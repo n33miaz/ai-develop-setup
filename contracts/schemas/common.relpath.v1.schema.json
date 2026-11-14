@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:common:relpath:1",
+  "title": "Caminho relativo",
+  "description": "Caminho relativo com barra normal, sem raiz, sem letra de unidade e sem segmento '..'.",
+  "type": "string",
+  "minLength": 1,
+  "maxLength": 260,
+  "pattern": "^[A-Za-z0-9._-][A-Za-z0-9._/-]*$",
+  "not": {
+    "pattern": "(^|/)\\.\\.(/|$)"
+  },
+  "examples": [
+    "src/lib.rs"
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "01-unknown-kind.json": {
+    "rule": "Só device, agent e daemon existem.",
+    "keyword": "enum",
+    "instancePath": "/kind"
+  },
+  "02-missing-id.json": {
+    "rule": "O id é obrigatório.",
+    "keyword": "required",
+    "instancePath": "",
+    "params": {
+      "missingProperty": "id"
+    }
+  },
+  "03-extra-field.json": {
+    "rule": "Objeto fechado: campo desconhecido reprova.",
+    "keyword": "additionalProperties",
+    "instancePath": "",
+    "params": {
+      "additionalProperty": "name"
+    }
+  },
+  "04-email-as-id.json": {
+    "rule": "O id não pode ser e-mail.",
+    "keyword": "pattern",
+    "instancePath": "/id"
+  }
+}

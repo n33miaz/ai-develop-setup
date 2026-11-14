@@ -1,0 +1,27 @@
+{
+  "01-empty.json": {
+    "rule": "Identificador vazio não vale.",
+    "keyword": "pattern",
+    "instancePath": ""
+  },
+  "02-email-like.json": {
+    "rule": "Arroba é proibida: impede e-mail ou credencial disfarçados de alias.",
+    "keyword": "pattern",
+    "instancePath": ""
+  },
+  "03-too-long.json": {
+    "rule": "No máximo 64 caracteres.",
+    "keyword": "pattern",
+    "instancePath": ""
+  },
+  "04-leading-dash.json": {
+    "rule": "Não pode começar por pontuação.",
+    "keyword": "pattern",
+    "instancePath": ""
+  },
+  "05-not-a-string.json": {
+    "rule": "Identificador é texto.",
+    "keyword": "type",
+    "instancePath": ""
+  }
+}

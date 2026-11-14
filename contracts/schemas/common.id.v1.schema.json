@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:common:id:1",
+  "title": "Identificador opaco",
+  "description": "Identificador opaco de entidade (tarefa, sessão, aparelho, alias): 1 a 64 caracteres de letras, dígitos e . _ : -, sem espaço nem arroba.",
+  "type": "string",
+  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+  "examples": [
+    "task-01"
+  ]
+}
