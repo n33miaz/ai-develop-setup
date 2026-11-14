@@ -1,0 +1,33 @@
+{
+  "01-wrong-type.json": {
+    "rule": "O type tem de ser exatamente a URN deste evento.",
+    "keyword": "const",
+    "instancePath": "/type"
+  },
+  "02-missing-tests_passed.json": {
+    "rule": "O campo tests_passed é obrigatório em data.",
+    "keyword": "required",
+    "instancePath": "/data",
+    "params": {
+      "missingProperty": "tests_passed"
+    }
+  },
+  "03-extra-data-field.json": {
+    "rule": "data é fechado: campo desconhecido reprova.",
+    "keyword": "additionalProperties",
+    "instancePath": "/data",
+    "params": {
+      "additionalProperty": "unexpected"
+    }
+  },
+  "04-wrong-stream.json": {
+    "rule": "O stream deste evento começa por task/.",
+    "keyword": "pattern",
+    "instancePath": "/stream"
+  },
+  "05-short-diff-digest.json": {
+    "rule": "diff_sha é um digest SHA-256 completo.",
+    "keyword": "pattern",
+    "instancePath": "/data/diff_sha"
+  }
+}

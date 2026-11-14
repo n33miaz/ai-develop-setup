@@ -1,0 +1,20 @@
+{
+  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+  "type": "urn:ads:event:usage.reconciled:1",
+  "ts": "2030-01-02T03:04:05Z",
+  "stream": "other/x1",
+  "seq": 1,
+  "actor": {
+    "kind": "daemon",
+    "id": "core-01"
+  },
+  "cause": null,
+  "data_class": "internal",
+  "data": {
+    "dedupe_key": "harness-a:sess-01:42",
+    "kept_event_id": "usage-01",
+    "dropped_sources": [
+      "transcript"
+    ]
+  }
+}

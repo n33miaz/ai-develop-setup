@@ -1,0 +1,43 @@
+{
+  "01-wrong-type.json": {
+    "rule": "O type tem de ser exatamente a URN deste evento.",
+    "keyword": "const",
+    "instancePath": "/type"
+  },
+  "02-missing-payload.json": {
+    "rule": "O campo payload é obrigatório em data.",
+    "keyword": "required",
+    "instancePath": "/data",
+    "params": {
+      "missingProperty": "payload"
+    }
+  },
+  "03-extra-data-field.json": {
+    "rule": "data é fechado: campo desconhecido reprova.",
+    "keyword": "additionalProperties",
+    "instancePath": "/data",
+    "params": {
+      "additionalProperty": "unexpected"
+    }
+  },
+  "04-wrong-stream.json": {
+    "rule": "O stream deste evento começa por session/.",
+    "keyword": "pattern",
+    "instancePath": "/stream"
+  },
+  "05-public-output.json": {
+    "rule": "Texto de terminal nunca é público: data_class é private ou secret.",
+    "keyword": "enum",
+    "instancePath": "/data_class"
+  },
+  "06-payload-not-base64.json": {
+    "rule": "O payload é base64.",
+    "keyword": "pattern",
+    "instancePath": "/data/payload"
+  },
+  "07-zero-length.json": {
+    "rule": "Um quadro de saída tem pelo menos 1 byte.",
+    "keyword": "minimum",
+    "instancePath": "/data/length"
+  }
+}

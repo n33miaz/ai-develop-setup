@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:event:host.alert_acked:1",
+  "title": "Alerta do host confirmado",
+  "description": "O dono confirmou ter visto um alerta; o alerta original não é alterado.",
+  "allOf": [
+    {
+      "$ref": "urn:ads:event:envelope:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "type",
+        "stream",
+        "data"
+      ],
+      "properties": {
+        "type": {
+          "const": "urn:ads:event:host.alert_acked:1"
+        },
+        "stream": {
+          "type": "string",
+          "pattern": "^host/"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "event_id"
+          ],
+          "properties": {
+            "event_id": {
+              "$ref": "urn:ads:common:id:1"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+      "type": "urn:ads:event:host.alert_acked:1",
+      "ts": "2030-01-02T03:04:05Z",
+      "stream": "host/host-01",
+      "seq": 1,
+      "actor": {
+        "kind": "daemon",
+        "id": "core-01"
+      },
+      "cause": null,
+      "data_class": "internal",
+      "data": {
+        "event_id": "alert-01"
+      }
+    }
+  ]
+}

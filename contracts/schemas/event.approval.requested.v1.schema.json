@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:event:approval.requested:1",
+  "title": "Aprovação pedida",
+  "description": "Uma ação com risco pede aprovação: vale para o hash do plano e expira na validade indicada.",
+  "allOf": [
+    {
+      "$ref": "urn:ads:event:envelope:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "type",
+        "stream",
+        "data"
+      ],
+      "properties": {
+        "type": {
+          "const": "urn:ads:event:approval.requested:1"
+        },
+        "stream": {
+          "type": "string",
+          "pattern": "^approval/"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "approval_id",
+            "plan_hash",
+            "risk",
+            "summary",
+            "expires_at",
+            "needs_elevation"
+          ],
+          "properties": {
+            "approval_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "plan_hash": {
+              "$ref": "urn:ads:common:sha256:1"
+            },
+            "risk": {
+              "$ref": "urn:ads:common:risk:1"
+            },
+            "summary": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 500
+            },
+            "expires_at": {
+              "$ref": "urn:ads:common:timestamp:1"
+            },
+            "needs_elevation": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+      "type": "urn:ads:event:approval.requested:1",
+      "ts": "2030-01-02T03:04:05Z",
+      "stream": "approval/appr-01",
+      "seq": 1,
+      "actor": {
+        "kind": "daemon",
+        "id": "core-01"
+      },
+      "cause": null,
+      "data_class": "internal",
+      "data": {
+        "approval_id": "appr-01",
+        "plan_hash": "sha256:abababababababababababababababababababababababababababababababab",
+        "risk": "medium",
+        "summary": "Limpar um cache regenerável",
+        "expires_at": "2030-01-02T03:19:05Z",
+        "needs_elevation": false
+      }
+    }
+  ]
+}

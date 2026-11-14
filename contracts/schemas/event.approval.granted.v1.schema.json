@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:event:approval.granted:1",
+  "title": "Aprovação concedida",
+  "description": "A aprovação foi concedida para o hash do plano, por um dos três caminhos permitidos.",
+  "allOf": [
+    {
+      "$ref": "urn:ads:event:envelope:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "type",
+        "stream",
+        "data"
+      ],
+      "properties": {
+        "type": {
+          "const": "urn:ads:event:approval.granted:1"
+        },
+        "stream": {
+          "type": "string",
+          "pattern": "^approval/"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "approval_id",
+            "plan_hash",
+            "via"
+          ],
+          "properties": {
+            "approval_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "plan_hash": {
+              "$ref": "urn:ads:common:sha256:1"
+            },
+            "via": {
+              "enum": [
+                "local_ui",
+                "tray",
+                "remote_device"
+              ]
+            }
+          }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+      "type": "urn:ads:event:approval.granted:1",
+      "ts": "2030-01-02T03:04:05Z",
+      "stream": "approval/appr-01",
+      "seq": 1,
+      "actor": {
+        "kind": "daemon",
+        "id": "core-01"
+      },
+      "cause": null,
+      "data_class": "internal",
+      "data": {
+        "approval_id": "appr-01",
+        "plan_hash": "sha256:abababababababababababababababababababababababababababababababab",
+        "via": "local_ui"
+      }
+    }
+  ]
+}

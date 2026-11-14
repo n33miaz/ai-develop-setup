@@ -1,0 +1,21 @@
+{
+  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+  "type": "urn:ads:event:session.output:1",
+  "ts": "2030-01-02T03:04:05Z",
+  "stream": "session/sess-01",
+  "seq": 1,
+  "actor": {
+    "kind": "daemon",
+    "id": "core-01"
+  },
+  "cause": null,
+  "data_class": "private",
+  "data": {
+    "session_id": "sess-01",
+    "offset": 0,
+    "length": 5,
+    "encoding": "base64",
+    "payload": "aGVsbG8=",
+    "unexpected": 1
+  }
+}

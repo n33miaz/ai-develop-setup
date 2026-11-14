@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:event:task.completed:1",
+  "title": "Tarefa concluída",
+  "description": "A tarefa terminou com entrega; registra se os testes passaram e o digest do diff.",
+  "allOf": [
+    {
+      "$ref": "urn:ads:event:envelope:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "type",
+        "stream",
+        "data"
+      ],
+      "properties": {
+        "type": {
+          "const": "urn:ads:event:task.completed:1"
+        },
+        "stream": {
+          "type": "string",
+          "pattern": "^task/"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "task_id",
+            "tests_passed",
+            "diff_sha"
+          ],
+          "properties": {
+            "task_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "tests_passed": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "diff_sha": {
+              "anyOf": [
+                {
+                  "$ref": "urn:ads:common:sha256:1"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+      "type": "urn:ads:event:task.completed:1",
+      "ts": "2030-01-02T03:04:05Z",
+      "stream": "task/task-01",
+      "seq": 1,
+      "actor": {
+        "kind": "daemon",
+        "id": "core-01"
+      },
+      "cause": null,
+      "data_class": "internal",
+      "data": {
+        "task_id": "task-01",
+        "tests_passed": true,
+        "diff_sha": "sha256:abababababababababababababababababababababababababababababababab"
+      }
+    }
+  ]
+}

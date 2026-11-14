@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:event:session.created:1",
+  "title": "Sessão criada",
+  "description": "Uma sessão de terminal foi aberta no host de PTY para um agente de IA.",
+  "allOf": [
+    {
+      "$ref": "urn:ads:event:envelope:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "type",
+        "stream",
+        "data"
+      ],
+      "properties": {
+        "type": {
+          "const": "urn:ads:event:session.created:1"
+        },
+        "stream": {
+          "type": "string",
+          "pattern": "^session/"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "session_id",
+            "task_id",
+            "harness",
+            "mode",
+            "cols",
+            "rows",
+            "workdir_alias"
+          ],
+          "properties": {
+            "session_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "task_id": {
+              "anyOf": [
+                {
+                  "$ref": "urn:ads:common:id:1"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "harness": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "mode": {
+              "enum": [
+                "interactive",
+                "headless"
+              ]
+            },
+            "cols": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000
+            },
+            "rows": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000
+            },
+            "workdir_alias": {
+              "$ref": "urn:ads:common:id:1"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+      "type": "urn:ads:event:session.created:1",
+      "ts": "2030-01-02T03:04:05Z",
+      "stream": "session/sess-01",
+      "seq": 1,
+      "actor": {
+        "kind": "daemon",
+        "id": "core-01"
+      },
+      "cause": null,
+      "data_class": "internal",
+      "data": {
+        "session_id": "sess-01",
+        "task_id": "task-01",
+        "harness": "harness-a",
+        "mode": "interactive",
+        "cols": 120,
+        "rows": 30,
+        "workdir_alias": "wd-01"
+      }
+    }
+  ]
+}

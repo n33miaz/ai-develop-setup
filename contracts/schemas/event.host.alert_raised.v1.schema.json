@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:event:host.alert_raised:1",
+  "title": "Alerta do host emitido",
+  "description": "Uma regra de alerta disparou a partir de amostras; o dado é um registro host_event.",
+  "allOf": [
+    {
+      "$ref": "urn:ads:event:envelope:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "type",
+        "stream",
+        "data"
+      ],
+      "properties": {
+        "type": {
+          "const": "urn:ads:event:host.alert_raised:1"
+        },
+        "stream": {
+          "type": "string",
+          "pattern": "^host/"
+        },
+        "data": {
+          "$ref": "urn:ads:record:host_event:1"
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+      "type": "urn:ads:event:host.alert_raised:1",
+      "ts": "2030-01-02T03:04:05Z",
+      "stream": "host/host-01",
+      "seq": 1,
+      "actor": {
+        "kind": "daemon",
+        "id": "core-01"
+      },
+      "cause": null,
+      "data_class": "internal",
+      "data": {
+        "version": 1,
+        "event_id": "alert-01",
+        "rule_id": "disk-low",
+        "severity": "warn",
+        "signals": [
+          "sample-01"
+        ],
+        "why": "12.4 GB < 15 GB",
+        "ts": "2030-01-02T03:04:06Z",
+        "ack": false
+      }
+    }
+  ]
+}

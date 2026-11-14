@@ -1,0 +1,17 @@
+{
+  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+  "type": "urn:ads:event:other.thing:1",
+  "ts": "2030-01-02T03:04:05Z",
+  "stream": "task/task-01",
+  "seq": 1,
+  "actor": {
+    "kind": "daemon",
+    "id": "core-01"
+  },
+  "cause": null,
+  "data_class": "internal",
+  "data": {
+    "task_id": "task-01",
+    "reason": "owner"
+  }
+}
