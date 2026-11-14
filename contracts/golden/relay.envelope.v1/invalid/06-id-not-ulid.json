@@ -1,0 +1,7 @@
+{
+  "id": "msg-01",
+  "from": "device-phone",
+  "to": "device-pc",
+  "expires_at": "2030-01-02T03:09:05Z",
+  "ciphertext": "AAAAAAAAAAAAAAAAAAAAAA=="
+}

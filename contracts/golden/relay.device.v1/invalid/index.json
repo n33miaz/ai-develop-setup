@@ -1,0 +1,33 @@
+{
+  "01-key-wrong-size.json": {
+    "rule": "A chave pública tem 32 bytes (44 caracteres em base64).",
+    "keyword": "pattern",
+    "instancePath": "/public_key"
+  },
+  "02-private-key-field.json": {
+    "rule": "O relé guarda só a chave pública: qualquer outro campo reprova.",
+    "keyword": "additionalProperties",
+    "instancePath": "",
+    "params": {
+      "additionalProperty": "private_key"
+    }
+  },
+  "03-missing-registered_at.json": {
+    "rule": "A inscrição registra quando aconteceu.",
+    "keyword": "required",
+    "instancePath": "",
+    "params": {
+      "missingProperty": "registered_at"
+    }
+  },
+  "04-device-as-email.json": {
+    "rule": "Aparelho é identificado por id opaco, nunca por e-mail.",
+    "keyword": "pattern",
+    "instancePath": "/device_id"
+  },
+  "05-local-time.json": {
+    "rule": "O instante é UTC com Z.",
+    "keyword": "pattern",
+    "instancePath": "/registered_at"
+  }
+}

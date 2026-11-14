@@ -1,0 +1,7 @@
+{
+  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAC",
+  "from": "device-pc",
+  "to": "device-phone",
+  "expires_at": "2030-01-03T03:04:05Z",
+  "ciphertext": "AAECAwQFBgc="
+}
