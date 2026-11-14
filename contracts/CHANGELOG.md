@@ -14,3 +14,4 @@ Primeira versão dos contratos (todos `:1`).
 Segunda leva, no mesmo dia (todos `:1`; nenhum contrato da primeira leva foi alterado).
 
 - Contratos entre processos: `harness-adapter` (descritor do adaptador) e `pty-host.request`, `pty-host.response`, `pty-host.notification`, `pty-host.frame` (o contrato `pty-host/1`, com o layout do quadro binário no README).
+- Eventos: `routing.proposed`, `routing.decided`, `routing.fallback`; `review.requested`, `review.completed`, `review.failed`; `action.planned`, `action.executed`, `action.failed`.

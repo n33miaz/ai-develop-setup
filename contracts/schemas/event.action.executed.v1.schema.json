@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:event:action.executed:1",
+  "title": "Ação executada",
+  "description": "A ação foi executada exatamente como o plano do hash indicado, com a aprovação citada (ou sem aprovação, quando a política a dispensa).",
+  "allOf": [
+    {
+      "$ref": "urn:ads:event:envelope:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "type",
+        "stream",
+        "data"
+      ],
+      "properties": {
+        "type": {
+          "const": "urn:ads:event:action.executed:1"
+        },
+        "stream": {
+          "type": "string",
+          "pattern": "^action/"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action_id",
+            "plan_hash",
+            "approval_id"
+          ],
+          "properties": {
+            "action_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "plan_hash": {
+              "$ref": "urn:ads:common:sha256:1"
+            },
+            "approval_id": {
+              "anyOf": [
+                {
+                  "$ref": "urn:ads:common:id:1"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+      "type": "urn:ads:event:action.executed:1",
+      "ts": "2030-01-02T03:04:05Z",
+      "stream": "action/act-01",
+      "seq": 1,
+      "actor": {
+        "kind": "daemon",
+        "id": "core-01"
+      },
+      "cause": null,
+      "data_class": "internal",
+      "data": {
+        "action_id": "act-01",
+        "plan_hash": "sha256:abababababababababababababababababababababababababababababababab",
+        "approval_id": "appr-01"
+      }
+    }
+  ]
+}

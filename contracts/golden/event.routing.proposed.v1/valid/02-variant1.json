@@ -1,0 +1,23 @@
+{
+  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAC",
+  "type": "urn:ads:event:routing.proposed:1",
+  "ts": "2030-01-02T03:04:05Z",
+  "stream": "routing/task-02",
+  "seq": 42,
+  "actor": {
+    "kind": "device",
+    "id": "device-pc"
+  },
+  "cause": "01ARZ3NDEKTSV4RRFFQ69G5FAK",
+  "data_class": "private",
+  "data": {
+    "task_id": "task-02",
+    "mode": "shadow",
+    "rule_id": "rule-07",
+    "tier": "T3",
+    "harness": "harness-b",
+    "provider": "provider-b",
+    "model": "model-y",
+    "effort": null
+  }
+}

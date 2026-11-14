@@ -1,0 +1,49 @@
+{
+  "01-wrong-type.json": {
+    "rule": "O type tem de ser exatamente a URN deste evento.",
+    "keyword": "const",
+    "instancePath": "/type"
+  },
+  "02-missing-from.json": {
+    "rule": "O campo from é obrigatório em data.",
+    "keyword": "required",
+    "instancePath": "/data",
+    "params": {
+      "missingProperty": "from"
+    }
+  },
+  "03-extra-data-field.json": {
+    "rule": "data é fechado: campo desconhecido reprova.",
+    "keyword": "additionalProperties",
+    "instancePath": "/data",
+    "params": {
+      "additionalProperty": "unexpected"
+    }
+  },
+  "04-wrong-stream.json": {
+    "rule": "O stream deste evento começa por routing/.",
+    "keyword": "pattern",
+    "instancePath": "/stream"
+  },
+  "05-free-text-code.json": {
+    "rule": "O código de erro é E_ seguido de maiúsculas, não texto livre.",
+    "keyword": "pattern",
+    "instancePath": "/data/error_code"
+  },
+  "06-target-without-model.json": {
+    "rule": "O destino da troca informa ferramenta, provedor e modelo.",
+    "keyword": "required",
+    "instancePath": "/data/to",
+    "params": {
+      "missingProperty": "model"
+    }
+  },
+  "07-target-with-account.json": {
+    "rule": "A rota não leva conta: rotação automática de contas é proibida.",
+    "keyword": "additionalProperties",
+    "instancePath": "/data/to",
+    "params": {
+      "additionalProperty": "account_alias"
+    }
+  }
+}

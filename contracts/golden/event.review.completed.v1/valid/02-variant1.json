@@ -1,0 +1,20 @@
+{
+  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAC",
+  "type": "urn:ads:event:review.completed:1",
+  "ts": "2030-01-02T03:04:05Z",
+  "stream": "review/rev-02",
+  "seq": 42,
+  "actor": {
+    "kind": "device",
+    "id": "device-pc"
+  },
+  "cause": "01ARZ3NDEKTSV4RRFFQ69G5FAK",
+  "data_class": "private",
+  "data": {
+    "review_id": "rev-02",
+    "task_id": "task-02",
+    "diff_sha": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+    "verdict": "changes_requested",
+    "findings": 3
+  }
+}

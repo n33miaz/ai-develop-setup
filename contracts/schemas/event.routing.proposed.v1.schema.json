@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:event:routing.proposed:1",
+  "title": "Rota proposta",
+  "description": "O roteador propôs, para uma tarefa, a faixa, a ferramenta, o provedor e o modelo, citando a regra que usou. Proposta não é decisão: nada roda por causa deste evento.",
+  "allOf": [
+    {
+      "$ref": "urn:ads:event:envelope:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "type",
+        "stream",
+        "data"
+      ],
+      "properties": {
+        "type": {
+          "const": "urn:ads:event:routing.proposed:1"
+        },
+        "stream": {
+          "type": "string",
+          "pattern": "^routing/"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "task_id",
+            "mode",
+            "rule_id",
+            "tier",
+            "harness",
+            "provider",
+            "model",
+            "effort"
+          ],
+          "properties": {
+            "task_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "mode": {
+              "enum": [
+                "manual",
+                "propose",
+                "auto",
+                "shadow"
+              ]
+            },
+            "rule_id": {
+              "anyOf": [
+                {
+                  "$ref": "urn:ads:common:id:1"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "tier": {
+              "type": "string",
+              "pattern": "^T[0-3]$"
+            },
+            "harness": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "provider": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "model": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "effort": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 32
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+      "type": "urn:ads:event:routing.proposed:1",
+      "ts": "2030-01-02T03:04:05Z",
+      "stream": "routing/task-01",
+      "seq": 1,
+      "actor": {
+        "kind": "daemon",
+        "id": "core-01"
+      },
+      "cause": null,
+      "data_class": "internal",
+      "data": {
+        "task_id": "task-01",
+        "mode": "propose",
+        "rule_id": "rule-01",
+        "tier": "T1",
+        "harness": "harness-a",
+        "provider": "provider-a",
+        "model": "model-x",
+        "effort": "medium"
+      }
+    }
+  ]
+}

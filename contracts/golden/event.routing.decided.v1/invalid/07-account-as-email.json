@@ -1,0 +1,23 @@
+{
+  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+  "type": "urn:ads:event:routing.decided:1",
+  "ts": "2030-01-02T03:04:05Z",
+  "stream": "routing/task-01",
+  "seq": 1,
+  "actor": {
+    "kind": "daemon",
+    "id": "core-01"
+  },
+  "cause": null,
+  "data_class": "internal",
+  "data": {
+    "task_id": "task-01",
+    "mode": "auto",
+    "rule_id": "rule-01",
+    "tier": "T1",
+    "harness": "harness-a",
+    "provider": "user@example.org",
+    "model": "model-x",
+    "effort": "medium"
+  }
+}

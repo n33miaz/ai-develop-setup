@@ -1,0 +1,43 @@
+{
+  "01-wrong-type.json": {
+    "rule": "O type tem de ser exatamente a URN deste evento.",
+    "keyword": "const",
+    "instancePath": "/type"
+  },
+  "02-missing-verb.json": {
+    "rule": "O campo verb é obrigatório em data.",
+    "keyword": "required",
+    "instancePath": "/data",
+    "params": {
+      "missingProperty": "verb"
+    }
+  },
+  "03-extra-data-field.json": {
+    "rule": "data é fechado: campo desconhecido reprova.",
+    "keyword": "additionalProperties",
+    "instancePath": "/data",
+    "params": {
+      "additionalProperty": "unexpected"
+    }
+  },
+  "04-wrong-stream.json": {
+    "rule": "O stream deste evento começa por action/.",
+    "keyword": "pattern",
+    "instancePath": "/stream"
+  },
+  "05-free-text-verb.json": {
+    "rule": "O verbo vem de uma lista fixa: minúsculo com pontos, nunca um comando livre.",
+    "keyword": "pattern",
+    "instancePath": "/data/verb"
+  },
+  "06-unknown-risk.json": {
+    "rule": "O risco é low, medium ou high.",
+    "keyword": "enum",
+    "instancePath": "/data/risk"
+  },
+  "07-plan-not-a-digest.json": {
+    "rule": "O plano entra só como digest SHA-256.",
+    "keyword": "pattern",
+    "instancePath": "/data/plan_hash"
+  }
+}

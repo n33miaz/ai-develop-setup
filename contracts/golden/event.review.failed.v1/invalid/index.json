@@ -1,0 +1,38 @@
+{
+  "01-wrong-type.json": {
+    "rule": "O type tem de ser exatamente a URN deste evento.",
+    "keyword": "const",
+    "instancePath": "/type"
+  },
+  "02-missing-task_id.json": {
+    "rule": "O campo task_id é obrigatório em data.",
+    "keyword": "required",
+    "instancePath": "/data",
+    "params": {
+      "missingProperty": "task_id"
+    }
+  },
+  "03-extra-data-field.json": {
+    "rule": "data é fechado: campo desconhecido reprova.",
+    "keyword": "additionalProperties",
+    "instancePath": "/data",
+    "params": {
+      "additionalProperty": "unexpected"
+    }
+  },
+  "04-wrong-stream.json": {
+    "rule": "O stream deste evento começa por review/.",
+    "keyword": "pattern",
+    "instancePath": "/stream"
+  },
+  "05-free-text-code.json": {
+    "rule": "O código de erro é E_ seguido de maiúsculas, não texto livre.",
+    "keyword": "pattern",
+    "instancePath": "/data/error_code"
+  },
+  "06-retriable-as-text.json": {
+    "rule": "retriable é verdadeiro ou falso.",
+    "keyword": "type",
+    "instancePath": "/data/retriable"
+  }
+}
