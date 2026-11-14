@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:common:data-class:1",
+  "title": "Classe do dado",
+  "description": "Classe de sensibilidade de um dado: public, internal, private ou secret. Segredo nunca sai da máquina.",
+  "enum": [
+    "public",
+    "internal",
+    "private",
+    "secret"
+  ],
+  "examples": [
+    "internal"
+  ]
+}

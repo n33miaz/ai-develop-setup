@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:common:actor:1",
+  "title": "Autor de um fato",
+  "description": "Quem causou um evento ou uma decisão: um aparelho, um agente de IA ou o próprio daemon.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "kind",
+    "id"
+  ],
+  "properties": {
+    "kind": {
+      "enum": [
+        "device",
+        "agent",
+        "daemon"
+      ]
+    },
+    "id": {
+      "$ref": "urn:ads:common:id:1"
+    }
+  },
+  "examples": [
+    {
+      "kind": "daemon",
+      "id": "core-01"
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "01-invalid-chars.json": {
+    "rule": "Espaço e ponto de exclamação não são base64.",
+    "keyword": "pattern",
+    "instancePath": ""
+  },
+  "02-bad-length.json": {
+    "rule": "O tamanho tem de ser múltiplo de 4.",
+    "keyword": "pattern",
+    "instancePath": ""
+  },
+  "03-missing-padding.json": {
+    "rule": "Falta o preenchimento com =.",
+    "keyword": "pattern",
+    "instancePath": ""
+  },
+  "04-padding-in-middle.json": {
+    "rule": "O = só aparece no fim.",
+    "keyword": "pattern",
+    "instancePath": ""
+  }
+}

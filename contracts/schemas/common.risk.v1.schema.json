@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:common:risk:1",
+  "title": "Nível de risco",
+  "description": "Nível de risco de uma ação ou tarefa: low, medium ou high.",
+  "enum": [
+    "low",
+    "medium",
+    "high"
+  ],
+  "examples": [
+    "low"
+  ]
+}

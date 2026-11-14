@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:common:sha256:1",
+  "title": "Digest SHA-256",
+  "description": "Digest SHA-256 no formato sha256: seguido de 64 hexadecimais minúsculos.",
+  "type": "string",
+  "pattern": "^sha256:[0-9a-f]{64}$",
+  "examples": [
+    "sha256:abababababababababababababababababababababababababababababababab"
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "01-offset.json": {
+    "rule": "Só UTC com Z; deslocamento de fuso não vale.",
+    "keyword": "pattern",
+    "instancePath": ""
+  },
+  "02-date-only.json": {
+    "rule": "Data sem hora não é instante.",
+    "keyword": "pattern",
+    "instancePath": ""
+  },
+  "03-space-separator.json": {
+    "rule": "O separador é T, não espaço.",
+    "keyword": "pattern",
+    "instancePath": ""
+  },
+  "04-impossible-month.json": {
+    "rule": "Mês 13 casa com o padrão mas não é data.",
+    "keyword": "format",
+    "instancePath": ""
+  },
+  "05-not-a-string.json": {
+    "rule": "Instante é texto.",
+    "keyword": "type",
+    "instancePath": ""
+  }
+}

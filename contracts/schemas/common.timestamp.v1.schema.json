@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:common:timestamp:1",
+  "title": "Instante em UTC",
+  "description": "Instante em UTC no formato RFC 3339 com sufixo Z, com fração opcional de até 6 dígitos.",
+  "type": "string",
+  "format": "date-time",
+  "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?Z$",
+  "examples": [
+    "2030-01-02T03:04:05Z"
+  ]
+}

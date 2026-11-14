@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:common:ulid:1",
+  "title": "Identificador ULID",
+  "description": "Identificador de evento ou de comando: ULID de 26 caracteres em Crockford base32, ordenável por tempo.",
+  "type": "string",
+  "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+  "examples": [
+    "01ARZ3NDEKTSV4RRFFQ69G5FAA"
+  ]
+}
