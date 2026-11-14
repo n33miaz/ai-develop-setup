@@ -1,0 +1,27 @@
+{
+  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAC",
+  "type": "urn:ads:event:routing.fallback:1",
+  "ts": "2030-01-02T03:04:05Z",
+  "stream": "routing/task-02",
+  "seq": 42,
+  "actor": {
+    "kind": "device",
+    "id": "device-pc"
+  },
+  "cause": "01ARZ3NDEKTSV4RRFFQ69G5FAK",
+  "data_class": "private",
+  "data": {
+    "task_id": "task-02",
+    "from": {
+      "harness": "harness-a",
+      "provider": "provider-a",
+      "model": "model-x"
+    },
+    "to": {
+      "harness": "harness-a",
+      "provider": "provider-a",
+      "model": "model-z"
+    },
+    "error_code": "E_MODEL_UNAVAILABLE"
+  }
+}

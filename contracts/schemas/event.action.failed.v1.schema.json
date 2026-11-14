@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:event:action.failed:1",
+  "title": "Ação falhou",
+  "description": "A ação não terminou como o plano previa; registra o hash do plano e um código de erro estável. O que foi feito pela metade é assunto do plano de reparo, não deste evento.",
+  "allOf": [
+    {
+      "$ref": "urn:ads:event:envelope:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "type",
+        "stream",
+        "data"
+      ],
+      "properties": {
+        "type": {
+          "const": "urn:ads:event:action.failed:1"
+        },
+        "stream": {
+          "type": "string",
+          "pattern": "^action/"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action_id",
+            "plan_hash",
+            "error_code"
+          ],
+          "properties": {
+            "action_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "plan_hash": {
+              "$ref": "urn:ads:common:sha256:1"
+            },
+            "error_code": {
+              "type": "string",
+              "pattern": "^E_[A-Z0-9_]{1,60}$"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+      "type": "urn:ads:event:action.failed:1",
+      "ts": "2030-01-02T03:04:05Z",
+      "stream": "action/act-01",
+      "seq": 1,
+      "actor": {
+        "kind": "daemon",
+        "id": "core-01"
+      },
+      "cause": null,
+      "data_class": "internal",
+      "data": {
+        "action_id": "act-01",
+        "plan_hash": "sha256:abababababababababababababababababababababababababababababababab",
+        "error_code": "E_PLAN_CHANGED"
+      }
+    }
+  ]
+}

@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:event:review.requested:1",
+  "title": "Revisão pedida",
+  "description": "Um revisor foi chamado para avaliar a entrega de uma tarefa. Só o digest do diff vai no evento; o diff fica fora.",
+  "allOf": [
+    {
+      "$ref": "urn:ads:event:envelope:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "type",
+        "stream",
+        "data"
+      ],
+      "properties": {
+        "type": {
+          "const": "urn:ads:event:review.requested:1"
+        },
+        "stream": {
+          "type": "string",
+          "pattern": "^review/"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "review_id",
+            "task_id",
+            "diff_sha"
+          ],
+          "properties": {
+            "review_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "task_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "diff_sha": {
+              "$ref": "urn:ads:common:sha256:1"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+      "type": "urn:ads:event:review.requested:1",
+      "ts": "2030-01-02T03:04:05Z",
+      "stream": "review/rev-01",
+      "seq": 1,
+      "actor": {
+        "kind": "daemon",
+        "id": "core-01"
+      },
+      "cause": null,
+      "data_class": "internal",
+      "data": {
+        "review_id": "rev-01",
+        "task_id": "task-01",
+        "diff_sha": "sha256:abababababababababababababababababababababababababababababababab"
+      }
+    }
+  ]
+}

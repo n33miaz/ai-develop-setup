@@ -1,0 +1,38 @@
+{
+  "01-wrong-type.json": {
+    "rule": "O type tem de ser exatamente a URN deste evento.",
+    "keyword": "const",
+    "instancePath": "/type"
+  },
+  "02-missing-plan_hash.json": {
+    "rule": "O campo plan_hash é obrigatório em data.",
+    "keyword": "required",
+    "instancePath": "/data",
+    "params": {
+      "missingProperty": "plan_hash"
+    }
+  },
+  "03-extra-data-field.json": {
+    "rule": "data é fechado: campo desconhecido reprova.",
+    "keyword": "additionalProperties",
+    "instancePath": "/data",
+    "params": {
+      "additionalProperty": "unexpected"
+    }
+  },
+  "04-wrong-stream.json": {
+    "rule": "O stream deste evento começa por action/.",
+    "keyword": "pattern",
+    "instancePath": "/stream"
+  },
+  "05-plan-not-a-digest.json": {
+    "rule": "A execução cita o hash do plano que foi ensaiado.",
+    "keyword": "pattern",
+    "instancePath": "/data/plan_hash"
+  },
+  "06-approval-as-flag.json": {
+    "rule": "approval_id é o identificador da aprovação ou null, não um sim/não.",
+    "keyword": "anyOf",
+    "instancePath": "/data/approval_id"
+  }
+}

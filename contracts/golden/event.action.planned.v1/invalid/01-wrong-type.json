@@ -1,0 +1,20 @@
+{
+  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+  "type": "urn:ads:event:session.resized:1",
+  "ts": "2030-01-02T03:04:05Z",
+  "stream": "action/act-01",
+  "seq": 1,
+  "actor": {
+    "kind": "daemon",
+    "id": "core-01"
+  },
+  "cause": null,
+  "data_class": "internal",
+  "data": {
+    "action_id": "act-01",
+    "verb": "cache.clean",
+    "risk": "medium",
+    "plan_hash": "sha256:abababababababababababababababababababababababababababababababab",
+    "needs_elevation": false
+  }
+}

@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:event:action.planned:1",
+  "title": "Ação planejada",
+  "description": "O ensaio (dry-run) de uma ação produziu um plano: o verbo, o risco, o hash do plano e se pede elevação. Nada foi alterado ainda; a aprovação e a execução valem só para este hash.",
+  "allOf": [
+    {
+      "$ref": "urn:ads:event:envelope:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "type",
+        "stream",
+        "data"
+      ],
+      "properties": {
+        "type": {
+          "const": "urn:ads:event:action.planned:1"
+        },
+        "stream": {
+          "type": "string",
+          "pattern": "^action/"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action_id",
+            "verb",
+            "risk",
+            "plan_hash",
+            "needs_elevation"
+          ],
+          "properties": {
+            "action_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "verb": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
+              "maxLength": 64
+            },
+            "risk": {
+              "$ref": "urn:ads:common:risk:1"
+            },
+            "plan_hash": {
+              "$ref": "urn:ads:common:sha256:1"
+            },
+            "needs_elevation": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+      "type": "urn:ads:event:action.planned:1",
+      "ts": "2030-01-02T03:04:05Z",
+      "stream": "action/act-01",
+      "seq": 1,
+      "actor": {
+        "kind": "daemon",
+        "id": "core-01"
+      },
+      "cause": null,
+      "data_class": "internal",
+      "data": {
+        "action_id": "act-01",
+        "verb": "cache.clean",
+        "risk": "medium",
+        "plan_hash": "sha256:abababababababababababababababababababababababababababababababab",
+        "needs_elevation": false
+      }
+    }
+  ]
+}

@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:event:review.failed:1",
+  "title": "Revisão falhou",
+  "description": "A revisão terminou sem veredito, com um código de erro estável e a indicação de se vale tentar de novo. Revisão que falha não aprova nada.",
+  "allOf": [
+    {
+      "$ref": "urn:ads:event:envelope:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "type",
+        "stream",
+        "data"
+      ],
+      "properties": {
+        "type": {
+          "const": "urn:ads:event:review.failed:1"
+        },
+        "stream": {
+          "type": "string",
+          "pattern": "^review/"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "review_id",
+            "task_id",
+            "error_code",
+            "retriable"
+          ],
+          "properties": {
+            "review_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "task_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "error_code": {
+              "type": "string",
+              "pattern": "^E_[A-Z0-9_]{1,60}$"
+            },
+            "retriable": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+      "type": "urn:ads:event:review.failed:1",
+      "ts": "2030-01-02T03:04:05Z",
+      "stream": "review/rev-01",
+      "seq": 1,
+      "actor": {
+        "kind": "daemon",
+        "id": "core-01"
+      },
+      "cause": null,
+      "data_class": "internal",
+      "data": {
+        "review_id": "rev-01",
+        "task_id": "task-01",
+        "error_code": "E_TIMEOUT",
+        "retriable": true
+      }
+    }
+  ]
+}

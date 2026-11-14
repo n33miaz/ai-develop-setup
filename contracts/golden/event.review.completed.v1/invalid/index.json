@@ -1,0 +1,43 @@
+{
+  "01-wrong-type.json": {
+    "rule": "O type tem de ser exatamente a URN deste evento.",
+    "keyword": "const",
+    "instancePath": "/type"
+  },
+  "02-missing-task_id.json": {
+    "rule": "O campo task_id é obrigatório em data.",
+    "keyword": "required",
+    "instancePath": "/data",
+    "params": {
+      "missingProperty": "task_id"
+    }
+  },
+  "03-extra-data-field.json": {
+    "rule": "data é fechado: campo desconhecido reprova.",
+    "keyword": "additionalProperties",
+    "instancePath": "/data",
+    "params": {
+      "additionalProperty": "unexpected"
+    }
+  },
+  "04-wrong-stream.json": {
+    "rule": "O stream deste evento começa por review/.",
+    "keyword": "pattern",
+    "instancePath": "/stream"
+  },
+  "05-unknown-verdict.json": {
+    "rule": "O veredito é approved ou changes_requested.",
+    "keyword": "enum",
+    "instancePath": "/data/verdict"
+  },
+  "06-negative-findings.json": {
+    "rule": "A contagem de apontamentos não é negativa.",
+    "keyword": "minimum",
+    "instancePath": "/data/findings"
+  },
+  "07-diff-not-a-digest.json": {
+    "rule": "O veredito vale para um digest de diff, não para texto.",
+    "keyword": "pattern",
+    "instancePath": "/data/diff_sha"
+  }
+}
