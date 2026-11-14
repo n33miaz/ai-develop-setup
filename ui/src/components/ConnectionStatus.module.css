@@ -1,0 +1,40 @@
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 2.75rem;
+  margin: 0;
+  font-size: 0.9375rem;
+}
+
+.dot {
+  flex: none;
+  width: 0.75rem;
+  height: 0.75rem;
+  border: 2px solid currentColor;
+  border-radius: 50%;
+}
+
+.disconnected {
+  color: var(--danger);
+}
+
+.connecting {
+  color: var(--warn);
+}
+
+.connecting .dot {
+  background: linear-gradient(90deg, currentColor 50%, transparent 50%);
+}
+
+.connected {
+  color: var(--ok);
+}
+
+.connected .dot {
+  background: currentColor;
+}
+
+.text {
+  color: var(--text);
+}
