@@ -1,0 +1,38 @@
+{
+  "01-plaintext-field.json": {
+    "rule": "O relé só leva texto cifrado: nenhum campo em claro além do endereçamento.",
+    "keyword": "additionalProperties",
+    "instancePath": "",
+    "params": {
+      "additionalProperty": "body"
+    }
+  },
+  "02-empty-ciphertext.json": {
+    "rule": "Mensagem sem conteúdo cifrado não vale.",
+    "keyword": "minLength",
+    "instancePath": "/ciphertext"
+  },
+  "03-ciphertext-not-base64.json": {
+    "rule": "O texto cifrado vai em base64 padrão.",
+    "keyword": "pattern",
+    "instancePath": "/ciphertext"
+  },
+  "04-missing-expires_at.json": {
+    "rule": "Toda mensagem guardada tem validade.",
+    "keyword": "required",
+    "instancePath": "",
+    "params": {
+      "missingProperty": "expires_at"
+    }
+  },
+  "05-sender-as-email.json": {
+    "rule": "Aparelho é identificado por id opaco, nunca por e-mail.",
+    "keyword": "pattern",
+    "instancePath": "/from"
+  },
+  "06-id-not-ulid.json": {
+    "rule": "O id da mensagem é um ULID.",
+    "keyword": "pattern",
+    "instancePath": "/id"
+  }
+}

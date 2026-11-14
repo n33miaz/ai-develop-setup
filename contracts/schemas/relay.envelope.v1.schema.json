@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:relay:envelope:1",
+  "title": "Mensagem cifrada do relé",
+  "description": "A única coisa que o relé transporta e guarda na caixa de mensagens: texto cifrado de ponta a ponta, de um aparelho para outro, com validade. O relé nunca vê texto em claro nem credencial; depois da validade a mensagem é descartada.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "from",
+    "to",
+    "expires_at",
+    "ciphertext"
+  ],
+  "properties": {
+    "id": {
+      "$ref": "urn:ads:common:ulid:1"
+    },
+    "from": {
+      "$ref": "urn:ads:common:id:1"
+    },
+    "to": {
+      "$ref": "urn:ads:common:id:1"
+    },
+    "expires_at": {
+      "$ref": "urn:ads:common:timestamp:1"
+    },
+    "ciphertext": {
+      "type": "string",
+      "minLength": 4,
+      "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+    }
+  },
+  "examples": [
+    {
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+      "from": "device-phone",
+      "to": "device-pc",
+      "expires_at": "2030-01-02T03:09:05Z",
+      "ciphertext": "AAAAAAAAAAAAAAAAAAAAAA=="
+    }
+  ]
+}
