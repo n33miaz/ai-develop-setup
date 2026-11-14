@@ -1,0 +1,17 @@
+{
+  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAC",
+  "type": "urn:ads:event:task.started:1",
+  "ts": "2030-01-02T03:04:05Z",
+  "stream": "task/task-01",
+  "seq": 42,
+  "actor": {
+    "kind": "agent",
+    "id": "agent-a"
+  },
+  "cause": "01ARZ3NDEKTSV4RRFFQ69G5FAK",
+  "data_class": "private",
+  "data": {
+    "task_id": "task-01",
+    "session_id": null
+  }
+}

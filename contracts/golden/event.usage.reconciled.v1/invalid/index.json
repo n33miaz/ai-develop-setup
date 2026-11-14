@@ -1,0 +1,43 @@
+{
+  "01-wrong-type.json": {
+    "rule": "O type tem de ser exatamente a URN deste evento.",
+    "keyword": "const",
+    "instancePath": "/type"
+  },
+  "02-missing-kept_event_id.json": {
+    "rule": "O campo kept_event_id é obrigatório em data.",
+    "keyword": "required",
+    "instancePath": "/data",
+    "params": {
+      "missingProperty": "kept_event_id"
+    }
+  },
+  "03-extra-data-field.json": {
+    "rule": "data é fechado: campo desconhecido reprova.",
+    "keyword": "additionalProperties",
+    "instancePath": "/data",
+    "params": {
+      "additionalProperty": "unexpected"
+    }
+  },
+  "04-wrong-stream.json": {
+    "rule": "O stream deste evento começa por usage/.",
+    "keyword": "pattern",
+    "instancePath": "/stream"
+  },
+  "05-nothing-dropped.json": {
+    "rule": "Reconciliar descarta pelo menos uma fonte.",
+    "keyword": "minItems",
+    "instancePath": "/data/dropped_sources"
+  },
+  "06-unknown-source.json": {
+    "rule": "A fonte é uma das sete conhecidas.",
+    "keyword": "enum",
+    "instancePath": "/data/dropped_sources/0"
+  },
+  "07-duplicate-source.json": {
+    "rule": "A mesma fonte não aparece duas vezes.",
+    "keyword": "uniqueItems",
+    "instancePath": "/data/dropped_sources"
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAC",
+  "type": "urn:ads:event:host.alert_raised:1",
+  "ts": "2030-01-02T03:04:05Z",
+  "stream": "host/host-01",
+  "seq": 42,
+  "actor": {
+    "kind": "agent",
+    "id": "agent-a"
+  },
+  "cause": "01ARZ3NDEKTSV4RRFFQ69G5FAK",
+  "data_class": "private",
+  "data": {
+    "version": 1,
+    "event_id": "alert-02",
+    "rule_id": "disk-low",
+    "severity": "critical",
+    "signals": [
+      "sample-01",
+      "sample-02"
+    ],
+    "why": "disco abaixo do crítico",
+    "ts": "2030-01-02T03:04:06Z",
+    "ack": false,
+    "task_id": "task-01"
+  }
+}

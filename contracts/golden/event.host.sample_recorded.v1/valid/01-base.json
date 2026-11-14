@@ -1,0 +1,25 @@
+{
+  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+  "type": "urn:ads:event:host.sample_recorded:1",
+  "ts": "2030-01-02T03:04:05Z",
+  "stream": "host/host-01",
+  "seq": 1,
+  "actor": {
+    "kind": "daemon",
+    "id": "core-01"
+  },
+  "cause": null,
+  "data_class": "internal",
+  "data": {
+    "version": 1,
+    "sample_id": "sample-01",
+    "signal_id": "host.disk.free_gb",
+    "value": 12.4,
+    "unit": "GB",
+    "ts": "2030-01-02T03:04:05Z",
+    "collector": "disk-basics",
+    "cost_ms": 18,
+    "scope_alias": "host-01",
+    "stale": false
+  }
+}

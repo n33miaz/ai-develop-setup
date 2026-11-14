@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:event:session.resized:1",
+  "title": "Sessão redimensionada",
+  "description": "O terminal da sessão mudou de tamanho.",
+  "allOf": [
+    {
+      "$ref": "urn:ads:event:envelope:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "type",
+        "stream",
+        "data"
+      ],
+      "properties": {
+        "type": {
+          "const": "urn:ads:event:session.resized:1"
+        },
+        "stream": {
+          "type": "string",
+          "pattern": "^session/"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "session_id",
+            "cols",
+            "rows"
+          ],
+          "properties": {
+            "session_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "cols": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000
+            },
+            "rows": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000
+            }
+          }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+      "type": "urn:ads:event:session.resized:1",
+      "ts": "2030-01-02T03:04:05Z",
+      "stream": "session/sess-01",
+      "seq": 1,
+      "actor": {
+        "kind": "daemon",
+        "id": "core-01"
+      },
+      "cause": null,
+      "data_class": "internal",
+      "data": {
+        "session_id": "sess-01",
+        "cols": 100,
+        "rows": 30
+      }
+    }
+  ]
+}

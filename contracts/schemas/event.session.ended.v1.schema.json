@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:event:session.ended:1",
+  "title": "Sessão encerrada",
+  "description": "A sessão terminou: o processo saiu, foi morto, o host de PTY reiniciou ou houve erro. Saída normal traz o código de saída.",
+  "allOf": [
+    {
+      "$ref": "urn:ads:event:envelope:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "type",
+        "stream",
+        "data"
+      ],
+      "properties": {
+        "type": {
+          "const": "urn:ads:event:session.ended:1"
+        },
+        "stream": {
+          "type": "string",
+          "pattern": "^session/"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "session_id",
+            "reason",
+            "exit_code"
+          ],
+          "properties": {
+            "session_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "reason": {
+              "enum": [
+                "exit",
+                "killed",
+                "host_restarted",
+                "error"
+              ]
+            },
+            "exit_code": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "if": {
+            "properties": {
+              "reason": {
+                "const": "exit"
+              }
+            },
+            "required": [
+              "reason"
+            ]
+          },
+          "then": {
+            "properties": {
+              "exit_code": {
+                "type": "integer"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+      "type": "urn:ads:event:session.ended:1",
+      "ts": "2030-01-02T03:04:05Z",
+      "stream": "session/sess-01",
+      "seq": 1,
+      "actor": {
+        "kind": "daemon",
+        "id": "core-01"
+      },
+      "cause": null,
+      "data_class": "internal",
+      "data": {
+        "session_id": "sess-01",
+        "reason": "exit",
+        "exit_code": 0
+      }
+    }
+  ]
+}

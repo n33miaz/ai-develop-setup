@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:event:usage.reconciled:1",
+  "title": "Uso reconciliado",
+  "description": "Duas fontes mediram o mesmo turno; ficou um registro e as outras foram descartadas pela chave de deduplicação.",
+  "allOf": [
+    {
+      "$ref": "urn:ads:event:envelope:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "type",
+        "stream",
+        "data"
+      ],
+      "properties": {
+        "type": {
+          "const": "urn:ads:event:usage.reconciled:1"
+        },
+        "stream": {
+          "type": "string",
+          "pattern": "^usage/"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "dedupe_key",
+            "kept_event_id",
+            "dropped_sources"
+          ],
+          "properties": {
+            "dedupe_key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "kept_event_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "dropped_sources": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "adapter",
+                  "cli_json",
+                  "statusline",
+                  "transcript",
+                  "rollout",
+                  "usagebar",
+                  "manual"
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+      "type": "urn:ads:event:usage.reconciled:1",
+      "ts": "2030-01-02T03:04:05Z",
+      "stream": "usage/task-01",
+      "seq": 1,
+      "actor": {
+        "kind": "daemon",
+        "id": "core-01"
+      },
+      "cause": null,
+      "data_class": "internal",
+      "data": {
+        "dedupe_key": "harness-a:sess-01:42",
+        "kept_event_id": "usage-01",
+        "dropped_sources": [
+          "transcript"
+        ]
+      }
+    }
+  ]
+}
