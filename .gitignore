@@ -1,0 +1,47 @@
+# Segredos e dados (nunca no git)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+*.log
+logs/
+data/
+
+# Perfis e sobreposições locais de agentes
+AGENTS.local.md
+CLAUDE.local.md
+.claude/settings.local.json
+
+# Rust
+target/
+**/*.rs.bk
+
+# Node, UI e casca Tauri
+node_modules/
+dist/
+build/
+coverage/
+.vite/
+shell/src-tauri/target/
+shell/src-tauri/gen/
+
+# Spikes e rascunhos fora do repo
+spikes/
+*.bak
+*.bak-*
+*.tmp
+
+# Editor e sistema
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini

@@ -1,0 +1,70 @@
+# Parâmetros do fluxo de desenvolvimento (P8): tudo que a esteira de commits poderia fazer de outro jeito
+# fica aqui, com padrão recomendado e explicação. Quem lê este arquivo: `.githooks/commit-msg`,
+# `.github/scripts/check-commits.sh` e `.github/scripts/check-commits.test.sh`.
+#
+# FORMATO (restrição de propósito: os scripts em bash leem este arquivo com grep/sed, sem parser de TOML):
+#   - uma chave por linha, no formato `chave.com.pontos = valor`; sem tabelas `[secao]`;
+#   - valor é texto entre aspas, número, true/false, ou lista de textos numa linha só;
+#   - expressão regular vai entre aspas simples (texto literal, sem escape); texto comum entre aspas duplas;
+#   - comentário só em linha própria, ou depois do valor com espaço antes do `#`.
+# A camada do usuário (perfil local, fora do repo) pode apontar para outro arquivo com a variável
+# de ambiente ADS_DEVFLOW_TOML; a chave que faltar nele cai no padrão embutido no script.
+
+# Perfil do fluxo. "express": develop é a produção, homolog e main ficam paradas.
+# "full": liga as promoções develop -> homolog -> main (ver CONTRIBUTING.md).
+profile = "express"
+
+# Uma issue por entrega (instrução do dono). false desliga o aviso do template de PR.
+workflow.issue_per_task = true
+
+# ---- Atribuição de IA nos commits -------------------------------------------------------------------------
+# "executor": o hook acrescenta um `Co-authored-by` a partir da variável de ambiente ADS_AI_AUTHOR
+#             (valores: as chaves `coauthor.*` abaixo; vazio = nenhum coautor neste commit).
+# "none": o hook não acrescenta nada e o checador recusa qualquer `Co-authored-by`.
+# Para parar com a atribuição no futuro, troque para "none"; o histórico não é reescrito.
+ai_attribution = "executor"
+
+# Coautores possíveis. Formato `Nome <e-mail>`. O checador compara só o e-mail (o nome do modelo muda de versão).
+# O e-mail do Codex abaixo é um palpite, a confirmar (ver NOTAS).
+coauthor.claude = "Claude <noreply@anthropic.com>"
+coauthor.codex = "Codex <noreply@openai.com>"
+
+# Lista de e-mails de coautor aceitos pelo checador (precisa conter os de `coauthor.*` que estiverem em uso).
+coauthors.allowed = ["noreply@anthropic.com", "noreply@openai.com"]
+
+# No máximo quantos `Co-authored-by` por commit. Padrão 1: quem escreveu a maior parte.
+commits.max_coauthors = 1
+
+# ---- Regras da mensagem de commit -------------------------------------------------------------------------
+# Liga ou desliga toda a checagem de mensagem (hook e CI).
+commits.enabled = true
+
+# Tamanho máximo do assunto, em caracteres (o assunto é só ASCII, então caractere = byte).
+commits.subject_max = 50
+
+# Tipos aceitos no Conventional Commits.
+commits.types = ["feat", "fix", "chore", "refactor", "docs", "test", "perf", "build", "ci", "style", "revert"]
+
+# Trailers permitidos depois do assunto (nome sem diferença de maiúscula). Qualquer outro é recusado.
+commits.allowed_trailers = ["Signed-off-by", "Co-authored-by"]
+
+# DCO: exige `Signed-off-by` em todo commit.
+commits.signoff_required = true
+
+# Pelo menos um `Signed-off-by` precisa ter o mesmo e-mail do autor do commit.
+commits.signoff_email_must_match_author = true
+
+# O hook acrescenta o `Signed-off-by` do autor quando ele faltar (equivale a `git commit -s`).
+commits.signoff_autoadd = true
+
+# E-mail do autor no padrão noreply do GitHub (`ID+usuario@users.noreply.github.com`).
+commits.author_email_regex = '^[0-9]+\+[A-Za-z0-9-]+@users\.noreply\.github\.com$'
+
+# Linhas de atribuição automática barradas (regex estendida, sem diferença de maiúscula), procuradas na mensagem toda.
+# Cobrem a linha que o Codex e outras ferramentas injetam por conta própria. Os padrões do Codex são palpites a confirmar.
+commits.blocked_patterns = ['generated (with|by)', 'chatgpt-codex-connector', 'codex@users\.noreply\.github\.com', 'made with codex']
+
+# ---- Assinatura criptográfica do commit -------------------------------------------------------------------
+# "warn": só avisa no CI quando o commit não tem assinatura verificada (padrão até existir a chave de assinatura).
+# "block": reprova. "off": não confere. O "rebase and merge" do GitHub recria os commits, então só vale no PR.
+signature.mode = "warn"

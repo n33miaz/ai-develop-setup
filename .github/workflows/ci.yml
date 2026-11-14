@@ -1,0 +1,165 @@
+name: CI
+
+# Modo expresso: só bloqueia o que roda rápido (alvo: até 5 minutos). O job `ci-ok` é o único check exigido na develop.
+on:
+  pull_request:
+    branches: [develop, homolog, main]
+  push:
+    branches: [develop]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  commits:
+    name: commits
+    # Só em PR para a develop, a porta de entrada. Robôs ficam de fora (as mensagens deles não passam pelo hook).
+    if: github.event_name == 'pull_request' && github.base_ref == 'develop' && github.event.pull_request.user.type != 'Bot'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Testar o próprio checador
+        run: bash .github/scripts/check-commits.test.sh
+      - name: Conferir o padrão dos commits do PR
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: bash .github/scripts/check-commits.sh "$BASE_SHA" "$HEAD_SHA"
+
+  secrets:
+    name: secrets
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # A configuração é .gitleaks.toml, na raiz. A push protection do GitHub é a segunda camada.
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  terms:
+    name: terms
+    # Desligado por padrão: a lista de termos é privada e, enquanto o mantenedor não decidir guardá-la como segredo
+    # do repositório, a conferência roda só na máquina dele, antes de cada push. Para ligar aqui: criar o segredo
+    # FORBIDDEN_TERMS e a variável de repositório TERMS_CHECK = on. Ligado, o job falha fechado.
+    if: vars.TERMS_CHECK == 'on'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # A lista de termos proibidos vive num segredo do repositório (FORBIDDEN_TERMS), fora do git. Uma linha por regra;
+      # linhas vazias e as que começam com # são ignoradas; prefixo `re:` marca expressão regular (Python `re`), o resto é
+      # texto literal casado por palavra inteira, sem diferença de maiúscula, com `\` e `/` valendo como o mesmo separador
+      # (as mesmas regras do verificador local). Falha fechado: lista ausente, vazia ou com regra inválida reprova; PR vindo
+      # de fork não recebe segredos e também reprova (contribuição externa está fechada). Nunca imprime os termos nem onde
+      # casaram: só as contagens. Varre os arquivos rastreados e as mensagens dos commits do PR.
+      - name: Procurar termos proibidos
+        env:
+          FORBIDDEN_TERMS: ${{ secrets.FORBIDDEN_TERMS }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python3 - <<'PY'
+          import os, re, subprocess, sys
+
+          def fail(msg):
+              print("::error::" + msg)
+              sys.exit(1)
+
+          raw = os.environ.get("FORBIDDEN_TERMS", "")
+          if not raw.strip():
+              fail("lista de termos ausente ou vazia; falha fechada.")
+
+          rules = []
+          for n, line in enumerate(raw.splitlines(), 1):
+              t = line.rstrip("\r")
+              if not t.strip() or t.startswith("#"):
+                  continue
+              try:
+                  if t.startswith("re:"):
+                      rx = t[3:]
+                  else:
+                      sep = "[\\/]"
+                      rx = "".join(sep if ch in ("\\", "/") else re.escape(ch) for ch in t)
+                      if t[0].isalnum():
+                          rx = r"(?<![^\W_])" + rx
+                      if t[-1].isalnum():
+                          rx = rx + r"(?![^\W_])"
+                  rules.append((n, re.compile(rx, re.I)))
+              except re.error:
+                  fail("regra inválida na linha %d da lista; falha fechada." % n)
+          if not rules:
+              fail("a lista não tem nenhuma regra; falha fechada.")
+
+          files = subprocess.run(["git", "ls-files", "-z"], capture_output=True, check=True).stdout.split(b"\0")
+          texts = []
+          for f in files:
+              if not f:
+                  continue
+              try:
+                  with open(f, "rb") as fh:
+                      texts.append(fh.read().decode("utf-8", errors="ignore"))
+              except OSError:
+                  pass
+          base, head = os.environ.get("BASE_SHA", ""), os.environ.get("HEAD_SHA", "")
+          if base and head:
+              out = subprocess.run(["git", "log", "--format=%B", base + ".." + head], capture_output=True, check=True)
+              texts.append(out.stdout.decode("utf-8", errors="ignore"))
+
+          hit = sum(1 for _, rx in rules if any(rx.search(t) for t in texts))
+          print("regras lidas: %d; regras com casamento: %d; arquivos varridos: %d" % (len(rules), hit, len(texts)))
+          if hit:
+              fail("%d regra(s) da lista de termos proibidos casaram." % hit)
+          PY
+
+  # ---------------------------------------------------------------------------------------------------------
+  # Entram depois, cada um com o gatilho que o liga. Mantenha o filtro por caminho para não
+  # rodar o que não mudou, e inclua o job novo em `needs` do ci-ok.
+  #
+  # contracts:   gatilho = existir contracts/ com o primeiro JSON Schema.
+  #              Valida os Schemas, os arquivos dourados e confere que os tipos gerados estão em dia.
+  # build-test:  gatilho = existir o primeiro crate Rust ou pacote da UI.
+  #              Build com avisos como erro (cargo clippy -D warnings), testes de unidade e a regra de
+  #              dependência (core não importa adapters), em Ubuntu.
+  # pty-windows: gatilho = existir ptyhost/. Um ciclo do fixture no runner Windows; só se ptyhost/ mudou.
+  # deps:        gatilho = existir Cargo.lock ou package-lock.json. dependency-review; só se um arquivo de
+  #              dependências mudou.
+  # artifact:    gatilho = o atualizador do daemon existir. Gera o executável, o SHA-256 e a atestação a cada junção
+  #              na develop (runner Windows) e publica como pré-lançamento.
+  # ---------------------------------------------------------------------------------------------------------
+
+  ci-ok:
+    name: ci-ok
+    if: always()
+    needs: [commits, secrets, terms]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Resumir
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "Resultados: $RESULTS"
+          case " $RESULTS " in
+            *" failure "*|*" cancelled "*)
+              echo "::error::algum job falhou ou foi cancelado."
+              exit 1
+              ;;
+          esac

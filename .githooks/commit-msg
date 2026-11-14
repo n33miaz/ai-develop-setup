@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Hook commit-msg. Ative uma vez por clone: git config core.hooksPath .githooks
+#
+# 1. Acrescenta `Co-authored-by` a partir da variável de ambiente ADS_AI_AUTHOR:
+#      claude | codex  -> usa `coauthor.<valor>` de defaults/devflow.toml
+#      vazio           -> nenhum coautor neste commit
+#    Só age com ai_attribution = "executor". Se já existir um Co-authored-by, não duplica (e o checador decide).
+# 2. Acrescenta `Signed-off-by` do autor quando faltar (commits.signoff_autoadd).
+# 3. Valida a mensagem com .github/scripts/check-commits.sh (as mesmas regras do CI).
+#
+# Exemplo (PowerShell):  $env:ADS_AI_AUTHOR = "claude"; git commit -m "feat(core): add event envelope"
+set -u
+
+msg_file="${1:?uso: commit-msg <arquivo-da-mensagem>}"
+root="$(cd "$(dirname "$0")/.." && pwd)"
+cfg="${ADS_DEVFLOW_TOML:-$root/defaults/devflow.toml}"
+checker="$root/.github/scripts/check-commits.sh"
+# shellcheck source=../.github/scripts/lib-devflow.sh
+. "$root/.github/scripts/lib-devflow.sh"
+
+if [ ! -r "$cfg" ]; then
+  echo "commit-msg: arquivo de parâmetros não encontrado: $cfg" >&2
+  exit 1
+fi
+[ "$(cfg_str commits.enabled true)" = "false" ] && exit 0
+
+ident="$(git var GIT_AUTHOR_IDENT 2>/dev/null | sed -E 's/ [0-9]+ [+-][0-9]{4}$//')"
+author_email="$(printf '%s' "$ident" | sed -nE 's/.*<([^<>]*)>$/\1/p')"
+if [ -z "$author_email" ]; then
+  echo "commit-msg: identidade do autor não configurada (user.name e user.email)." >&2
+  exit 1
+fi
+
+# 1. Coautor
+ai="$(cfg_str ai_attribution executor)"
+who="$(printf '%s' "${ADS_AI_AUTHOR:-}" | tr '[:upper:]' '[:lower:]')"
+if [ "$ai" = "executor" ] && [ -n "$who" ]; then
+  if ! [[ "$who" =~ ^[a-z0-9_-]+$ ]]; then
+    echo "commit-msg: ADS_AI_AUTHOR inválida (use claude, codex ou deixe vazia)." >&2
+    exit 1
+  fi
+  co="$(cfg_str "coauthor.$who")"
+  if [ -z "$co" ]; then
+    echo "commit-msg: ADS_AI_AUTHOR=\"$who\" não tem entrada coauthor.$who em devflow.toml." >&2
+    exit 1
+  fi
+  git interpret-trailers --in-place --if-exists doNothing --trailer "Co-authored-by: $co" "$msg_file"
+fi
+
+# 2. Sign-off
+if [ "$(cfg_str commits.signoff_required true)" = "true" ] && [ "$(cfg_str commits.signoff_autoadd true)" = "true" ]; then
+  git interpret-trailers --in-place --if-exists doNothing --trailer "Signed-off-by: $ident" "$msg_file"
+fi
+
+# 3. Validação
+exec bash "$checker" --message "$msg_file" --author "$author_email" --strip-comments

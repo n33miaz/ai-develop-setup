@@ -1,0 +1,11 @@
+title = "ai-develop-setup gitleaks"
+
+# Usa as regras padrão do gitleaks e só acrescenta exceções explícitas e mínimas.
+[extend]
+useDefault = true
+
+# Exceção única: o modelo de variáveis, que tem só nomes e nenhum valor real (AGENTS.md).
+# Qualquer outra exceção entra por PR, com o motivo no commit e na issue.
+[allowlist]
+description = "arquivos de modelo sem valores reais"
+paths = ['''(^|/)\.env\.example$''']

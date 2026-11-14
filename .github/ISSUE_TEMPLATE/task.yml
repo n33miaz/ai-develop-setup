@@ -1,0 +1,45 @@
+name: Tarefa
+description: Uma entrega do projeto (uma issue por entrega, aberta antes do trabalho).
+title: "type(scope): short english title"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Esta issue é pública.** Não cole dados pessoais, nomes de pessoas ou de empresas, e-mails, caminhos da sua máquina, tokens ou segredos. Descreva o pedido em termos genéricos.
+        O título é em inglês, no mesmo padrão dos commits (`tipo(escopo): assunto`, até 50 caracteres, minúsculas).
+  - type: textarea
+    id: objective
+    attributes:
+      label: Objetivo
+      description: O que esta entrega resolve, em poucas linhas.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Critério de aceite
+      description: Como saberemos que está pronto, de forma verificável (teste, comando, comportamento observado). Miudezas da mesma entrega entram aqui como checklist.
+      placeholder: "- [ ] ..."
+    validations:
+      required: true
+  - type: checkboxes
+    id: principles
+    attributes:
+      label: Princípios tocados
+      description: Marque os que esta entrega afeta (detalhes em AGENTS.md).
+      options:
+        - label: P1 Coesão
+        - label: P2 Acoplamento
+        - label: P3 Segurança
+        - label: P4 Prevenção
+        - label: P5 Mitigação de riscos
+        - label: P6 Reparo
+        - label: P7 Melhora contínua
+        - label: P8 Parametrização
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notas
+      description: Riscos, dependências ou decisões pendentes. Opcional.
+    validations:
+      required: false

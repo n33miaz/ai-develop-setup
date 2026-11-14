@@ -1,0 +1,21 @@
+# Fim de linha: LF no repositório. Scripts e hooks precisam de LF mesmo no Windows (bash quebra com CRLF).
+* text=auto eol=lf
+*.sh text eol=lf
+.githooks/* text eol=lf
+.githooks/commit-msg text eol=lf
+*.toml text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+
+# Binários
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.zip binary
+*.exe binary
