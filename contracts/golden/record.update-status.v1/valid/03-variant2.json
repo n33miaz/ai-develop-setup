@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "state": "verifying",
+  "current": {
+    "build": "dev-20300102-0123456",
+    "commit": "0123456789abcdef0123456789abcdef01234567"
+  },
+  "previous": null,
+  "candidate": {
+    "build": "dev-20300103-89abcde",
+    "commit": "89abcdef0123456789abcdef0123456789abcdef"
+  },
+  "probation_until": null,
+  "crashes": 0,
+  "blocked": [],
+  "last_error": null,
+  "updated_at": "2030-01-02T03:04:05Z"
+}

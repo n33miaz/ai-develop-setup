@@ -1,0 +1,53 @@
+{
+  "01-uppercase-key.json": {
+    "rule": "A chave é minúscula, com pontos separando as partes.",
+    "keyword": "pattern",
+    "instancePath": "/key"
+  },
+  "02-unknown-type.json": {
+    "rule": "O tipo é um dos cinco tipos de parâmetro.",
+    "keyword": "enum",
+    "instancePath": "/type"
+  },
+  "03-default-of-other-type.json": {
+    "rule": "O padrão tem o tipo declarado em type.",
+    "keyword": "type",
+    "instancePath": "/default"
+  },
+  "04-value-of-other-type.json": {
+    "rule": "O valor em vigor tem o tipo declarado em type.",
+    "keyword": "type",
+    "instancePath": "/value"
+  },
+  "05-missing-description.json": {
+    "rule": "Todo parâmetro traz a explicação.",
+    "keyword": "required",
+    "instancePath": "",
+    "params": {
+      "missingProperty": "description"
+    }
+  },
+  "06-choices-on-boolean.json": {
+    "rule": "Só parâmetro de texto tem lista de escolhas.",
+    "keyword": "not",
+    "instancePath": ""
+  },
+  "07-single-choice.json": {
+    "rule": "Lista de escolhas tem pelo menos duas opções.",
+    "keyword": "minItems",
+    "instancePath": "/choices"
+  },
+  "08-fractional-integer.json": {
+    "rule": "Parâmetro inteiro não aceita fração.",
+    "keyword": "type",
+    "instancePath": "/value"
+  },
+  "09-extra-field.json": {
+    "rule": "O registro é fechado: campo desconhecido reprova.",
+    "keyword": "additionalProperties",
+    "instancePath": "",
+    "params": {
+      "additionalProperty": "secret"
+    }
+  }
+}

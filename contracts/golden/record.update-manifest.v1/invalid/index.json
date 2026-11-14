@@ -1,0 +1,43 @@
+{
+  "01-build-not-date-and-commit.json": {
+    "rule": "O build se identifica por data e commit curto (dev-AAAAMMDD-commit).",
+    "keyword": "pattern",
+    "instancePath": "/build"
+  },
+  "02-short-commit.json": {
+    "rule": "O commit é o SHA completo, de 40 hexadecimais.",
+    "keyword": "pattern",
+    "instancePath": "/commit"
+  },
+  "03-no-files.json": {
+    "rule": "O manifesto lista pelo menos um arquivo.",
+    "keyword": "minItems",
+    "instancePath": "/files"
+  },
+  "04-absolute-path.json": {
+    "rule": "O caminho do arquivo é relativo à pasta da versão.",
+    "keyword": "pattern",
+    "instancePath": "/files/0/path"
+  },
+  "05-parent-path.json": {
+    "rule": "O caminho não sai da pasta da versão.",
+    "keyword": "not",
+    "instancePath": "/files/0/path"
+  },
+  "06-file-without-digest.json": {
+    "rule": "Todo arquivo leva o seu SHA-256.",
+    "keyword": "required",
+    "instancePath": "/files/1",
+    "params": {
+      "missingProperty": "sha256"
+    }
+  },
+  "07-inline-signature.json": {
+    "rule": "A assinatura fica em arquivo à parte, não dentro do manifesto.",
+    "keyword": "additionalProperties",
+    "instancePath": "",
+    "params": {
+      "additionalProperty": "signature"
+    }
+  }
+}

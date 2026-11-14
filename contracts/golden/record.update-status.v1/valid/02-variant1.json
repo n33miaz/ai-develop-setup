@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "state": "probation",
+  "current": {
+    "build": "dev-20300103-89abcde",
+    "commit": "89abcdef0123456789abcdef0123456789abcdef"
+  },
+  "previous": {
+    "build": "dev-20300102-0123456",
+    "commit": "0123456789abcdef0123456789abcdef01234567"
+  },
+  "candidate": null,
+  "probation_until": "2030-01-03T10:10:00Z",
+  "crashes": 1,
+  "blocked": [
+    "dev-20300101-fedcba9"
+  ],
+  "last_error": null,
+  "updated_at": "2030-01-03T10:02:00Z"
+}

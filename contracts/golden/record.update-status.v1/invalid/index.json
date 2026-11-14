@@ -1,0 +1,47 @@
+{
+  "01-unknown-state.json": {
+    "rule": "state é um dos sete estados.",
+    "keyword": "enum",
+    "instancePath": "/state"
+  },
+  "02-downloading-without-candidate.json": {
+    "rule": "Baixando, conferindo ou trocando: há uma candidata.",
+    "keyword": "type",
+    "instancePath": "/candidate"
+  },
+  "03-probation-without-deadline.json": {
+    "rule": "Em prova, o prazo da prova é obrigatório.",
+    "keyword": "type",
+    "instancePath": "/probation_until"
+  },
+  "04-deadline-outside-probation.json": {
+    "rule": "Fora da prova não há prazo de prova.",
+    "keyword": "type",
+    "instancePath": "/probation_until"
+  },
+  "05-failed-without-error.json": {
+    "rule": "Falha traz o código de erro.",
+    "keyword": "type",
+    "instancePath": "/last_error"
+  },
+  "06-negative-crashes.json": {
+    "rule": "A contagem de quedas não é negativa.",
+    "keyword": "minimum",
+    "instancePath": "/crashes"
+  },
+  "07-no-current.json": {
+    "rule": "Sempre há uma versão rodando.",
+    "keyword": "type",
+    "instancePath": "/current"
+  },
+  "08-repeated-blocked.json": {
+    "rule": "Uma versão bloqueada aparece uma vez só.",
+    "keyword": "uniqueItems",
+    "instancePath": "/blocked"
+  },
+  "09-free-text-error.json": {
+    "rule": "O código de erro é E_ seguido de maiúsculas, não texto livre.",
+    "keyword": "pattern",
+    "instancePath": "/last_error"
+  }
+}

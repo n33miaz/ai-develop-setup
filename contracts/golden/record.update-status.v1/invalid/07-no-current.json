@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "state": "idle",
+  "current": null,
+  "previous": null,
+  "candidate": null,
+  "probation_until": null,
+  "crashes": 0,
+  "blocked": [],
+  "last_error": null,
+  "updated_at": "2030-01-02T03:04:05Z"
+}

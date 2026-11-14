@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "key": "commits.subject_max",
+  "type": "integer",
+  "default": 50,
+  "value": 50.5,
+  "description": "Tamanho máximo do assunto do commit."
+}

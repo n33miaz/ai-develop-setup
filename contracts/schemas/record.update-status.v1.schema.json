@@ -1,0 +1,202 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:record:update-status:1",
+  "title": "Estado da atualização",
+  "description": "Estado visível da auto-atualização, escrito pelo lançador: o que está rodando, a versão anterior guardada, a candidata em andamento, a prova depois da troca, as quedas contadas e as versões bloqueadas. Baixando, conferindo e trocando têm candidata; em prova há prazo; falha traz código de erro.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "state",
+    "current",
+    "previous",
+    "candidate",
+    "probation_until",
+    "crashes",
+    "blocked",
+    "last_error",
+    "updated_at"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "state": {
+      "enum": [
+        "idle",
+        "downloading",
+        "verifying",
+        "switching",
+        "probation",
+        "rolled_back",
+        "failed"
+      ]
+    },
+    "current": {
+      "$ref": "#/$defs/build_ref"
+    },
+    "previous": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/build_ref"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "candidate": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/build_ref"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "probation_until": {
+      "anyOf": [
+        {
+          "$ref": "urn:ads:common:timestamp:1"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "crashes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "blocked": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^dev-[0-9]{8}-[0-9a-f]{7,12}$"
+      }
+    },
+    "last_error": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^E_[A-Z0-9_]{1,60}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "updated_at": {
+      "$ref": "urn:ads:common:timestamp:1"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "enum": [
+              "downloading",
+              "verifying",
+              "switching"
+            ]
+          }
+        },
+        "required": [
+          "state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "candidate": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "const": "probation"
+          }
+        },
+        "required": [
+          "state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "probation_until": {
+            "type": "string"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "probation_until": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "const": "failed"
+          }
+        },
+        "required": [
+          "state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "last_error": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "build_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "build",
+        "commit"
+      ],
+      "properties": {
+        "build": {
+          "type": "string",
+          "pattern": "^dev-[0-9]{8}-[0-9a-f]{7,12}$"
+        },
+        "commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "version": 1,
+      "state": "idle",
+      "current": {
+        "build": "dev-20300102-0123456",
+        "commit": "0123456789abcdef0123456789abcdef01234567"
+      },
+      "previous": null,
+      "candidate": null,
+      "probation_until": null,
+      "crashes": 0,
+      "blocked": [],
+      "last_error": null,
+      "updated_at": "2030-01-02T03:04:05Z"
+    }
+  ]
+}

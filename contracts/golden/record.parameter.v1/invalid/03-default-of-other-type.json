@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "key": "workflow.issue_per_task",
+  "type": "boolean",
+  "default": "yes",
+  "value": true,
+  "description": "Uma issue por entrega; false desliga o aviso do template de PR."
+}
