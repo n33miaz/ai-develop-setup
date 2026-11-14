@@ -1,0 +1,107 @@
+# Matriz de dependencias entre crates: quem pode depender de quem (P2, P8).
+# Lida por tools/check_deps.py, que compara com `cargo metadata` e reprova a violacao.
+# O doc docs/dependency-matrix.md e gerado daqui (`python tools/check_deps.py write-doc`); nao edite o doc a mao.
+#
+# settings.kinds: quais tipos de dependencia contam. "normal", "build" e "dev"; padrao: todos,
+#   para que nem codigo de teste dependa do que o crate nao pode ver. Tirar "dev" afrouxa a regra.
+# crates.<pacote>.path:   pasta do crate (confere com o manifesto; pega crate movido sem atualizar a matriz).
+# crates.<pacote>.allow:  crates INTERNOS que ele pode importar. Tudo que nao esta aqui e proibido.
+# crates.<pacote>.forbid_external: bibliotecas EXTERNAS (nome do pacote) que ele nunca pode importar.
+# Todo crate do workspace precisa ter uma entrada; entrada sem crate tambem reprova.
+
+[settings]
+kinds = ["normal", "build", "dev"]
+
+# Sem logica de produto, sem dependencia interna.
+
+[crates.ads-contracts]
+path = "crates/contracts"
+allow = []
+
+# Politica pura: so enxerga contratos; sem rede, banco nem PTY.
+
+[crates.ads-core]
+path = "crates/core"
+allow = ["ads-contracts"]
+forbid_external = [
+  "axum",
+  "hyper",
+  "reqwest",
+  "tungstenite",
+  "tokio-tungstenite",
+  "rusqlite",
+  "sqlx",
+  "portable-pty",
+]
+
+# Guarda o estado: contratos e mais nada interno.
+
+[crates.ads-storage]
+path = "crates/storage"
+allow = ["ads-contracts"]
+
+# Processo estavel das sessoes: so contratos.
+
+[crates.ads-ptyhost]
+path = "crates/ptyhost"
+allow = ["ads-contracts"]
+
+# Sessao cifrada compartilhada por PC e PWA: so contratos (compila tambem para WebAssembly).
+
+[crates.ads-e2e]
+path = "crates/e2e"
+allow = ["ads-contracts"]
+
+# Supervisor estavel: so contratos, para quase nunca precisar mudar.
+
+[crates.ads-launcher]
+path = "crates/launcher"
+allow = ["ads-contracts"]
+
+# Casca fina: so contratos e a sessao cifrada. Nada de politica, banco ou PTY.
+
+[crates.ads-shell]
+path = "crates/shell"
+allow = ["ads-contracts", "ads-e2e"]
+
+# Adaptadores: contratos e os tracos do nucleo; nunca outro adaptador.
+
+[crates.ads-adapter-claude]
+path = "crates/adapters/claude"
+allow = ["ads-contracts", "ads-core"]
+
+
+[crates.ads-adapter-codex]
+path = "crates/adapters/codex"
+allow = ["ads-contracts", "ads-core"]
+
+
+[crates.ads-adapter-antigravity]
+path = "crates/adapters/antigravity"
+allow = ["ads-contracts", "ads-core"]
+
+
+[crates.ads-adapter-api]
+path = "crates/adapters/api"
+allow = ["ads-contracts", "ads-core"]
+
+
+[crates.ads-adapter-vault]
+path = "crates/adapters/vault"
+allow = ["ads-contracts", "ads-core"]
+
+
+[crates.ads-adapter-collectors]
+path = "crates/adapters/collectors"
+allow = ["ads-contracts", "ads-core"]
+
+
+[crates.ads-adapter-relay]
+path = "crates/adapters/relay"
+allow = ["ads-contracts", "ads-core"]
+
+# Composicao: enxerga tudo, menos a casca e o supervisor.
+
+[crates.ads-daemon]
+path = "crates/daemon"
+allow = ["ads-contracts", "ads-core", "ads-storage", "ads-ptyhost", "ads-e2e", "ads-adapter-claude", "ads-adapter-codex", "ads-adapter-antigravity", "ads-adapter-api", "ads-adapter-vault", "ads-adapter-collectors", "ads-adapter-relay"]
