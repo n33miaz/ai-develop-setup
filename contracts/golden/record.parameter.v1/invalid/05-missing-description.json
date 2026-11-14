@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "key": "workflow.issue_per_task",
+  "type": "boolean",
+  "default": true,
+  "value": true
+}

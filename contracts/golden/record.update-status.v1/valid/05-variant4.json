@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "state": "rolled_back",
+  "current": {
+    "build": "dev-20300102-0123456",
+    "commit": "0123456789abcdef0123456789abcdef01234567"
+  },
+  "previous": null,
+  "candidate": {
+    "build": "dev-20300101-fedcba9",
+    "commit": "fedcba9876543210fedcba9876543210fedcba98"
+  },
+  "probation_until": null,
+  "crashes": 3,
+  "blocked": [
+    "dev-20300101-fedcba9"
+  ],
+  "last_error": null,
+  "updated_at": "2030-01-02T03:04:05Z"
+}

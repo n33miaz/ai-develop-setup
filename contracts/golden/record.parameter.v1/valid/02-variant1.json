@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "key": "signature.mode",
+  "type": "string",
+  "default": "warn",
+  "value": "block",
+  "description": "O que fazer com commit sem assinatura verificada.",
+  "choices": [
+    "warn",
+    "block",
+    "off"
+  ]
+}

@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:record:update-manifest:1",
+  "title": "Manifesto de atualização",
+  "description": "O que o CI publica a cada junção: qual build é, de qual commit saiu e o SHA-256 de cada arquivo. O lançador confere a assinatura do manifesto (arquivo à parte, sobre os bytes exatos deste JSON) com a chave pública embutida e depois o digest de cada arquivo, antes de trocar qualquer coisa.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "build",
+    "commit",
+    "created_at",
+    "files"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "build": {
+      "type": "string",
+      "pattern": "^dev-[0-9]{8}-[0-9a-f]{7,12}$"
+    },
+    "commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "created_at": {
+      "$ref": "urn:ads:common:timestamp:1"
+    },
+    "files": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "sha256"
+        ],
+        "properties": {
+          "path": {
+            "$ref": "urn:ads:common:relpath:1"
+          },
+          "sha256": {
+            "$ref": "urn:ads:common:sha256:1"
+          }
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "version": 1,
+      "build": "dev-20300102-0123456",
+      "commit": "0123456789abcdef0123456789abcdef01234567",
+      "created_at": "2030-01-02T03:04:05Z",
+      "files": [
+        {
+          "path": "bin/ads-daemon.exe",
+          "sha256": "sha256:abababababababababababababababababababababababababababababababab"
+        },
+        {
+          "path": "bin/ads-shell.exe",
+          "sha256": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+        }
+      ]
+    }
+  ]
+}

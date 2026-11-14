@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "state": "idle",
+  "current": {
+    "build": "dev-20300102-0123456",
+    "commit": "0123456789abcdef0123456789abcdef01234567"
+  },
+  "previous": null,
+  "candidate": null,
+  "probation_until": null,
+  "crashes": 0,
+  "blocked": [
+    "dev-20300101-fedcba9",
+    "dev-20300101-fedcba9"
+  ],
+  "last_error": null,
+  "updated_at": "2030-01-02T03:04:05Z"
+}

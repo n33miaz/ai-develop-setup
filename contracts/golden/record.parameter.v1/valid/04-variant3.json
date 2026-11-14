@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "key": "commits.types",
+  "type": "string_list",
+  "default": [
+    "feat",
+    "fix"
+  ],
+  "value": [
+    "feat",
+    "fix",
+    "docs"
+  ],
+  "description": "Tipos aceitos no assunto do commit."
+}
