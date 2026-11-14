@@ -1,0 +1,14 @@
+{
+  "contract": "harness-adapter/1",
+  "harness": "harness-c",
+  "kind": "cli",
+  "modes": [
+    "interactive",
+    "headless"
+  ],
+  "roles": [
+    "executor",
+    "advisor"
+  ],
+  "credential": "cli_managed"
+}

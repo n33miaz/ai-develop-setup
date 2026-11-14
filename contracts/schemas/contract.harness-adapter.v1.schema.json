@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:contract:harness-adapter:1",
+  "title": "Descritor do adaptador de IA",
+  "description": "O que um adaptador declara ao núcleo no contrato harness-adapter/1: qual ferramenta adapta, se é linha de comando ou API, em que modos e papéis atende e quem guarda a credencial. Adaptador de linha de comando nunca toca na credencial que a ferramenta administra; adaptador de API usa a chave do cofre do produto e não tem modo interativo.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract",
+    "harness",
+    "kind",
+    "modes",
+    "roles",
+    "credential"
+  ],
+  "properties": {
+    "contract": {
+      "const": "harness-adapter/1"
+    },
+    "harness": {
+      "$ref": "urn:ads:common:id:1"
+    },
+    "kind": {
+      "enum": [
+        "cli",
+        "api"
+      ]
+    },
+    "modes": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "interactive",
+          "headless"
+        ]
+      }
+    },
+    "roles": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "executor",
+          "reviewer",
+          "router",
+          "advisor",
+          "orchestrator"
+        ]
+      }
+    },
+    "credential": {
+      "enum": [
+        "cli_managed",
+        "vault"
+      ]
+    }
+  },
+  "if": {
+    "properties": {
+      "kind": {
+        "const": "api"
+      }
+    },
+    "required": [
+      "kind"
+    ]
+  },
+  "then": {
+    "properties": {
+      "credential": {
+        "const": "vault"
+      },
+      "modes": {
+        "type": "array",
+        "items": {
+          "const": "headless"
+        }
+      }
+    }
+  },
+  "else": {
+    "properties": {
+      "credential": {
+        "const": "cli_managed"
+      }
+    }
+  },
+  "examples": [
+    {
+      "contract": "harness-adapter/1",
+      "harness": "harness-a",
+      "kind": "cli",
+      "modes": [
+        "interactive"
+      ],
+      "roles": [
+        "executor"
+      ],
+      "credential": "cli_managed"
+    }
+  ]
+}

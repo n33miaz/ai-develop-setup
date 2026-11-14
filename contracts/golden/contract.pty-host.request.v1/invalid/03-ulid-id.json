@@ -1,0 +1,19 @@
+{
+  "jsonrpc": "2.0",
+  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAD",
+  "method": "session.open",
+  "params": {
+    "session_id": "sess-01",
+    "program": "harness-a",
+    "args": [
+      "--verbose"
+    ],
+    "cwd": "/work/proj-01",
+    "env": {
+      "TERM": "xterm-256color",
+      "LANG": "C.UTF-8"
+    },
+    "cols": 120,
+    "rows": 30
+  }
+}

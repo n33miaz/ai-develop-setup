@@ -1,0 +1,45 @@
+{
+  "01-wrong-contract.json": {
+    "rule": "contract é exatamente harness-adapter/1.",
+    "keyword": "const",
+    "instancePath": "/contract"
+  },
+  "02-cli-with-vault-credential.json": {
+    "rule": "Adaptador de linha de comando usa a credencial que a própria ferramenta administra.",
+    "keyword": "const",
+    "instancePath": "/credential"
+  },
+  "03-api-with-cli-credential.json": {
+    "rule": "Adaptador de API usa a chave guardada no cofre do produto.",
+    "keyword": "const",
+    "instancePath": "/credential"
+  },
+  "04-api-interactive.json": {
+    "rule": "Adaptador de API não tem modo interativo.",
+    "keyword": "const",
+    "instancePath": "/modes/0"
+  },
+  "05-empty-modes.json": {
+    "rule": "O adaptador atende pelo menos um modo.",
+    "keyword": "minItems",
+    "instancePath": "/modes"
+  },
+  "06-unknown-role.json": {
+    "rule": "O papel é um dos cinco papéis conhecidos.",
+    "keyword": "enum",
+    "instancePath": "/roles/0"
+  },
+  "07-repeated-mode.json": {
+    "rule": "Um modo não se repete na lista.",
+    "keyword": "uniqueItems",
+    "instancePath": "/modes"
+  },
+  "08-extra-field.json": {
+    "rule": "O descritor é fechado: campo desconhecido reprova.",
+    "keyword": "additionalProperties",
+    "instancePath": "",
+    "params": {
+      "additionalProperty": "api_key"
+    }
+  }
+}
