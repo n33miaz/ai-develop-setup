@@ -1,0 +1,82 @@
+/* Tokens de tema. Claro é o padrão; escuro vale por `prefers-color-scheme` (a menos que o atributo
+   force o claro) e por `data-theme="dark"`. Os dois blocos escuros têm de ficar idênticos
+   (um teste confere), e os pares de cor passam de contraste AA (outro teste confere). */
+:root {
+  color-scheme: light;
+  --bg: #f4f6f9;
+  --surface: #ffffff;
+  --surface-2: #e9edf2;
+  --border: #c9d0d9;
+  --border-strong: #6b7685;
+  --text: #14181f;
+  --text-muted: #4a5360;
+  --accent: #1a56c4;
+  --accent-contrast: #ffffff;
+  --focus: #1a56c4;
+  --ok: #17653a;
+  --warn: #7a4a00;
+  --danger: #b3261e;
+  --terminal-bg: #fbfcfd;
+  --terminal-fg: #1c2128;
+  --terminal-selection: #b8d0f5;
+  --terminal-red: #a40e26;
+  --terminal-green: #116329;
+  --terminal-yellow: #7a4d00;
+  --terminal-blue: #0b4fb3;
+  --terminal-cyan: #0a5f73;
+  --terminal-muted: #59636e;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    color-scheme: dark;
+    --bg: #0e1116;
+    --surface: #161b22;
+    --surface-2: #212932;
+    --border: #353e49;
+    --border-strong: #8591a0;
+    --text: #e6eaf0;
+    --text-muted: #aab3bf;
+    --accent: #7aa7ff;
+    --accent-contrast: #0b1220;
+    --focus: #8ab4ff;
+    --ok: #56d364;
+    --warn: #e3b341;
+    --danger: #ff8a82;
+    --terminal-bg: #0a0d12;
+    --terminal-fg: #d7dde5;
+    --terminal-selection: #264f8f;
+    --terminal-red: #ff8a82;
+    --terminal-green: #56d364;
+    --terminal-yellow: #e3b341;
+    --terminal-blue: #79b8ff;
+    --terminal-cyan: #56d4dd;
+    --terminal-muted: #8b96a3;
+  }
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --bg: #0e1116;
+  --surface: #161b22;
+  --surface-2: #212932;
+  --border: #353e49;
+  --border-strong: #8591a0;
+  --text: #e6eaf0;
+  --text-muted: #aab3bf;
+  --accent: #7aa7ff;
+  --accent-contrast: #0b1220;
+  --focus: #8ab4ff;
+  --ok: #56d364;
+  --warn: #e3b341;
+  --danger: #ff8a82;
+  --terminal-bg: #0a0d12;
+  --terminal-fg: #d7dde5;
+  --terminal-selection: #264f8f;
+  --terminal-red: #ff8a82;
+  --terminal-green: #56d364;
+  --terminal-yellow: #e3b341;
+  --terminal-blue: #79b8ff;
+  --terminal-cyan: #56d4dd;
+  --terminal-muted: #8b96a3;
+}
