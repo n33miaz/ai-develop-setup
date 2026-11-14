@@ -1,0 +1,67 @@
+[workspace]
+resolver = "3"
+members = [
+  "crates/contracts",
+  "crates/core",
+  "crates/storage",
+  "crates/ptyhost",
+  "crates/daemon",
+  "crates/launcher",
+  "crates/e2e",
+  "crates/shell",
+  "crates/adapters/claude",
+  "crates/adapters/codex",
+  "crates/adapters/antigravity",
+  "crates/adapters/api",
+  "crates/adapters/vault",
+  "crates/adapters/collectors",
+  "crates/adapters/relay",
+]
+# A casca Tauri fica de fora: `cargo check`, `clippy` e `test` sem `-p` nao a compilam (ela compila so no CI).
+default-members = [
+  "crates/contracts",
+  "crates/core",
+  "crates/storage",
+  "crates/ptyhost",
+  "crates/daemon",
+  "crates/launcher",
+  "crates/e2e",
+  "crates/adapters/claude",
+  "crates/adapters/codex",
+  "crates/adapters/antigravity",
+  "crates/adapters/api",
+  "crates/adapters/vault",
+  "crates/adapters/collectors",
+  "crates/adapters/relay",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.96"
+publish = false
+
+# Uma versao de cada biblioteca externa e o caminho de cada crate interno ficam aqui.
+# Quem pode depender de quem esta em defaults/dependency-matrix.toml e e cobrado por tools/check_deps.py.
+[workspace.dependencies]
+ads-contracts = { path = "crates/contracts" }
+ads-core = { path = "crates/core" }
+ads-storage = { path = "crates/storage" }
+ads-e2e = { path = "crates/e2e" }
+tauri = { version = "2.12.5", features = ["tray-icon"] }
+tauri-build = "2.7.4"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+
+# Menos informacao de depuracao no perfil de desenvolvimento: cabe melhor em disco e memoria.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

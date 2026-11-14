@@ -30,8 +30,7 @@ dist/
 build/
 coverage/
 .vite/
-shell/src-tauri/target/
-shell/src-tauri/gen/
+crates/shell/gen/
 
 # Spikes e rascunhos fora do repo
 spikes/
@@ -45,3 +44,5 @@ spikes/
 .DS_Store
 Thumbs.db
 desktop.ini
+__pycache__/
+*.pyc

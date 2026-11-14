@@ -1,0 +1,10 @@
+[package]
+name = "ads-storage"
+description = "Local SQLite storage, column encryption and chained audit."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

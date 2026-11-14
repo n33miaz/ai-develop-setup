@@ -1,0 +1,10 @@
+[package]
+name = "ads-core"
+description = "Policy: tasks, approvals, scope, routing and budget."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
