@@ -131,19 +131,19 @@ jobs:
           PY
 
   # ---------------------------------------------------------------------------------------------------------
-  # Entram depois, cada um com o gatilho que o liga. Mantenha o filtro por caminho para n„o
-  # rodar o que n„o mudou, e inclua o job novo em `needs` do ci-ok.
+  # Entram depois, cada um com o gatilho que o liga. Mantenha o filtro por caminho para n√£o
+  # rodar o que n√£o mudou, e inclua o job novo em `needs` do ci-ok.
   #
   # contracts:   gatilho = existir contracts/ com o primeiro JSON Schema.
-  #              Valida os Schemas, os arquivos dourados e confere que os tipos gerados est„o em dia.
-  # pty-windows: gatilho = existir ptyhost/. Um ciclo do fixture no runner Windows; sÛ se ptyhost/ mudou.
-  # deps:        gatilho = existir Cargo.lock ou package-lock.json. dependency-review; sÛ se um arquivo de
-  #              dependÍncias mudou.
-  # artifact:    gatilho = o atualizador do daemon existir. Gera o execut·vel, o SHA-256 e a atestaÁ„o a cada junÁ„o
-  #              na develop (runner Windows) e publica como prÈ-lanÁamento.
+  #              Valida os Schemas, os arquivos dourados e confere que os tipos gerados est√£o em dia.
+  # pty-windows: gatilho = existir ptyhost/. Um ciclo do fixture no runner Windows; s√≥ se ptyhost/ mudou.
+  # deps:        gatilho = existir Cargo.lock ou package-lock.json. dependency-review; s√≥ se um arquivo de
+  #              depend√™ncias mudou.
+  # artifact:    gatilho = o atualizador do daemon existir. Gera o execut√°vel, o SHA-256 e a atesta√ß√£o a cada jun√ß√£o
+  #              na develop (runner Windows) e publica como pr√©-lan√ßamento.
   # ---------------------------------------------------------------------------------------------------------
 
-  # Decide, por `git diff`, quais jobs condicionais rodam. … um job (e n„o `on.paths`) para o `ci-ok` existir sempre.
+  # Decide, por `git diff`, quais jobs condicionais rodam. √â um job (e n√£o `on.paths`) para o `ci-ok` existir sempre.
   changes:
     name: changes
     runs-on: ubuntu-latest
@@ -163,11 +163,11 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
           PUSH_AFTER_SHA: ${{ github.sha }}
-          # Casca: ela mesma, o que ela enxerga (contracts, e2e) e tudo que muda o resultado da compilaÁ„o.
+          # Casca: ela mesma, o que ela enxerga (contracts, e2e) e tudo que muda o resultado da compila√ß√£o.
           SHELL_PATHS: '^(crates/shell/|crates/contracts/|crates/e2e/|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
         run: |
           set -euo pipefail
-          # Na d˙vida (disparo manual, push sem base conhecida, diff impossÌvel), roda.
+          # Na d√∫vida (disparo manual, push sem base conhecida, diff imposs√≠vel), roda.
           run=true
           range=""
           case "$EVENT" in
@@ -197,24 +197,24 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Instalar a vers„o fixada em rust-toolchain.toml
+      - name: Instalar a vers√£o fixada em rust-toolchain.toml
         run: |
           rustup toolchain install
           rustc --version
           cargo --version
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      # Sem --workspace de propÛsito: a casca Tauri fica de fora (default-members) e compila no job shell-check.
-      - name: FormataÁ„o
+      # Sem --workspace de prop√≥sito: a casca Tauri fica de fora (default-members) e compila no job shell-check.
+      - name: Formata√ß√£o
         run: cargo fmt --all --check
       - name: Lint (avisos como erro)
         run: cargo clippy --locked --all-targets -- -D warnings
       - name: Testes
         run: cargo test --locked
-      - name: Regra de dependÍncia (testes da ferramenta e conferÍncia do grafo)
+      - name: Regra de depend√™ncia (testes da ferramenta e confer√™ncia do grafo)
         run: |
           python3 -m unittest discover -s tools -p 'test_*.py'
           python3 tools/check_deps.py check
-      # Vers„o fixa da ferramenta; configuraÁ„o em deny.toml (licenÁas, avisos de seguranÁa, origem).
+      # Vers√£o fixa da ferramenta; configura√ß√£o em deny.toml (licen√ßas, avisos de seguran√ßa, origem).
       - uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
         with:
           tool: cargo-deny@0.20.2
@@ -238,12 +238,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Instalar a vers„o fixada em rust-toolchain.toml
+      - name: Instalar a vers√£o fixada em rust-toolchain.toml
         run: |
           rustup toolchain install
           rustc --version
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      # O Tauri embute `ui/dist` ao compilar; enquanto a interface n„o existir, uma p·gina vazia basta.
+      # O Tauri embute `ui/dist` ao compilar; enquanto a interface n√£o existir, uma p√°gina vazia basta.
       - name: Pasta da interface
         run: |
           mkdir -p ui/dist
