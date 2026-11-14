@@ -21,3 +21,4 @@ Uma decisão por arquivo. Número nunca é reutilizado; decisão substituída ga
 | [0015](0015-ci-built-artifact-with-verified-self-update.md) | 0015. CI-built artifact with verified self-update |
 | [0016](0016-sanitized-public-issue-per-delivery.md) | 0016. Sanitized public issue per delivery |
 | [0017](0017-date-and-commit-versioning-during-express.md) | 0017. Date-and-commit versioning during the express period |
+| [0018](0018-mpl-2-0-exception-for-the-tauri-dependency-tree.md) | 0018. MPL-2.0 exception for the Tauri dependency tree |
