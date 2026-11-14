@@ -131,25 +131,130 @@ jobs:
           PY
 
   # ---------------------------------------------------------------------------------------------------------
-  # Entram depois, cada um com o gatilho que o liga. Mantenha o filtro por caminho para nÃ£o
-  # rodar o que nÃ£o mudou, e inclua o job novo em `needs` do ci-ok.
+  # Entram depois, cada um com o gatilho que o liga. Mantenha o filtro por caminho para não
+  # rodar o que não mudou, e inclua o job novo em `needs` do ci-ok.
   #
   # contracts:   gatilho = existir contracts/ com o primeiro JSON Schema.
-  #              Valida os Schemas, os arquivos dourados e confere que os tipos gerados estÃ£o em dia.
-  # build-test:  gatilho = existir o primeiro crate Rust ou pacote da UI.
-  #              Build com avisos como erro (cargo clippy -D warnings), testes de unidade e a regra de
-  #              dependÃªncia (core nÃ£o importa adapters), em Ubuntu.
-  # pty-windows: gatilho = existir ptyhost/. Um ciclo do fixture no runner Windows; sÃ³ se ptyhost/ mudou.
-  # deps:        gatilho = existir Cargo.lock ou package-lock.json. dependency-review; sÃ³ se um arquivo de
-  #              dependÃªncias mudou.
-  # artifact:    gatilho = o atualizador do daemon existir. Gera o executÃ¡vel, o SHA-256 e a atestaÃ§Ã£o a cada junÃ§Ã£o
-  #              na develop (runner Windows) e publica como prÃ©-lanÃ§amento.
+  #              Valida os Schemas, os arquivos dourados e confere que os tipos gerados estão em dia.
+  # pty-windows: gatilho = existir ptyhost/. Um ciclo do fixture no runner Windows; só se ptyhost/ mudou.
+  # deps:        gatilho = existir Cargo.lock ou package-lock.json. dependency-review; só se um arquivo de
+  #              dependências mudou.
+  # artifact:    gatilho = o atualizador do daemon existir. Gera o executável, o SHA-256 e a atestação a cada junção
+  #              na develop (runner Windows) e publica como pré-lançamento.
   # ---------------------------------------------------------------------------------------------------------
+
+  # Decide, por `git diff`, quais jobs condicionais rodam. É um job (e não `on.paths`) para o `ci-ok` existir sempre.
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      shell: ${{ steps.filter.outputs.shell }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Filtrar por caminho
+        id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          PUSH_AFTER_SHA: ${{ github.sha }}
+          # Casca: ela mesma, o que ela enxerga (contracts, e2e) e tudo que muda o resultado da compilação.
+          SHELL_PATHS: '^(crates/shell/|crates/contracts/|crates/e2e/|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
+        run: |
+          set -euo pipefail
+          # Na dúvida (disparo manual, push sem base conhecida, diff impossível), roda.
+          run=true
+          range=""
+          case "$EVENT" in
+            pull_request) range="$PR_BASE_SHA...$PR_HEAD_SHA" ;;
+            push)
+              case "$PUSH_BEFORE_SHA" in
+                ""|0000000000000000000000000000000000000000) ;;
+                *) range="$PUSH_BEFORE_SHA..$PUSH_AFTER_SHA" ;;
+              esac
+              ;;
+          esac
+          if [ -n "$range" ] && files=$(git diff --name-only "$range"); then
+            echo "$files"
+            if echo "$files" | grep -Eq "$SHELL_PATHS"; then run=true; else run=false; fi
+          fi
+          echo "shell=$run" >> "$GITHUB_OUTPUT"
+          echo "shell-check roda: $run"
+
+  rust:
+    name: rust
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Instalar a versão fixada em rust-toolchain.toml
+        run: |
+          rustup toolchain install
+          rustc --version
+          cargo --version
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # Sem --workspace de propósito: a casca Tauri fica de fora (default-members) e compila no job shell-check.
+      - name: Formatação
+        run: cargo fmt --all --check
+      - name: Lint (avisos como erro)
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Testes
+        run: cargo test --locked
+      - name: Regra de dependência (testes da ferramenta e conferência do grafo)
+        run: |
+          python3 -m unittest discover -s tools -p 'test_*.py'
+          python3 tools/check_deps.py check
+      # Versão fixa da ferramenta; configuração em deny.toml (licenças, avisos de segurança, origem).
+      - uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
+        with:
+          tool: cargo-deny@0.20.2
+      - name: cargo-deny
+        run: cargo deny --locked check
+
+  shell-check:
+    name: shell-check
+    needs: changes
+    if: needs.changes.outputs.shell == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+      RUSTFLAGS: "-D warnings"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Instalar a versão fixada em rust-toolchain.toml
+        run: |
+          rustup toolchain install
+          rustc --version
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # O Tauri embute `ui/dist` ao compilar; enquanto a interface não existir, uma página vazia basta.
+      - name: Pasta da interface
+        run: |
+          mkdir -p ui/dist
+          [ -f ui/dist/index.html ] || echo '<!doctype html><title>ads</title>' > ui/dist/index.html
+      - name: Compilar a casca (cargo check)
+        run: cargo check --locked -p ads-shell --all-targets
 
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [commits, secrets, terms]
+    needs: [commits, secrets, terms, changes, rust, shell-check]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
