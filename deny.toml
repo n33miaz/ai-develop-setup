@@ -22,10 +22,6 @@ allow = [
   "Unicode-3.0",
 ]
 confidence-threshold = 0.9
-# Crates proprios do workspace nao tem licenca SPDX e nao sao publicados.
-[licenses.private]
-ignore = true
-
 # Excecoes de licenca (ADR 0018): so estes crates, so esta licenca. Todos vem da arvore do Tauri.
 exceptions = [
   { crate = "cssparser", allow = ["MPL-2.0"] },
@@ -34,6 +30,10 @@ exceptions = [
   { crate = "option-ext", allow = ["MPL-2.0"] },
   { crate = "selectors", allow = ["MPL-2.0"] },
 ]
+
+# Crates proprios do workspace nao tem licenca SPDX e nao sao publicados.
+[licenses.private]
+ignore = true
 
 [bans]
 # O Tauri traz versoes duplicadas; so avisa.
