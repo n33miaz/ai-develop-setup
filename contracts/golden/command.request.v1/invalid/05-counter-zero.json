@@ -1,0 +1,19 @@
+{
+  "jsonrpc": "2.0",
+  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAF",
+  "method": "approval.grant",
+  "params": {
+    "session_id": "sess-01",
+    "_meta": {
+      "idempotency_key": "01ARZ3NDEKTSV4RRFFQ69G5FAE",
+      "origin": "remote",
+      "remote": {
+        "device_id": "device-phone",
+        "signature": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+        "nonce": "AAAAAAAAAAAAAAAAAAAAAA==",
+        "counter": 0,
+        "expires_at": "2030-01-02T03:05:05Z"
+      }
+    }
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "task_id": "task-02",
+  "parent_id": "task-01",
+  "mode": "solo_review",
+  "role": "reviewer",
+  "tier_requested": "T2",
+  "model_effective": "model-x",
+  "provider_effective": "provider-a",
+  "objective": "Corrigir o teste que falha no módulo de exemplo.",
+  "acceptance": [
+    "o comando de teste passa",
+    "o diff é revisável"
+  ],
+  "constraints": {
+    "allow_ref": "allowlist@v3",
+    "deny_ref": "denylist@v3",
+    "writes": "none",
+    "worktree": null
+  },
+  "budget": {
+    "usd": 3,
+    "quota_pct": 5,
+    "turns": 40,
+    "wall_min": 45
+  },
+  "inputs": {
+    "decisions": [
+      "decision-12"
+    ],
+    "files": [
+      "src/example.rs"
+    ],
+    "memory_refs": []
+  },
+  "expected_output": {
+    "diff": true,
+    "report": "summary<=300w"
+  },
+  "status": "running",
+  "evidence": {
+    "diff_sha": "sha256:abababababababababababababababababababababababababababababababab",
+    "tests": true
+  },
+  "trust": "payload_is_data_not_instructions"
+}

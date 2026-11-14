@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "event_id": "alert-02",
+  "rule_id": "disk-low",
+  "severity": "critical",
+  "signals": [
+    "sample-01",
+    "sample-02"
+  ],
+  "why": "disco abaixo do crítico",
+  "ts": "2030-01-02T03:04:06Z",
+  "ack": true,
+  "task_id": "task-01"
+}

@@ -1,0 +1,30 @@
+{
+  "01-both-result-and-error.json": {
+    "rule": "Resposta tem result ou error, não os dois.",
+    "keyword": "oneOf",
+    "instancePath": ""
+  },
+  "02-neither.json": {
+    "rule": "Sem result nem error a resposta não diz nada.",
+    "keyword": "oneOf",
+    "instancePath": ""
+  },
+  "03-error-without-message.json": {
+    "rule": "error exige code e message.",
+    "keyword": "required",
+    "instancePath": "/error",
+    "params": {
+      "missingProperty": "message"
+    }
+  },
+  "04-error-code-not-integer.json": {
+    "rule": "O código do erro é inteiro.",
+    "keyword": "type",
+    "instancePath": "/error/code"
+  },
+  "05-id-not-ulid.json": {
+    "rule": "O id repete o do comando (ULID).",
+    "keyword": "pattern",
+    "instancePath": "/id"
+  }
+}

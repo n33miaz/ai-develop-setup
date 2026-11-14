@@ -1,0 +1,43 @@
+{
+  "01-reviewer-writes.json": {
+    "rule": "Revisor nunca escreve: role reviewer exige writes none.",
+    "keyword": "const",
+    "instancePath": "/constraints/writes"
+  },
+  "02-trust-changed.json": {
+    "rule": "A marca trust é fixa: o pacote é dado, não instrução.",
+    "keyword": "const",
+    "instancePath": "/trust"
+  },
+  "03-quota-over-100.json": {
+    "rule": "quota_pct vai de 0 a 100.",
+    "keyword": "maximum",
+    "instancePath": "/budget/quota_pct"
+  },
+  "04-no-acceptance.json": {
+    "rule": "Sem critério de aceite a tarefa não tem como terminar.",
+    "keyword": "minItems",
+    "instancePath": "/acceptance"
+  },
+  "05-file-escapes-root.json": {
+    "rule": "Arquivo de entrada é caminho relativo sem '..'.",
+    "keyword": "not",
+    "instancePath": "/inputs/files/0"
+  },
+  "06-missing-objective.json": {
+    "rule": "O objetivo é obrigatório.",
+    "keyword": "required",
+    "instancePath": "",
+    "params": {
+      "missingProperty": "objective"
+    }
+  },
+  "07-extra-field.json": {
+    "rule": "Pacote fechado: campo desconhecido reprova.",
+    "keyword": "additionalProperties",
+    "instancePath": "",
+    "params": {
+      "additionalProperty": "permissions"
+    }
+  }
+}

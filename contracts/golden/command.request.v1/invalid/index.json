@@ -1,0 +1,48 @@
+{
+  "01-wrong-version.json": {
+    "rule": "jsonrpc é exatamente \"2.0\".",
+    "keyword": "const",
+    "instancePath": "/jsonrpc"
+  },
+  "02-missing-idempotency-key.json": {
+    "rule": "Todo comando leva chave de idempotência.",
+    "keyword": "required",
+    "instancePath": "/params/_meta",
+    "params": {
+      "missingProperty": "idempotency_key"
+    }
+  },
+  "03-remote-without-signature-block.json": {
+    "rule": "Origem remota exige o bloco remote (assinatura, nonce, contador, validade).",
+    "keyword": "required",
+    "instancePath": "/params/_meta",
+    "params": {
+      "missingProperty": "remote"
+    }
+  },
+  "04-local-with-remote-block.json": {
+    "rule": "Origem local não leva bloco remote.",
+    "keyword": "not",
+    "instancePath": "/params/_meta"
+  },
+  "05-counter-zero.json": {
+    "rule": "O contador anti-repetição começa em 1.",
+    "keyword": "minimum",
+    "instancePath": "/params/_meta/remote/counter"
+  },
+  "06-signature-wrong-size.json": {
+    "rule": "A assinatura Ed25519 tem 64 bytes (88 caracteres em base64).",
+    "keyword": "minLength",
+    "instancePath": "/params/_meta/remote/signature"
+  },
+  "07-method-uppercase.json": {
+    "rule": "O método é minúsculo com pontos.",
+    "keyword": "pattern",
+    "instancePath": "/method"
+  },
+  "08-params-not-object.json": {
+    "rule": "params é objeto nomeado.",
+    "keyword": "type",
+    "instancePath": "/params"
+  }
+}

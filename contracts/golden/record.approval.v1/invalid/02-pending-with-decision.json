@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "approval_id": "appr-01",
+  "plan_hash": "sha256:abababababababababababababababababababababababababababababababab",
+  "risk": "medium",
+  "summary": "Limpar um cache regenerável",
+  "status": "pending",
+  "requested_at": "2030-01-02T03:04:05Z",
+  "expires_at": "2030-01-02T03:19:05Z",
+  "decided_at": "2030-01-02T03:04:05Z",
+  "decided_by": null,
+  "via": null,
+  "reason": null
+}
