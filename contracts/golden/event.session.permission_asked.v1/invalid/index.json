@@ -1,0 +1,43 @@
+{
+  "01-wrong-type.json": {
+    "rule": "O type tem de ser exatamente a URN deste evento.",
+    "keyword": "const",
+    "instancePath": "/type"
+  },
+  "02-missing-request_id.json": {
+    "rule": "O campo request_id é obrigatório em data.",
+    "keyword": "required",
+    "instancePath": "/data",
+    "params": {
+      "missingProperty": "request_id"
+    }
+  },
+  "03-extra-data-field.json": {
+    "rule": "data é fechado: campo desconhecido reprova.",
+    "keyword": "additionalProperties",
+    "instancePath": "/data",
+    "params": {
+      "additionalProperty": "unexpected"
+    }
+  },
+  "04-wrong-stream.json": {
+    "rule": "O stream deste evento começa por session/.",
+    "keyword": "pattern",
+    "instancePath": "/stream"
+  },
+  "05-empty-summary.json": {
+    "rule": "O resumo não pode ser vazio.",
+    "keyword": "minLength",
+    "instancePath": "/data/summary"
+  },
+  "06-unknown-kind.json": {
+    "rule": "kind é um dos cinco tipos.",
+    "keyword": "enum",
+    "instancePath": "/data/kind"
+  },
+  "07-public-question.json": {
+    "rule": "A pergunta nunca é pública.",
+    "keyword": "enum",
+    "instancePath": "/data_class"
+  }
+}

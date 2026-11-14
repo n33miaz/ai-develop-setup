@@ -1,0 +1,22 @@
+{
+  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAC",
+  "type": "urn:ads:event:session.created:1",
+  "ts": "2030-01-02T03:04:05Z",
+  "stream": "session/sess-01",
+  "seq": 42,
+  "actor": {
+    "kind": "agent",
+    "id": "agent-a"
+  },
+  "cause": "01ARZ3NDEKTSV4RRFFQ69G5FAK",
+  "data_class": "private",
+  "data": {
+    "session_id": "sess-01",
+    "task_id": null,
+    "harness": "harness-b",
+    "mode": "headless",
+    "cols": 80,
+    "rows": 24,
+    "workdir_alias": "wd-02"
+  }
+}

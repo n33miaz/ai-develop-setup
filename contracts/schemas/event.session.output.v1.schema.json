@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:event:session.output:1",
+  "title": "Saída da sessão",
+  "description": "Bytes que o terminal produziu, em base64, com deslocamento no fluxo da sessão. No transporte ao vivo viajam em quadro binário; este é o registro.",
+  "allOf": [
+    {
+      "$ref": "urn:ads:event:envelope:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "type",
+        "stream",
+        "data"
+      ],
+      "properties": {
+        "type": {
+          "const": "urn:ads:event:session.output:1"
+        },
+        "stream": {
+          "type": "string",
+          "pattern": "^session/"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "session_id",
+            "offset",
+            "length",
+            "encoding",
+            "payload"
+          ],
+          "properties": {
+            "session_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "offset": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "length": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "encoding": {
+              "const": "base64"
+            },
+            "payload": {
+              "$ref": "urn:ads:common:base64:1"
+            }
+          }
+        },
+        "data_class": {
+          "enum": [
+            "private",
+            "secret"
+          ]
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+      "type": "urn:ads:event:session.output:1",
+      "ts": "2030-01-02T03:04:05Z",
+      "stream": "session/sess-01",
+      "seq": 1,
+      "actor": {
+        "kind": "daemon",
+        "id": "core-01"
+      },
+      "cause": null,
+      "data_class": "private",
+      "data": {
+        "session_id": "sess-01",
+        "offset": 0,
+        "length": 5,
+        "encoding": "base64",
+        "payload": "aGVsbG8="
+      }
+    }
+  ]
+}

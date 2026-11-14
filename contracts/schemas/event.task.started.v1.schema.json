@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:event:task.started:1",
+  "title": "Tarefa iniciada",
+  "description": "A execução da tarefa começou, numa sessão ou ainda sem sessão.",
+  "allOf": [
+    {
+      "$ref": "urn:ads:event:envelope:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "type",
+        "stream",
+        "data"
+      ],
+      "properties": {
+        "type": {
+          "const": "urn:ads:event:task.started:1"
+        },
+        "stream": {
+          "type": "string",
+          "pattern": "^task/"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "task_id",
+            "session_id"
+          ],
+          "properties": {
+            "task_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "session_id": {
+              "anyOf": [
+                {
+                  "$ref": "urn:ads:common:id:1"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+      "type": "urn:ads:event:task.started:1",
+      "ts": "2030-01-02T03:04:05Z",
+      "stream": "task/task-01",
+      "seq": 1,
+      "actor": {
+        "kind": "daemon",
+        "id": "core-01"
+      },
+      "cause": null,
+      "data_class": "internal",
+      "data": {
+        "task_id": "task-01",
+        "session_id": "sess-01"
+      }
+    }
+  ]
+}

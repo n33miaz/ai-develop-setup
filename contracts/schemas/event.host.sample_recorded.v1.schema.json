@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:event:host.sample_recorded:1",
+  "title": "Amostra do host registrada",
+  "description": "Um coletor mediu um sinal da máquina; o dado é um registro host_sample.",
+  "allOf": [
+    {
+      "$ref": "urn:ads:event:envelope:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "type",
+        "stream",
+        "data"
+      ],
+      "properties": {
+        "type": {
+          "const": "urn:ads:event:host.sample_recorded:1"
+        },
+        "stream": {
+          "type": "string",
+          "pattern": "^host/"
+        },
+        "data": {
+          "$ref": "urn:ads:record:host_sample:1"
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+      "type": "urn:ads:event:host.sample_recorded:1",
+      "ts": "2030-01-02T03:04:05Z",
+      "stream": "host/host-01",
+      "seq": 1,
+      "actor": {
+        "kind": "daemon",
+        "id": "core-01"
+      },
+      "cause": null,
+      "data_class": "internal",
+      "data": {
+        "version": 1,
+        "sample_id": "sample-01",
+        "signal_id": "host.disk.free_gb",
+        "value": 12.4,
+        "unit": "GB",
+        "ts": "2030-01-02T03:04:05Z",
+        "collector": "disk-basics",
+        "cost_ms": 18,
+        "scope_alias": "host-01",
+        "stale": false
+      }
+    }
+  ]
+}

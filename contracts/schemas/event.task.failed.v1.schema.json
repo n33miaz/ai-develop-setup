@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:event:task.failed:1",
+  "title": "Tarefa falhou",
+  "description": "A tarefa terminou sem entrega, com um código de erro estável e a indicação de se vale tentar de novo.",
+  "allOf": [
+    {
+      "$ref": "urn:ads:event:envelope:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "type",
+        "stream",
+        "data"
+      ],
+      "properties": {
+        "type": {
+          "const": "urn:ads:event:task.failed:1"
+        },
+        "stream": {
+          "type": "string",
+          "pattern": "^task/"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "task_id",
+            "error_code",
+            "retriable"
+          ],
+          "properties": {
+            "task_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "error_code": {
+              "type": "string",
+              "pattern": "^E_[A-Z0-9_]{1,60}$"
+            },
+            "retriable": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+      "type": "urn:ads:event:task.failed:1",
+      "ts": "2030-01-02T03:04:05Z",
+      "stream": "task/task-01",
+      "seq": 1,
+      "actor": {
+        "kind": "daemon",
+        "id": "core-01"
+      },
+      "cause": null,
+      "data_class": "internal",
+      "data": {
+        "task_id": "task-01",
+        "error_code": "E_TIMEOUT",
+        "retriable": true
+      }
+    }
+  ]
+}

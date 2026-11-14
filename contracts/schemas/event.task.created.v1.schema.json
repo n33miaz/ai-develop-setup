@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:event:task.created:1",
+  "title": "Tarefa criada",
+  "description": "Uma tarefa nasceu. Só o hash do objetivo vai no evento; o texto fica no pacote da tarefa.",
+  "allOf": [
+    {
+      "$ref": "urn:ads:event:envelope:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "type",
+        "stream",
+        "data"
+      ],
+      "properties": {
+        "type": {
+          "const": "urn:ads:event:task.created:1"
+        },
+        "stream": {
+          "type": "string",
+          "pattern": "^task/"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "task_id",
+            "parent_task_id",
+            "project_id",
+            "objective_hash",
+            "kind",
+            "risk",
+            "oracle_declared"
+          ],
+          "properties": {
+            "task_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "parent_task_id": {
+              "anyOf": [
+                {
+                  "$ref": "urn:ads:common:id:1"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "project_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "objective_hash": {
+              "$ref": "urn:ads:common:sha256:1"
+            },
+            "kind": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "risk": {
+              "$ref": "urn:ads:common:risk:1"
+            },
+            "oracle_declared": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+      "type": "urn:ads:event:task.created:1",
+      "ts": "2030-01-02T03:04:05Z",
+      "stream": "task/task-01",
+      "seq": 1,
+      "actor": {
+        "kind": "daemon",
+        "id": "core-01"
+      },
+      "cause": null,
+      "data_class": "internal",
+      "data": {
+        "task_id": "task-01",
+        "parent_task_id": null,
+        "project_id": "proj-01",
+        "objective_hash": "sha256:abababababababababababababababababababababababababababababababab",
+        "kind": "small-cohesive",
+        "risk": "low",
+        "oracle_declared": true
+      }
+    }
+  ]
+}
