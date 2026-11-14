@@ -69,6 +69,65 @@ Dados dos dourados são sempre sintéticos: sem nomes reais, e-mails, caminhos d
 - Regras entre campos (`if`/`then`) só cobrem o que depende de valores do próprio documento. Regra que precisa de outro documento (o hash de um plano contra o plano, por exemplo) é teste de contrato, não Schema.
 - `data_class` (`public`, `internal`, `private`, `secret`) acompanha todo evento; texto de terminal e perguntas de permissão nunca são `public`.
 
+## Contrato pty-host/1
+
+Canal local do usuário entre o núcleo (cliente) e o host de PTY (servidor). O host segura as sessões e o anel de replay; o núcleo reinicia, reconecta e retoma pelo `seq` (ADR 0003).
+
+### Quadro
+
+Tudo o que passa pelo canal vai dentro de um quadro. Inteiros em big-endian.
+
+| Deslocamento | Tamanho | Campo |
+|---|---|---|
+| 0 | 1 | `kind`: `0x01` mensagem JSON-RPC, `0x02` saída de terminal. Outro valor encerra a conexão. |
+| 1 | 4 | `payload_len` (u32): quantos bytes vêm depois deste campo |
+| 5 | `payload_len` | `payload` |
+
+`payload` de um quadro `0x01`: uma mensagem JSON em UTF-8, que é um `pty-host.request`, um `pty-host.response` ou um `pty-host.notification`.
+
+`payload` de um quadro `0x02` (só do host para o núcleo):
+
+| Deslocamento | Tamanho | Campo |
+|---|---|---|
+| 0 | 2 | `header_len` (u16) |
+| 2 | `header_len` | cabeçalho: JSON em UTF-8 que valida contra `urn:ads:contract:pty-host.frame:1` |
+| 2 + `header_len` | `length` do cabeçalho | bytes do terminal, sem transformação |
+
+`payload_len` tem de ser igual a `2 + header_len + length`; quadro que não fecha a conta encerra a conexão. O JSON Schema cobre só o cabeçalho: os bytes não cabem em Schema e a conta dos tamanhos é teste de contrato.
+
+### Métodos
+
+| Método | `params` | `result` |
+|---|---|---|
+| `host.hello` | `contract` | `contract` |
+| `session.open` | `session_id`, `program`, `args`, `cwd`, `env`, `cols`, `rows` | vazio |
+| `session.write` | `session_id`, `data` (base64) | vazio |
+| `session.resize` | `session_id`, `cols`, `rows` | vazio |
+| `session.subscribe` | `session_id`, `from_seq` (ou `null`: tudo o que o anel guarda) | `oldest_seq`, `next_seq` |
+| `session.close` | `session_id` | `exit_code` |
+| `session.list` | vazio | `sessions` |
+
+- O primeiro pedido de toda conexão é `host.hello`; versão que o host não fala volta como erro `-32009`.
+- O processo filho enxerga só o `env` do pedido: nada é herdado do host.
+- Depois de `session.subscribe` o host manda quadros `0x02` em ordem de `seq`, primeiro o que o anel guarda e depois a saída ao vivo, sem buraco e sem duplicata. A assinatura vale até a conexão cair, a sessão ser fechada ou o aviso `subscription.closed`.
+- Avisos (sem `id`): `session.exited` e `subscription.closed`, os dois com `last_seq`.
+
+### Códigos de erro
+
+Além dos cinco do JSON-RPC 2.0 (`-32700`, `-32600`, `-32601`, `-32602`, `-32603`):
+
+| Código | Significado |
+|---|---|
+| `-32001` | Sessão desconhecida |
+| `-32002` | Já existe sessão com esse `session_id` |
+| `-32003` | Limite de sessões atingido (`data.limit`) |
+| `-32004` | O `seq` pedido já saiu do anel (`data.oldest_seq` obrigatório) |
+| `-32005` | O `seq` pedido ainda não existe (`data.next_seq` obrigatório) |
+| `-32006` | A sessão já terminou |
+| `-32007` | Não foi possível iniciar o processo |
+| `-32008` | Falha de leitura ou escrita no terminal |
+| `-32009` | Versão de contrato não suportada |
+
 ## Schemas
 
 ### Tipos comuns
@@ -151,3 +210,16 @@ Dados dos dourados são sempre sintéticos: sem nomes reais, e-mails, caminhos d
 | `urn:ads:record:approval:1` | Estado de uma aprovação: vale para o hash de um plano e expira. Pendente e expirada não têm decisor; concedida e negada têm autor e instante da decisão. |
 | `urn:ads:record:host_sample:1` | Uma observação de um sinal da máquina (disco, memória, etc.) feita por um coletor só leitura. Amostra ausente nunca vira zero; corrigir é gravar outra amostra com outro sample_id. |
 | `urn:ads:record:host_event:1` | Um alerta derivado de amostras: cita a regra, a gravidade e os sample_id que o justificam. Confirmar é um evento posterior; o alerta original não muda. |
+
+### Contratos entre processos
+
+O contrato `harness-adapter/1` é o descritor abaixo. O contrato `pty-host/1` são os quatro Schemas `pty-host.*` mais o quadro binário descrito em [Contrato pty-host/1](#contrato-pty-host1).
+
+| Schema | O que descreve |
+|---|---|
+| `urn:ads:contract:harness-adapter:1` | O que um adaptador declara ao núcleo no contrato harness-adapter/1: qual ferramenta adapta, se é linha de comando ou API, em que modos e papéis atende e quem guarda a credencial. Adaptador de linha de comando nunca toca na credencial que a ferramenta administra; adaptador de API usa a chave do cofre do produto e não tem modo interativo. |
+| `urn:ads:contract:pty-host.request:1` | Pedido JSON-RPC 2.0 do núcleo ao host de PTY no contrato pty-host/1, com envelope próprio: id inteiro por conexão, sem chave de idempotência nem assinatura, porque o canal é local e do próprio usuário. Os bytes de saída do terminal não vêm em resposta: viajam no quadro binário. |
+| `urn:ads:contract:pty-host.response:1` | Resposta JSON-RPC 2.0 do host de PTY: ou result ou error, nunca os dois. O result tem uma das formas do contrato (vazio, saudação, limites do replay, encerramento ou lista de sessões). Erro de replay informa o limite: nada é pulado em silêncio. |
+| `urn:ads:contract:pty-host.notification:1` | Notificação JSON-RPC 2.0 (sem id, sem resposta) do host de PTY ao núcleo: o processo de uma sessão terminou, ou uma assinatura foi encerrada. last_seq é o último pedaço numerado (0 se não houve saída); o núcleo reassina a partir de last_seq + 1 sem perder nada. |
+| `urn:ads:contract:pty-host.frame:1` | Cabeçalho, em JSON, do quadro binário que leva os bytes de saída do terminal no contrato pty-host/1: de qual sessão são, o número de sequência do pedaço e quantos bytes vêm logo depois do cabeçalho. Os bytes não fazem parte do JSON; o layout do quadro está no README. |
+

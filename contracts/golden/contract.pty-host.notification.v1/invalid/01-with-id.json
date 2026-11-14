@@ -1,0 +1,10 @@
+{
+  "jsonrpc": "2.0",
+  "method": "session.exited",
+  "params": {
+    "session_id": "sess-01",
+    "exit_code": 0,
+    "last_seq": 50
+  },
+  "id": 7
+}

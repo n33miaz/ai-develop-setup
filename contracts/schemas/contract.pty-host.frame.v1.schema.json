@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:contract:pty-host.frame:1",
+  "title": "Cabeçalho do quadro de saída",
+  "description": "Cabeçalho, em JSON, do quadro binário que leva os bytes de saída do terminal no contrato pty-host/1: de qual sessão são, o número de sequência do pedaço e quantos bytes vêm logo depois do cabeçalho. Os bytes não fazem parte do JSON; o layout do quadro está no README.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "session_id",
+    "seq",
+    "length"
+  ],
+  "properties": {
+    "session_id": {
+      "$ref": "urn:ads:common:id:1"
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "length": {
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "examples": [
+    {
+      "session_id": "sess-01",
+      "seq": 1,
+      "length": 5
+    }
+  ]
+}

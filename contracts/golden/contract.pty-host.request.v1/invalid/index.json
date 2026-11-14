@@ -1,0 +1,58 @@
+{
+  "01-wrong-version.json": {
+    "rule": "jsonrpc é exatamente \"2.0\".",
+    "keyword": "const",
+    "instancePath": "/jsonrpc"
+  },
+  "02-id-zero.json": {
+    "rule": "O id do pedido é um inteiro a partir de 1.",
+    "keyword": "minimum",
+    "instancePath": "/id"
+  },
+  "03-ulid-id.json": {
+    "rule": "O envelope é próprio: o id é inteiro, não o ULID dos comandos do núcleo.",
+    "keyword": "type",
+    "instancePath": "/id"
+  },
+  "04-open-without-program.json": {
+    "rule": "Abrir sessão exige o programa a executar.",
+    "keyword": "required",
+    "instancePath": "/params",
+    "params": {
+      "missingProperty": "program"
+    }
+  },
+  "05-env-value-not-text.json": {
+    "rule": "Cada variável de ambiente é texto.",
+    "keyword": "type",
+    "instancePath": "/params/env/LANG"
+  },
+  "06-cols-zero.json": {
+    "rule": "O terminal tem pelo menos uma coluna.",
+    "keyword": "minimum",
+    "instancePath": "/params/cols"
+  },
+  "07-from-seq-zero.json": {
+    "rule": "O replay começa no seq 1; para pedir tudo o que o anel guarda, use null.",
+    "keyword": "minimum",
+    "instancePath": "/params/from_seq"
+  },
+  "08-core-meta-block.json": {
+    "rule": "params é fechado: o bloco _meta dos comandos do núcleo não existe neste contrato.",
+    "keyword": "additionalProperties",
+    "instancePath": "/params",
+    "params": {
+      "additionalProperty": "_meta"
+    }
+  },
+  "09-write-not-base64.json": {
+    "rule": "Os bytes digitados vão em base64.",
+    "keyword": "pattern",
+    "instancePath": "/params/data"
+  },
+  "10-unknown-method.json": {
+    "rule": "O método é um dos sete do contrato; não casa com nenhuma das formas.",
+    "keyword": "oneOf",
+    "instancePath": ""
+  }
+}

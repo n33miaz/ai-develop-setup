@@ -1,0 +1,22 @@
+{
+  "jsonrpc": "2.0",
+  "id": 6,
+  "result": {
+    "sessions": [
+      {
+        "session_id": "sess-01",
+        "running": true,
+        "exit_code": null,
+        "oldest_seq": 49,
+        "next_seq": 51
+      },
+      {
+        "session_id": "sess-02",
+        "running": false,
+        "exit_code": 0,
+        "oldest_seq": 1,
+        "next_seq": 8
+      }
+    ]
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "session.kill",
+  "params": {
+    "session_id": "sess-01",
+    "from_seq": 42
+  }
+}

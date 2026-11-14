@@ -1,0 +1,38 @@
+{
+  "01-with-id.json": {
+    "rule": "Notificação não tem id: quem tem id é pedido ou resposta.",
+    "keyword": "additionalProperties",
+    "instancePath": "",
+    "params": {
+      "additionalProperty": "id"
+    }
+  },
+  "02-missing-last_seq.json": {
+    "rule": "O aviso informa o último seq, para o núcleo saber de onde retomar.",
+    "keyword": "required",
+    "instancePath": "/params",
+    "params": {
+      "missingProperty": "last_seq"
+    }
+  },
+  "03-negative-last-seq.json": {
+    "rule": "last_seq é 0 (sem saída) ou um seq válido.",
+    "keyword": "minimum",
+    "instancePath": "/params/last_seq"
+  },
+  "04-unknown-reason.json": {
+    "rule": "O motivo do encerramento da assinatura é um dos dois conhecidos.",
+    "keyword": "enum",
+    "instancePath": "/params/reason"
+  },
+  "05-wrong-version.json": {
+    "rule": "jsonrpc é exatamente \"2.0\".",
+    "keyword": "const",
+    "instancePath": "/jsonrpc"
+  },
+  "06-unknown-method.json": {
+    "rule": "O método é um dos dois avisos do contrato; não casa com nenhuma das formas.",
+    "keyword": "oneOf",
+    "instancePath": ""
+  }
+}

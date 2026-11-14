@@ -1,0 +1,12 @@
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "session.subscribe",
+  "params": {
+    "session_id": "sess-01",
+    "from_seq": 42,
+    "_meta": {
+      "origin": "local"
+    }
+  }
+}

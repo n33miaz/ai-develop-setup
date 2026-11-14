@@ -1,0 +1,9 @@
+{
+  "jsonrpc": "2.0",
+  "method": "subscription.closed",
+  "params": {
+    "session_id": "sess-01",
+    "reason": "slow_subscriber",
+    "last_seq": 37
+  }
+}

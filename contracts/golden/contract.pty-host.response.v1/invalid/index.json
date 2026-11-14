@@ -1,0 +1,48 @@
+{
+  "01-result-and-error.json": {
+    "rule": "Ou result ou error, nunca os dois.",
+    "keyword": "oneOf",
+    "instancePath": ""
+  },
+  "02-neither-result-nor-error.json": {
+    "rule": "Toda resposta traz result ou error.",
+    "keyword": "oneOf",
+    "instancePath": ""
+  },
+  "03-id-zero.json": {
+    "rule": "O id repete o do pedido: inteiro a partir de 1.",
+    "keyword": "minimum",
+    "instancePath": "/id"
+  },
+  "04-unknown-result-shape.json": {
+    "rule": "O result tem uma das formas do contrato; campo desconhecido reprova.",
+    "keyword": "anyOf",
+    "instancePath": "/result"
+  },
+  "05-unknown-error-code.json": {
+    "rule": "O código de erro é um dos códigos do contrato.",
+    "keyword": "enum",
+    "instancePath": "/error/code"
+  },
+  "06-replay-error-without-limit.json": {
+    "rule": "Replay recusado informa o limite (oldest_seq).",
+    "keyword": "required",
+    "instancePath": "/error",
+    "params": {
+      "missingProperty": "data"
+    }
+  },
+  "07-empty-message.json": {
+    "rule": "A mensagem de erro não é vazia.",
+    "keyword": "minLength",
+    "instancePath": "/error/message"
+  },
+  "08-session-without-next-seq.json": {
+    "rule": "Cada sessão listada informa o próximo seq, para o núcleo retomar.",
+    "keyword": "required",
+    "instancePath": "/result/sessions/0",
+    "params": {
+      "missingProperty": "next_seq"
+    }
+  }
+}

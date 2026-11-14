@@ -1,0 +1,33 @@
+{
+  "01-seq-zero.json": {
+    "rule": "O primeiro pedaço é o seq 1.",
+    "keyword": "minimum",
+    "instancePath": "/seq"
+  },
+  "02-length-zero.json": {
+    "rule": "Leitura vazia não gasta seq: todo quadro leva pelo menos um byte.",
+    "keyword": "minimum",
+    "instancePath": "/length"
+  },
+  "03-missing-session_id.json": {
+    "rule": "O quadro diz de qual sessão são os bytes.",
+    "keyword": "required",
+    "instancePath": "",
+    "params": {
+      "missingProperty": "session_id"
+    }
+  },
+  "04-inline-payload.json": {
+    "rule": "Os bytes vêm depois do cabeçalho, não dentro dele.",
+    "keyword": "additionalProperties",
+    "instancePath": "",
+    "params": {
+      "additionalProperty": "payload"
+    }
+  },
+  "05-seq-as-text.json": {
+    "rule": "seq é número inteiro.",
+    "keyword": "type",
+    "instancePath": "/seq"
+  }
+}

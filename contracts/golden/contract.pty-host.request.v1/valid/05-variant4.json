@@ -1,0 +1,9 @@
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "method": "session.subscribe",
+  "params": {
+    "session_id": "sess-01",
+    "from_seq": null
+  }
+}

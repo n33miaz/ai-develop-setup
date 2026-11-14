@@ -1,0 +1,10 @@
+{
+  "contract": "harness-adapter/1",
+  "harness": "harness-a",
+  "kind": "cli",
+  "modes": [],
+  "roles": [
+    "executor"
+  ],
+  "credential": "cli_managed"
+}
