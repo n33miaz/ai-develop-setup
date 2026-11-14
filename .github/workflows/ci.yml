@@ -134,8 +134,6 @@ jobs:
   # Entram depois, cada um com o gatilho que o liga. Mantenha o filtro por caminho para não
   # rodar o que não mudou, e inclua o job novo em `needs` do ci-ok.
   #
-  # contracts:   gatilho = existir contracts/ com o primeiro JSON Schema.
-  #              Valida os Schemas, os arquivos dourados e confere que os tipos gerados estão em dia.
   # pty-windows: gatilho = existir ptyhost/. Um ciclo do fixture no runner Windows; só se ptyhost/ mudou.
   # deps:        gatilho = existir Cargo.lock ou package-lock.json. dependency-review; só se um arquivo de
   #              dependências mudou.
@@ -151,6 +149,7 @@ jobs:
     outputs:
       shell: ${{ steps.filter.outputs.shell }}
       ui: ${{ steps.filter.outputs.ui }}
+      contracts: ${{ steps.filter.outputs.contracts }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -167,11 +166,13 @@ jobs:
           # Casca: ela mesma, o que ela enxerga (contracts, e2e) e tudo que muda o resultado da compilação.
           SHELL_PATHS: '^(crates/shell/|crates/contracts/|crates/e2e/|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
           UI_PATHS: '^ui/'
+          CONTRACTS_PATHS: '^contracts/'
         run: |
           set -euo pipefail
           # Na dúvida (disparo manual, push sem base conhecida, diff impossível), roda.
           shell=true
           ui=true
+          contracts=true
           range=""
           case "$EVENT" in
             pull_request) range="$PR_BASE_SHA...$PR_HEAD_SHA" ;;
@@ -186,10 +187,39 @@ jobs:
             echo "$files"
             if echo "$files" | grep -Eq "$SHELL_PATHS"; then shell=true; else shell=false; fi
             if echo "$files" | grep -Eq "$UI_PATHS"; then ui=true; else ui=false; fi
+            if echo "$files" | grep -Eq "$CONTRACTS_PATHS"; then contracts=true; else contracts=false; fi
           fi
           echo "shell=$shell" >> "$GITHUB_OUTPUT"
           echo "ui=$ui" >> "$GITHUB_OUTPUT"
-          echo "shell-check roda: $shell; ui roda: $ui"
+          echo "contracts=$contracts" >> "$GITHUB_OUTPUT"
+          echo "shell-check roda: $shell; ui roda: $ui; contracts roda: $contracts"
+
+  contracts:
+    name: contracts
+    needs: changes
+    if: needs.changes.outputs.contracts == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: contracts
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: contracts/package-lock.json
+      - name: Instalar as dependências fixadas
+        run: npm ci --ignore-scripts
+      - name: Testes do validador e do gerador
+        run: npm test
+      - name: Schemas, URNs e arquivos dourados
+        run: npm run validate
+      - name: Tipos gerados em dia
+        run: npm run gen:check
 
   rust:
     name: rust
@@ -291,7 +321,7 @@ jobs:
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [commits, secrets, terms, changes, rust, shell-check, ui]
+    needs: [commits, secrets, terms, changes, contracts, rust, shell-check, ui]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
