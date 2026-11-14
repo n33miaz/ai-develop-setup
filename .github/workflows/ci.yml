@@ -136,7 +136,6 @@ jobs:
   #
   # contracts:   gatilho = existir contracts/ com o primeiro JSON Schema.
   #              Valida os Schemas, os arquivos dourados e confere que os tipos gerados estão em dia.
-  # pty-windows: gatilho = existir ptyhost/. Um ciclo do fixture no runner Windows; só se ptyhost/ mudou.
   # deps:        gatilho = existir Cargo.lock ou package-lock.json. dependency-review; só se um arquivo de
   #              dependências mudou.
   # artifact:    gatilho = o atualizador do daemon existir. Gera o executável, o SHA-256 e a atestação a cada junção
@@ -150,6 +149,7 @@ jobs:
     timeout-minutes: 3
     outputs:
       shell: ${{ steps.filter.outputs.shell }}
+      pty: ${{ steps.filter.outputs.pty }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -165,10 +165,13 @@ jobs:
           PUSH_AFTER_SHA: ${{ github.sha }}
           # Casca: ela mesma, o que ela enxerga (contracts, e2e) e tudo que muda o resultado da compilação.
           SHELL_PATHS: '^(crates/shell/|crates/contracts/|crates/e2e/|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
+          # PTY: o crate, os parametros dele, este workflow e tudo que muda o resultado da compilacao.
+          PTY_PATHS: '^(crates/ptyhost/|defaults/ptyhost\.toml$|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
         run: |
           set -euo pipefail
           # Na dúvida (disparo manual, push sem base conhecida, diff impossível), roda.
-          run=true
+          shell=true
+          pty=true
           range=""
           case "$EVENT" in
             pull_request) range="$PR_BASE_SHA...$PR_HEAD_SHA" ;;
@@ -181,10 +184,12 @@ jobs:
           esac
           if [ -n "$range" ] && files=$(git diff --name-only "$range"); then
             echo "$files"
-            if echo "$files" | grep -Eq "$SHELL_PATHS"; then run=true; else run=false; fi
+            if echo "$files" | grep -Eq "$SHELL_PATHS"; then shell=true; else shell=false; fi
+            if echo "$files" | grep -Eq "$PTY_PATHS"; then pty=true; else pty=false; fi
           fi
-          echo "shell=$run" >> "$GITHUB_OUTPUT"
-          echo "shell-check roda: $run"
+          echo "shell=$shell" >> "$GITHUB_OUTPUT"
+          echo "pty=$pty" >> "$GITHUB_OUTPUT"
+          echo "shell-check roda: $shell; pty-windows roda: $pty"
 
   rust:
     name: rust
@@ -251,10 +256,38 @@ jobs:
       - name: Compilar a casca (cargo check)
         run: cargo check --locked -p ads-shell --all-targets
 
+  # ConPTY real e Job Object so existem no Windows: os testes do ptyhost (com os 20 ciclos de abrir e fechar
+  # sessao) e o lint do codigo exclusivo do Windows rodam aqui, e so quando o codigo do PTY muda (ADR 0013).
+  pty-windows:
+    name: pty-windows
+    needs: changes
+    if: needs.changes.outputs.pty == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Instalar a versao fixada em rust-toolchain.toml
+        run: |
+          rustup toolchain install
+          rustc --version
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Lint do ptyhost no Windows (avisos como erro)
+        run: cargo clippy --locked -p ads-ptyhost --all-targets -- -D warnings
+      - name: Testes do ptyhost (inclui os 20 ciclos de ConPTY)
+        run: cargo test --locked -p ads-ptyhost -- --nocapture
+
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [commits, secrets, terms, changes, rust, shell-check]
+    needs: [commits, secrets, terms, changes, rust, shell-check, pty-windows]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:

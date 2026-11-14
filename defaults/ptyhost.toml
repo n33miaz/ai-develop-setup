@@ -1,0 +1,19 @@
+# Parametros do processo dos terminais (P8). Lido por `ads-ptyhost` (embutido na compilacao como padrao;
+# uma camada do usuario pode sobrepor qualquer chave, e a que faltar cai no valor daqui).
+# Formato: uma chave por linha, `chave = valor`, sem tabelas.
+
+# Tamanho maximo, em bytes, do anel de replay de CADA sessao. E o quanto de saida um cliente que
+# reconecta consegue recuperar; o que passa disso e descartado do mais antigo para o mais novo.
+# Padrao 1 MiB: cobre varias telas cheias e custa pouca memoria por sessao.
+replay_capacity_bytes = 1048576
+
+# Tamanho, em bytes, do buffer de leitura do terminal. Cada leitura vira um pedaco numerado (`seq`).
+# Nao pode ser maior que `replay_capacity_bytes`.
+read_buffer_bytes = 8192
+
+# Quantos pedacos ao vivo podem ficar na fila de um cliente lento. Passou disso, a assinatura dele e
+# encerrada (sem perder nada: ele reconecta e pede o replay a partir do ultimo `seq` que viu).
+subscriber_queue_chunks = 1024
+
+# Quantas sessoes abertas ao mesmo tempo o processo aceita. Passou disso, abrir sessao falha.
+max_sessions = 64
