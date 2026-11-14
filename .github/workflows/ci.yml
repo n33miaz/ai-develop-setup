@@ -134,7 +134,6 @@ jobs:
   # Entram depois, cada um com o gatilho que o liga. Mantenha o filtro por caminho para não
   # rodar o que não mudou, e inclua o job novo em `needs` do ci-ok.
   #
-  # pty-windows: gatilho = existir ptyhost/. Um ciclo do fixture no runner Windows; só se ptyhost/ mudou.
   # deps:        gatilho = existir Cargo.lock ou package-lock.json. dependency-review; só se um arquivo de
   #              dependências mudou.
   # artifact:    gatilho = o atualizador do daemon existir. Gera o executável, o SHA-256 e a atestação a cada junção
@@ -150,6 +149,7 @@ jobs:
       shell: ${{ steps.filter.outputs.shell }}
       ui: ${{ steps.filter.outputs.ui }}
       contracts: ${{ steps.filter.outputs.contracts }}
+      pty: ${{ steps.filter.outputs.pty }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -167,12 +167,15 @@ jobs:
           SHELL_PATHS: '^(crates/shell/|crates/contracts/|crates/e2e/|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
           UI_PATHS: '^ui/'
           CONTRACTS_PATHS: '^contracts/'
+          # PTY: o crate, os parâmetros dele, este workflow e tudo que muda o resultado da compilação.
+          PTY_PATHS: '^(crates/ptyhost/|defaults/ptyhost\.toml$|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
         run: |
           set -euo pipefail
           # Na dúvida (disparo manual, push sem base conhecida, diff impossível), roda.
           shell=true
           ui=true
           contracts=true
+          pty=true
           range=""
           case "$EVENT" in
             pull_request) range="$PR_BASE_SHA...$PR_HEAD_SHA" ;;
@@ -188,11 +191,13 @@ jobs:
             if echo "$files" | grep -Eq "$SHELL_PATHS"; then shell=true; else shell=false; fi
             if echo "$files" | grep -Eq "$UI_PATHS"; then ui=true; else ui=false; fi
             if echo "$files" | grep -Eq "$CONTRACTS_PATHS"; then contracts=true; else contracts=false; fi
+            if echo "$files" | grep -Eq "$PTY_PATHS"; then pty=true; else pty=false; fi
           fi
           echo "shell=$shell" >> "$GITHUB_OUTPUT"
           echo "ui=$ui" >> "$GITHUB_OUTPUT"
           echo "contracts=$contracts" >> "$GITHUB_OUTPUT"
-          echo "shell-check roda: $shell; ui roda: $ui; contracts roda: $contracts"
+          echo "pty=$pty" >> "$GITHUB_OUTPUT"
+          echo "shell-check roda: $shell; ui roda: $ui; contracts roda: $contracts; pty-windows roda: $pty"
 
   contracts:
     name: contracts
@@ -318,10 +323,38 @@ jobs:
       - name: Build
         run: npm run build
 
+  # ConPTY real e Job Object só existem no Windows: os testes do ptyhost (com os 20 ciclos de abrir e fechar
+  # sessão) e o lint do código exclusivo do Windows rodam aqui, e só quando o código do PTY muda (ADR 0013).
+  pty-windows:
+    name: pty-windows
+    needs: changes
+    if: needs.changes.outputs.pty == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Instalar a versão fixada em rust-toolchain.toml
+        run: |
+          rustup toolchain install
+          rustc --version
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Lint do ptyhost no Windows (avisos como erro)
+        run: cargo clippy --locked -p ads-ptyhost --all-targets -- -D warnings
+      - name: Testes do ptyhost (inclui os 20 ciclos de ConPTY)
+        run: cargo test --locked -p ads-ptyhost -- --nocapture
+
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [commits, secrets, terms, changes, contracts, rust, shell-check, ui]
+    needs: [commits, secrets, terms, changes, contracts, rust, shell-check, ui, pty-windows]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
