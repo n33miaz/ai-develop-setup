@@ -1,0 +1,17 @@
+{
+  "01-unknown-class.json": {
+    "rule": "Só as quatro classes existem.",
+    "keyword": "enum",
+    "instancePath": ""
+  },
+  "02-wrong-case.json": {
+    "rule": "Os valores são minúsculos.",
+    "keyword": "enum",
+    "instancePath": ""
+  },
+  "03-null.json": {
+    "rule": "Nulo não é uma classe.",
+    "keyword": "enum",
+    "instancePath": ""
+  }
+}

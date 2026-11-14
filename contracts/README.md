@@ -1,0 +1,153 @@
+# Contratos
+
+Fonte única de toda mensagem e todo registro do produto: JSON Schema 2020-12, um arquivo por contrato, com exemplos dourados que o CI confere. Módulos só conversam por estes contratos (P2). Os tipos de TypeScript saem daqui por geração; nenhum tipo de mensagem é escrito à mão.
+
+## Pastas
+
+| Pasta | Conteúdo |
+|---|---|
+| `schemas/` | Um arquivo por Schema: `<tipo>.<nome>.v<versão>.schema.json` |
+| `golden/<tipo>.<nome>.v<versão>/valid/` | Exemplos que têm de passar (pelo menos 2) |
+| `golden/<tipo>.<nome>.v<versão>/invalid/` | Exemplos que têm de falhar (pelo menos 3), mais `index.json` |
+| `generated/ts/` | Tipos TypeScript gerados, versionados; o CI reprova se estiverem desatualizados |
+| `tools/` | Validador, gerador e os testes deles |
+
+## Comandos
+
+```bash
+cd contracts
+npm ci
+npm run validate   # Schemas válidos, referências resolvidas, URNs únicas, dourados no lugar
+npm run gen:ts     # regera generated/ts
+npm run gen:check  # reprova se generated/ts não for o que o gerador produz agora
+npm test           # testes do próprio validador e do gerador
+```
+
+Os testes montam árvores de contratos de mentira em `.test-tmp/` (fora do git), uma subpasta nova por execução, e não apagam nada: a limpeza dessa pasta é manual.
+
+O `validate` confere, entre outras coisas: todo `$id` segue a URN e é único; o nome do arquivo bate com o `$id`; todo objeto com `properties` declara `additionalProperties`; cada `examples[0]` é o primeiro dourado válido; cada dourado válido passa; cada dourado inválido falha **pelo motivo declarado**; este README cita todo Schema.
+
+## Identificadores (ADR 0006)
+
+`urn:ads:<tipo>:<nome>:<versão>`, sem domínio e sem nome de fornecedor de IA.
+
+| Tipo | Uso |
+|---|---|
+| `common` | Tipos pequenos reaproveitados (id, instante, digest, autor) |
+| `event` | Envelope e cada tipo de evento (`urn:ads:event:session.created:1`) |
+| `command` | Envelope de comando e de resposta (JSON-RPC 2.0) |
+| `record` | Registros persistidos ou trocados (tarefa, uso, aprovação, amostra) |
+| `contract` | Contratos entre processos (adaptador de IA, host de PTY) |
+| `relay` | Mensagens do relé remoto |
+
+A versão é a versão **maior** do contrato. Nome: minúsculas, dígitos, `_` e `-`, com pontos separando partes (`session.created`).
+
+## Regras de versão
+
+1. **Campo novo e opcional** não muda a versão: o contrato continua `:1`. Entra no CHANGELOG.
+2. **Remover campo, mudar o tipo, apertar uma regra ou tornar obrigatório um campo opcional** cria uma versão nova da URN (`:2`). O arquivo `:1` não é alterado: os dois convivem enquanto houver quem os use.
+3. **Um id nunca é reutilizado.** Contrato aposentado fica no CHANGELOG como aposentado; ninguém lhe dá outro significado.
+4. Afrouxar uma regra (aceitar mais do que antes) conta como mudança compatível, mas só vale se todo leitor antigo continuar lendo o que o novo escreve; na dúvida, versão nova.
+5. Todo PR que toca `schemas/` atualiza o CHANGELOG e os dourados no mesmo commit.
+
+## Como acrescentar um contrato
+
+1. Escolha o tipo e o nome e crie `schemas/<tipo>.<nome>.v1.schema.json` com `$schema` 2020-12, `$id`, `title` e `description` em português, `additionalProperties: false` onde couber e `examples` com o primeiro dourado válido.
+2. Reaproveite os tipos `common` por `$ref` (`urn:ads:common:id:1`) em vez de repetir padrões.
+3. Evento novo: estenda o envelope com `allOf` e fixe `type` (a própria URN), `stream` e `data` (veja qualquer `event.*`).
+4. Crie `golden/<tipo>.<nome>.v1/valid/` com pelo menos 2 arquivos e `invalid/` com pelo menos 3. Cada inválido muda **um campo só** de um válido e ganha uma entrada em `invalid/index.json`: `rule` (a regra violada, em português), `keyword` e `instancePath` do erro esperado e, se quiser, `params`.
+5. Acrescente uma linha na tabela abaixo e uma entrada no CHANGELOG.
+6. `npm run gen:ts`, depois `npm run validate` e `npm test`. Inclua `generated/ts` no mesmo commit.
+
+Dados dos dourados são sempre sintéticos: sem nomes reais, e-mails, caminhos de máquina nem valores que lembrem credencial.
+
+## Convenções que valem em todos os Schemas
+
+- Instantes em UTC com `Z`. Digest é `sha256:` mais 64 hexadecimais minúsculos. Bytes vão em base64 padrão.
+- Entidades são identificadas por `urn:ads:common:id:1` (opaco, sem arroba); eventos e comandos, por ULID.
+- Campo que pode faltar de verdade é opcional; campo que existe e pode não ter valor é obrigatório e aceita `null`.
+- Regras entre campos (`if`/`then`) só cobrem o que depende de valores do próprio documento. Regra que precisa de outro documento (o hash de um plano contra o plano, por exemplo) é teste de contrato, não Schema.
+- `data_class` (`public`, `internal`, `private`, `secret`) acompanha todo evento; texto de terminal e perguntas de permissão nunca são `public`.
+
+## Schemas
+
+### Tipos comuns
+
+| Schema | O que descreve |
+|---|---|
+| `urn:ads:common:ulid:1` | Identificador de evento ou de comando: ULID de 26 caracteres em Crockford base32, ordenável por tempo. |
+| `urn:ads:common:id:1` | Identificador opaco de entidade (tarefa, sessão, aparelho, alias): 1 a 64 caracteres de letras, dígitos e . _ : -, sem espaço nem arroba. |
+| `urn:ads:common:timestamp:1` | Instante em UTC no formato RFC 3339 com sufixo Z, com fração opcional de até 6 dígitos. |
+| `urn:ads:common:sha256:1` | Digest SHA-256 no formato sha256: seguido de 64 hexadecimais minúsculos. |
+| `urn:ads:common:base64:1` | Bytes em base64 padrão (RFC 4648) com preenchimento; vazio é permitido. |
+| `urn:ads:common:data-class:1` | Classe de sensibilidade de um dado: public, internal, private ou secret. Segredo nunca sai da máquina. |
+| `urn:ads:common:risk:1` | Nível de risco de uma ação ou tarefa: low, medium ou high. |
+| `urn:ads:common:relpath:1` | Caminho relativo com barra normal, sem raiz, sem letra de unidade e sem segmento '..'. |
+| `urn:ads:common:actor:1` | Quem causou um evento ou uma decisão: um aparelho, um agente de IA ou o próprio daemon. |
+
+### Envelopes
+
+| Schema | O que descreve |
+|---|---|
+| `urn:ads:event:envelope:1` | Envelope único de todo evento: fato gravado só-anexo, numerado por stream, com autor, causa e classe do dado. Cada tipo de evento estende este envelope e fixa type, stream e data. |
+
+### Comandos
+
+| Schema | O que descreve |
+|---|---|
+| `urn:ads:command:request:1` | Comando JSON-RPC 2.0 enviado ao núcleo. Comando é pedido, não fato; a chave de idempotência evita executar duas vezes, e a origem remota exige assinatura do aparelho, nonce, contador e validade. |
+| `urn:ads:command:response:1` | Resposta JSON-RPC 2.0 a um comando: ou result ou error, nunca os dois. |
+
+### Eventos de sessão
+
+| Schema | O que descreve |
+|---|---|
+| `urn:ads:event:session.created:1` | Uma sessão de terminal foi aberta no host de PTY para um agente de IA. |
+| `urn:ads:event:session.output:1` | Bytes que o terminal produziu, em base64, com deslocamento no fluxo da sessão. No transporte ao vivo viajam em quadro binário; este é o registro. |
+| `urn:ads:event:session.resized:1` | O terminal da sessão mudou de tamanho. |
+| `urn:ads:event:session.ended:1` | A sessão terminou: o processo saiu, foi morto, o host de PTY reiniciou ou houve erro. Saída normal traz o código de saída. |
+| `urn:ads:event:session.permission_asked:1` | O CLI de IA pediu permissão para algo (comando, escrita, rede). O resumo pode conter texto do usuário, então a classe é private ou secret. |
+
+### Eventos de tarefa
+
+| Schema | O que descreve |
+|---|---|
+| `urn:ads:event:task.created:1` | Uma tarefa nasceu. Só o hash do objetivo vai no evento; o texto fica no pacote da tarefa. |
+| `urn:ads:event:task.started:1` | A execução da tarefa começou, numa sessão ou ainda sem sessão. |
+| `urn:ads:event:task.completed:1` | A tarefa terminou com entrega; registra se os testes passaram e o digest do diff. |
+| `urn:ads:event:task.failed:1` | A tarefa terminou sem entrega, com um código de erro estável e a indicação de se vale tentar de novo. |
+| `urn:ads:event:task.cancelled:1` | A tarefa foi interrompida por decisão do dono, por teto de custo, por pressão de recursos, por política ou por ter sido substituída. |
+
+### Eventos de aprovação
+
+| Schema | O que descreve |
+|---|---|
+| `urn:ads:event:approval.requested:1` | Uma ação com risco pede aprovação: vale para o hash do plano e expira na validade indicada. |
+| `urn:ads:event:approval.granted:1` | A aprovação foi concedida para o hash do plano, por um dos três caminhos permitidos. |
+| `urn:ads:event:approval.denied:1` | A aprovação foi negada para o hash do plano, com motivo opcional. |
+| `urn:ads:event:approval.expired:1` | O prazo da aprovação passou sem decisão; o plano precisa ser refeito. |
+
+### Eventos de uso
+
+| Schema | O que descreve |
+|---|---|
+| `urn:ads:event:usage.recorded:1` | Uma chamada ou turno de IA foi medido: o dado é um registro usage_event completo, gravado só-anexo no banco de métricas. |
+| `urn:ads:event:usage.reconciled:1` | Duas fontes mediram o mesmo turno; ficou um registro e as outras foram descartadas pela chave de deduplicação. |
+
+### Eventos do host
+
+| Schema | O que descreve |
+|---|---|
+| `urn:ads:event:host.sample_recorded:1` | Um coletor mediu um sinal da máquina; o dado é um registro host_sample. |
+| `urn:ads:event:host.alert_raised:1` | Uma regra de alerta disparou a partir de amostras; o dado é um registro host_event. |
+| `urn:ads:event:host.alert_acked:1` | O dono confirmou ter visto um alerta; o alerta original não é alterado. |
+
+### Registros
+
+| Schema | O que descreve |
+|---|---|
+| `urn:ads:record:task-packet:1` | O que um agente recebe para executar uma tarefa: objetivo, critérios de aceite, restrições, orçamento e entradas. O receptor trata o pacote como dado, nunca como instrução; permissões vêm da configuração do usuário. |
+| `urn:ads:record:usage_event:1` | Uma linha do livro-caixa: uma chamada ou turno de IA medido, com tokens, duração, custo de lista, custo faturável (só chave de API), janela de cota, fonte e chave de deduplicação. Só-anexo; alias de conta nunca é credencial nem e-mail. |
+| `urn:ads:record:approval:1` | Estado de uma aprovação: vale para o hash de um plano e expira. Pendente e expirada não têm decisor; concedida e negada têm autor e instante da decisão. |
+| `urn:ads:record:host_sample:1` | Uma observação de um sinal da máquina (disco, memória, etc.) feita por um coletor só leitura. Amostra ausente nunca vira zero; corrigir é gravar outra amostra com outro sample_id. |
+| `urn:ads:record:host_event:1` | Um alerta derivado de amostras: cita a regra, a gravidade e os sample_id que o justificam. Confirmar é um evento posterior; o alerta original não muda. |

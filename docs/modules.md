@@ -4,6 +4,7 @@ Uma frase por módulo (P1): se a frase precisa de "e também", o módulo está g
 
 | Módulo | Pasta | Responsabilidade |
 |---|---|---|
+| `ads-contract-schemas` | `contracts` | Fonte dos contratos: JSON Schemas versionados, arquivos dourados e os tipos gerados a partir deles. |
 | `ads-contracts` | `crates/contracts` | Tipos de mensagem e de evento gerados dos Schemas, sem lógica. |
 | `ads-core` | `crates/core` | Política do produto: tarefas, aprovações, escopo, roteamento e orçamento. |
 | `ads-storage` | `crates/storage` | Estado local: SQLite, cifra por coluna e auditoria encadeada. |

@@ -1,0 +1,21 @@
+{
+  "name": "ads-contract-schemas",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Contratos JSON Schema do projeto: validação, arquivos dourados e tipos gerados.",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "validate": "node tools/validate.mjs",
+    "gen:ts": "node tools/gen-ts.mjs",
+    "gen:check": "node tools/gen-ts.mjs --check",
+    "test": "node --test \"tools/*.test.mjs\""
+  },
+  "devDependencies": {
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
+    "json-schema-to-typescript": "16.0.0"
+  }
+}

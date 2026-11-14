@@ -1,0 +1,17 @@
+{
+  "01-unknown-level.json": {
+    "rule": "Só três níveis existem.",
+    "keyword": "enum",
+    "instancePath": ""
+  },
+  "02-wrong-case.json": {
+    "rule": "Os valores são minúsculos.",
+    "keyword": "enum",
+    "instancePath": ""
+  },
+  "03-number.json": {
+    "rule": "Nível é texto, não número.",
+    "keyword": "enum",
+    "instancePath": ""
+  }
+}

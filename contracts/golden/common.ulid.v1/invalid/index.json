@@ -1,0 +1,27 @@
+{
+  "01-lowercase.json": {
+    "rule": "Letras minúsculas não são ULID.",
+    "keyword": "pattern",
+    "instancePath": ""
+  },
+  "02-too-short.json": {
+    "rule": "ULID tem exatamente 26 caracteres.",
+    "keyword": "pattern",
+    "instancePath": ""
+  },
+  "03-first-char-overflow.json": {
+    "rule": "O primeiro caractere vai até 7, senão estoura os 128 bits.",
+    "keyword": "pattern",
+    "instancePath": ""
+  },
+  "04-forbidden-letter.json": {
+    "rule": "A letra U não existe no alfabeto Crockford.",
+    "keyword": "pattern",
+    "instancePath": ""
+  },
+  "05-not-a-string.json": {
+    "rule": "ULID é texto, não número.",
+    "keyword": "type",
+    "instancePath": ""
+  }
+}

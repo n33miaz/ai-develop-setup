@@ -1,0 +1,27 @@
+{
+  "01-absolute.json": {
+    "rule": "Caminho absoluto não vale.",
+    "keyword": "pattern",
+    "instancePath": ""
+  },
+  "02-drive-letter.json": {
+    "rule": "Letra de unidade e barra invertida não valem.",
+    "keyword": "pattern",
+    "instancePath": ""
+  },
+  "03-parent-segment.json": {
+    "rule": "Segmento .. escaparia da pasta.",
+    "keyword": "not",
+    "instancePath": ""
+  },
+  "04-parent-in-middle.json": {
+    "rule": "Segmento .. no meio também escapa.",
+    "keyword": "not",
+    "instancePath": ""
+  },
+  "05-empty.json": {
+    "rule": "Caminho vazio não vale.",
+    "keyword": "minLength",
+    "instancePath": ""
+  }
+}
