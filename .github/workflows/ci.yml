@@ -6,6 +6,7 @@ on:
     branches: [develop, homolog, main]
   push:
     branches: [develop]
+  workflow_dispatch:
 
 permissions:
   contents: read
