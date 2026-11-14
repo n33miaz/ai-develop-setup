@@ -150,6 +150,7 @@ jobs:
     timeout-minutes: 3
     outputs:
       shell: ${{ steps.filter.outputs.shell }}
+      ui: ${{ steps.filter.outputs.ui }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -165,10 +166,12 @@ jobs:
           PUSH_AFTER_SHA: ${{ github.sha }}
           # Casca: ela mesma, o que ela enxerga (contracts, e2e) e tudo que muda o resultado da compila��o.
           SHELL_PATHS: '^(crates/shell/|crates/contracts/|crates/e2e/|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
+          UI_PATHS: '^ui/'
         run: |
           set -euo pipefail
           # Na d�vida (disparo manual, push sem base conhecida, diff imposs�vel), roda.
-          run=true
+          shell=true
+          ui=true
           range=""
           case "$EVENT" in
             pull_request) range="$PR_BASE_SHA...$PR_HEAD_SHA" ;;
@@ -181,10 +184,12 @@ jobs:
           esac
           if [ -n "$range" ] && files=$(git diff --name-only "$range"); then
             echo "$files"
-            if echo "$files" | grep -Eq "$SHELL_PATHS"; then run=true; else run=false; fi
+            if echo "$files" | grep -Eq "$SHELL_PATHS"; then shell=true; else shell=false; fi
+            if echo "$files" | grep -Eq "$UI_PATHS"; then ui=true; else ui=false; fi
           fi
-          echo "shell=$run" >> "$GITHUB_OUTPUT"
-          echo "shell-check roda: $run"
+          echo "shell=$shell" >> "$GITHUB_OUTPUT"
+          echo "ui=$ui" >> "$GITHUB_OUTPUT"
+          echo "shell-check roda: $shell; ui roda: $ui"
 
   rust:
     name: rust
@@ -251,10 +256,42 @@ jobs:
       - name: Compilar a casca (cargo check)
         run: cargo check --locked -p ads-shell --all-targets
 
+  ui:
+    name: ui
+    needs: changes
+    if: needs.changes.outputs.ui == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: ui/.node-version
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      # Só o que está no package-lock.json, sem rodar scripts de instalação de terceiros.
+      - name: Instalar dependências
+        run: npm ci --ignore-scripts
+      - name: Licenças das dependências diretas
+        run: npm run licenses
+      - name: Lint e formatação
+        run: npm run lint
+      - name: Tipos
+        run: npm run typecheck
+      - name: Testes
+        run: npm test
+      - name: Build
+        run: npm run build
+
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [commits, secrets, terms, changes, rust, shell-check]
+    needs: [commits, secrets, terms, changes, rust, shell-check, ui]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
