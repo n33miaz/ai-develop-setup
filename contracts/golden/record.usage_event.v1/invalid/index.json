@@ -1,0 +1,40 @@
+{
+  "01-negative-tokens.json": {
+    "rule": "Contagem de tokens não é negativa.",
+    "keyword": "minimum",
+    "instancePath": "/tokens_in"
+  },
+  "02-unknown-status.json": {
+    "rule": "status é um dos cinco valores.",
+    "keyword": "enum",
+    "instancePath": "/status"
+  },
+  "03-error-without-code.json": {
+    "rule": "Status error ou 429 exige error_code.",
+    "keyword": "type",
+    "instancePath": "/error_code"
+  },
+  "04-email-as-account.json": {
+    "rule": "O alias da conta não pode ser e-mail.",
+    "keyword": "pattern",
+    "instancePath": "/account_alias"
+  },
+  "05-negative-cost.json": {
+    "rule": "Custo não é negativo.",
+    "keyword": "minimum",
+    "instancePath": "/cost_list_usd"
+  },
+  "06-missing-dedupe-key.json": {
+    "rule": "Sem dedupe_key o mesmo turno pode ser contado duas vezes.",
+    "keyword": "required",
+    "instancePath": "",
+    "params": {
+      "missingProperty": "dedupe_key"
+    }
+  },
+  "07-quota-over-100.json": {
+    "rule": "A janela de cota é percentual de 0 a 100.",
+    "keyword": "maximum",
+    "instancePath": "/quota_window_after/weekly_pct"
+  }
+}

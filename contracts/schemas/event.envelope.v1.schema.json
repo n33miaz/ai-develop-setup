@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:event:envelope:1",
+  "title": "Envelope de evento",
+  "description": "Envelope único de todo evento: fato gravado só-anexo, numerado por stream, com autor, causa e classe do dado. Cada tipo de evento estende este envelope e fixa type, stream e data.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "type",
+    "ts",
+    "stream",
+    "seq",
+    "actor",
+    "cause",
+    "data_class",
+    "data"
+  ],
+  "properties": {
+    "id": {
+      "$ref": "urn:ads:common:ulid:1"
+    },
+    "type": {
+      "type": "string",
+      "pattern": "^urn:ads:event:[a-z][a-z0-9_-]*(\\.[a-z][a-z0-9_-]*)+:[1-9][0-9]*$"
+    },
+    "ts": {
+      "$ref": "urn:ads:common:timestamp:1"
+    },
+    "stream": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]*/[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$"
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "actor": {
+      "$ref": "urn:ads:common:actor:1"
+    },
+    "cause": {
+      "anyOf": [
+        {
+          "$ref": "urn:ads:common:ulid:1"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "data_class": {
+      "$ref": "urn:ads:common:data-class:1"
+    },
+    "data": {
+      "type": "object"
+    }
+  },
+  "examples": [
+    {
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+      "type": "urn:ads:event:session.resized:1",
+      "ts": "2030-01-02T03:04:05Z",
+      "stream": "session/sess-01",
+      "seq": 1,
+      "actor": {
+        "kind": "daemon",
+        "id": "core-01"
+      },
+      "cause": null,
+      "data_class": "internal",
+      "data": {
+        "session_id": "sess-01",
+        "cols": 100,
+        "rows": 30
+      }
+    }
+  ]
+}

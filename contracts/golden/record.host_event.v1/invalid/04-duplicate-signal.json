@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "event_id": "alert-01",
+  "rule_id": "disk-low",
+  "severity": "warn",
+  "signals": [
+    "sample-01",
+    "sample-01"
+  ],
+  "why": "12.4 GB < 15 GB",
+  "ts": "2030-01-02T03:04:06Z",
+  "ack": false
+}

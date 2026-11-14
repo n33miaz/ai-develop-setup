@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:record:host_event:1",
+  "title": "Alerta do host",
+  "description": "Um alerta derivado de amostras: cita a regra, a gravidade e os sample_id que o justificam. Confirmar é um evento posterior; o alerta original não muda.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "event_id",
+    "rule_id",
+    "severity",
+    "signals",
+    "why",
+    "ts",
+    "ack"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "event_id": {
+      "$ref": "urn:ads:common:id:1"
+    },
+    "rule_id": {
+      "$ref": "urn:ads:common:id:1"
+    },
+    "severity": {
+      "enum": [
+        "info",
+        "warn",
+        "critical"
+      ]
+    },
+    "signals": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "urn:ads:common:id:1"
+      }
+    },
+    "why": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "ts": {
+      "$ref": "urn:ads:common:timestamp:1"
+    },
+    "ack": {
+      "type": "boolean"
+    },
+    "task_id": {
+      "anyOf": [
+        {
+          "$ref": "urn:ads:common:id:1"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "examples": [
+    {
+      "version": 1,
+      "event_id": "alert-01",
+      "rule_id": "disk-low",
+      "severity": "warn",
+      "signals": [
+        "sample-01"
+      ],
+      "why": "12.4 GB < 15 GB",
+      "ts": "2030-01-02T03:04:06Z",
+      "ack": false
+    }
+  ]
+}

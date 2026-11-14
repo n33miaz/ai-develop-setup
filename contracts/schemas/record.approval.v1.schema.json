@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:record:approval:1",
+  "title": "Aprovação",
+  "description": "Estado de uma aprovação: vale para o hash de um plano e expira. Pendente e expirada não têm decisor; concedida e negada têm autor e instante da decisão.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "approval_id",
+    "plan_hash",
+    "risk",
+    "summary",
+    "status",
+    "requested_at",
+    "expires_at",
+    "decided_at",
+    "decided_by",
+    "via",
+    "reason"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "approval_id": {
+      "$ref": "urn:ads:common:id:1"
+    },
+    "plan_hash": {
+      "$ref": "urn:ads:common:sha256:1"
+    },
+    "risk": {
+      "$ref": "urn:ads:common:risk:1"
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "status": {
+      "enum": [
+        "pending",
+        "granted",
+        "denied",
+        "expired"
+      ]
+    },
+    "requested_at": {
+      "$ref": "urn:ads:common:timestamp:1"
+    },
+    "expires_at": {
+      "$ref": "urn:ads:common:timestamp:1"
+    },
+    "decided_at": {
+      "anyOf": [
+        {
+          "$ref": "urn:ads:common:timestamp:1"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "decided_by": {
+      "anyOf": [
+        {
+          "$ref": "urn:ads:common:actor:1"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "via": {
+      "anyOf": [
+        {
+          "enum": [
+            "local_ui",
+            "tray",
+            "remote_device"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "reason": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "if": {
+    "properties": {
+      "status": {
+        "enum": [
+          "granted",
+          "denied"
+        ]
+      }
+    },
+    "required": [
+      "status"
+    ]
+  },
+  "then": {
+    "properties": {
+      "decided_at": {
+        "type": "string"
+      },
+      "decided_by": {
+        "type": "object"
+      }
+    }
+  },
+  "else": {
+    "properties": {
+      "decided_at": {
+        "type": "null"
+      },
+      "decided_by": {
+        "type": "null"
+      },
+      "via": {
+        "type": "null"
+      }
+    }
+  },
+  "examples": [
+    {
+      "version": 1,
+      "approval_id": "appr-01",
+      "plan_hash": "sha256:abababababababababababababababababababababababababababababababab",
+      "risk": "medium",
+      "summary": "Limpar um cache regenerável",
+      "status": "pending",
+      "requested_at": "2030-01-02T03:04:05Z",
+      "expires_at": "2030-01-02T03:19:05Z",
+      "decided_at": null,
+      "decided_by": null,
+      "via": null,
+      "reason": null
+    }
+  ]
+}

@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:record:host_sample:1",
+  "title": "Amostra do host",
+  "description": "Uma observação de um sinal da máquina (disco, memória, etc.) feita por um coletor só leitura. Amostra ausente nunca vira zero; corrigir é gravar outra amostra com outro sample_id.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "sample_id",
+    "signal_id",
+    "value",
+    "unit",
+    "ts",
+    "collector",
+    "cost_ms",
+    "scope_alias",
+    "stale"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "sample_id": {
+      "$ref": "urn:ads:common:id:1"
+    },
+    "signal_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$",
+      "maxLength": 96
+    },
+    "value": {
+      "type": [
+        "number",
+        "boolean",
+        "string"
+      ]
+    },
+    "unit": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 16
+    },
+    "ts": {
+      "$ref": "urn:ads:common:timestamp:1"
+    },
+    "collector": {
+      "$ref": "urn:ads:common:id:1"
+    },
+    "cost_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "scope_alias": {
+      "$ref": "urn:ads:common:id:1"
+    },
+    "stale": {
+      "type": "boolean"
+    },
+    "task_id": {
+      "anyOf": [
+        {
+          "$ref": "urn:ads:common:id:1"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "if": {
+    "properties": {
+      "signal_id": {
+        "type": "string",
+        "pattern": "^host\\.disk\\.free_(gb|pct)$"
+      }
+    },
+    "required": [
+      "signal_id"
+    ]
+  },
+  "then": {
+    "properties": {
+      "value": {
+        "type": "number",
+        "minimum": 0
+      }
+    }
+  },
+  "examples": [
+    {
+      "version": 1,
+      "sample_id": "sample-01",
+      "signal_id": "host.disk.free_gb",
+      "value": 12.4,
+      "unit": "GB",
+      "ts": "2030-01-02T03:04:05Z",
+      "collector": "disk-basics",
+      "cost_ms": 18,
+      "scope_alias": "host-01",
+      "stale": false
+    }
+  ]
+}

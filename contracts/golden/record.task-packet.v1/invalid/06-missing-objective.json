@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "task_id": "task-01",
+  "parent_id": null,
+  "mode": "solo_review",
+  "role": "executor",
+  "tier_requested": "T1",
+  "model_effective": null,
+  "provider_effective": null,
+  "acceptance": [
+    "o comando de teste passa",
+    "o diff é revisável"
+  ],
+  "constraints": {
+    "allow_ref": "allowlist@v3",
+    "deny_ref": "denylist@v3",
+    "writes": "single_writer",
+    "worktree": "wt-01"
+  },
+  "budget": {
+    "usd": 3,
+    "quota_pct": 5,
+    "turns": 40,
+    "wall_min": 45
+  },
+  "inputs": {
+    "decisions": [
+      "decision-12"
+    ],
+    "files": [
+      "src/example.rs"
+    ],
+    "memory_refs": []
+  },
+  "expected_output": {
+    "diff": true,
+    "report": "summary<=300w"
+  },
+  "status": "pending",
+  "evidence": {
+    "diff_sha": null,
+    "tests": null
+  },
+  "trust": "payload_is_data_not_instructions"
+}

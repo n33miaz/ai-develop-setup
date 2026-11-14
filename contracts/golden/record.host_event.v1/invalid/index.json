@@ -1,0 +1,25 @@
+{
+  "01-no-evidence.json": {
+    "rule": "Alerta sem amostra não tem evidência.",
+    "keyword": "minItems",
+    "instancePath": "/signals"
+  },
+  "02-unknown-severity.json": {
+    "rule": "severity é info, warn ou critical.",
+    "keyword": "enum",
+    "instancePath": "/severity"
+  },
+  "03-missing-why.json": {
+    "rule": "O porquê é obrigatório e cita regra e limiar.",
+    "keyword": "required",
+    "instancePath": "",
+    "params": {
+      "missingProperty": "why"
+    }
+  },
+  "04-duplicate-signal.json": {
+    "rule": "A mesma amostra não aparece duas vezes.",
+    "keyword": "uniqueItems",
+    "instancePath": "/signals"
+  }
+}

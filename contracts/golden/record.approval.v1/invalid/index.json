@@ -1,0 +1,27 @@
+{
+  "01-granted-without-decider.json": {
+    "rule": "Concedida exige quem decidiu.",
+    "keyword": "type",
+    "instancePath": "/decided_by"
+  },
+  "02-pending-with-decision.json": {
+    "rule": "Pendente ainda não tem instante de decisão.",
+    "keyword": "type",
+    "instancePath": "/decided_at"
+  },
+  "03-short-plan-hash.json": {
+    "rule": "O hash do plano é um SHA-256 completo.",
+    "keyword": "pattern",
+    "instancePath": "/plan_hash"
+  },
+  "04-unknown-status.json": {
+    "rule": "status é um dos quatro valores.",
+    "keyword": "enum",
+    "instancePath": "/status"
+  },
+  "05-expired-with-channel.json": {
+    "rule": "Expirada não tem canal de decisão.",
+    "keyword": "type",
+    "instancePath": "/via"
+  }
+}
