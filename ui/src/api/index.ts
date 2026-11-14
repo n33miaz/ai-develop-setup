@@ -1,0 +1,7 @@
+export { CoreClientError } from './client'
+export type { CoreClient, Unsubscribe } from './client'
+export { createFakeCoreClient } from './fake'
+export type { FakeCoreClient } from './fake'
+export { newIdempotencyKey } from './idempotency'
+export type { CommandAck, ConnectionState, CoreCommand, CoreEvent, Seq } from './types'
+export { useConnectionState } from './useConnectionState'
