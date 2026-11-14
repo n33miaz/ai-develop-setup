@@ -1,0 +1,48 @@
+{
+  "01-id-not-ulid.json": {
+    "rule": "O id do evento é um ULID.",
+    "keyword": "pattern",
+    "instancePath": "/id"
+  },
+  "02-type-not-event-urn.json": {
+    "rule": "O type é a URN de um evento (urn:ads:event:<nome>:<versão>).",
+    "keyword": "pattern",
+    "instancePath": "/type"
+  },
+  "03-type-is-other-kind.json": {
+    "rule": "A URN do type tem de ser do tipo event.",
+    "keyword": "pattern",
+    "instancePath": "/type"
+  },
+  "04-missing-seq.json": {
+    "rule": "Sem seq não há como retomar o stream.",
+    "keyword": "required",
+    "instancePath": "",
+    "params": {
+      "missingProperty": "seq"
+    }
+  },
+  "05-seq-zero.json": {
+    "rule": "seq começa em 1.",
+    "keyword": "minimum",
+    "instancePath": "/seq"
+  },
+  "06-stream-without-id.json": {
+    "rule": "O stream é <tipo>/<id>.",
+    "keyword": "pattern",
+    "instancePath": "/stream"
+  },
+  "07-unknown-data-class.json": {
+    "rule": "data_class é uma das quatro classes.",
+    "keyword": "enum",
+    "instancePath": "/data_class"
+  },
+  "08-extra-field.json": {
+    "rule": "Envelope fechado: campo desconhecido reprova.",
+    "keyword": "additionalProperties",
+    "instancePath": "",
+    "params": {
+      "additionalProperty": "note"
+    }
+  }
+}

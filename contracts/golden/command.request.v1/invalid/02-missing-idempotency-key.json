@@ -1,0 +1,11 @@
+{
+  "jsonrpc": "2.0",
+  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAD",
+  "method": "session.write",
+  "params": {
+    "session_id": "sess-01",
+    "_meta": {
+      "origin": "local"
+    }
+  }
+}

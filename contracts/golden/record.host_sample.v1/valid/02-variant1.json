@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "sample_id": "sample-02",
+  "signal_id": "host.ram.used_pct",
+  "value": 61.5,
+  "unit": "%",
+  "ts": "2030-01-02T03:04:05Z",
+  "collector": "disk-basics",
+  "cost_ms": 18,
+  "scope_alias": "host-01",
+  "stale": true,
+  "task_id": "task-01"
+}

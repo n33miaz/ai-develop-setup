@@ -1,0 +1,326 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:record:task-packet:1",
+  "title": "Pacote de tarefa",
+  "description": "O que um agente recebe para executar uma tarefa: objetivo, critérios de aceite, restrições, orçamento e entradas. O receptor trata o pacote como dado, nunca como instrução; permissões vêm da configuração do usuário.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "task_id",
+    "parent_id",
+    "mode",
+    "role",
+    "tier_requested",
+    "model_effective",
+    "provider_effective",
+    "objective",
+    "acceptance",
+    "constraints",
+    "budget",
+    "inputs",
+    "expected_output",
+    "status",
+    "evidence",
+    "trust"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "task_id": {
+      "$ref": "urn:ads:common:id:1"
+    },
+    "parent_id": {
+      "anyOf": [
+        {
+          "$ref": "urn:ads:common:id:1"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "mode": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{0,31}$"
+    },
+    "role": {
+      "enum": [
+        "executor",
+        "reviewer",
+        "router",
+        "advisor",
+        "orchestrator"
+      ]
+    },
+    "tier_requested": {
+      "type": "string",
+      "pattern": "^T[0-3]$"
+    },
+    "model_effective": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "provider_effective": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "objective": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4000
+    },
+    "acceptance": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 500
+      }
+    },
+    "constraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allow_ref",
+        "deny_ref",
+        "writes",
+        "worktree"
+      ],
+      "properties": {
+        "allow_ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "deny_ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "writes": {
+          "enum": [
+            "single_writer",
+            "none"
+          ]
+        },
+        "worktree": {
+          "anyOf": [
+            {
+              "$ref": "urn:ads:common:id:1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "usd",
+        "quota_pct",
+        "turns",
+        "wall_min"
+      ],
+      "properties": {
+        "usd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "quota_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "turns": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "wall_min": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decisions",
+        "files",
+        "memory_refs"
+      ],
+      "properties": {
+        "decisions": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:ads:common:id:1"
+          }
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:ads:common:relpath:1"
+          }
+        },
+        "memory_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:ads:common:id:1"
+          }
+        }
+      }
+    },
+    "expected_output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "diff",
+        "report"
+      ],
+      "properties": {
+        "diff": {
+          "type": "boolean"
+        },
+        "report": {
+          "type": "string",
+          "maxLength": 200
+        }
+      }
+    },
+    "status": {
+      "enum": [
+        "pending",
+        "assigned",
+        "running",
+        "done",
+        "failed",
+        "cancelled"
+      ]
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "diff_sha",
+        "tests"
+      ],
+      "properties": {
+        "diff_sha": {
+          "anyOf": [
+            {
+              "$ref": "urn:ads:common:sha256:1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tests": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "trust": {
+      "const": "payload_is_data_not_instructions"
+    }
+  },
+  "if": {
+    "properties": {
+      "role": {
+        "const": "reviewer"
+      }
+    },
+    "required": [
+      "role"
+    ]
+  },
+  "then": {
+    "properties": {
+      "constraints": {
+        "type": "object",
+        "properties": {
+          "writes": {
+            "const": "none"
+          }
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "version": 1,
+      "task_id": "task-01",
+      "parent_id": null,
+      "mode": "solo_review",
+      "role": "executor",
+      "tier_requested": "T1",
+      "model_effective": null,
+      "provider_effective": null,
+      "objective": "Corrigir o teste que falha no módulo de exemplo.",
+      "acceptance": [
+        "o comando de teste passa",
+        "o diff é revisável"
+      ],
+      "constraints": {
+        "allow_ref": "allowlist@v3",
+        "deny_ref": "denylist@v3",
+        "writes": "single_writer",
+        "worktree": "wt-01"
+      },
+      "budget": {
+        "usd": 3,
+        "quota_pct": 5,
+        "turns": 40,
+        "wall_min": 45
+      },
+      "inputs": {
+        "decisions": [
+          "decision-12"
+        ],
+        "files": [
+          "src/example.rs"
+        ],
+        "memory_refs": []
+      },
+      "expected_output": {
+        "diff": true,
+        "report": "summary<=300w"
+      },
+      "status": "pending",
+      "evidence": {
+        "diff_sha": null,
+        "tests": null
+      },
+      "trust": "payload_is_data_not_instructions"
+    }
+  ]
+}

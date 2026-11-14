@@ -1,0 +1,30 @@
+{
+  "01-negative-free-space.json": {
+    "rule": "Espaço livre em disco não é negativo.",
+    "keyword": "minimum",
+    "instancePath": "/value"
+  },
+  "02-missing-sample-id.json": {
+    "rule": "Sem sample_id nenhum alerta ou auditoria consegue citar a amostra.",
+    "keyword": "required",
+    "instancePath": "",
+    "params": {
+      "missingProperty": "sample_id"
+    }
+  },
+  "03-empty-unit.json": {
+    "rule": "A unidade não é vazia.",
+    "keyword": "minLength",
+    "instancePath": "/unit"
+  },
+  "04-negative-cost.json": {
+    "rule": "O custo da coleta não é negativo.",
+    "keyword": "minimum",
+    "instancePath": "/cost_ms"
+  },
+  "05-signal-uppercase.json": {
+    "rule": "signal_id é minúsculo, com pontos.",
+    "keyword": "pattern",
+    "instancePath": "/signal_id"
+  }
+}
