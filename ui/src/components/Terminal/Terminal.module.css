@@ -1,0 +1,15 @@
+.terminal {
+  position: relative;
+  flex: 1 1 15rem;
+  min-height: 15rem;
+  background: var(--terminal-bg);
+  border: 1px solid var(--border-strong);
+  border-radius: 0.5rem;
+  overflow: hidden;
+}
+
+/* Fora do fluxo: o tamanho vem só do contêiner, senão o ajuste de linhas faz a área crescer sem parar. */
+.screen {
+  position: absolute;
+  inset: 0.5rem;
+}
