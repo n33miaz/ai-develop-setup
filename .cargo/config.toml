@@ -1,0 +1,8 @@
+[build]
+jobs = 4
+
+[alias]
+lint = "clippy --all-targets -- -D warnings"
+
+[term]
+color = "auto"

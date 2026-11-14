@@ -1,0 +1,10 @@
+[package]
+name = "ads-adapter-vault"
+description = "Adapter for the operating system secret vault."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
