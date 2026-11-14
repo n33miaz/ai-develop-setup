@@ -4,8 +4,13 @@ title = "ai-develop-setup gitleaks"
 [extend]
 useDefault = true
 
-# Exceção única: o modelo de variáveis, que tem só nomes e nenhum valor real (AGENTS.md).
-# Qualquer outra exceção entra por PR, com o motivo no commit e na issue.
+# Exceções explícitas e mínimas. Qualquer outra entra por PR, com o motivo aqui e na issue.
+# Uma tabela só, no formato que a versão do gitleaks usada no CI entende; caminhos e expressões valem como "ou".
+# 1. O modelo de variáveis, que tem só nomes e nenhum valor real (AGENTS.md).
+# 2. A chave de idempotência de um comando: é um ULID (identificador ordenável, não segredo), e a regra genérica de
+#    chave de API casa com os exemplos sintéticos dos contratos pelo nome do campo. A expressão olha a linha inteira.
 [allowlist]
-description = "arquivos de modelo sem valores reais"
+description = "modelo de variáveis sem valores e chave de idempotência em formato ULID"
 paths = ['''(^|/)\.env\.example$''']
+regexTarget = "line"
+regexes = ['''"idempotency_key":\s*"[0-9A-HJKMNP-TV-Z]{26}"''']
