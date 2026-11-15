@@ -2,6 +2,10 @@
 # fica aqui, com padrão recomendado e explicação. Quem lê este arquivo: `.githooks/commit-msg`,
 # `.github/scripts/check-commits.sh` e `.github/scripts/check-commits.test.sh`.
 #
+# O checador valida este arquivo inteiro antes de olhar qualquer mensagem: valor de tipo errado ou fora do domínio
+# (número entre aspas, booleano que não é true/false, opção desconhecida, lista vazia onde precisa de item, expressão
+# regular que não compila) termina com código 2 e nenhum commit é analisado. Chave ausente cai no padrão embutido.
+#
 # FORMATO (restrição de propósito: os scripts em bash leem este arquivo com grep/sed, sem parser de TOML):
 #   - uma chave por linha, no formato `chave.com.pontos = valor`; sem tabelas `[secao]`;
 #   - valor é texto entre aspas, número, true/false, ou lista de textos numa linha só;
@@ -32,17 +36,21 @@ coauthor.codex = "Codex <noreply@openai.com>"
 # Lista de e-mails de coautor aceitos pelo checador (precisa conter os de `coauthor.*` que estiverem em uso).
 coauthors.allowed = ["noreply@anthropic.com", "noreply@openai.com"]
 
-# No máximo quantos `Co-authored-by` por commit. Padrão 1: quem escreveu a maior parte.
+# No máximo quantos `Co-authored-by` por commit (inteiro de 0 a 99). Padrão 1: quem escreveu a maior parte.
 commits.max_coauthors = 1
 
 # ---- Regras da mensagem de commit -------------------------------------------------------------------------
 # Liga ou desliga toda a checagem de mensagem (hook e CI).
 commits.enabled = true
 
-# Tamanho máximo do assunto, em caracteres (o assunto é só ASCII, então caractere = byte).
+# Tamanho máximo do assunto, em caracteres (o assunto é só ASCII, então caractere = byte). Inteiro de 1 a 999.
 commits.subject_max = 50
 
-# Tipos aceitos no Conventional Commits.
+# A descrição do assunto (o que vem depois de `tipo(escopo): `) vai inteira em minúsculas, sem exceção: siglas e
+# identificadores também (`ci`, `utf-8`, `pty-host/1`). false solta as maiúsculas da descrição; tipo e escopo não mudam.
+commits.subject_lowercase = true
+
+# Tipos aceitos no Conventional Commits (só letras minúsculas: entram numa expressão regular).
 commits.types = ["feat", "fix", "chore", "refactor", "docs", "test", "perf", "build", "ci", "style", "revert"]
 
 # Trailers permitidos depois do assunto (nome sem diferença de maiúscula). Qualquer outro é recusado.
