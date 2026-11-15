@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use ads_ptyhost::win::{own_handle_count, process_table};
 use ads_ptyhost::{HostConfig, PortablePtyBackend, PtyHost, ReplayFrom};
-use common::{STEP_TIMEOUT, assert_contiguous, next, shell, text};
+use common::{STEP_TIMEOUT, assert_contiguous, next, open, shell, text};
 
 const CYCLES: usize = 20;
 /// Cycles run before the baseline is taken, so one-time setup (thread pool, loaded libraries)
@@ -42,7 +42,7 @@ fn alive(process_ids: &HashSet<u32>) -> Vec<u32> {
     alive
 }
 
-async fn host_output(host: &PtyHost, id: ads_ptyhost::SessionId) -> Vec<ads_ptyhost::OutputChunk> {
+async fn host_output(host: &PtyHost, id: &ads_ptyhost::SessionId) -> Vec<ads_ptyhost::OutputChunk> {
     let mut all = host.subscribe(id, ReplayFrom::Oldest).unwrap();
     let mut chunks = Vec::new();
     while let Ok(Some(chunk)) = tokio::time::timeout(POLL_INTERVAL, all.recv()).await {
@@ -53,24 +53,24 @@ async fn host_output(host: &PtyHost, id: ads_ptyhost::SessionId) -> Vec<ads_ptyh
 
 /// One session: wait for output and for the whole tree, close, and return the tree it had.
 async fn cycle(host: &PtyHost) -> HashSet<u32> {
-    let id = host.open(&shell(TREE_COMMAND)).unwrap();
-    let mut subscription = host.subscribe(id, ReplayFrom::Oldest).unwrap();
+    let id = open(host, &shell(TREE_COMMAND));
+    let mut subscription = host.subscribe(&id, ReplayFrom::Oldest).unwrap();
     let mut chunks = vec![next(&mut subscription).await.expect("session ended early")];
 
     let deadline = Instant::now() + STEP_TIMEOUT;
-    let mut tree = host.tree_process_ids(id).unwrap();
+    let mut tree = host.tree_process_ids(&id).unwrap();
     while tree.len() < 2 {
         assert!(
             Instant::now() < deadline,
             "tree never grew past the shell: {tree:?}; output so far: {:?}",
-            text(&host_output(host, id).await)
+            text(&host_output(host, &id).await)
         );
         tokio::time::sleep(POLL_INTERVAL).await;
-        tree = host.tree_process_ids(id).unwrap();
+        tree = host.tree_process_ids(&id).unwrap();
     }
-    assert_eq!(host.exit_status(id).unwrap(), None);
+    assert_eq!(host.exit_status(&id).unwrap(), None);
 
-    host.close(id).await.unwrap();
+    host.close(&id).await.unwrap();
 
     while let Some(chunk) = next(&mut subscription).await {
         chunks.push(chunk);

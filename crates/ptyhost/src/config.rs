@@ -12,7 +12,14 @@ pub struct HostConfig {
     pub read_buffer_bytes: usize,
     pub subscriber_queue_chunks: usize,
     pub max_sessions: usize,
+    pub max_frame_bytes: usize,
+    pub channel_name: String,
+    /// Empty means "derive from `channel_name` and the current user".
+    pub channel_path: String,
 }
+
+/// Smallest `max_frame_bytes` accepted: below this not even `session.open` would fit.
+const MAX_FRAME_BYTES_FLOOR: usize = 4096;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -21,6 +28,9 @@ struct Layer {
     read_buffer_bytes: Option<usize>,
     subscriber_queue_chunks: Option<usize>,
     max_sessions: Option<usize>,
+    max_frame_bytes: Option<usize>,
+    channel_name: Option<String>,
+    channel_path: Option<String>,
 }
 
 impl HostConfig {
@@ -33,10 +43,10 @@ impl HostConfig {
     pub fn from_toml_str(overrides: &str) -> Result<Self, PtyError> {
         let base = parse(DEFAULTS_TOML)?;
         let over = parse(overrides)?;
-        let pick = |name: &str, over: Option<usize>, base: Option<usize>| {
+        fn pick<T>(name: &str, over: Option<T>, base: Option<T>) -> Result<T, PtyError> {
             over.or(base)
                 .ok_or_else(|| PtyError::Config(format!("missing key `{name}`")))
-        };
+        }
         let config = Self {
             replay_capacity_bytes: pick(
                 "replay_capacity_bytes",
@@ -54,6 +64,13 @@ impl HostConfig {
                 base.subscriber_queue_chunks,
             )?,
             max_sessions: pick("max_sessions", over.max_sessions, base.max_sessions)?,
+            max_frame_bytes: pick(
+                "max_frame_bytes",
+                over.max_frame_bytes,
+                base.max_frame_bytes,
+            )?,
+            channel_name: pick("channel_name", over.channel_name, base.channel_name)?,
+            channel_path: pick("channel_path", over.channel_path, base.channel_path)?,
         };
         config.validate()?;
         Ok(config)
@@ -70,6 +87,22 @@ impl HostConfig {
             if value == 0 {
                 return Err(PtyError::Config(format!("`{name}` must be at least 1")));
             }
+        }
+        if self.max_frame_bytes < MAX_FRAME_BYTES_FLOOR {
+            return Err(PtyError::Config(format!(
+                "`max_frame_bytes` must be at least {MAX_FRAME_BYTES_FLOOR}"
+            )));
+        }
+        let name_ok = !self.channel_name.is_empty()
+            && self.channel_name.len() <= 64
+            && self
+                .channel_name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'));
+        if !name_ok {
+            return Err(PtyError::Config(
+                "`channel_name` must be 1 to 64 of letters, digits and . _ -".to_owned(),
+            ));
         }
         if self.read_buffer_bytes > self.replay_capacity_bytes {
             return Err(PtyError::Config(
@@ -100,6 +133,18 @@ mod tests {
         let config = HostConfig::from_toml_str("replay_capacity_bytes = 16384").unwrap();
         assert_eq!(config.replay_capacity_bytes, 16_384);
         assert_eq!(config.max_sessions, HostConfig::defaults().max_sessions);
+    }
+
+    #[test]
+    fn channel_keys_have_defaults_and_can_be_replaced() {
+        let config = HostConfig::defaults();
+        assert_eq!(config.channel_name, "ads-ptyhost");
+        assert_eq!(config.channel_path, "");
+        let config = HostConfig::from_toml_str("channel_path = 'somewhere'").unwrap();
+        assert_eq!(config.channel_path, "somewhere");
+        assert!(HostConfig::from_toml_str("channel_name = 'a/b'").is_err());
+        assert!(HostConfig::from_toml_str("channel_name = ''").is_err());
+        assert!(HostConfig::from_toml_str("max_frame_bytes = 100").is_err());
     }
 
     #[test]

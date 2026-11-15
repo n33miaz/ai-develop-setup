@@ -1,11 +1,10 @@
-//! Internal session types. This is the single place to swap when the `pty-host/1` contract lands.
+//! Internal session types. What crosses the channel is in `wire`; the session name comes from there.
 
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct SessionId(pub u64);
+use crate::wire::SessionId;
 
 /// Position of an output chunk in a session. The first chunk is `Seq(1)`; numbers never repeat.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -52,12 +51,34 @@ pub struct ExitStatus {
     pub code: u32,
 }
 
+/// One open session as `session.list` shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionInfo {
+    pub id: SessionId,
+    /// `None` while the root process is still running.
+    pub exit: Option<ExitStatus>,
+    pub oldest_seq: Seq,
+    pub next_seq: Seq,
+}
+
+/// Why a subscription stopped delivering output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubscriptionEnd {
+    /// The process exited and every piece of its output was delivered.
+    Exited(ExitStatus),
+    /// The session was closed while the subscription was open.
+    SessionClosed,
+    /// This subscriber fell too far behind; the rest is still in the replay ring.
+    Lagged,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PtyError {
     Config(String),
     Spawn(String),
     Io(String),
     UnknownSession(SessionId),
+    SessionExists(SessionId),
     TooManySessions {
         limit: usize,
     },
@@ -80,7 +101,8 @@ impl fmt::Display for PtyError {
             Self::Config(msg) => write!(f, "invalid configuration: {msg}"),
             Self::Spawn(msg) => write!(f, "spawn failed: {msg}"),
             Self::Io(msg) => write!(f, "terminal i/o failed: {msg}"),
-            Self::UnknownSession(id) => write!(f, "unknown session {}", id.0),
+            Self::UnknownSession(id) => write!(f, "unknown session {id}"),
+            Self::SessionExists(id) => write!(f, "session {id} already exists"),
             Self::TooManySessions { limit } => write!(f, "session limit reached ({limit})"),
             Self::ReplayEvicted { requested, oldest } => write!(
                 f,

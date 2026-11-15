@@ -17,3 +17,18 @@ subscriber_queue_chunks = 1024
 
 # Quantas sessoes abertas ao mesmo tempo o processo aceita. Passou disso, abrir sessao falha.
 max_sessions = 64
+
+# Maior quadro, em bytes, que o processo aceita receber de um cliente (um pedido do contrato
+# `pty-host/1`). Quadro maior encerra a conexao. Padrao 1 MiB; o minimo aceito e 4096.
+max_frame_bytes = 1048576
+
+# Nome do canal local por onde o nucleo fala com este processo. No Windows vira o named pipe
+# `\\.\pipe\<channel_name>.<SID do usuario>`; nos demais, o socket
+# `$XDG_RUNTIME_DIR/<channel_name>.sock`. So o usuario atual consegue abrir o canal.
+# Letras, digitos e . _ -, ate 64 caracteres.
+channel_name = "ads-ptyhost"
+
+# Caminho completo do canal (nome do pipe no Windows, caminho do socket nos demais). Vazio (padrao):
+# o caminho e montado a partir de `channel_name`, como descrito acima. Preencha para rodar mais de
+# um processo dos terminais para o mesmo usuario, ou num sistema sem `XDG_RUNTIME_DIR`.
+channel_path = ""

@@ -6,15 +6,39 @@ Processo estável que segura as sessões de terminal e o anel de replay.
 
 | Arquivo | O que faz |
 |---|---|
-| `src/types.rs` | Tipos internos da sessão (`SessionId`, `Seq`, `OutputChunk`, `SpawnSpec`, erros). É o único ponto a trocar quando o contrato `pty-host/1` existir. |
+| `src/wire.rs` | Contrato `pty-host/1`: codec do quadro e tipos das mensagens, escritos à mão e conferidos contra os arquivos dourados de `contracts/golden/`. Só este arquivo conhece o layout de bytes e os nomes dos campos JSON. |
+| `src/channel.rs` | Canal local: named pipe no Windows, socket Unix nos demais, aberto só para o usuário atual. |
+| `src/server.rs` | Servidor do contrato: uma tarefa por cliente, sessões compartilhadas por todos e independentes de qualquer conexão. |
+| `src/types.rs` | Tipos internos da sessão (`Seq`, `OutputChunk`, `SpawnSpec`, erros). O nome da sessão (`SessionId`) vem de `wire.rs`: é opaco e escolhido pelo cliente. |
 | `src/backend.rs` | Traço `PtyBackend`: a costura entre a sessão e quem fornece o terminal. |
 | `src/portable.rs` | Backend real, sobre `portable-pty` (ConPTY no Windows). Só este arquivo cita a biblioteca. |
 | `src/fake.rs` | Backend falso, determinístico e sem processo real, para os testes. |
-| `src/win.rs` | Chamadas do Windows: o Job Object que encerra a árvore de processos e as sondas de processo e de handle. Todo `unsafe` do crate fica aqui. |
+| `src/win.rs` | Chamadas do Windows: o Job Object que encerra a árvore de processos, o named pipe restrito ao usuário e as sondas de processo, de handle e de lista de acesso. Todo `unsafe` do crate fica aqui. |
 | `src/replay.rs` | Anel de replay: pedaços de saída numerados por `seq`, limitado em bytes. |
 | `src/session.rs`, `src/host.rs` | Sessão (bombeia a saída para o anel e para os assinantes) e o conjunto de sessões abertas. |
 
 Os parâmetros e seus padrões estão em [`defaults/ptyhost.toml`](../../defaults/ptyhost.toml).
+
+## Como roda
+
+`ads-ptyhost [--config <arquivo>]` sobe o servidor e imprime uma linha, `ads-ptyhost <versão> listening on <canal>`, quando está pronto para aceitar clientes. O arquivo de `--config` é a camada do usuário: um TOML com as chaves de `defaults/ptyhost.toml` que se quer trocar.
+
+O canal é do usuário e de mais ninguém:
+
+- Windows: named pipe `\\.\pipe\<channel_name>.<SID do usuário>`. A lista de acesso do pipe tem uma entrada só, a do usuário que roda o processo; clientes remotos são recusados; e o processo não sobe se já existir um pipe com esse nome (ninguém se põe no lugar dele).
+- Demais sistemas: socket `$XDG_RUNTIME_DIR/<channel_name>.sock` com modo `0600`. Um arquivo de socket deixado por uma execução que caiu é substituído; qualquer outra coisa no caminho impede a subida.
+
+## Regras do contrato
+
+O contrato está em [`contracts/README.md`](../../contracts/README.md). O que este processo decide dentro dele:
+
+- `host.hello` é o primeiro pedido. Qualquer outro antes dele volta `-32600`; versão diferente de `pty-host/1` volta `-32009` e a conexão continua esperando um `host.hello` válido.
+- JSON ilegível volta `-32700` com `id` nulo; envelope fora do contrato, `-32600`; método desconhecido, `-32601`; `params` fora do contrato, `-32602`. A conexão continua.
+- Quadro de tipo desconhecido, maior que `max_frame_bytes`, ou de saída (`0x02`) vindo do cliente encerra a conexão. As sessões não são afetadas.
+- Um cliente tem no máximo uma assinatura por sessão. Um novo `session.subscribe` encerra a anterior entre dois quadros: depois da resposta, todo quadro de saída daquela sessão pertence à assinatura nova.
+- Quando a saída de uma sessão termina, cada assinante que recebeu tudo recebe `session.exited`. Quem não está assinando vê o estado em `session.list`.
+- Assinante lento recebe o que já estava na fila dele e depois `subscription.closed` com `reason: "slow_subscriber"`; fechar a sessão avisa os assinantes com `reason: "session_closed"`. Nos dois, `last_seq` é o último pedaço entregue naquela assinatura.
+- Cliente que cai (no meio de um quadro ou não) não afeta a sessão: ao voltar, assina a partir do último `seq` que recebeu inteiro, mais 1.
 
 ## Regras do replay
 
@@ -29,4 +53,6 @@ Os parâmetros e seus padrões estão em [`defaults/ptyhost.toml`](../../default
 - No Windows o processo raiz entra no Job Object logo depois de criado, não antes de começar a rodar. Um neto iniciado nesse instante ficaria fora do job. Fechar essa janela pede criar o processo suspenso, o que a biblioteca não expõe; é o que o plano B (ConPTY direto) resolve.
 - O ConPTY abre perguntando a posição do cursor e segura o processo filho até a resposta. Como pode não haver cliente conectado, o backend responde "canto superior esquerdo" ao abrir. A pergunta continua na saída; um cliente que também responda manda uma resposta repetida ao programa.
 - Fora do Windows só o processo raiz recebe o sinal de encerramento; o resto da árvore depende do fechamento do terminal. O produto roda no Windows; o caminho Unix existe para os testes do CI em Linux.
-- O binário ainda não serve o canal local entre os processos: isso entra com o contrato `pty-host/1`.
+- O processo roda até ser encerrado por quem o iniciou; não há pedido de desligamento no contrato `pty-host/1`. Quem o inicia destacado é o lançador, que ainda não existe.
+- Um cliente conectado que para de ler não segura memória além da fila dele (`subscriber_queue_chunks`), mas a conexão fica aberta até ele sair.
+- Fora do Windows, sem `XDG_RUNTIME_DIR` o processo só sobe com `channel_path` preenchido.

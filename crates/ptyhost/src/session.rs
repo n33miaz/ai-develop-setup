@@ -10,7 +10,9 @@ use tokio::sync::{mpsc, watch};
 use crate::backend::{PtyControl, PtyParts, PtyWaiter};
 use crate::config::HostConfig;
 use crate::replay::ReplayRing;
-use crate::types::{ExitStatus, OutputChunk, PtyError, ReplayFrom, TerminalSize};
+use crate::types::{
+    ExitStatus, OutputChunk, PtyError, ReplayFrom, Seq, SubscriptionEnd, TerminalSize,
+};
 
 /// A panic on another thread must not take the whole host down with a poisoned lock.
 pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -21,6 +23,7 @@ struct Shared {
     ring: ReplayRing,
     subscribers: Vec<mpsc::Sender<OutputChunk>>,
     ended: bool,
+    closed: bool,
 }
 
 /// Replay followed by live output, in `seq` order with no gap and no repeat.
@@ -30,13 +33,55 @@ struct Shared {
 pub struct Subscription {
     backlog: VecDeque<OutputChunk>,
     live: mpsc::Receiver<OutputChunk>,
+    shared: Arc<Mutex<Shared>>,
+    exit: watch::Receiver<Option<ExitStatus>>,
+    oldest_seq: Seq,
+    next_seq: Seq,
+    /// The number the next delivered chunk must have.
+    expected: u64,
 }
 
 impl Subscription {
     pub async fn recv(&mut self) -> Option<OutputChunk> {
-        match self.backlog.pop_front() {
+        let chunk = match self.backlog.pop_front() {
             Some(chunk) => Some(chunk),
             None => self.live.recv().await,
+        }?;
+        self.expected = chunk.seq.0 + 1;
+        Some(chunk)
+    }
+
+    /// First chunk the replay ring held when this subscription was made.
+    pub fn oldest_seq(&self) -> Seq {
+        self.oldest_seq
+    }
+
+    /// The number the next chunk was going to get when this subscription was made.
+    pub fn next_seq(&self) -> Seq {
+        self.next_seq
+    }
+
+    /// Last chunk delivered so far, or the one right before the starting point.
+    pub fn last_seq(&self) -> u64 {
+        self.expected - 1
+    }
+
+    /// Why `recv` returned `None`. Waits for the exit status when the process is on its way out.
+    pub async fn end(&mut self) -> SubscriptionEnd {
+        let (closed, drained) = {
+            let shared = lock(&self.shared);
+            let drained = shared.ended && self.expected == shared.ring.next_seq().0;
+            (shared.closed, drained)
+        };
+        if closed {
+            return SubscriptionEnd::SessionClosed;
+        }
+        if !drained {
+            return SubscriptionEnd::Lagged;
+        }
+        match self.exit.wait_for(Option::is_some).await.map(|exit| *exit) {
+            Ok(Some(status)) => SubscriptionEnd::Exited(status),
+            _ => SubscriptionEnd::SessionClosed,
         }
     }
 }
@@ -62,6 +107,7 @@ impl Session {
             ring: ReplayRing::new(config.replay_capacity_bytes),
             subscribers: Vec::new(),
             ended: false,
+            closed: false,
         }));
         let control = Arc::new(Mutex::new(control));
         let (exit_tx, exit) = watch::channel(None);
@@ -92,12 +138,22 @@ impl Session {
     pub(crate) fn subscribe(&self, from: ReplayFrom) -> Result<Subscription, PtyError> {
         // Snapshot and registration under one lock: nothing can slip between replay and live.
         let mut shared = lock(&self.shared);
-        let backlog = shared.ring.replay(from)?.into();
+        let backlog: VecDeque<_> = shared.ring.replay(from)?.into();
+        let oldest_seq = shared.ring.oldest_seq();
+        let next_seq = shared.ring.next_seq();
         let (tx, live) = mpsc::channel(self.queue_chunks);
         if !shared.ended {
             shared.subscribers.push(tx);
         }
-        Ok(Subscription { backlog, live })
+        Ok(Subscription {
+            expected: backlog.front().map_or(next_seq.0, |chunk| chunk.seq.0),
+            backlog,
+            live,
+            shared: Arc::clone(&self.shared),
+            exit: self.exit.clone(),
+            oldest_seq,
+            next_seq,
+        })
     }
 
     pub(crate) fn write(&self, bytes: &[u8]) -> Result<(), PtyError> {
@@ -121,6 +177,12 @@ impl Session {
         *self.exit.borrow()
     }
 
+    /// Oldest chunk still in the replay ring and the number the next one will get.
+    pub(crate) fn replay_bounds(&self) -> (Seq, Seq) {
+        let shared = lock(&self.shared);
+        (shared.ring.oldest_seq(), shared.ring.next_seq())
+    }
+
     pub(crate) async fn wait_exit(&self) -> Result<ExitStatus, PtyError> {
         let mut exit = self.exit.clone();
         let status = exit
@@ -132,6 +194,7 @@ impl Session {
 
     /// Kills the process tree and returns once all output is in the ring and the threads are gone.
     pub(crate) async fn close(&self) -> Result<ExitStatus, PtyError> {
+        lock(&self.shared).closed = true;
         lock(&self.control).kill_tree();
         lock(&self.writer).take();
         let threads = std::mem::take(&mut *lock(&self.threads));
