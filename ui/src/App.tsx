@@ -39,7 +39,7 @@ export function App({ client, events = sampleEvents }: AppProps) {
   const [selectedSessionId, setSelectedSessionId] = useState(() => sessions[0]?.id ?? '')
 
   const session = sessions.find((item) => item.id === selectedSessionId)
-  const sessionName = session?.displayName ?? t('session.unnamed')
+  const sessionName = session ? (session.displayName ?? t('session.unnamed')) : ''
   const source = useMemo(
     () =>
       staticByteSource(decodeBase64(sampleOutput(t, selectedSessionId, sessionName).data.payload)),
