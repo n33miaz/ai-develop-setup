@@ -1,12 +1,46 @@
 name: Tarefa
 description: Uma entrega do projeto (uma issue por entrega, aberta antes do trabalho).
-title: "type(scope): short english title"
 body:
   - type: markdown
     attributes:
       value: |
         **Esta issue é pública.** Não cole dados pessoais, nomes de pessoas ou de empresas, e-mails, caminhos da sua máquina, tokens ou segredos. Descreva o pedido em termos genéricos.
-        O título é em inglês, no mesmo padrão dos commits (`tipo(escopo): assunto`, até 50 caracteres, minúsculas).
+        **Título:** em inglês, descreve o problema ou o resultado esperado, no imperativo ou como frase nominal, com inicial maiúscula, sem prefixo `tipo(escopo):` (isso é de commit), sem ponto final, até 72 caracteres. Exemplos: "Prevent deletions outside the workspace", "Terminal host loses output when the client reconnects".
+        **Classificação:** escolha o tipo e a área abaixo e aplique os rótulos correspondentes (`type: ...` e `area: ...`) ao abrir a issue; o formulário não aplica rótulo sozinho. A lista está no CONTRIBUTING.md.
+  - type: dropdown
+    id: type
+    attributes:
+      label: Tipo
+      description: O rótulo `type:` desta entrega.
+      options:
+        - "type: feature"
+        - "type: fix"
+        - "type: chore"
+        - "type: docs"
+        - "type: test"
+        - "type: ci"
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Área
+      description: O rótulo `area:` de cada módulo que a entrega toca (ver docs/modules.md).
+      multiple: true
+      options:
+        - "area: contracts"
+        - "area: core"
+        - "area: storage"
+        - "area: ptyhost"
+        - "area: daemon"
+        - "area: launcher"
+        - "area: shell"
+        - "area: e2e"
+        - "area: adapters"
+        - "area: ui"
+        - "area: process"
+    validations:
+      required: true
   - type: textarea
     id: objective
     attributes:

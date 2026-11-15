@@ -1,3 +1,5 @@
+<!-- Título do PR: descritivo, em inglês, como o da issue (sem prefixo tipo(escopo):, sem ponto final, até 72 caracteres). O padrão de commit vale só para os commits. -->
+
 ## O que mudou
 
 ## Por que
