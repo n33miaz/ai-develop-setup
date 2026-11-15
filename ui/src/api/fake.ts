@@ -1,25 +1,36 @@
-import { CoreClientError, type CoreClient, type Unsubscribe } from './client'
-import type { CommandAck, CoreCommand, CoreEvent, ConnectionState, Seq } from './types'
+import { CoreClientError, type ConnectionState, type CoreClient, type Unsubscribe } from './client'
+import type {
+  CommandRequestV1,
+  CommandResponseV1,
+  CommonActorV1,
+  EventDraft,
+  EventEnvelopeV1,
+} from './contracts'
+import { newUlid } from './ulid'
 
 /** Cliente falso em memória: dá para testar a UI sem núcleo. Não simula rede nem atraso. */
 export interface FakeCoreClient extends CoreClient {
   /** Grava um evento no fluxo (como se o núcleo o tivesse produzido) e entrega aos assinantes. */
-  emit(stream: string, type: string, data?: unknown): CoreEvent
+  emit(draft: EventDraft): EventEnvelopeV1
+  /** Comandos que tiveram efeito, na ordem; um reenvio com a mesma chave não entra de novo. */
+  applied(): readonly CommandRequestV1[]
 }
 
 interface Subscription {
   stream: string
-  lastDelivered: Seq
-  onEvent: (event: CoreEvent) => void
+  lastDelivered: number
+  onEvent: (event: EventEnvelopeV1) => void
 }
+
+const FAKE_ACTOR: CommonActorV1 = { kind: 'daemon', id: 'fake-core' }
 
 export function createFakeCoreClient(): FakeCoreClient {
   let state: ConnectionState = 'disconnected'
-  let counter = 0
   const stateListeners = new Set<(state: ConnectionState) => void>()
-  const logs = new Map<string, CoreEvent[]>()
+  const logs = new Map<string, EventEnvelopeV1[]>()
   const subscriptions = new Set<Subscription>()
-  const acks = new Map<string, CommandAck>()
+  const applied: CommandRequestV1[] = []
+  const results = new Map<string, { accepted: true }>()
 
   function setState(next: ConnectionState): void {
     if (state === next) return
@@ -41,22 +52,23 @@ export function createFakeCoreClient(): FakeCoreClient {
     }
   }
 
-  function append(stream: string, type: string, data: unknown, cause?: string): CoreEvent {
-    const log = logs.get(stream) ?? []
-    logs.set(stream, log)
-    counter += 1
-    const event: CoreEvent = {
-      id: `fake-${String(counter)}`,
-      type,
+  function append(draft: EventDraft): EventEnvelopeV1 {
+    const log = logs.get(draft.stream) ?? []
+    logs.set(draft.stream, log)
+    const event: EventEnvelopeV1 = {
+      id: newUlid(),
+      type: draft.type,
       ts: new Date().toISOString(),
-      stream,
+      stream: draft.stream,
       seq: log.length + 1,
-      data,
-      ...(cause === undefined ? {} : { cause }),
+      actor: draft.actor ?? FAKE_ACTOR,
+      cause: draft.cause ?? null,
+      data_class: draft.data_class ?? 'internal',
+      data: draft.data,
     }
     log.push(event)
     for (const subscription of [...subscriptions]) {
-      if (subscription.stream === stream) deliver(subscription)
+      if (subscription.stream === draft.stream) deliver(subscription)
     }
     return event
   }
@@ -89,21 +101,22 @@ export function createFakeCoreClient(): FakeCoreClient {
       return () => subscriptions.delete(subscription)
     },
 
-    send(command: CoreCommand, idempotencyKey) {
+    send(command) {
       if (state !== 'connected') return Promise.reject(notConnected())
-      const previous = acks.get(idempotencyKey)
-      if (previous) return Promise.resolve({ ...previous, duplicate: true })
-      const event = append('commands', `command.${command.method}`, command.params, idempotencyKey)
-      const ack: CommandAck = {
-        idempotencyKey,
-        duplicate: false,
-        stream: event.stream,
-        seq: event.seq,
+      const key = command.params._meta.idempotency_key
+      let result = results.get(key)
+      if (!result) {
+        // O contrato deixa `result` aberto; o falso só confirma o aceite, como o exemplo do Schema.
+        result = { accepted: true }
+        results.set(key, result)
+        applied.push(command)
       }
-      acks.set(idempotencyKey, ack)
-      return Promise.resolve(ack)
+      const response: CommandResponseV1 = { jsonrpc: '2.0', id: command.id, result }
+      return Promise.resolve(response)
     },
 
-    emit: (stream, type, data) => append(stream, type, data),
+    emit: append,
+
+    applied: () => [...applied],
   }
 }

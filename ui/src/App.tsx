@@ -1,12 +1,12 @@
 import { useId, useMemo, useState } from 'react'
-import { useConnectionState, type CoreClient } from './api'
+import { decodeBase64, useConnectionState, type CoreClient } from './api'
 import styles from './App.module.css'
 import { ConnectionStatus } from './components/ConnectionStatus'
 import { Sidebar } from './components/Sidebar/Sidebar'
 import { staticByteSource } from './components/Terminal/byteSource'
 import { Terminal } from './components/Terminal/Terminal'
 import { useT, type MessageKey } from './i18n'
-import { sampleSessions, sampleTasks, sampleTerminalText } from './sample/data'
+import { sampleOutput, sampleSessions, sampleTasks } from './sample/data'
 import type { ThemePreference } from './theme/theme'
 import { useTheme } from './theme/useTheme'
 
@@ -30,8 +30,9 @@ export function App({ client }: { client: CoreClient }) {
   const session = sampleSessions.find((item) => item.id === selectedSessionId)
   const sessionName = session ? t(session.nameKey) : ''
   const source = useMemo(
-    () => staticByteSource(sampleTerminalText(t, sessionName)),
-    [t, sessionName],
+    () =>
+      staticByteSource(decodeBase64(sampleOutput(t, selectedSessionId, sessionName).data.payload)),
+    [t, selectedSessionId, sessionName],
   )
 
   return (

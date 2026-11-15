@@ -3,9 +3,9 @@ export interface ByteSource {
   subscribe(onBytes: (bytes: Uint8Array) => void): () => void
 }
 
-/** Fonte de texto fixo, entregue assim que alguém assina. Serve aos dados de exemplo. */
-export function staticByteSource(text: string): ByteSource {
-  const bytes = new TextEncoder().encode(text)
+/** Fonte de bytes fixos, entregues assim que alguém assina. Serve aos dados de exemplo. */
+export function staticByteSource(content: string | Uint8Array): ByteSource {
+  const bytes = typeof content === 'string' ? new TextEncoder().encode(content) : content
   return {
     subscribe(onBytes) {
       onBytes(bytes)

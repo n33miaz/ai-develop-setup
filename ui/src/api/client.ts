@@ -1,6 +1,9 @@
-import type { CommandAck, CoreCommand, CoreEvent, ConnectionState, Seq } from './types'
+import type { CommandRequestV1, CommandResponseV1, EventEnvelopeV1 } from './contracts'
 
 export type Unsubscribe = () => void
+
+/** Estado da ligação com o núcleo. É estado do cliente, não mensagem: não vem dos contratos. */
+export type ConnectionState = 'disconnected' | 'connecting' | 'connected'
 
 /** Erro previsto do cliente (ex.: usar o núcleo sem estar conectado). */
 export class CoreClientError extends Error {
@@ -26,7 +29,14 @@ export interface CoreClient {
    * Entrega, em ordem de `seq`, os eventos do fluxo com `seq` maior que `afterSeq` (o último que
    * a UI viu; 0 para ler desde o começo) e depois os novos, sem repetir nem pular.
    */
-  subscribe(stream: string, afterSeq: Seq, onEvent: (event: CoreEvent) => void): Unsubscribe
-  /** Envia o comando; repetir a mesma chave não repete o efeito. */
-  send(command: CoreCommand, idempotencyKey: string): Promise<CommandAck>
+  subscribe(
+    stream: string,
+    afterSeq: number,
+    onEvent: (event: EventEnvelopeV1) => void,
+  ): Unsubscribe
+  /**
+   * Envia o comando. A chave de idempotência vai em `params._meta`; repetir a mesma chave não
+   * repete o efeito. Um comando não é um evento: o efeito volta como evento.
+   */
+  send(command: CommandRequestV1): Promise<CommandResponseV1>
 }

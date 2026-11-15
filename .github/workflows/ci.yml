@@ -165,7 +165,8 @@ jobs:
           PUSH_AFTER_SHA: ${{ github.sha }}
           # Casca: ela mesma, o que ela enxerga (contracts, e2e) e tudo que muda o resultado da compilação.
           SHELL_PATHS: '^(crates/shell/|crates/contracts/|crates/e2e/|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
-          UI_PATHS: '^ui/'
+          # Interface: ela mesma e o que ela lê dos contratos (tipos gerados e os Schemas do teste de contrato).
+          UI_PATHS: '^(ui/|contracts/generated/|contracts/schemas/)'
           CONTRACTS_PATHS: '^contracts/'
           # PTY: o crate, os parâmetros dele, este workflow e tudo que muda o resultado da compilação.
           PTY_PATHS: '^(crates/ptyhost/|defaults/ptyhost\.toml$|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
