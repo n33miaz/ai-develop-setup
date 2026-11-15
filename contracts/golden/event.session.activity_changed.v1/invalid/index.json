@@ -1,0 +1,33 @@
+{
+  "01-wrong-type.json": {
+    "rule": "O type tem de ser exatamente a URN deste evento.",
+    "keyword": "const",
+    "instancePath": "/type"
+  },
+  "02-missing-activity.json": {
+    "rule": "O campo activity é obrigatório em data.",
+    "keyword": "required",
+    "instancePath": "/data",
+    "params": {
+      "missingProperty": "activity"
+    }
+  },
+  "03-extra-data-field.json": {
+    "rule": "data é fechado: campo desconhecido reprova.",
+    "keyword": "additionalProperties",
+    "instancePath": "/data",
+    "params": {
+      "additionalProperty": "unexpected"
+    }
+  },
+  "04-wrong-stream.json": {
+    "rule": "O stream deste evento começa por session/.",
+    "keyword": "pattern",
+    "instancePath": "/stream"
+  },
+  "05-unknown-activity.json": {
+    "rule": "activity é active ou idle.",
+    "keyword": "enum",
+    "instancePath": "/data/activity"
+  }
+}

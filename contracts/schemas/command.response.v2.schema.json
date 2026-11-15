@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:command:response:2",
+  "title": "Resposta de comando",
+  "description": "Resposta JSON-RPC 2.0 a um comando: ou result ou error, nunca os dois. A versão 2 fecha a forma do result: o comando foi aceito, e replayed diz se esta é a repetição de um comando já aceito com a mesma chave de idempotência (nada foi executado de novo). O efeito do comando volta como evento, não no result.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "jsonrpc",
+    "id"
+  ],
+  "properties": {
+    "jsonrpc": {
+      "const": "2.0"
+    },
+    "id": {
+      "$ref": "urn:ads:common:ulid:1"
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "accepted",
+        "replayed"
+      ],
+      "properties": {
+        "accepted": {
+          "const": true
+        },
+        "replayed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message"
+      ],
+      "properties": {
+        "code": {
+          "type": "integer"
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "data": {
+          "type": "object"
+        }
+      }
+    }
+  },
+  "oneOf": [
+    {
+      "required": [
+        "result"
+      ]
+    },
+    {
+      "required": [
+        "error"
+      ]
+    }
+  ],
+  "examples": [
+    {
+      "jsonrpc": "2.0",
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAD",
+      "result": {
+        "accepted": true,
+        "replayed": false
+      }
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "01-uppercase.json": {
+    "rule": "O código é todo em minúsculas.",
+    "keyword": "pattern",
+    "instancePath": ""
+  },
+  "02-space.json": {
+    "rule": "O código não tem espaço.",
+    "keyword": "pattern",
+    "instancePath": ""
+  },
+  "03-two-details.json": {
+    "rule": "Só um detalhe depois do ponto.",
+    "keyword": "pattern",
+    "instancePath": ""
+  },
+  "04-empty.json": {
+    "rule": "Código vazio não vale.",
+    "keyword": "pattern",
+    "instancePath": ""
+  },
+  "05-too-long.json": {
+    "rule": "O código tem no máximo 64 caracteres.",
+    "keyword": "maxLength",
+    "instancePath": ""
+  }
+}

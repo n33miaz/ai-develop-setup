@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "action_id": "act-05",
+  "plan_hash": "sha256:8f9a2556ddb54f894a134da1ce63c48503dfb0e6175df4ccd7d67db90c4dac1e",
+  "operation": "fs.move",
+  "work_root": "/work/proj",
+  "destination": "/work/proj/archive",
+  "targets": [
+    {
+      "path": "/work/proj/out/a.log",
+      "pattern": null,
+      "repo_root": false
+    },
+    {
+      "path": "/work/proj/out/b.log",
+      "pattern": null,
+      "repo_root": false
+    }
+  ],
+  "estimate": {
+    "items": 2,
+    "bytes": 2048
+  },
+  "verdict": {
+    "decision": "allowed",
+    "risk": "low",
+    "reasons": []
+  },
+  "quarantined": false
+}

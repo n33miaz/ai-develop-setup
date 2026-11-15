@@ -1,0 +1,43 @@
+{
+  "01-wrong-type.json": {
+    "rule": "O type tem de ser exatamente a URN deste evento.",
+    "keyword": "const",
+    "instancePath": "/type"
+  },
+  "02-missing-rules.json": {
+    "rule": "O campo rules é obrigatório em data.",
+    "keyword": "required",
+    "instancePath": "/data",
+    "params": {
+      "missingProperty": "rules"
+    }
+  },
+  "03-extra-data-field.json": {
+    "rule": "data é fechado: campo desconhecido reprova.",
+    "keyword": "additionalProperties",
+    "instancePath": "/data",
+    "params": {
+      "additionalProperty": "unexpected"
+    }
+  },
+  "04-wrong-stream.json": {
+    "rule": "O stream deste evento começa por action/.",
+    "keyword": "pattern",
+    "instancePath": "/stream"
+  },
+  "05-no-rules.json": {
+    "rule": "Plano negado cita ao menos uma regra.",
+    "keyword": "minItems",
+    "instancePath": "/data/rules"
+  },
+  "06-repeated-rule.json": {
+    "rule": "Cada regra aparece uma vez.",
+    "keyword": "uniqueItems",
+    "instancePath": "/data/rules"
+  },
+  "07-rule-not-a-code.json": {
+    "rule": "A regra é um código estável, não um texto.",
+    "keyword": "pattern",
+    "instancePath": "/data/rules/0"
+  }
+}

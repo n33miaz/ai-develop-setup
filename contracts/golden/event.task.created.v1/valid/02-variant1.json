@@ -2,7 +2,7 @@
   "id": "01ARZ3NDEKTSV4RRFFQ69G5FAC",
   "type": "urn:ads:event:task.created:1",
   "ts": "2030-01-02T03:04:05Z",
-  "stream": "task/task-01",
+  "stream": "task/task-02",
   "seq": 42,
   "actor": {
     "kind": "agent",

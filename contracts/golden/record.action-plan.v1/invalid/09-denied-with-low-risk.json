@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "action_id": "act-04",
+  "plan_hash": "sha256:b5793ce134b48011d4e24e0a494a05b863a177de46651a9fe7068efce0231c35",
+  "operation": "fs.delete_recursive",
+  "work_root": "/work/proj",
+  "destination": null,
+  "targets": [
+    {
+      "path": "/work/proj",
+      "pattern": null,
+      "repo_root": true
+    }
+  ],
+  "estimate": {
+    "items": 1200,
+    "bytes": 52428800
+  },
+  "verdict": {
+    "decision": "denied",
+    "risk": "low",
+    "reasons": [
+      {
+        "rule": "work_root_itself",
+        "subject": "/work/proj"
+      },
+      {
+        "rule": "outside_allowed_roots",
+        "subject": "/work/proj"
+      },
+      {
+        "rule": "repository_root",
+        "subject": "/work/proj"
+      },
+      {
+        "rule": "item_limit_exceeded",
+        "subject": "/work/proj"
+      }
+    ]
+  },
+  "quarantined": false
+}

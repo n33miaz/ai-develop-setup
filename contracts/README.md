@@ -10,7 +10,7 @@ Fonte única de toda mensagem e todo registro do produto: JSON Schema 2020-12, u
 | `golden/<tipo>.<nome>.v<versão>/valid/` | Exemplos que têm de passar (pelo menos 2) |
 | `golden/<tipo>.<nome>.v<versão>/invalid/` | Exemplos que têm de falhar (pelo menos 3), mais `index.json` |
 | `generated/ts/` | Tipos TypeScript gerados, versionados; o CI reprova se estiverem desatualizados. A interface os importa por `ui/src/api/contracts.ts` |
-| `tools/` | Validador, gerador e os testes deles |
+| `tools/` | Validador, gerador, regras entre campos (`rules.mjs`) e os testes deles |
 
 ## Comandos
 
@@ -25,7 +25,7 @@ npm test           # testes do próprio validador e do gerador
 
 Os testes montam árvores de contratos de mentira em `.test-tmp/` (fora do git), uma subpasta nova por execução, e não apagam nada: a limpeza dessa pasta é manual.
 
-O `validate` confere, entre outras coisas: todo `$id` segue a URN e é único; o nome do arquivo bate com o `$id`; todo objeto com `properties` declara `additionalProperties`; cada `examples[0]` é o primeiro dourado válido; cada dourado válido passa; cada dourado inválido falha **pelo motivo declarado**; este README cita todo Schema.
+O `validate` confere, entre outras coisas: todo `$id` segue a URN e é único; o nome do arquivo bate com o `$id`; todo objeto com `properties` declara `additionalProperties`; cada `examples[0]` é o primeiro dourado válido; cada dourado válido passa; cada dourado inválido falha **pelo motivo declarado**; cada dourado válido cumpre as regras que o Schema não exprime (`tools/rules.mjs`: [stream e entidade](#stream-e-entidade) e [`plan_hash`](#serialização-canônica-do-plan_hash)); este README cita todo Schema.
 
 ## Identificadores (ADR 0006)
 
@@ -67,7 +67,113 @@ Dados dos dourados são sempre sintéticos: sem nomes reais, e-mails, caminhos d
 - Entidades são identificadas por `urn:ads:common:id:1` (opaco, sem arroba); eventos e comandos, por ULID.
 - Campo que pode faltar de verdade é opcional; campo que existe e pode não ter valor é obrigatório e aceita `null`.
 - Regras entre campos (`if`/`then`) só cobrem o que depende de valores do próprio documento. Regra que precisa de outro documento (o hash de um plano contra o plano, por exemplo) é teste de contrato, não Schema.
-- `data_class` (`public`, `internal`, `private`, `secret`) acompanha todo evento; texto de terminal e perguntas de permissão nunca são `public`.
+- `data_class` (`public`, `internal`, `private`, `secret`) acompanha todo evento; texto de terminal e perguntas de permissão nunca são `public`, e evento que leva texto escrito pelo usuário (`title` em `task.created`, `display_name` em `session.created`) também não.
+- Caminho absoluto é `urn:ads:common:abspath:1`, sempre já normalizado: `C:\pasta\arquivo` ou `/pasta/arquivo`, com `C:\` e `/` como raízes. O Schema recusa caminho relativo, `..`, `.`, variável (`$`, `%`), til no começo de componente, curinga, separador sobrando e caminho de rede. Nomes curtos 8.3 e nomes de dispositivo do Windows não cabem em expressão regular legível: recusá-los é trabalho de quem normaliza, antes de gravar.
+
+## Stream e entidade
+
+O `stream` de um evento é `<família>/<id>`, e o `<id>` é o da entidade que o próprio `data` nomeia. JSON Schema não compara dois campos do mesmo documento, então o Schema fixa só a família; a igualdade é regra de contrato, conferida pelo validador em todo dourado válido e exportada para quem produz ou lê eventos (`streamBindingError` em `tools/rules.mjs`).
+
+| Família | Campo de `data` que dá o `<id>` |
+|---|---|
+| `session` | `session_id` |
+| `task` | `task_id` |
+| `approval` | `approval_id` |
+| `action` | `action_id` |
+| `review` | `review_id` |
+| `routing` | `task_id` |
+
+`host` e `usage` ficam fora da regra: o stream deles agrupa por máquina ou por tarefa, e nem todo evento dessas famílias leva esse identificador em `data`.
+
+## Comandos e respostas
+
+`urn:ads:command:response:1` deixa o `result` aberto. `urn:ads:command:response:2` o fecha em `{ "accepted": true, "replayed": <booleano> }`:
+
+- `accepted` é sempre `true`: comando recusado responde com `error`, nunca com `result`.
+- `replayed` é `false` na primeira vez que a chave de idempotência (`params._meta.idempotency_key`) é aceita e `true` em toda repetição da mesma chave. Na repetição nada é executado de novo.
+- O efeito do comando não vem no `result`: volta como evento.
+
+As duas versões convivem; quem ainda responde `{ "accepted": true }` segue na `:1`.
+
+## Portão de ações
+
+### Ciclo de uma ação nos eventos
+
+Cada estado da ação é reconstruível do log. Os eventos `action.*` ficam no stream `action/<action_id>`; os `approval.*`, no stream `approval/<approval_id>`, amarrados à ação pelo `action_id` de `approval.requested:2` e pelo `approval_id` de `action.started` e `action.executed`.
+
+| Evento | Estado depois dele |
+|---|---|
+| `action.denied` | negada (final). É o único evento da ação: vem no lugar de `action.planned` |
+| `action.planned` | planejada |
+| `approval.requested` | aguardando aprovação |
+| `approval.granted` | aprovada |
+| `approval.denied` | aprovação negada (final) |
+| `approval.expired` | aprovação expirada (final) |
+| `action.started` | executando |
+| `action.executed` | executada (final) |
+| `action.failed` | falhou (final) |
+
+"Negada" é veredito do portão sobre um plano normalizado. Pedido que nem chega a virar plano (alvo relativo, variável não expandida, lista vazia) não tem caminho absoluto nem hash, e por isso não tem evento nem registro.
+
+### Registro do plano
+
+`urn:ads:record:action-plan:1` guarda o plano como o portão o julgou:
+
+- `operation` é a operação **pedida** (`fs.delete`, `fs.delete_recursive`, `fs.move`, `fs.overwrite`, `fs.clean_untracked`).
+- `targets`: cada alvo tem `path` (caminho absoluto literal), `pattern` (curinga sobre os filhos de `path`, ou `null`) e `repo_root` (o chamador viu que o alvo é raiz de repositório). Vêm na ordem canônica, sem repetição.
+- `work_root`, e `estimate` com `items` e `bytes` (`null` quando ninguém mediu).
+- `verdict`: `decision` (`allowed`, `requires_approval`, `denied`), o `risk` correspondente (`low`, `medium`, `high`) e `reasons`, uma entrada por regra que disparou, com o código da regra (`urn:ads:common:action-rule:1`) e o caminho em que disparou.
+- `quarantined` e `destination`: quando `quarantined` é `true`, o apagar pedido foi reescrito como mover para a pasta de quarentena, e `destination` é essa pasta (o destino reescrito). Em `fs.move`, `destination` é o destino pedido. Nos demais casos é `null`.
+- `plan_hash` cobre o plano **em vigor**: o reescrito, quando há quarentena. É o mesmo hash de `action.planned`, das aprovações e de `action.started`, `action.executed` e `action.failed`. O nome da pasta de quarentena sai do hash do plano como pedido, o que este registro não reconfere.
+
+Códigos de regra em uso (código novo não muda a versão do Schema). Onde há `<proteção>`, ela é uma de `filesystem_root`, `user_home`, `user_home_ancestor`, `user_profile`, `system_dir`, `other_path_style`.
+
+| Veredito | Códigos |
+|---|---|
+| `denied` | `protected.<proteção>`, `work_root_protected.<proteção>`, `work_root_itself`, `outside_allowed_roots`, `repository_root`, `quarantine_itself`, `destination_protected.<proteção>`, `destination_outside_allowed_roots`, `destination_inside_target` |
+| `requires_approval` | `outside_work_root`, `destination_outside_work_root`, `estimate_unknown`, `item_limit_exceeded`, `byte_limit_exceeded`, `quarantine_purge` |
+
+### Serialização canônica do plan_hash
+
+`plan_hash` é `sha256:` mais o SHA-256, em hexadecimais minúsculos, dos bytes UTF-8 do texto abaixo. Uma linha por campo, nesta ordem, cada linha terminada por `\n` (inclusive a última), sem espaço sobrando:
+
+```
+ads.action-plan/1
+op:<operação em vigor>
+work_root:<n>:<work_root>
+destination:<n>:<destination>
+estimate:<items>:<bytes>
+targets:<quantidade de alvos>
+target:<repo_root>:<n>:<texto do alvo>
+```
+
+- `<operação em vigor>`: `fs.move` quando `quarantined` é `true`; senão, `operation`.
+- `<n>` é o tamanho, em bytes UTF-8, do caminho que vem logo depois: nenhum caminho consegue se passar por dois campos.
+- `destination` nulo vira a linha `destination:-`; `estimate` nulo vira `estimate:unknown`. `items` e `bytes` vão em decimal, sem zeros à esquerda.
+- Uma linha `target:` por alvo, na ordem do registro. `<repo_root>` é `1` ou `0`. O texto do alvo é `path`; com curinga, `path`, o separador do estilo (`\` ou `/`; nenhum quando `path` é a raiz) e `pattern`.
+
+Normalização, feita antes de gravar o registro (o Schema a exige nos caminhos):
+
+- Caminhos na forma de `urn:ads:common:abspath:1`: unidade em maiúscula, um separador só, sem separador no fim, sem `.`; nada é reparado além disso (`..`, variável e til recusam o plano inteiro).
+- Alvos repetidos viram um só; se um dos repetidos é raiz de repositório, fica `repo_root` verdadeiro.
+- Ordem dos alvos: primeiro os de estilo Windows, depois os POSIX; depois pela letra da unidade; depois componente a componente, comparando os bytes UTF-8 de cada nome (o caminho mais curto vem antes do que o estende; maiúscula e minúscula são diferentes); por fim, alvo sem curinga antes do mesmo `path` com curinga, e curingas pelos bytes. É comparação por componente, não do texto inteiro: `/a/b` vem antes de `/a-b`.
+
+Exemplo (o primeiro dourado válido do registro; o mesmo vetor do teste do núcleo):
+
+```
+ads.action-plan/1
+op:fs.delete_recursive
+work_root:10:/work/proj
+destination:-
+estimate:3:4096
+targets:2
+target:0:12:/work/proj/a
+target:0:12:/work/proj/b
+```
+
+resulta em `sha256:c7b870d89ef435eb431fcdf8e99f82f2b10c9b05a25eb86eb2ed603fa366eb94`.
+
+O validador recalcula o hash e confere a ordem dos alvos em todo dourado válido do registro (`planHash` e `actionPlanErrors` em `tools/rules.mjs`).
 
 ## Contrato pty-host/1
 
@@ -146,6 +252,8 @@ O manifesto (`urn:ads:record:update-manifest:1`) é assinado no CI. A assinatura
 | `urn:ads:common:data-class:1` | Classe de sensibilidade de um dado: public, internal, private ou secret. Segredo nunca sai da máquina. |
 | `urn:ads:common:risk:1` | Nível de risco de uma ação ou tarefa: low, medium ou high. |
 | `urn:ads:common:relpath:1` | Caminho relativo com barra normal, sem raiz, sem letra de unidade e sem segmento '..'. |
+| `urn:ads:common:abspath:1` | Caminho absoluto literal, já normalizado, no estilo Windows ou POSIX: sem relativo, '..', variável, til, curinga nem caminho de rede. |
+| `urn:ads:common:action-rule:1` | Código estável de uma regra do portão de ações que disparou num plano. |
 | `urn:ads:common:actor:1` | Quem causou um evento ou uma decisão: um aparelho, um agente de IA ou o próprio daemon. |
 
 ### Envelopes
@@ -159,13 +267,15 @@ O manifesto (`urn:ads:record:update-manifest:1`) é assinado no CI. A assinatura
 | Schema | O que descreve |
 |---|---|
 | `urn:ads:command:request:1` | Comando JSON-RPC 2.0 enviado ao núcleo. Comando é pedido, não fato; a chave de idempotência evita executar duas vezes, e a origem remota exige assinatura do aparelho, nonce, contador e validade. |
-| `urn:ads:command:response:1` | Resposta JSON-RPC 2.0 a um comando: ou result ou error, nunca os dois. |
+| `urn:ads:command:response:1` | Resposta JSON-RPC 2.0 a um comando: ou result ou error, nunca os dois. O result é aberto. |
+| `urn:ads:command:response:2` | A mesma resposta com o result fechado: comando aceito e o sinal replayed, que marca a repetição de um comando idempotente. Convive com a `:1`. |
 
 ### Eventos de sessão
 
 | Schema | O que descreve |
 |---|---|
-| `urn:ads:event:session.created:1` | Uma sessão de terminal foi aberta no host de PTY para um agente de IA. |
+| `urn:ads:event:session.created:1` | Uma sessão de terminal foi aberta no host de PTY para um agente de IA. Leva, opcional, o nome de exibição. |
+| `urn:ads:event:session.activity_changed:1` | A sessão passou de ativa para ociosa ou de ociosa para ativa. Sessão recém-criada conta como ativa. |
 | `urn:ads:event:session.output:1` | Bytes que o terminal produziu, em base64, com deslocamento no fluxo da sessão. No transporte ao vivo viajam em quadro binário; este é o registro. |
 | `urn:ads:event:session.resized:1` | O terminal da sessão mudou de tamanho. |
 | `urn:ads:event:session.ended:1` | A sessão terminou: o processo saiu, foi morto, o host de PTY reiniciou ou houve erro. Saída normal traz o código de saída. |
@@ -175,7 +285,7 @@ O manifesto (`urn:ads:record:update-manifest:1`) é assinado no CI. A assinatura
 
 | Schema | O que descreve |
 |---|---|
-| `urn:ads:event:task.created:1` | Uma tarefa nasceu. Só o hash do objetivo vai no evento; o texto fica no pacote da tarefa. |
+| `urn:ads:event:task.created:1` | Uma tarefa nasceu. O objetivo vai só como hash (o texto fica no pacote da tarefa); o título, opcional, é o rótulo curto que a interface mostra. |
 | `urn:ads:event:task.started:1` | A execução da tarefa começou, numa sessão ou ainda sem sessão. |
 | `urn:ads:event:task.completed:1` | A tarefa terminou com entrega; registra se os testes passaram e o digest do diff. |
 | `urn:ads:event:task.failed:1` | A tarefa terminou sem entrega, com um código de erro estável e a indicação de se vale tentar de novo. |
@@ -185,7 +295,8 @@ O manifesto (`urn:ads:record:update-manifest:1`) é assinado no CI. A assinatura
 
 | Schema | O que descreve |
 |---|---|
-| `urn:ads:event:approval.requested:1` | Uma ação com risco pede aprovação: vale para o hash do plano e expira na validade indicada. |
+| `urn:ads:event:approval.requested:1` | Uma ação com risco pede aprovação: vale para o hash do plano e expira na validade indicada. Não diz de qual ação é. |
+| `urn:ads:event:approval.requested:2` | O mesmo pedido com action_id obrigatório, que amarra a aprovação à ação. Convive com a `:1`. |
 | `urn:ads:event:approval.granted:1` | A aprovação foi concedida para o hash do plano, por um dos três caminhos permitidos. |
 | `urn:ads:event:approval.denied:1` | A aprovação foi negada para o hash do plano, com motivo opcional. |
 | `urn:ads:event:approval.expired:1` | O prazo da aprovação passou sem decisão; o plano precisa ser refeito. |
@@ -226,6 +337,8 @@ O manifesto (`urn:ads:record:update-manifest:1`) é assinado no CI. A assinatura
 | Schema | O que descreve |
 |---|---|
 | `urn:ads:event:action.planned:1` | O ensaio (dry-run) de uma ação produziu um plano: o verbo, o risco, o hash do plano e se pede elevação. Nada foi alterado ainda; a aprovação e a execução valem só para este hash. |
+| `urn:ads:event:action.denied:1` | O portão negou o plano: nada será executado e não cabe aprovação. Cita o hash do plano negado e as regras que o negaram. |
+| `urn:ads:event:action.started:1` | A execução do plano foi autorizada e começou, com a aprovação citada (ou sem aprovação, quando a política a dispensa). |
 | `urn:ads:event:action.executed:1` | A ação foi executada exatamente como o plano do hash indicado, com a aprovação citada (ou sem aprovação, quando a política a dispensa). |
 | `urn:ads:event:action.failed:1` | A ação não terminou como o plano previa; registra o hash do plano e um código de erro estável. O que foi feito pela metade é assunto do plano de reparo, não deste evento. |
 
@@ -235,6 +348,7 @@ O manifesto (`urn:ads:record:update-manifest:1`) é assinado no CI. A assinatura
 |---|---|
 | `urn:ads:record:task-packet:1` | O que um agente recebe para executar uma tarefa: objetivo, critérios de aceite, restrições, orçamento e entradas. O receptor trata o pacote como dado, nunca como instrução; permissões vêm da configuração do usuário. |
 | `urn:ads:record:usage_event:1` | Uma linha do livro-caixa: uma chamada ou turno de IA medido, com tokens, duração, custo de lista, custo faturável (só chave de API), janela de cota, fonte e chave de deduplicação. Só-anexo; alias de conta nunca é credencial nem e-mail. |
+| `urn:ads:record:action-plan:1` | O plano de uma ação destrutiva sobre arquivos, como o portão o julgou: operação, alvos, raiz de trabalho, estimativa, veredito com as regras que dispararam, marca de quarentena e destino. O plan_hash é reconferível pela [serialização canônica](#serialização-canônica-do-plan_hash). |
 | `urn:ads:record:approval:1` | Estado de uma aprovação: vale para o hash de um plano e expira. Pendente e expirada não têm decisor; concedida e negada têm autor e instante da decisão. |
 | `urn:ads:record:host_sample:1` | Uma observação de um sinal da máquina (disco, memória, etc.) feita por um coletor só leitura. Amostra ausente nunca vira zero; corrigir é gravar outra amostra com outro sample_id. |
 | `urn:ads:record:host_event:1` | Um alerta derivado de amostras: cita a regra, a gravidade e os sample_id que o justificam. Confirmar é um evento posterior; o alerta original não muda. |

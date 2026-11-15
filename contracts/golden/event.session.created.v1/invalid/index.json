@@ -29,5 +29,25 @@
     "rule": "O terminal tem pelo menos 1 coluna.",
     "keyword": "minimum",
     "instancePath": "/data/cols"
+  },
+  "06-empty-display_name.json": {
+    "rule": "display_name é opcional, mas nunca vazio.",
+    "keyword": "minLength",
+    "instancePath": "/data/display_name"
+  },
+  "07-display_name-too-long.json": {
+    "rule": "display_name tem no máximo 80 caracteres.",
+    "keyword": "maxLength",
+    "instancePath": "/data/display_name"
+  },
+  "08-display_name-with-line-break.json": {
+    "rule": "display_name é uma linha só, sem caractere de controle.",
+    "keyword": "pattern",
+    "instancePath": "/data/display_name"
+  },
+  "09-public-display_name.json": {
+    "rule": "Evento com display_name leva texto do usuário e nunca é public.",
+    "keyword": "enum",
+    "instancePath": "/data_class"
   }
 }

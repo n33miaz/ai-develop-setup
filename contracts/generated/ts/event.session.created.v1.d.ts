@@ -1,7 +1,7 @@
 /* Gerado por tools/gen-ts.mjs a partir de schemas/event.session.created.v1.schema.json. Não edite à mão. */
 
 /**
- * Sessão criada. Uma sessão de terminal foi aberta no host de PTY para um agente de IA.
+ * Sessão criada. Uma sessão de terminal foi aberta no host de PTY para um agente de IA. O nome de exibição, opcional, é o rótulo que a interface mostra.
  */
 export type EventSessionCreatedV1 = EventEnvelopeV1 & {
   type: "urn:ads:event:session.created:1";
@@ -14,6 +14,10 @@ export type EventSessionCreatedV1 = EventEnvelopeV1 & {
     cols: number;
     rows: number;
     workdir_alias: CommonIdV1;
+    /**
+     * Nome de exibição da sessão, numa linha.
+     */
+    display_name?: string;
   };
 };
 /**

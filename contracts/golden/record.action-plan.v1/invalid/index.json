@@ -1,0 +1,95 @@
+{
+  "01-relative-target.json": {
+    "rule": "Alvo relativo não vale: todo alvo é absoluto.",
+    "keyword": "pattern",
+    "instancePath": "/targets/0/path"
+  },
+  "02-parent-in-target.json": {
+    "rule": "Alvo com componente .. não vale.",
+    "keyword": "not",
+    "instancePath": "/targets/0/path"
+  },
+  "03-variable-in-target.json": {
+    "rule": "Alvo com variável não expandida não vale.",
+    "keyword": "not",
+    "instancePath": "/targets/0/path"
+  },
+  "04-tilde-work-root.json": {
+    "rule": "Raiz de trabalho com til não expandido não vale.",
+    "keyword": "not",
+    "instancePath": "/work_root"
+  },
+  "05-network-target.json": {
+    "rule": "Alvo em caminho de rede não vale.",
+    "keyword": "pattern",
+    "instancePath": "/targets/0/path"
+  },
+  "06-wildcard-in-path.json": {
+    "rule": "O curinga vai em pattern, nunca em path.",
+    "keyword": "not",
+    "instancePath": "/targets/0/path"
+  },
+  "07-no-targets.json": {
+    "rule": "Plano sem alvo não existe.",
+    "keyword": "minItems",
+    "instancePath": "/targets"
+  },
+  "08-allowed-with-reason.json": {
+    "rule": "Veredito permitido não tem regra disparada.",
+    "keyword": "maxItems",
+    "instancePath": "/verdict/reasons"
+  },
+  "09-denied-with-low-risk.json": {
+    "rule": "Veredito negado tem risco high.",
+    "keyword": "const",
+    "instancePath": "/verdict/risk"
+  },
+  "10-approval-without-reason.json": {
+    "rule": "Veredito que pede aprovação cita ao menos uma regra.",
+    "keyword": "minItems",
+    "instancePath": "/verdict/reasons"
+  },
+  "11-quarantined-overwrite.json": {
+    "rule": "Só apagar vira mover para a quarentena.",
+    "keyword": "enum",
+    "instancePath": "/operation"
+  },
+  "12-quarantined-denied.json": {
+    "rule": "Plano negado não é reescrito para a quarentena.",
+    "keyword": "enum",
+    "instancePath": "/verdict/decision"
+  },
+  "13-move-without-destination.json": {
+    "rule": "Mover exige destino.",
+    "keyword": "type",
+    "instancePath": "/destination"
+  },
+  "14-delete-with-destination.json": {
+    "rule": "Sem mover e sem quarentena não há destino.",
+    "keyword": "type",
+    "instancePath": "/destination"
+  },
+  "15-missing-plan_hash.json": {
+    "rule": "O campo plan_hash é obrigatório.",
+    "keyword": "required",
+    "instancePath": "",
+    "params": {
+      "missingProperty": "plan_hash"
+    }
+  },
+  "16-unknown-operation.json": {
+    "rule": "A operação é uma das cinco do portão.",
+    "keyword": "enum",
+    "instancePath": "/operation"
+  },
+  "17-pattern-without-wildcard.json": {
+    "rule": "pattern só existe com curinga; nome literal vai em path.",
+    "keyword": "pattern",
+    "instancePath": "/targets/0/pattern"
+  },
+  "18-negative-estimate.json": {
+    "rule": "A estimativa não é negativa.",
+    "keyword": "minimum",
+    "instancePath": "/estimate/items"
+  }
+}
