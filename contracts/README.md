@@ -9,7 +9,7 @@ Fonte única de toda mensagem e todo registro do produto: JSON Schema 2020-12, u
 | `schemas/` | Um arquivo por Schema: `<tipo>.<nome>.v<versão>.schema.json` |
 | `golden/<tipo>.<nome>.v<versão>/valid/` | Exemplos que têm de passar (pelo menos 2) |
 | `golden/<tipo>.<nome>.v<versão>/invalid/` | Exemplos que têm de falhar (pelo menos 3), mais `index.json` |
-| `generated/ts/` | Tipos TypeScript gerados, versionados; o CI reprova se estiverem desatualizados |
+| `generated/ts/` | Tipos TypeScript gerados, versionados; o CI reprova se estiverem desatualizados. A interface os importa por `ui/src/api/contracts.ts` |
 | `tools/` | Validador, gerador e os testes deles |
 
 ## Comandos
