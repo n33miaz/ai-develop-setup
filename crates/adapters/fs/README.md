@@ -35,7 +35,8 @@ executor.measure(raiz de trabalho, alvo)  // fatos reais, para o plano nascer co
 2. A raiz de trabalho tem de estar dentro da cerca (ou ser ela) e ser uma pasta de verdade. Cada alvo tem de estar estritamente dentro da raiz de trabalho.
 3. **Resolução física.** O caminho é percorrido nome a nome a partir da cerca, com `symlink_metadata`. Link simbólico, junção ou qualquer outro ponto de reanálise no meio do caminho é recusa; no último nome é "o alvo é um link", e o que ele aponta nunca é olhado. Fora do Windows, entrada em outro volume é recusa (no Windows, volume montado em pasta é ponto de reanálise). Ao fim, o caminho resolvido pelo sistema tem de ser o mesmo que foi percorrido: outra grafia do mesmo lugar é recusa.
 4. **Fatos.** O executor conta itens e bytes de cada alvo (sem seguir link; um link conta um) e olha se há `.git` no nível do alvo. O plano é julgado mais uma vez com esses fatos no lugar dos declarados. Veredito mais duro que o do plano declarado é recusa; com aprovação, mais itens ou mais bytes do que a estimativa aprovada também.
-5. Alvos sobrepostos (um dentro do outro), curinga, sobrescrever, limpar não rastreados e mover que não seja para a quarentena nem restauração: recusa. Ver [o que não é executado](#o-que-não-é-executado).
+5. **Onde cada alvo cai de verdade.** O veredito julga a pasta que recebe os alvos; o executor julga o lugar final de cada um (`<destino>/<action_id>/items/...` na quarentena, o lugar de origem na restauração): estritamente dentro da raiz de trabalho, fora de pasta protegida pela política e, no disco, pelo mesmo percurso sem link.
+6. Alvos sobrepostos (um dentro do outro), curinga, sobrescrever, limpar não rastreados e mover que não seja para a quarentena nem restauração: recusa. Ver [o que não é executado](#o-que-não-é-executado).
 
 Qualquer recusa aqui acontece com o disco intacto.
 

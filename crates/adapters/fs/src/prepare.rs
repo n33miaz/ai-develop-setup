@@ -206,6 +206,46 @@ pub(crate) fn prepare(
     check_facts(policy, permit, declared.decision(), &targets)?;
 
     let quarantine = policy.quarantine_root(work_root);
+    let job = build_job(fence, policy, limits, permit, work, &targets, &quarantine)?;
+
+    // The verdict judged the folder that receives the targets. Where each one really lands
+    // is judged here: by text against the policy and the work root, and on disk by every
+    // mutation (see `disk`).
+    for op in job.ops.iter().flatten() {
+        let Act::MoveTo { to, .. } = &op.act else {
+            continue;
+        };
+        let text = fence.text_of(to);
+        let landing =
+            AbsPath::parse(&text).map_err(|error| Stop::new(Reason::NotPhysical, error))?;
+        if !landing.is_strictly_within(work_root) {
+            return Err(Stop::new(
+                Reason::OutsideWorkRoot,
+                format!("{text} is not strictly inside the work root"),
+            ));
+        }
+        if let Some(protection) = policy.protection(&landing) {
+            return Err(Stop::new(
+                Reason::PolicyDenies,
+                format!("{text} is protected ({})", protection.code()),
+            ));
+        }
+    }
+    Ok(job)
+}
+
+fn build_job(
+    fence: &Fence,
+    policy: &GatePolicy,
+    limits: &Limits,
+    permit: &ExecutionPermit,
+    work: Vec<String>,
+    targets: &[Target],
+    quarantine: &AbsPath,
+) -> Result<Job, Stop> {
+    let plan = permit.plan();
+    let work_root = plan.work_root();
+    let declared = classify(plan, policy);
     match plan.operation() {
         Operation::Overwrite | Operation::CleanUntracked => Err(Stop::new(
             Reason::Unsupported,
@@ -220,7 +260,7 @@ pub(crate) fn prepare(
                     && plan
                         .targets()
                         .iter()
-                        .all(|target| target.path().scope().is_strictly_within(&quarantine));
+                        .all(|target| target.path().scope().is_strictly_within(quarantine));
                 if !purge {
                     return Err(Stop::new(
                         Reason::QuarantineBypassed,
@@ -230,22 +270,22 @@ pub(crate) fn prepare(
             }
             let recursive = matches!(plan.operation(), Operation::DeleteRecursive);
             let floor = if policy.quarantine_enabled() {
-                fence.relative(&quarantine)?
+                fence.relative(quarantine)?
             } else {
                 work
             };
-            delete_job(fence, floor, &targets, recursive)
+            delete_job(fence, floor, targets, recursive)
         }
         Operation::Move { destination } => {
             let into_quarantine =
-                policy.quarantine_enabled() && destination.is_strictly_within(&quarantine);
+                policy.quarantine_enabled() && destination.is_strictly_within(quarantine);
             if into_quarantine {
-                quarantine_job(fence, permit, work, &targets, destination, &quarantine)
+                quarantine_job(fence, permit, work, targets, destination, quarantine)
             } else if same_path(destination, work_root) {
                 if !policy.quarantine_enabled() {
                     return Err(Stop::new(Reason::Unsupported, "the quarantine is off"));
                 }
-                restore_job(fence, limits, permit, work, &targets, &quarantine)
+                restore_job(fence, limits, permit, work, targets, quarantine)
             } else {
                 Err(Stop::new(
                     Reason::Unsupported,

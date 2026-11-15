@@ -947,3 +947,101 @@ fn what_is_not_defined_yet_is_refused_whole() {
         assert_eq!(tree(&sandbox.root), before);
     }
 }
+
+// ---- where a move really lands -----------------------------------------------------------------
+
+#[test]
+fn a_destination_that_is_a_link_is_refused() {
+    let sandbox = Sandbox::new("destlink");
+    sandbox.file("work/build/out.txt", "text");
+    sandbox.dir("work/.ads/quarantine");
+    let flow = through_gate(
+        &sandbox.policy(""),
+        delete(&sandbox, "act-1", &["work/build"]),
+    );
+    // The folder the gate chose, by text inside the work root, leads out of the fence.
+    let (batch, _) = batch_of(&sandbox, &flow, "act-1");
+    if !folder_link(batch.parent().unwrap(), &sandbox.outside) {
+        return;
+    }
+    let before = tree(&sandbox.root);
+    let mut executor = sandbox.executor("");
+    assert_eq!(
+        executor.rehearse(&flow.permit).unwrap_err().reason,
+        Reason::LinkInPath
+    );
+    let (outcome, _) = execute(&mut executor, flow);
+    assert_eq!(outcome.unwrap_err().reason, Reason::LinkInPath);
+    assert_eq!(tree(&sandbox.root), before);
+    assert_eq!(tree(&sandbox.outside).len(), 1);
+}
+
+#[test]
+fn a_link_swapped_into_the_destination_is_caught_before_the_move() {
+    let sandbox = Sandbox::new("swapdest");
+    sandbox.file("work/a/data/file.txt", "inside");
+    if !folder_link(&sandbox.path("work/probe"), &sandbox.outside) {
+        return;
+    }
+    let outside_before = tree(&sandbox.outside);
+    let flow = through_gate(
+        &sandbox.policy(""),
+        delete(&sandbox, "act-1", &["work/a/data"]),
+    );
+    // By the time of the move the quarantine exists; it is then replaced by a link.
+    let mut executor = sandbox.executor("").with_probe(Box::new(SwapForLink {
+        folder: sandbox.path("work/.ads"),
+        aside: sandbox.path("work/.ads-real"),
+        points_to: sandbox.outside.clone(),
+        done: false,
+    }));
+    let (outcome, _) = execute(&mut executor, flow);
+    let failure = outcome.unwrap_err();
+    assert_eq!(failure.reason, Reason::LinkInPath);
+    assert!(matches!(
+        failure.report.steps[0].status,
+        Status::Failed { .. }
+    ));
+    // The target never left, and nothing was written through the link.
+    assert_eq!(
+        fs::read_to_string(sandbox.path("work/a/data/file.txt")).unwrap(),
+        "inside"
+    );
+    assert_eq!(tree(&sandbox.outside), outside_before);
+}
+
+/// A policy can name a protected folder inside the work root only in the POSIX lists.
+#[cfg(not(windows))]
+#[test]
+fn a_quarantine_inside_a_protected_folder_is_refused() {
+    use ads_core::gate::{ActionPlan, Decision, PlanRequest, TargetRequest, classify};
+
+    let sandbox = Sandbox::new("protecteddest");
+    sandbox.file("work/build/out.txt", "text");
+    let overrides = format!(
+        "quarantine_dir = \"trash\"\nposix_system_dirs = [\"{}\"]",
+        sandbox.text("work/trash")
+    );
+    let before = tree(&sandbox.root);
+    let plan = ActionPlan::normalize(&PlanRequest {
+        operation: OperationRequest::DeleteRecursive,
+        targets: vec![TargetRequest {
+            path: sandbox.text("work/build"),
+            repo_root: false,
+        }],
+        work_root: sandbox.work_root(),
+        estimate: estimate(50, 4096),
+    })
+    .unwrap();
+    // A gate that judges the rewritten destination denies by itself; one that does not hands
+    // out a permit, and then the executor has to refuse it.
+    if classify(&plan, &sandbox.policy(&overrides)).decision() != Decision::Denied {
+        let flow = through_gate(
+            &sandbox.policy(&overrides),
+            delete(&sandbox, "act-1", &["work/build"]),
+        );
+        let (outcome, _) = execute(&mut sandbox.executor(&overrides), flow);
+        assert_eq!(outcome.unwrap_err().reason, Reason::PolicyDenies);
+    }
+    assert_eq!(tree(&sandbox.root), before);
+}
