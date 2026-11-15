@@ -7,7 +7,7 @@ interface SidebarProps {
   open: boolean
   tasks: readonly TaskView[]
   sessions: readonly SessionView[]
-  selectedSessionId: string
+  selectedSessionId: string | null
   onSelectSession: (id: string) => void
 }
 
@@ -15,6 +15,8 @@ const TASK_STATE: Record<TaskState, MessageKey> = {
   pending: 'task.state.pending',
   running: 'task.state.running',
   done: 'task.state.done',
+  failed: 'task.state.failed',
+  cancelled: 'task.state.cancelled',
 }
 
 const SESSION_ACTIVITY: Record<SessionActivity, MessageKey> = {
@@ -46,7 +48,9 @@ export function Sidebar({
             {tasks.map((task) => (
               <li key={task.id} className={styles.item}>
                 <span className={styles.name}>{task.title ?? t('task.untitled')}</span>
-                <span className={styles.state}>{t(TASK_STATE[task.state])}</span>
+                <span className={styles.state} data-state={task.state}>
+                  {t(TASK_STATE[task.state])}
+                </span>
               </li>
             ))}
           </ul>

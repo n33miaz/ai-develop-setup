@@ -36,14 +36,20 @@ export function App({ client, events = sampleEvents }: AppProps) {
     const replayed = events(t)
     return { tasks: tasksFrom(replayed.tasks), sessions: sessionsFrom(replayed.sessions) }
   }, [events, t])
-  const [selectedSessionId, setSelectedSessionId] = useState(() => sessions[0]?.id ?? '')
+  const [chosenSessionId, setChosenSessionId] = useState<string | null>(null)
 
-  const session = sessions.find((item) => item.id === selectedSessionId)
+  // Seleção sempre válida: a escolhida enquanto existir, senão a primeira, senão nenhuma.
+  const session = sessions.find((item) => item.id === chosenSessionId) ?? sessions[0]
+  const sessionId = session?.id
   const sessionName = session ? (session.displayName ?? t('session.unnamed')) : ''
   const source = useMemo(
     () =>
-      staticByteSource(decodeBase64(sampleOutput(t, selectedSessionId, sessionName).data.payload)),
-    [t, selectedSessionId, sessionName],
+      staticByteSource(
+        sessionId === undefined
+          ? ''
+          : decodeBase64(sampleOutput(t, sessionId, sessionName).data.payload),
+      ),
+    [t, sessionId, sessionName],
   )
 
   return (
@@ -76,9 +82,9 @@ export function App({ client, events = sampleEvents }: AppProps) {
           open={menuOpen}
           tasks={tasks}
           sessions={sessions}
-          selectedSessionId={selectedSessionId}
+          selectedSessionId={sessionId ?? null}
           onSelectSession={(id) => {
-            setSelectedSessionId(id)
+            setChosenSessionId(id)
             setMenuOpen(false)
           }}
         />

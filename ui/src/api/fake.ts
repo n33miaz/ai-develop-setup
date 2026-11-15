@@ -16,12 +16,21 @@ interface Subscription {
 
 const FAKE_ACTOR: CommonActorV1 = { kind: 'daemon', id: 'fake-core' }
 
+function deepFreeze<T>(value: T): T {
+  if (typeof value === 'object' && value !== null && !Object.isFrozen(value)) {
+    Object.freeze(value)
+    for (const inner of Object.values(value)) deepFreeze(inner)
+  }
+  return value
+}
+
 export function createFakeCoreClient(): FakeCoreClient {
   let state: ConnectionState = 'disconnected'
   const stateListeners = new Set<(state: ConnectionState) => void>()
   const logs = new Map<string, EventEnvelopeV1[]>()
   const subscriptions = new Set<Subscription>()
   const acceptedKeys = new Set<string>()
+  let connecting: Promise<void> | null = null
 
   function setState(next: ConnectionState): void {
     if (state === next) return
@@ -46,17 +55,19 @@ export function createFakeCoreClient(): FakeCoreClient {
   function append(draft: EventDraft): EventEnvelopeV1 {
     const log = logs.get(draft.stream) ?? []
     logs.set(draft.stream, log)
-    const event: EventEnvelopeV1 = {
+    // Fato gravado não muda: o evento é uma cópia congelada, que nem o autor do rascunho nem um
+    // assinante consegue alterar para os outros.
+    const event: EventEnvelopeV1 = deepFreeze({
       id: newUlid(),
       type: draft.type,
       ts: new Date().toISOString(),
       stream: draft.stream,
       seq: log.length + 1,
-      actor: draft.actor ?? FAKE_ACTOR,
+      actor: { ...(draft.actor ?? FAKE_ACTOR) },
       cause: draft.cause ?? null,
       data_class: draft.data_class ?? 'internal',
-      data: draft.data,
-    }
+      data: structuredClone(draft.data),
+    })
     log.push(event)
     for (const subscription of [...subscriptions]) {
       if (subscription.stream === draft.stream) deliver(subscription)
@@ -74,13 +85,23 @@ export function createFakeCoreClient(): FakeCoreClient {
 
     connect() {
       if (state === 'connected') return Promise.resolve()
+      if (connecting) return connecting
       setState('connecting')
-      return Promise.resolve().then(() => {
+      const attempt = Promise.resolve().then(() => {
+        // `disconnect()` no meio do caminho cancela a tentativa: ela não volta a conectar.
+        if (connecting !== attempt) throw notConnected()
+        connecting = null
         setState('connected')
       })
+      connecting = attempt
+      return attempt
     },
 
+    // A conexão leva as assinaturas junto; os eventos continuam sendo gravados e quem reconectar
+    // retoma pelo último `seq` que viu.
     disconnect() {
+      connecting = null
+      subscriptions.clear()
       setState('disconnected')
     },
 
