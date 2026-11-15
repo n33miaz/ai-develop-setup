@@ -130,7 +130,7 @@ Códigos de regra em uso (código novo não muda a versão do Schema). Onde há 
 
 | Veredito | Códigos |
 |---|---|
-| `denied` | `protected.<proteção>`, `work_root_protected.<proteção>`, `work_root_itself`, `outside_allowed_roots`, `repository_root`, `quarantine_itself`, `destination_protected.<proteção>`, `destination_outside_allowed_roots`, `destination_inside_target` |
+| `denied` | `protected.<proteção>`, `work_root_protected.<proteção>`, `work_root_itself`, `allowed_root_itself`, `outside_allowed_roots`, `repository_root`, `quarantine_itself`, `destination_protected.<proteção>`, `destination_outside_allowed_roots`, `destination_inside_target` |
 | `requires_approval` | `outside_work_root`, `destination_outside_work_root`, `estimate_unknown`, `item_limit_exceeded`, `byte_limit_exceeded`, `quarantine_purge` |
 
 ### Serialização canônica do plan_hash

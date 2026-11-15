@@ -113,22 +113,28 @@ impl AbsPath {
     }
 
     /// Equal to `base` or inside it, compared component by component (`proj2` is not inside
-    /// `proj`). Case is ignored on Windows only.
+    /// `proj`). This is the comparison that grants: on Windows only the case of ASCII letters
+    /// is ignored, and elsewhere nothing is. Names a wider fold would make equal (`K` and the
+    /// Kelvin sign) are different folders, so they are outside.
     pub fn is_within(&self, base: &AbsPath) -> bool {
-        self.within(base, self.style == PathStyle::Windows)
+        match self.style {
+            PathStyle::Windows => self.within(base, |a, b| a.eq_ignore_ascii_case(b)),
+            PathStyle::Posix => self.within(base, |a, b| a == b),
+        }
     }
 
     pub fn is_strictly_within(&self, base: &AbsPath) -> bool {
         self.depth() > base.depth() && self.is_within(base)
     }
 
-    /// Like [`Self::is_within`], ignoring case in both styles. For deny rules only: some POSIX
-    /// file systems ignore case, and a deny rule must not be dodged by changing it.
+    /// Like [`Self::is_within`], with the widest comparison of names, in both styles. For deny
+    /// rules only: some file systems ignore case, and a deny rule must not be dodged by
+    /// changing it. Never use it to grant.
     pub(crate) fn is_loosely_within(&self, base: &AbsPath) -> bool {
-        self.within(base, true)
+        self.within(base, same_name_loosely)
     }
 
-    fn within(&self, base: &AbsPath, ignore_case: bool) -> bool {
+    fn within(&self, base: &AbsPath, same_name: fn(&str, &str) -> bool) -> bool {
         self.style == base.style
             && self.drive == base.drive
             && self.components.len() >= base.components.len()
@@ -136,7 +142,7 @@ impl AbsPath {
                 .components
                 .iter()
                 .zip(&base.components)
-                .all(|(mine, theirs)| same_name(mine, theirs, ignore_case))
+                .all(|(mine, theirs)| same_name(mine, theirs))
     }
 
     pub(crate) fn join(&self, names: &[String]) -> AbsPath {
@@ -146,12 +152,10 @@ impl AbsPath {
     }
 }
 
-pub(crate) fn same_name(a: &str, b: &str, ignore_case: bool) -> bool {
-    if ignore_case {
-        a.to_lowercase() == b.to_lowercase()
-    } else {
-        a == b
-    }
+/// Whether two names could be the same folder on some file system: equal after either Unicode
+/// case mapping. Wider than any real file system on purpose, so it only ever serves to deny.
+pub(crate) fn same_name_loosely(a: &str, b: &str) -> bool {
+    a.to_lowercase() == b.to_lowercase() || a.to_uppercase() == b.to_uppercase()
 }
 
 impl fmt::Display for AbsPath {
@@ -545,6 +549,20 @@ mod tests {
                 .unwrap()
                 .is_loosely_within(&base)
         );
+
+        // Only the case of ASCII letters is ignored when granting; the deny side is wider.
+        let base = AbsPath::parse("C:\\work\\K\\stra\u{df}e").unwrap();
+        let within = |raw: &str| AbsPath::parse(raw).unwrap().is_within(&base);
+        let loosely = |raw: &str| AbsPath::parse(raw).unwrap().is_loosely_within(&base);
+        assert!(within("c:\\WORK\\k\\STRA\u{df}E\\x"));
+        for look_alike in [
+            "C:\\work\\\u{212A}\\stra\u{df}e",
+            "C:\\work\\K\\STRASSE",
+            "C:\\work\\K\\stra\u{1E9E}e",
+        ] {
+            assert!(!within(look_alike), "{look_alike}");
+            assert!(loosely(look_alike), "{look_alike}");
+        }
         assert!(!AbsPath::parse("/work/proj2").unwrap().is_within(&base));
         assert!(!AbsPath::parse("C:\\work\\proj").unwrap().is_within(&base));
     }

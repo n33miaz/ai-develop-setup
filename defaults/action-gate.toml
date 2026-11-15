@@ -12,6 +12,8 @@
 # Raizes permitidas alem da raiz de trabalho do plano (caminhos absolutos). Alvo fora da raiz de trabalho
 # e de todas estas e negado. Dentro de uma destas, mas fora da raiz de trabalho, toda acao pede aprovacao.
 # Padrao vazio: so a raiz de trabalho. Uma raiz permitida nao pode ser uma pasta protegida.
+# A propria raiz permitida nunca e alvo: alvo que e uma delas, ou que contem uma, e negado, mesmo
+# quando ela fica dentro da raiz de trabalho ou de outra raiz permitida.
 allowed_roots = []
 
 # Pastas do sistema no Windows: nomes no primeiro nivel de QUALQUER unidade. A pasta e tudo dentro dela
@@ -55,8 +57,9 @@ posix_system_dirs = [
 windows_user_parents = ["Users", "Documents and Settings"]
 posix_user_parents = ["/home", "/Users"]
 
-# Apagar recursivo e limpar nao rastreados pedem aprovacao quando o plano estima MAIS itens ou MAIS bytes
-# que estes limites. Plano sem estimativa conta como acima do limite. Zero: sempre pede aprovacao.
+# Apagar recursivo, limpar nao rastreados e mover para dentro da pasta de quarentena pedem aprovacao
+# quando o plano estima MAIS itens ou MAIS bytes que estes limites. Plano sem estimativa conta como acima
+# do limite. Zero: sempre pede aprovacao, qualquer que seja a estimativa (zero inclusive).
 approval_item_limit = 500
 approval_byte_limit = 104857600
 

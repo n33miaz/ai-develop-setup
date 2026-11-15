@@ -1,10 +1,12 @@
-//! The state machine of an action: every legal path, and every jump it must refuse.
+//! The state machine of an action: every legal path, and every jump it must refuse. A
+//! transition consumes the action, so each refusal is checked on the action it gives back.
 
 mod common;
 
 use ads_core::gate::{
     Action, ActionPlan, Command, Decision, ErrorCode, Estimate, Event, ExecutionPermit,
-    OperationRequest as Op, PlanHash, ShortText, State, TransitionError, Verdict, Via, classify,
+    OperationRequest as Op, PlanHash, Refused, ShortText, State, TransitionError, Verdict, Via,
+    classify,
 };
 use common::{WIN_HOME, WIN_ROOT, at, id, meta, plan, policy, request, win};
 
@@ -38,26 +40,65 @@ fn planned(verdict: &Verdict) -> Action {
     Action::plan(id("act-01"), verdict, meta(T0, 1)).unwrap().0
 }
 
-fn request_approval(action: &Action) -> Action {
-    let command = Command::RequestApproval {
-        approval_id: id("appr-01"),
+fn ask(approval: &str) -> Command {
+    Command::RequestApproval {
+        approval_id: id(approval),
         summary: ShortText::new("Apagar a pasta de build").unwrap(),
         expires_at: at(EXPIRES),
-    };
-    action.apply(command, meta(T0, 1)).unwrap().0
+    }
 }
 
-fn grant(action: &Action) -> Action {
-    let command = Command::Grant {
-        approval_id: id("appr-01"),
+fn grant_of(action: &Action, approval: &str) -> Command {
+    Command::Grant {
+        action_id: action.action_id().clone(),
+        approval_id: id(approval),
         plan_hash: action.plan_hash().clone(),
         via: Via::LocalUi,
-    };
+    }
+}
+
+fn deny_of(action: &Action) -> Command {
+    Command::Deny {
+        action_id: action.action_id().clone(),
+        approval_id: id("appr-01"),
+        plan_hash: action.plan_hash().clone(),
+        reason: None,
+    }
+}
+
+fn expire_of(action: &Action) -> Command {
+    Command::Expire {
+        action_id: action.action_id().clone(),
+        approval_id: id("appr-01"),
+        plan_hash: action.plan_hash().clone(),
+    }
+}
+
+fn request_approval(action: Action) -> Action {
+    action.apply(ask("appr-01"), meta(T0, 1)).unwrap().0
+}
+
+fn grant(action: Action) -> Action {
+    let command = grant_of(&action, "appr-01");
     action.apply(command, meta(T1, 2)).unwrap().0
 }
 
+fn waiting(verdict: &Verdict) -> Action {
+    request_approval(planned(verdict))
+}
+
 fn approved(verdict: &Verdict) -> Action {
-    grant(&request_approval(&planned(verdict)))
+    grant(waiting(verdict))
+}
+
+fn executing(verdict: &Verdict) -> (Action, ExecutionPermit) {
+    let action = if verdict.decision() == Decision::Allowed {
+        planned(verdict)
+    } else {
+        approved(verdict)
+    };
+    let (action, permit, _) = action.authorize(verdict.plan(), meta(T1, 2)).unwrap();
+    (action, permit)
 }
 
 fn fail() -> Command {
@@ -74,6 +115,24 @@ fn other_hash() -> PlanHash {
 fn foreign_permit(verdict: &Verdict) -> ExecutionPermit {
     let (other, _, _) = Action::plan(id("act-02"), verdict, meta(T0, 1)).unwrap();
     other.authorize(verdict.plan(), meta(T1, 2)).unwrap().1
+}
+
+/// The refusal is `error`; gives back the action, which a refusal leaves as it was.
+fn refused<T: std::fmt::Debug>(result: Result<T, Box<Refused>>, error: TransitionError) -> Action {
+    let refusal = result.expect_err("accepted");
+    assert_eq!(refusal.error, error);
+    refusal.action
+}
+
+/// The refusal is "this does not fit the state"; gives back the action.
+fn out_of_place<T: std::fmt::Debug>(result: Result<T, Box<Refused>>) -> Action {
+    let refusal = result.expect_err("accepted");
+    assert!(
+        matches!(refusal.error, TransitionError::InvalidTransition { .. }),
+        "{:?}",
+        refusal.error
+    );
+    refusal.action
 }
 
 #[test]
@@ -119,9 +178,9 @@ fn approved_plan_runs_with_its_approval() {
     let action = planned(&verdict);
     assert!(action.needs_approval());
 
-    let action = request_approval(&action);
+    let action = request_approval(action);
     assert!(matches!(action.state(), State::AwaitingApproval { .. }));
-    let action = grant(&action);
+    let action = grant(action);
     assert!(matches!(action.state(), State::Approved { .. }));
 
     let (action, permit, event) = action.authorize(verdict.plan(), meta(T1, 2)).unwrap();
@@ -131,7 +190,7 @@ fn approved_plan_runs_with_its_approval() {
     };
     assert_eq!(event.data().approval_id, Some(id("appr-01")));
     let (action, event) = action
-        .apply(Command::Executed { permit }, meta(T1, 2))
+        .apply(Command::Executed { permit }, meta(T1, 3))
         .unwrap();
     assert_eq!(action.state(), &State::Executed);
     let Event::ActionExecuted(event) = event else {
@@ -173,29 +232,12 @@ fn denied_verdict_emits_action_denied_and_ends_the_action() {
     assert!(!record.fields().quarantined);
 
     // Nothing comes out of a denied action: no permit, no approval, not even a failure.
-    assert!(matches!(
-        action.authorize(verdict.plan(), meta(T1, 2)),
-        Err(TransitionError::InvalidTransition { .. })
-    ));
-    let commands = [
-        Command::RequestApproval {
-            approval_id: id("appr-01"),
-            summary: ShortText::new("Mesmo assim").unwrap(),
-            expires_at: at(EXPIRES),
-        },
-        Command::Grant {
-            approval_id: id("appr-01"),
-            plan_hash: action.plan_hash().clone(),
-            via: Via::LocalUi,
-        },
-        fail(),
-    ];
-    for command in commands {
-        assert!(matches!(
-            action.apply(command, meta(T1, 2)),
-            Err(TransitionError::InvalidTransition { .. })
-        ));
-    }
+    let action = out_of_place(action.authorize(verdict.plan(), meta(T1, 2)));
+    let action = out_of_place(action.apply(ask("appr-01"), meta(T1, 2)));
+    let command = grant_of(&action, "appr-01");
+    let action = out_of_place(action.apply(command, meta(T1, 2)));
+    let action = out_of_place(action.apply(fail(), meta(T1, 2)));
+    assert_eq!(action.state(), &State::Denied);
 }
 
 #[test]
@@ -250,115 +292,80 @@ fn plan_that_does_not_fit_the_record_starts_nothing() {
 #[test]
 fn execution_without_the_required_approval_is_refused() {
     let verdict = approval_needed(&[BUILD]);
-    let action = planned(&verdict);
-    assert_eq!(
-        action.authorize(verdict.plan(), meta(T1, 2)),
-        Err(TransitionError::ApprovalRequired)
-    );
-    let waiting = request_approval(&action);
-    assert_eq!(
-        waiting.authorize(verdict.plan(), meta(T1, 2)),
-        Err(TransitionError::ApprovalRequired)
+    let action = refused(
+        planned(&verdict).authorize(verdict.plan(), meta(T1, 2)),
+        TransitionError::ApprovalRequired,
     );
     // No permit, no `executed`: the command needs a permit and the state is not `Executing`.
-    let stolen = foreign_permit(&verdict_allowed_for_permit());
-    assert!(matches!(
-        action.apply(Command::Executed { permit: stolen }, meta(T1, 2)),
-        Err(TransitionError::InvalidTransition { .. })
-    ));
-}
-
-fn verdict_allowed_for_permit() -> Verdict {
-    allowed()
+    let stolen = foreign_permit(&allowed());
+    let action = out_of_place(action.apply(Command::Executed { permit: stolen }, meta(T1, 2)));
+    let waiting = request_approval(action);
+    let waiting = refused(
+        waiting.authorize(verdict.plan(), meta(T1, 2)),
+        TransitionError::ApprovalRequired,
+    );
+    assert!(matches!(waiting.state(), State::AwaitingApproval { .. }));
 }
 
 #[test]
 fn approval_reused_after_changing_a_target_is_refused() {
     let approved_verdict = approval_needed(&[BUILD]);
     let approved_action = approved(&approved_verdict);
+    let approved_hash = approved_action.plan_hash().clone();
 
     // The same request with one more target: another plan, another hash.
     let changed_verdict = approval_needed(&[BUILD, "C:\\Users\\user-a\\work\\proj\\src"]);
-    assert_ne!(
-        changed_verdict.plan().hash(),
-        approved_verdict.plan().hash()
-    );
+    assert_ne!(changed_verdict.plan().hash(), approved_hash);
 
     // 1. The approved action does not authorize the changed plan.
-    assert_eq!(
+    let approved_action = refused(
         approved_action.authorize(changed_verdict.plan(), meta(T1, 2)),
-        Err(TransitionError::PlanHashMismatch)
+        TransitionError::PlanHashMismatch,
     );
 
     // 2. The changed plan is a new action, and the old approval does not fit it: neither
     //    carrying the old hash, nor relabelled with the new one.
-    let changed_action = planned(&changed_verdict);
-    assert_eq!(
-        changed_action.authorize(changed_verdict.plan(), meta(T1, 2)),
-        Err(TransitionError::ApprovalRequired)
+    let changed_action = refused(
+        planned(&changed_verdict).authorize(changed_verdict.plan(), meta(T1, 2)),
+        TransitionError::ApprovalRequired,
     );
-    let old_grant = Command::Grant {
+    let old_grant = || Command::Grant {
+        action_id: id("act-01"),
         approval_id: id("appr-01"),
-        plan_hash: approved_action.plan_hash().clone(),
+        plan_hash: approved_hash.clone(),
         via: Via::LocalUi,
     };
-    assert!(matches!(
-        changed_action.apply(old_grant.clone(), meta(T1, 2)),
-        Err(TransitionError::InvalidTransition { .. })
-    ));
-    let changed_waiting = changed_action
-        .apply(
-            Command::RequestApproval {
-                approval_id: id("appr-02"),
-                summary: ShortText::new("Apagar build e src").unwrap(),
-                expires_at: at(EXPIRES),
-            },
-            meta(T0, 1),
-        )
-        .unwrap()
-        .0;
-    assert_eq!(
-        changed_waiting.apply(old_grant, meta(T1, 2)),
-        Err(TransitionError::PlanHashMismatch)
+    let changed_action = out_of_place(changed_action.apply(old_grant(), meta(T1, 2)));
+    let changed_waiting = changed_action.apply(ask("appr-02"), meta(T0, 1)).unwrap().0;
+    let changed_waiting = refused(
+        changed_waiting.apply(old_grant(), meta(T1, 2)),
+        TransitionError::PlanHashMismatch,
     );
-    let relabelled = Command::Grant {
-        approval_id: id("appr-01"),
-        plan_hash: changed_waiting.plan_hash().clone(),
-        via: Via::LocalUi,
-    };
-    assert_eq!(
+    let relabelled = grant_of(&changed_waiting, "appr-01");
+    let changed_waiting = refused(
         changed_waiting.apply(relabelled, meta(T1, 2)),
-        Err(TransitionError::ApprovalMismatch)
+        TransitionError::ApprovalMismatch,
     );
 
     // 3. The permit of the approved plan does not close the changed action.
     let (_, old_permit, _) = approved_action
         .authorize(approved_verdict.plan(), meta(T1, 2))
         .unwrap();
-    let changed_approved = changed_waiting
-        .apply(
-            Command::Grant {
-                approval_id: id("appr-02"),
-                plan_hash: changed_waiting.plan_hash().clone(),
-                via: Via::Tray,
-            },
-            meta(T1, 2),
-        )
-        .unwrap()
-        .0;
+    let command = grant_of(&changed_waiting, "appr-02");
+    let changed_approved = changed_waiting.apply(command, meta(T1, 2)).unwrap().0;
     let (changed_executing, _, _) = changed_approved
         .authorize(changed_verdict.plan(), meta(T1, 2))
         .unwrap();
-    assert_eq!(
+    refused(
         changed_executing.apply(Command::Executed { permit: old_permit }, meta(T1, 3)),
-        Err(TransitionError::PlanHashMismatch)
+        TransitionError::PlanHashMismatch,
     );
 }
 
 #[test]
 fn changing_any_part_of_the_plan_invalidates_the_permit_check() {
     let verdict = allowed();
-    let action = planned(&verdict);
+    let mut action = planned(&verdict);
     let variants = [
         plan(
             Op::Delete,
@@ -376,69 +383,69 @@ fn changing_any_part_of_the_plan_invalidates_the_permit_check() {
         plan(Op::Delete, WIN_ROOT, &[BUILD]),
     ];
     for other in variants {
-        assert_eq!(
+        action = refused(
             action.authorize(&other, meta(T1, 2)),
-            Err(TransitionError::PlanHashMismatch),
-            "{}",
-            other.canonical()
+            TransitionError::PlanHashMismatch,
         );
     }
+    assert_eq!(action.state(), &State::Planned);
 }
 
 #[test]
 fn approval_for_a_plan_that_needs_none_is_refused() {
-    let action = planned(&allowed());
-    let command = Command::RequestApproval {
-        approval_id: id("appr-01"),
-        summary: ShortText::new("Sem necessidade").unwrap(),
-        expires_at: at(EXPIRES),
-    };
-    assert_eq!(
-        action.apply(command, meta(T0, 1)),
-        Err(TransitionError::ApprovalNotRequired)
+    refused(
+        planned(&allowed()).apply(ask("appr-01"), meta(T0, 1)),
+        TransitionError::ApprovalNotRequired,
     );
 }
 
 #[test]
 fn approval_cannot_be_born_expired() {
-    let action = planned(&approval_needed(&[BUILD]));
+    let mut action = planned(&approval_needed(&[BUILD]));
     for expires_at in [T0, "2030-01-02T03:04:04.999Z"] {
         let command = Command::RequestApproval {
             approval_id: id("appr-01"),
             summary: ShortText::new("Apagar a pasta de build").unwrap(),
             expires_at: at(expires_at),
         };
-        assert_eq!(
+        action = refused(
             action.apply(command, meta(T0, 1)),
-            Err(TransitionError::ExpiryNotInFuture)
+            TransitionError::ExpiryNotInFuture,
         );
     }
 }
 
 #[test]
-fn grant_needs_the_pending_approval_the_same_hash_and_time_left() {
-    let waiting = request_approval(&planned(&approval_needed(&[BUILD])));
-    let grant = |approval: &str, hash: PlanHash| Command::Grant {
+fn grant_needs_the_pending_approval_the_same_action_and_hash_and_time_left() {
+    let waiting = waiting(&approval_needed(&[BUILD]));
+    let hash = waiting.plan_hash().clone();
+    let grant = |action: &str, approval: &str, hash: &PlanHash| Command::Grant {
+        action_id: id(action),
         approval_id: id(approval),
-        plan_hash: hash,
+        plan_hash: hash.clone(),
         via: Via::RemoteDevice,
     };
-    let hash = waiting.plan_hash().clone();
-    assert_eq!(
-        waiting.apply(grant("appr-99", hash.clone()), meta(T1, 2)),
-        Err(TransitionError::ApprovalMismatch)
+    let waiting = refused(
+        waiting.apply(grant("act-01", "appr-99", &hash), meta(T1, 2)),
+        TransitionError::ApprovalMismatch,
     );
-    assert_eq!(
-        waiting.apply(grant("appr-01", other_hash()), meta(T1, 2)),
-        Err(TransitionError::PlanHashMismatch)
+    let waiting = refused(
+        waiting.apply(grant("act-01", "appr-01", &other_hash()), meta(T1, 2)),
+        TransitionError::PlanHashMismatch,
+    );
+    let mut waiting = refused(
+        waiting.apply(grant("act-02", "appr-01", &hash), meta(T1, 2)),
+        TransitionError::ActionMismatch,
     );
     for late in [EXPIRES, AFTER] {
-        assert_eq!(
-            waiting.apply(grant("appr-01", hash.clone()), meta(late, 2)),
-            Err(TransitionError::ApprovalLapsed)
+        waiting = refused(
+            waiting.apply(grant("act-01", "appr-01", &hash), meta(late, 2)),
+            TransitionError::ApprovalLapsed,
         );
     }
-    let (granted, event) = waiting.apply(grant("appr-01", hash), meta(T1, 2)).unwrap();
+    let (granted, event) = waiting
+        .apply(grant("act-01", "appr-01", &hash), meta(T1, 2))
+        .unwrap();
     assert!(matches!(granted.state(), State::Approved { .. }));
     let Event::ApprovalGranted(event) = event else {
         panic!("not approval.granted");
@@ -450,59 +457,53 @@ fn grant_needs_the_pending_approval_the_same_hash_and_time_left() {
 #[test]
 fn denied_approval_ends_the_action() {
     let verdict = approval_needed(&[BUILD]);
-    let waiting = request_approval(&planned(&verdict));
-    let deny = Command::Deny {
-        approval_id: id("appr-01"),
-        plan_hash: waiting.plan_hash().clone(),
-        reason: Some(ShortText::new("fora de hora").unwrap()),
-    };
+    let waiting = waiting(&verdict);
     let wrong = Command::Deny {
+        action_id: id("act-01"),
         approval_id: id("appr-01"),
         plan_hash: other_hash(),
         reason: None,
     };
-    assert_eq!(
+    let waiting = refused(
         waiting.apply(wrong, meta(T1, 2)),
-        Err(TransitionError::PlanHashMismatch)
+        TransitionError::PlanHashMismatch,
     );
+    let deny = Command::Deny {
+        action_id: id("act-01"),
+        approval_id: id("appr-01"),
+        plan_hash: waiting.plan_hash().clone(),
+        reason: Some(ShortText::new("fora de hora").unwrap()),
+    };
     let (denied, event) = waiting.apply(deny, meta(T1, 2)).unwrap();
     assert_eq!(denied.state(), &State::ApprovalDenied);
     assert!(matches!(event, Event::ApprovalDenied(_)));
-    assert!(matches!(
-        denied.authorize(verdict.plan(), meta(T1, 2)),
-        Err(TransitionError::InvalidTransition { .. })
-    ));
+    out_of_place(denied.authorize(verdict.plan(), meta(T1, 2)));
 }
 
 #[test]
 fn approval_expires_only_after_its_validity() {
     let verdict = approval_needed(&[BUILD]);
-    let waiting = request_approval(&planned(&verdict));
-    let expire = Command::Expire {
-        approval_id: id("appr-01"),
-        plan_hash: waiting.plan_hash().clone(),
-    };
-    assert_eq!(
-        waiting.apply(expire.clone(), meta(T1, 2)),
-        Err(TransitionError::NotYetExpired)
+    let waiting = waiting(&verdict);
+    let command = expire_of(&waiting);
+    let waiting = refused(
+        waiting.apply(command, meta(T1, 2)),
+        TransitionError::NotYetExpired,
     );
-    let (expired, event) = waiting.apply(expire, meta(EXPIRES, 2)).unwrap();
+    let command = expire_of(&waiting);
+    let (expired, event) = waiting.apply(command, meta(EXPIRES, 2)).unwrap();
     assert_eq!(expired.state(), &State::ApprovalExpired);
     assert!(matches!(event, Event::ApprovalExpired(_)));
-    assert!(matches!(
-        expired.authorize(verdict.plan(), meta(AFTER, 2)),
-        Err(TransitionError::InvalidTransition { .. })
-    ));
+    out_of_place(expired.authorize(verdict.plan(), meta(AFTER, 2)));
 }
 
 #[test]
 fn granted_approval_does_not_outlive_its_validity() {
     let verdict = approval_needed(&[BUILD]);
-    let action = approved(&verdict);
+    let mut action = approved(&verdict);
     for late in [EXPIRES, AFTER] {
-        assert_eq!(
+        action = refused(
             action.authorize(verdict.plan(), meta(late, 2)),
-            Err(TransitionError::ApprovalLapsed)
+            TransitionError::ApprovalLapsed,
         );
     }
     // The way out is to fail the action and plan again.
@@ -518,44 +519,49 @@ fn granted_approval_does_not_outlive_its_validity() {
 #[test]
 fn permit_is_single_use_and_bound_to_its_action() {
     let verdict = allowed();
-    let (executing, permit, _) = planned(&verdict)
-        .authorize(verdict.plan(), meta(T1, 2))
-        .unwrap();
+    let (executing, permit) = executing(&verdict);
     // A second permit is not handed out.
-    assert!(matches!(
-        executing.authorize(verdict.plan(), meta(T1, 2)),
-        Err(TransitionError::InvalidTransition { .. })
-    ));
+    let executing = out_of_place(executing.authorize(verdict.plan(), meta(T1, 2)));
     // The permit of another action does not close this one.
-    assert_eq!(
+    let executing = refused(
         executing.apply(
             Command::Executed {
-                permit: foreign_permit(&verdict)
-            },
-            meta(T1, 2)
-        ),
-        Err(TransitionError::ActionMismatch)
-    );
-    let (executed, _) = executing
-        .apply(
-            Command::Executed {
-                permit: permit.clone(),
+                permit: foreign_permit(&verdict),
             },
             meta(T1, 2),
-        )
+        ),
+        TransitionError::ActionMismatch,
+    );
+    // Reporting the execution consumes the permit and the action: there is no second report
+    // to make, and the action that comes out takes neither a permit request nor a failure.
+    let (executed, _) = executing
+        .apply(Command::Executed { permit }, meta(T1, 2))
         .unwrap();
-    assert!(matches!(
-        executed.apply(Command::Executed { permit }, meta(T1, 3)),
-        Err(TransitionError::InvalidTransition { .. })
-    ));
+    let executed = out_of_place(executed.authorize(verdict.plan(), meta(T1, 3)));
+    let executed = out_of_place(executed.apply(fail(), meta(T1, 3)));
+    let again = foreign_permit(&verdict);
+    out_of_place(executed.apply(Command::Executed { permit: again }, meta(T1, 3)));
+}
+
+#[test]
+fn one_approval_yields_one_permit() {
+    let verdict = approval_needed(&[BUILD]);
+    let approved = approved(&verdict);
+    let (executing, permit, _) = approved.authorize(verdict.plan(), meta(T1, 2)).unwrap();
+    // `approved` was consumed: the only action left is the one already executing, and it hands
+    // out nothing more, with the approval still inside its validity.
+    let executing = out_of_place(executing.authorize(verdict.plan(), meta(T1, 3)));
+    let command = grant_of(&executing, "appr-01");
+    let executing = out_of_place(executing.apply(command, meta(T1, 3)));
+    let (executed, _) = executing
+        .apply(Command::Executed { permit }, meta(T1, 3))
+        .unwrap();
+    assert_eq!(executed.state(), &State::Executed);
 }
 
 #[test]
 fn execution_can_fail() {
-    let verdict = allowed();
-    let (executing, _, _) = planned(&verdict)
-        .authorize(verdict.plan(), meta(T1, 2))
-        .unwrap();
+    let (executing, _) = executing(&allowed());
     let (failed, event) = executing.apply(fail(), meta(T1, 2)).unwrap();
     assert_eq!(failed.state(), &State::Failed);
     assert!(matches!(event, Event::ActionFailed(_)));
@@ -564,145 +570,67 @@ fn execution_can_fail() {
 #[test]
 fn terminal_states_accept_nothing() {
     let verdict = approval_needed(&[BUILD]);
-    let waiting = request_approval(&planned(&verdict));
-    let hash = waiting.plan_hash().clone();
-    let denied = waiting
-        .apply(
-            Command::Deny {
-                approval_id: id("appr-01"),
-                plan_hash: hash.clone(),
-                reason: None,
-            },
-            meta(T1, 2),
-        )
-        .unwrap()
-        .0;
-    let expired = waiting
-        .apply(
-            Command::Expire {
-                approval_id: id("appr-01"),
-                plan_hash: hash.clone(),
-            },
-            meta(AFTER, 2),
-        )
-        .unwrap()
-        .0;
-    let (executing, permit, _) = grant(&waiting)
-        .authorize(verdict.plan(), meta(T1, 2))
-        .unwrap();
-    let executed = executing
-        .apply(
-            Command::Executed {
-                permit: permit.clone(),
-            },
-            meta(T1, 2),
-        )
-        .unwrap()
-        .0;
-    let failed = executing.apply(fail(), meta(T1, 2)).unwrap().0;
+    let denied = {
+        let waiting = waiting(&verdict);
+        let command = deny_of(&waiting);
+        waiting.apply(command, meta(T1, 2)).unwrap().0
+    };
+    let expired = {
+        let waiting = waiting(&verdict);
+        let command = expire_of(&waiting);
+        waiting.apply(command, meta(AFTER, 2)).unwrap().0
+    };
+    let executed = {
+        let (executing, permit) = executing(&verdict);
+        executing
+            .apply(Command::Executed { permit }, meta(T1, 2))
+            .unwrap()
+            .0
+    };
+    let failed = executing(&verdict).0.apply(fail(), meta(T1, 2)).unwrap().0;
 
-    for end in [denied, expired, executed, failed] {
+    for mut end in [denied, expired, executed, failed] {
         assert!(end.state().is_terminal());
+        let state = end.state().clone();
+        let (_, spare) = executing(&verdict);
         let commands = [
-            Command::RequestApproval {
-                approval_id: id("appr-02"),
-                summary: ShortText::new("De novo").unwrap(),
-                expires_at: at(EXPIRES),
-            },
-            Command::Grant {
-                approval_id: id("appr-01"),
-                plan_hash: hash.clone(),
-                via: Via::LocalUi,
-            },
-            Command::Deny {
-                approval_id: id("appr-01"),
-                plan_hash: hash.clone(),
-                reason: None,
-            },
-            Command::Expire {
-                approval_id: id("appr-01"),
-                plan_hash: hash.clone(),
-            },
-            Command::Executed {
-                permit: permit.clone(),
-            },
+            ask("appr-02"),
+            grant_of(&end, "appr-01"),
+            deny_of(&end),
+            expire_of(&end),
+            Command::Executed { permit: spare },
             fail(),
         ];
         for command in commands {
-            assert!(
-                matches!(
-                    end.apply(command.clone(), meta(AFTER, 9)),
-                    Err(TransitionError::InvalidTransition { .. })
-                ),
-                "{:?} accepted {command:?}",
-                end.state()
-            );
+            end = out_of_place(end.apply(command, meta(AFTER, 9)));
         }
-        assert!(matches!(
-            end.authorize(verdict.plan(), meta(T1, 2)),
-            Err(TransitionError::InvalidTransition { .. })
-        ));
+        end = out_of_place(end.authorize(verdict.plan(), meta(T1, 2)));
+        assert_eq!(end.state(), &state);
     }
 }
 
 #[test]
 fn commands_out_of_order_are_refused() {
     let verdict = approval_needed(&[BUILD]);
-    let action = planned(&verdict);
-    let hash = action.plan_hash().clone();
+    let mut action = planned(&verdict);
     // Decisions with no request.
     let decisions = [
-        Command::Grant {
-            approval_id: id("appr-01"),
-            plan_hash: hash.clone(),
-            via: Via::LocalUi,
-        },
-        Command::Deny {
-            approval_id: id("appr-01"),
-            plan_hash: hash.clone(),
-            reason: None,
-        },
-        Command::Expire {
-            approval_id: id("appr-01"),
-            plan_hash: hash.clone(),
-        },
+        grant_of(&action, "appr-01"),
+        deny_of(&action),
+        expire_of(&action),
     ];
-    for command in decisions {
-        assert!(matches!(
-            action.apply(command, meta(T1, 2)),
-            Err(TransitionError::InvalidTransition { .. })
-        ));
+    for decision in decisions {
+        action = out_of_place(action.apply(decision, meta(T1, 2)));
     }
-    let waiting = request_approval(&action);
+    let waiting = request_approval(action);
     // A second request, or giving up, while one is pending.
-    assert!(matches!(
-        waiting.apply(
-            Command::RequestApproval {
-                approval_id: id("appr-02"),
-                summary: ShortText::new("De novo").unwrap(),
-                expires_at: at(EXPIRES),
-            },
-            meta(T1, 2)
-        ),
-        Err(TransitionError::InvalidTransition { .. })
-    ));
-    assert!(matches!(
-        waiting.apply(fail(), meta(T1, 2)),
-        Err(TransitionError::InvalidTransition { .. })
-    ));
+    let waiting = out_of_place(waiting.apply(ask("appr-02"), meta(T1, 2)));
+    let waiting = out_of_place(waiting.apply(fail(), meta(T1, 2)));
     // A second decision after the first.
-    let granted = grant(&waiting);
-    assert!(matches!(
-        granted.apply(
-            Command::Deny {
-                approval_id: id("appr-01"),
-                plan_hash: hash,
-                reason: None,
-            },
-            meta(T1, 3)
-        ),
-        Err(TransitionError::InvalidTransition { .. })
-    ));
+    let granted = grant(waiting);
+    let command = deny_of(&granted);
+    let granted = out_of_place(granted.apply(command, meta(T1, 3)));
+    assert!(matches!(granted.state(), State::Approved { .. }));
 }
 
 #[test]
@@ -715,8 +643,8 @@ fn estimate_is_part_of_what_was_approved() {
         &ActionPlan::normalize(&measured).unwrap(),
         &policy(WIN_HOME, ""),
     );
-    assert_eq!(
+    refused(
         action.authorize(measured.plan(), meta(T1, 2)),
-        Err(TransitionError::PlanHashMismatch)
+        TransitionError::PlanHashMismatch,
     );
 }

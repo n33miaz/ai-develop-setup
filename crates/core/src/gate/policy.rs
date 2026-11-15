@@ -4,7 +4,7 @@ use std::fmt;
 
 use serde::Deserialize;
 
-use super::path::{AbsPath, PathError, PathStyle, parse_relative, same_name};
+use super::path::{AbsPath, PathError, PathStyle, parse_relative, same_name_loosely};
 
 const DEFAULTS_TOML: &str = include_str!("../../../../defaults/action-gate.toml");
 
@@ -287,7 +287,7 @@ impl GatePolicy {
             });
         }
         let first = &path.components()[0];
-        let listed = |names: &[String]| names.iter().any(|name| same_name(name, first, true));
+        let listed = |names: &[String]| names.iter().any(|name| same_name_loosely(name, first));
         match path.style() {
             PathStyle::Windows => {
                 if listed(&self.windows_system_dirs) {

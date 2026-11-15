@@ -4,10 +4,10 @@
 
 mod common;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use ads_core::gate::{
-    Action, ActionPlan, Command, Decision, ErrorCode, Event, ExecutionPermit,
+    Action, ActionPlan, ActionSnapshot, Command, Decision, ErrorCode, Event, ExecutionPermit,
     OperationRequest as Op, ReplayError, ShortText, State, Verdict, Via, classify, replay,
 };
 use common::{WIN_HOME, WIN_ROOT, at, id, meta, policy, request, win};
@@ -65,25 +65,118 @@ fn stream_names_the_entity_in_data(event: &Value) {
     );
 }
 
-/// Walks every path of the machine from one planned action, trying every command at every
-/// state. At each step the log so far must rebuild the state in memory.
+/// Everything that can be asked of an action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Move {
+    Authorize,
+    Ask,
+    Grant,
+    Deny,
+    Expire,
+    Executed,
+    Fail,
+}
+
+const MOVES: [Move; 7] = [
+    Move::Authorize,
+    Move::Ask,
+    Move::Grant,
+    Move::Deny,
+    Move::Expire,
+    Move::Executed,
+    Move::Fail,
+];
+
+/// An action taken from its verdict through `moves`, with its permit, if one is out, and its
+/// log. `None` when the machine refuses one of the moves. An action cannot be copied, so each
+/// branch of the walk is played again from the start.
+fn run(verdict: &Verdict, moves: &[Move]) -> Option<(Action, Option<ExecutionPermit>, Vec<Event>)> {
+    let (mut action, first, _) = Action::plan(id("act-01"), verdict, meta(T0, 1)).unwrap();
+    let mut permit = None;
+    let mut log = vec![first];
+    for step in moves {
+        // `seq` counts in the stream of the event to come.
+        let seq =
+            |stream: &str| 1 + log.iter().filter(|event| event.stream() == stream).count() as u64;
+        let (action_seq, approval_seq) = (seq("action/act-01"), seq("approval/appr-01"));
+        let decision = |ts: &str| (meta(ts, approval_seq), id("act-01"), id("appr-01"));
+        let plan_hash = action.plan_hash().clone();
+        let result = match step {
+            Move::Authorize => match action.authorize(verdict.plan(), meta(T1, action_seq)) {
+                Ok((next, handed, event)) => {
+                    permit = Some(handed);
+                    Ok((next, event))
+                }
+                Err(refusal) => Err(refusal),
+            },
+            Move::Ask => {
+                let command = Command::RequestApproval {
+                    approval_id: id("appr-01"),
+                    summary: ShortText::new("Apagar a pasta de build").unwrap(),
+                    expires_at: at(EXPIRES),
+                };
+                action.apply(command, meta(T0, approval_seq))
+            }
+            Move::Grant => {
+                let (meta, action_id, approval_id) = decision(T1);
+                let command = Command::Grant {
+                    action_id,
+                    approval_id,
+                    plan_hash,
+                    via: Via::LocalUi,
+                };
+                action.apply(command, meta)
+            }
+            Move::Deny => {
+                let (meta, action_id, approval_id) = decision(T1);
+                let command = Command::Deny {
+                    action_id,
+                    approval_id,
+                    plan_hash,
+                    reason: None,
+                };
+                action.apply(command, meta)
+            }
+            Move::Expire => {
+                let (meta, action_id, approval_id) = decision(AFTER);
+                let command = Command::Expire {
+                    action_id,
+                    approval_id,
+                    plan_hash,
+                };
+                action.apply(command, meta)
+            }
+            Move::Executed => {
+                let permit = permit.take()?;
+                action.apply(Command::Executed { permit }, meta(T1, action_seq))
+            }
+            Move::Fail => {
+                let error_code = ErrorCode::new("E_PLAN_CHANGED").unwrap();
+                action.apply(Command::Fail { error_code }, meta(T1, action_seq))
+            }
+        };
+        let (next, event) = result.ok()?;
+        action = next;
+        log.push(event);
+    }
+    Some((action, permit, log))
+}
+
+/// Walks every path of the machine from one verdict, trying every move at every state. At
+/// each step the log so far must rebuild the state in memory.
 struct Walk {
-    plan: ActionPlan,
-    paths: Vec<Vec<String>>,
+    verdict: Verdict,
+    paths: Vec<String>,
     final_states: BTreeSet<String>,
     events: Vec<Value>,
 }
 
 impl Walk {
-    fn step(
-        &mut self,
-        action: &Action,
-        permit: Option<&ExecutionPermit>,
-        log: &[Event],
-        seqs: &BTreeMap<String, u64>,
-    ) {
+    fn step(&mut self, moves: &[Move]) {
+        let (action, _, log) = run(&self.verdict, moves).unwrap();
+
         // Straight from memory, and from the log as it would be read back from storage.
-        assert_eq!(replay(log), Ok(action.snapshot()), "{log:?}");
+        assert_eq!(replay(&log), Ok(action.snapshot()), "{log:?}");
         let read_back: Vec<Event> = log
             .iter()
             .map(|event| Event::from_json(event.to_json()).unwrap())
@@ -91,142 +184,59 @@ impl Walk {
         assert_eq!(read_back, log);
         assert_eq!(replay(&read_back), Ok(action.snapshot()));
 
-        // `seq` counts in the stream of the event to come.
-        let seq_of = |family: &str| {
-            let stream = match family {
-                "action" => format!("action/{}", action.action_id()),
-                _ => "approval/appr-01".to_owned(),
-            };
-            seqs.get(&stream).copied().unwrap_or(0) + 1
-        };
-        let hash = action.plan_hash().clone();
-        let mut moves: Vec<(Action, Option<ExecutionPermit>, Event)> = Vec::new();
-        if let Ok((next, permit, event)) = action.authorize(&self.plan, meta(T1, seq_of("action")))
-        {
-            moves.push((next, Some(permit), event));
-        }
-        let mut commands = vec![
-            (
-                "approval",
-                T0,
-                Command::RequestApproval {
-                    approval_id: id("appr-01"),
-                    summary: ShortText::new("Apagar a pasta de build").unwrap(),
-                    expires_at: at(EXPIRES),
-                },
-            ),
-            (
-                "approval",
-                T1,
-                Command::Grant {
-                    approval_id: id("appr-01"),
-                    plan_hash: hash.clone(),
-                    via: Via::LocalUi,
-                },
-            ),
-            (
-                "approval",
-                T1,
-                Command::Deny {
-                    approval_id: id("appr-01"),
-                    plan_hash: hash.clone(),
-                    reason: None,
-                },
-            ),
-            (
-                "approval",
-                AFTER,
-                Command::Expire {
-                    approval_id: id("appr-01"),
-                    plan_hash: hash,
-                },
-            ),
-            (
-                "action",
-                T1,
-                Command::Fail {
-                    error_code: ErrorCode::new("E_PLAN_CHANGED").unwrap(),
-                },
-            ),
-        ];
-        if let Some(permit) = permit {
-            let permit = permit.clone();
-            commands.push(("action", T1, Command::Executed { permit }));
-        }
-        for (family, ts, command) in commands {
-            if let Ok((next, event)) = action.apply(command, meta(ts, seq_of(family))) {
-                moves.push((next, permit.cloned(), event));
+        let last = log.last().unwrap().to_json();
+        stream_names_the_entity_in_data(&last);
+        let earlier = log.iter().filter(|event| event.stream() == last["stream"]);
+        assert_eq!(last["seq"], earlier.count(), "{last}");
+        self.events.push(last);
+
+        let mut moved = false;
+        for next in MOVES {
+            let mut longer = moves.to_vec();
+            longer.push(next);
+            if run(&self.verdict, &longer).is_some() {
+                moved = true;
+                self.step(&longer);
             }
         }
-
-        if moves.is_empty() {
-            assert!(
-                action.state().is_terminal(),
-                "stuck in {:?}",
-                action.state()
-            );
+        assert_eq!(moved, !action.state().is_terminal(), "{:?}", action.state());
+        if !moved {
             self.final_states.insert(format!("{:?}", action.state()));
-            self.paths.push(
-                log.iter()
-                    .map(|event| event.kind().rsplit(':').nth(1).unwrap().to_owned())
-                    .collect(),
-            );
-            return;
-        }
-        assert!(
-            !action.state().is_terminal(),
-            "{:?} moved on",
-            action.state()
-        );
-        for (next, permit, event) in moves {
-            let json = event.to_json();
-            stream_names_the_entity_in_data(&json);
-            let mut seqs = seqs.clone();
-            let seq = seqs.entry(event.stream().to_owned()).or_insert(0);
-            *seq += 1;
-            assert_eq!(json["seq"], *seq, "{json}");
-            self.events.push(json);
-            let mut log = log.to_vec();
-            log.push(event);
-            self.step(&next, permit.as_ref(), &log, &seqs);
+            let kinds: Vec<&str> = log
+                .iter()
+                .map(|event| event.kind().rsplit(':').nth(1).unwrap())
+                .collect();
+            self.paths.push(kinds.join(" > "));
         }
     }
 }
 
-fn walk(verdict: &Verdict) -> Walk {
-    let (action, event, _) = Action::plan(id("act-01"), verdict, meta(T0, 1)).unwrap();
-    let json = event.to_json();
-    stream_names_the_entity_in_data(&json);
+fn walk(verdict: Verdict) -> Walk {
     let mut walk = Walk {
-        plan: verdict.plan().clone(),
+        verdict,
         paths: Vec::new(),
         final_states: BTreeSet::new(),
-        events: vec![json],
+        events: Vec::new(),
     };
-    let seqs = BTreeMap::from([(event.stream().to_owned(), 1)]);
-    walk.step(&action, None, &[event], &seqs);
+    walk.step(&[]);
     walk.paths.sort();
     walk
 }
 
-fn paths(walk: &Walk) -> Vec<String> {
-    walk.paths.iter().map(|path| path.join(" > ")).collect()
-}
-
 #[test]
 fn replay_gives_the_state_in_memory_on_every_path_of_the_machine() {
-    let allowed = walk(&allowed());
+    let allowed = walk(allowed());
     assert_eq!(
-        paths(&allowed),
+        allowed.paths,
         [
             "action.planned > action.failed",
             "action.planned > action.started > action.executed",
             "action.planned > action.started > action.failed",
         ]
     );
-    let approval = walk(&approval_needed(&[BUILD]));
+    let approval = walk(approval_needed(&[BUILD]));
     assert_eq!(
-        paths(&approval),
+        approval.paths,
         [
             "action.planned > action.failed",
             "action.planned > approval.requested > approval.denied",
@@ -236,8 +246,8 @@ fn replay_gives_the_state_in_memory_on_every_path_of_the_machine() {
             "action.planned > approval.requested > approval.granted > action.started > action.failed",
         ]
     );
-    let denied = walk(&denied());
-    assert_eq!(paths(&denied), ["action.denied"]);
+    let denied = walk(denied());
+    assert_eq!(denied.paths, ["action.denied"]);
 
     // Between them the three walks end in every final state and write every event of the gate.
     let walks = [&allowed, &approval, &denied];
@@ -257,11 +267,8 @@ fn replay_gives_the_state_in_memory_on_every_path_of_the_machine() {
     );
     let kinds: BTreeSet<&str> = walks
         .iter()
-        .flat_map(|walk| {
-            walk.events
-                .iter()
-                .map(|event| event["type"].as_str().unwrap())
-        })
+        .flat_map(|walk| walk.events.iter())
+        .map(|event| event["type"].as_str().unwrap())
         .collect();
     assert_eq!(
         kinds,
@@ -283,7 +290,7 @@ fn replay_gives_the_state_in_memory_on_every_path_of_the_machine() {
 fn every_emitted_event_is_in_the_stream_of_the_entity_in_its_data() {
     let mut checked = 0;
     for verdict in [allowed(), approval_needed(&[BUILD]), denied()] {
-        for event in walk(&verdict).events {
+        for event in walk(verdict).events {
             stream_names_the_entity_in_data(&event);
             checked += 1;
         }
@@ -308,16 +315,20 @@ fn every_emitted_event_is_in_the_stream_of_the_entity_in_its_data() {
     assert_eq!(log[3].to_json()["data"]["approval_id"], "appr-01");
 }
 
-/// The longest path: planned, approval requested and granted, started, executed.
-fn approved_run(action_id: &str, approval_id: &str, verdict: &Verdict) -> (Action, Vec<Event>) {
-    let (action, planned, _) = Action::plan(id(action_id), verdict, meta(T0, 1)).unwrap();
-    let request = Command::RequestApproval {
+fn ask(approval_id: &str) -> Command {
+    Command::RequestApproval {
         approval_id: id(approval_id),
         summary: ShortText::new("Apagar a pasta de build").unwrap(),
         expires_at: at(EXPIRES),
-    };
-    let (action, requested) = action.apply(request, meta(T0, 1)).unwrap();
+    }
+}
+
+/// The longest path: planned, approval requested and granted, started, executed.
+fn approved_run(action_id: &str, approval_id: &str, verdict: &Verdict) -> (Action, Vec<Event>) {
+    let (action, planned, _) = Action::plan(id(action_id), verdict, meta(T0, 1)).unwrap();
+    let (action, requested) = action.apply(ask(approval_id), meta(T0, 1)).unwrap();
     let grant = Command::Grant {
+        action_id: id(action_id),
         approval_id: id(approval_id),
         plan_hash: action.plan_hash().clone(),
         via: Via::Tray,
@@ -339,7 +350,7 @@ fn rewritten(log: &[Event], index: usize, change: &dyn Fn(&mut Value)) -> Vec<Ev
     log
 }
 
-fn unexpected(result: Result<ads_core::gate::ActionSnapshot, ReplayError>) -> bool {
+fn unexpected(result: Result<ActionSnapshot, ReplayError>) -> bool {
     matches!(result, Err(ReplayError::UnexpectedEvent { .. }))
 }
 
@@ -383,7 +394,8 @@ fn logs_the_machine_would_not_write_are_refused() {
         log[2].clone(),
         log[4].clone()
     ])));
-    // Anything after a final state, the same event twice included.
+    // Anything after a final state, and any event twice: a second `action.started` is a
+    // second permit, a second `action.executed` a permit used twice.
     for again in &log {
         let mut longer = log.clone();
         longer.push(again.clone());
@@ -392,7 +404,7 @@ fn logs_the_machine_would_not_write_are_refused() {
     for twice in 0..log.len() {
         let mut repeated = log[..=twice].to_vec();
         repeated.push(log[twice].clone());
-        assert!(replay(&repeated).is_err(), "event {twice} twice");
+        assert!(unexpected(replay(&repeated)), "event {twice} twice");
     }
 }
 
@@ -458,13 +470,9 @@ fn events_outside_the_validity_of_the_approval_are_refused() {
 
     // Expired before its validity was over.
     let (action, planned, _) = Action::plan(id("act-01"), &verdict, meta(T0, 1)).unwrap();
-    let request = Command::RequestApproval {
-        approval_id: id("appr-01"),
-        summary: ShortText::new("Apagar a pasta de build").unwrap(),
-        expires_at: at(EXPIRES),
-    };
-    let (action, requested) = action.apply(request, meta(T0, 1)).unwrap();
+    let (action, requested) = action.apply(ask("appr-01"), meta(T0, 1)).unwrap();
     let expire = Command::Expire {
+        action_id: id("act-01"),
         approval_id: id("appr-01"),
         plan_hash: action.plan_hash().clone(),
     };

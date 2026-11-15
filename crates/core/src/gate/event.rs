@@ -213,12 +213,22 @@ fn timestamp_key(text: &str) -> Option<(&str, u32)> {
         return None;
     }
     let number = |from: usize, to: usize| text[from..to].parse::<u32>().ok();
-    let in_range = (1..=12).contains(&number(5, 7)?)
-        && (1..=31).contains(&number(8, 10)?)
-        && number(11, 13)? < 24
-        && number(14, 16)? < 60
-        && number(17, 19)? <= 60;
-    if !in_range {
+    let (year, month, day) = (number(0, 4)?, number(5, 7)?, number(8, 10)?);
+    let (hour, minute, second) = (number(11, 13)?, number(14, 16)?, number(17, 19)?);
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return None,
+    };
+    // A leap second exists only as the last second of a day.
+    let real = (1..=days).contains(&day)
+        && hour < 24
+        && minute < 60
+        && (second < 60 || (second == 60 && hour == 23 && minute == 59));
+    if !real {
         return None;
     }
     let micros = match &text[19..] {
@@ -929,6 +939,78 @@ pub(crate) fn canonical_plan(
     out
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalStatus {
+    Pending,
+    Granted,
+    Denied,
+    Expired,
+}
+
+/// The fields of `urn:ads:record:approval:1`, before the rules between them are checked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovalFields {
+    pub version: u64,
+    pub approval_id: Id,
+    pub plan_hash: PlanHash,
+    pub risk: Risk,
+    pub summary: ShortText,
+    pub status: ApprovalStatus,
+    pub requested_at: Timestamp,
+    pub expires_at: Timestamp,
+    #[serde(deserialize_with = "nullable")]
+    pub decided_at: Option<Timestamp>,
+    #[serde(deserialize_with = "nullable")]
+    pub decided_by: Option<Actor>,
+    #[serde(deserialize_with = "nullable")]
+    pub via: Option<Via>,
+    #[serde(deserialize_with = "nullable")]
+    pub reason: Option<ShortText>,
+}
+
+/// `urn:ads:record:approval:1`: the state of an approval. Read only: the gate writes the
+/// approval events, and whoever persists them keeps this record.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "ApprovalFields", into = "ApprovalFields")]
+pub struct ApprovalRecord(ApprovalFields);
+
+impl From<ApprovalRecord> for ApprovalFields {
+    fn from(record: ApprovalRecord) -> Self {
+        record.0
+    }
+}
+
+impl TryFrom<ApprovalFields> for ApprovalRecord {
+    type Error = ContractError;
+
+    fn try_from(fields: ApprovalFields) -> Result<Self, ContractError> {
+        let decided = matches!(
+            fields.status,
+            ApprovalStatus::Granted | ApprovalStatus::Denied
+        );
+        let coherent = if decided {
+            fields.decided_at.is_some() && fields.decided_by.is_some()
+        } else {
+            fields.decided_at.is_none() && fields.decided_by.is_none() && fields.via.is_none()
+        };
+        if fields.version != 1 || !coherent {
+            return Err(ContractError {
+                what: "approval with the decision its status asks for",
+                value: format!("version {}, {:?}", fields.version, fields.status),
+            });
+        }
+        Ok(Self(fields))
+    }
+}
+
+impl ApprovalRecord {
+    pub fn fields(&self) -> &ApprovalFields {
+        &self.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1031,6 +1113,9 @@ mod tests {
     fn timestamps_are_validated_and_compared_as_instants() {
         let at = |text: &str| Timestamp::new(text).unwrap();
         for bad in [
+            "2030-02-31T03:04:05Z",
+            "2031-02-29T03:04:05Z",
+            "2030-01-02T03:04:60Z",
             "2030-01-02T03:04:05",
             "2030-01-02 03:04:05Z",
             "2030-13-02T03:04:05Z",
