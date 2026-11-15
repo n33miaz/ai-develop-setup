@@ -4,7 +4,7 @@ Política do produto (tarefas, aprovações, escopo, roteamento e orçamento), s
 
 ## Portão de ações destrutivas (`src/gate/`)
 
-Nenhuma ação sobre o sistema de arquivos é executada sem passar por aqui (quem executa, e só com a licença daqui, é o [`ads-adapter-fs`](../adapters/fs/README.md)). O portão não toca o disco: recebe o plano como dado e responde se, e como o quê, ele pode rodar. Os tipos só se encaixam de um jeito: o pedido só vira plano pela normalização, o veredito só sai de `classify`, a ação só nasce de um veredito (a de um veredito negado já nasce no estado final) e a licença de execução só sai de uma ação cujo hash do plano e cuja aprovação conferem. O que o portão escreve (eventos e o registro do plano) segue os contratos de [`contracts/`](../../contracts/README.md#portão-de-ações), e o estado de uma ação se reconstrói só desses eventos.
+Nenhuma ação sobre o sistema de arquivos é executada sem passar por aqui. O portão não toca o disco: recebe o plano como dado e responde se, e como o quê, ele pode rodar. Os tipos só se encaixam de um jeito: o pedido só vira plano pela normalização, o veredito só sai de `classify`, a ação só nasce de um veredito (a de um veredito negado já nasce no estado final) e a licença de execução só sai de uma ação cujo hash do plano e cuja aprovação conferem. O que o portão escreve (eventos e o registro do plano) segue os contratos de [`contracts/`](../../contracts/README.md#portão-de-ações), e o estado de uma ação se reconstrói só desses eventos.
 
 | Arquivo | O que faz |
 |---|---|
