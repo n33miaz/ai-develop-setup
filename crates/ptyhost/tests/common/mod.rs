@@ -7,6 +7,7 @@ use std::time::Duration;
 use ads_ptyhost::{OutputChunk, PtyHost, SessionId, SpawnSpec, Subscription};
 
 pub mod client;
+pub mod gated;
 
 pub const STEP_TIMEOUT: Duration = Duration::from_secs(30);
 

@@ -1,6 +1,6 @@
 //! One terminal session: pumps output into the replay ring and fans it out to subscribers.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
@@ -21,7 +21,10 @@ pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 struct Shared {
     ring: ReplayRing,
-    subscribers: Vec<mpsc::Sender<OutputChunk>>,
+    /// Live queues by subscription number. An entry leaves when its subscription is dropped or
+    /// falls behind, never later: an idle session keeps nothing of clients that are gone.
+    subscribers: HashMap<u64, mpsc::Sender<OutputChunk>>,
+    next_subscriber: u64,
     ended: bool,
     closed: bool,
 }
@@ -34,6 +37,8 @@ pub struct Subscription {
     backlog: VecDeque<OutputChunk>,
     live: mpsc::Receiver<OutputChunk>,
     shared: Arc<Mutex<Shared>>,
+    /// Number of the live queue in the session; `None` when the output had already ended.
+    registration: Option<u64>,
     exit: watch::Receiver<Option<ExitStatus>>,
     oldest_seq: Seq,
     next_seq: Seq,
@@ -86,6 +91,14 @@ impl Subscription {
     }
 }
 
+impl Drop for Subscription {
+    fn drop(&mut self) {
+        if let Some(number) = self.registration {
+            lock(&self.shared).subscribers.remove(&number);
+        }
+    }
+}
+
 pub(crate) struct Session {
     shared: Arc<Mutex<Shared>>,
     writer: Mutex<Option<Box<dyn Write + Send>>>,
@@ -105,7 +118,8 @@ impl Session {
         } = parts;
         let shared = Arc::new(Mutex::new(Shared {
             ring: ReplayRing::new(config.replay_capacity_bytes),
-            subscribers: Vec::new(),
+            subscribers: HashMap::new(),
+            next_subscriber: 0,
             ended: false,
             closed: false,
         }));
@@ -142,10 +156,14 @@ impl Session {
         let oldest_seq = shared.ring.oldest_seq();
         let next_seq = shared.ring.next_seq();
         let (tx, live) = mpsc::channel(self.queue_chunks);
-        if !shared.ended {
-            shared.subscribers.push(tx);
-        }
+        let registration = (!shared.ended).then(|| {
+            let number = shared.next_subscriber;
+            shared.next_subscriber += 1;
+            shared.subscribers.insert(number, tx);
+            number
+        });
         Ok(Subscription {
+            registration,
             expected: backlog.front().map_or(next_seq.0, |chunk| chunk.seq.0),
             backlog,
             live,
@@ -177,6 +195,10 @@ impl Session {
         *self.exit.borrow()
     }
 
+    pub(crate) fn subscriber_count(&self) -> usize {
+        lock(&self.shared).subscribers.len()
+    }
+
     /// Oldest chunk still in the replay ring and the number the next one will get.
     pub(crate) fn replay_bounds(&self) -> (Seq, Seq) {
         let shared = lock(&self.shared);
@@ -192,18 +214,15 @@ impl Session {
         (*status).ok_or(PtyError::SessionEnded)
     }
 
-    /// Kills the process tree and returns once all output is in the ring and the threads are gone.
-    pub(crate) async fn close(&self) -> Result<ExitStatus, PtyError> {
+    /// Kills the process tree and returns once all output is in the ring and the threads are
+    /// gone. Blocks on the terminal: never call it from an async thread.
+    pub(crate) fn close(&self) -> Result<ExitStatus, PtyError> {
         lock(&self.shared).closed = true;
         lock(&self.control).kill_tree();
         lock(&self.writer).take();
-        let threads = std::mem::take(&mut *lock(&self.threads));
-        let joined = tokio::task::spawn_blocking(move || {
-            for thread in threads {
-                let _ = thread.join();
-            }
-        });
-        joined.await.map_err(|err| PtyError::Io(err.to_string()))?;
+        for thread in std::mem::take(&mut *lock(&self.threads)) {
+            let _ = thread.join();
+        }
         self.exit_status().ok_or(PtyError::SessionEnded)
     }
 }
@@ -228,7 +247,7 @@ fn pump_output(mut reader: Box<dyn Read + Send>, shared: &Mutex<Shared>, buffer_
             // A full or closed queue drops the subscriber; it can come back through replay.
             shared
                 .subscribers
-                .retain(|subscriber| subscriber.try_send(chunk.clone()).is_ok());
+                .retain(|_, subscriber| subscriber.try_send(chunk.clone()).is_ok());
         }
     }
     let mut shared = lock(shared);

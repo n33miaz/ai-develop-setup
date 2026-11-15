@@ -352,3 +352,57 @@ async fn the_child_environment_is_exactly_what_the_spec_carries() {
     assert_eq!(backend.terminals()[0].spec(), wanted);
     host.close(&id).await.unwrap();
 }
+
+#[tokio::test]
+async fn dropped_subscriptions_leave_nothing_behind_on_an_idle_session() {
+    const CYCLES: usize = 1000;
+    let backend = Arc::new(FakeBackend::new());
+    let host = host_with(&backend, "");
+    let id = open(&host, &spec());
+
+    for _ in 0..CYCLES {
+        drop(host.subscribe(&id, ReplayFrom::Oldest).unwrap());
+    }
+    assert_eq!(host.subscriber_count(&id).unwrap(), 0);
+
+    // Held together and dropped out of order: each one takes only itself away.
+    let mut held: Vec<_> = (0..CYCLES)
+        .map(|_| host.subscribe(&id, ReplayFrom::Oldest).unwrap())
+        .collect();
+    assert_eq!(host.subscriber_count(&id).unwrap(), CYCLES);
+    held.retain({
+        let mut index = 0;
+        move |_| {
+            index += 1;
+            index % 2 == 0
+        }
+    });
+    assert_eq!(host.subscriber_count(&id).unwrap(), CYCLES / 2);
+    drop(held);
+    assert_eq!(host.subscriber_count(&id).unwrap(), 0);
+
+    // Not one byte of output was needed for any of it.
+    assert_eq!(host.sessions()[0].next_seq, Seq(1));
+}
+
+#[tokio::test]
+async fn a_lagging_subscriber_is_forgotten_as_soon_as_it_lags() {
+    let backend = Arc::new(FakeBackend::new());
+    let host = host_with(&backend, "subscriber_queue_chunks = 2");
+    let id = open(&host, &spec());
+    let mut lagging = host.subscribe(&id, ReplayFrom::Oldest).unwrap();
+    let mut reading = host.subscribe(&id, ReplayFrom::Oldest).unwrap();
+
+    let terminal = &backend.terminals()[0];
+    for n in 1..=3_u8 {
+        terminal.emit(&[n]);
+        assert_eq!(next(&mut reading).await.unwrap().seq, Seq(u64::from(n)));
+    }
+    // The third chunk found the queue of the one that never read full.
+    assert_eq!(host.subscriber_count(&id).unwrap(), 1);
+    assert_eq!(seqs(&drain(&mut lagging).await), [1, 2]);
+    drop(lagging);
+    assert_eq!(host.subscriber_count(&id).unwrap(), 1);
+    drop(reading);
+    assert_eq!(host.subscriber_count(&id).unwrap(), 0);
+}
