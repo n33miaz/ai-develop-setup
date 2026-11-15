@@ -36,6 +36,7 @@ Um alvo negado nega o plano inteiro. Comparação por componente (`proj2` não e
 | Veredito | Quando |
 |---|---|
 | Negado | alvo que é raiz de unidade ou `/`; a pasta do usuário ou um ancestral dela; a pasta dos perfis ou o perfil de qualquer usuário; pasta do sistema (ou algo dentro dela); a raiz de trabalho ou algo que a contenha; qualquer coisa que não esteja estritamente dentro da raiz de trabalho ou de uma raiz permitida; raiz de repositório (informada no plano); a pasta de quarentena ou algo que a contenha |
+| Negado | qualquer caminho escrito no estilo que não é o da pasta do usuário (`/c/...` contra `C:\...`): pode ser outra grafia de uma pasta protegida, e o texto sozinho não resolve isso |
 | Negado | raiz de trabalho que é ela mesma uma pasta protegida; destino de "mover" protegido, fora das raízes permitidas ou dentro de um dos alvos |
 | Exige aprovação | apagar recursivo ou limpar não rastreados acima do limite de itens ou de bytes, ou sem estimativa; qualquer ação (sobrescrita inclusive) em raiz permitida fora da raiz de trabalho; "mover" com destino fora da raiz de trabalho; apagar algo que já está na quarentena |
 | Permitido | o restante dentro da raiz de trabalho |

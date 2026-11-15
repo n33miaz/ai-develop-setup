@@ -25,6 +25,9 @@ pub enum Protection {
     /// The folder that holds the user profiles, or the profile of any user.
     UserProfile,
     SystemDir,
+    /// A path written in the other style than the user home (`/c/...` against `C:\...`): it
+    /// may be another spelling of a protected folder, and text alone cannot tell.
+    OtherPathStyle,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -288,7 +291,8 @@ impl GatePolicy {
                 }
             }
         }
-        None
+        // Last on purpose: the rules above name the reason when they can.
+        (path.style() != self.user_home.style()).then_some(Protection::OtherPathStyle)
     }
 }
 
@@ -470,6 +474,34 @@ mod tests {
         for (raw, expected) in cases {
             assert_eq!(protection(&policy, raw), expected, "{raw}");
         }
+    }
+
+    #[test]
+    fn path_in_another_style_than_the_user_home_is_protected() {
+        let policy = GatePolicy::defaults(&WINDOWS).unwrap();
+        for raw in [
+            "/c/Users/user-a",
+            "/c/Users/user-a/Documents",
+            "/mnt/c/work",
+            "/work",
+        ] {
+            assert_eq!(
+                protection(&policy, raw),
+                Some(Protection::OtherPathStyle),
+                "{raw}"
+            );
+        }
+        let policy = GatePolicy::defaults(&POSIX).unwrap();
+        assert_eq!(
+            protection(&policy, "C:\\work\\proj"),
+            Some(Protection::OtherPathStyle)
+        );
+        assert_eq!(
+            GatePolicy::from_toml_str("allowed_roots = ['/c/Users/user-a']", &WINDOWS),
+            Err(PolicyError::ProtectedAllowedRoot(
+                "/c/Users/user-a".to_owned()
+            ))
+        );
     }
 
     #[test]

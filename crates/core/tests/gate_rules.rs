@@ -3,8 +3,8 @@
 mod common;
 
 use ads_core::gate::{
-    ActionPlan, Decision, Estimate, Operation, OperationRequest as Op, PathError, PlanError,
-    Protection, Risk, Rule, Verdict, classify,
+    ActionPlan, Decision, Estimate, GatePolicy, HostFacts, Operation, OperationRequest as Op,
+    PathError, PlanError, PolicyError, Protection, Risk, Rule, Verdict, classify,
 };
 use common::{POSIX_HOME, POSIX_ROOT, WIN_HOME, WIN_ROOT, plan, policy, posix, request, win};
 
@@ -95,6 +95,58 @@ fn user_home_is_denied_even_as_work_root_or_allowed_root_content() {
         &policy(WIN_HOME, ""),
     );
     denied_by(&verdict, Rule::WorkRootProtected(Protection::UserHome));
+}
+
+#[test]
+fn user_home_spelled_in_the_other_path_style_is_denied() {
+    // `/c/Users/user-a` is how some shells write `C:\Users\user-a`. As text it is a POSIX
+    // path that no other rule recognizes, so a whole plan in that style would have passed.
+    let policy = policy(WIN_HOME, "quarantine_enabled = false");
+    for op in [
+        Op::Delete,
+        Op::DeleteRecursive,
+        Op::Overwrite,
+        Op::CleanUntracked,
+    ] {
+        let verdict = classify(
+            &plan(op, "/c/Users/user-a", &["/c/Users/user-a/Documents"]),
+            &policy,
+        );
+        denied_by(
+            &verdict,
+            Rule::WorkRootProtected(Protection::OtherPathStyle),
+        );
+        assert!(verdict.has(Rule::Protected(Protection::OtherPathStyle)));
+    }
+    // The same for a target or a destination alone, and the other way around.
+    denied_by(
+        &win(Op::DeleteRecursive, &["/c/Users/user-a"]),
+        Rule::Protected(Protection::OtherPathStyle),
+    );
+    denied_by(
+        &win(move_to("/c/tmp"), &["C:\\Users\\user-a\\work\\proj\\build"]),
+        Rule::DestinationProtected(Protection::OtherPathStyle),
+    );
+    denied_by(
+        &posix(Op::DeleteRecursive, &["C:\\work\\proj\\build"]),
+        Rule::Protected(Protection::OtherPathStyle),
+    );
+}
+
+#[test]
+fn allowed_root_in_the_other_path_style_is_refused() {
+    let refused = GatePolicy::from_toml_str(
+        "allowed_roots = ['/c/Users/user-a']",
+        &HostFacts {
+            user_home: WIN_HOME,
+        },
+    );
+    assert_eq!(
+        refused,
+        Err(PolicyError::ProtectedAllowedRoot(
+            "/c/Users/user-a".to_owned()
+        ))
+    );
 }
 
 #[test]

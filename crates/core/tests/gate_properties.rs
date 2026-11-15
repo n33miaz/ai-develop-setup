@@ -147,6 +147,8 @@ struct Case {
     /// The folder each target ranges over.
     scopes: Vec<Loc>,
     destination: Option<Loc>,
+    /// The work root is written in the other style than the user home.
+    other_style: bool,
 }
 
 impl Case {
@@ -239,7 +241,22 @@ fn generate(rng: &mut Rng) -> Case {
             ],
         )
     };
-    let work_root = loc(rng.pick(work_roots));
+    // Now and then the whole plan comes in the style the user home is not written in.
+    let other_style = rng.chance(8);
+    let work_root = if other_style {
+        let pool: &[&str] = if windows {
+            &["/c/Users/user-a", "/c/Users/user-a/work/proj", "/work/proj"]
+        } else {
+            &[
+                "C:\\home\\user-a",
+                "C:\\home\\user-a\\work\\proj",
+                "D:\\work\\proj",
+            ]
+        };
+        loc(rng.pick(pool))
+    } else {
+        loc(rng.pick(work_roots))
+    };
     let allowed_roots: Vec<Loc> = root_pool
         .iter()
         .filter(|_| rng.chance(40))
@@ -356,6 +373,7 @@ fn generate(rng: &mut Rng) -> Case {
         allowed_roots,
         scopes,
         destination,
+        other_style,
     }
 }
 
@@ -376,13 +394,22 @@ fn meta() -> EventMeta {
 #[test]
 fn no_plan_with_a_target_outside_the_allowed_roots_gets_past_denied() {
     let mut rng = Rng(0x00AD_5C0D_E000_0001);
-    let (mut outside, mut inside_passed, mut inside_denied) = (0, 0, 0);
+    let (mut outside, mut inside_passed, mut inside_denied, mut other_style) = (0, 0, 0, 0);
     for index in 0..CASES {
         let case = generate(&mut rng);
         let plan = ActionPlan::normalize(&case.request)
             .unwrap_or_else(|err| panic!("case {index}: {:?}: {err}", case.request));
         let verdict = classify(&plan, &case.policy);
 
+        if case.other_style {
+            other_style += 1;
+            assert_eq!(
+                verdict.decision(),
+                Decision::Denied,
+                "case {index}: {:?}",
+                case.request
+            );
+        }
         if case.has_target_outside() || case.has_destination_outside() {
             outside += 1;
             assert_eq!(
@@ -412,6 +439,7 @@ fn no_plan_with_a_target_outside_the_allowed_roots_gets_past_denied() {
         inside_denied > CASES / 200,
         "inside, denied: {inside_denied}"
     );
+    assert!(other_style > CASES / 50, "other style: {other_style}");
 }
 
 #[test]
