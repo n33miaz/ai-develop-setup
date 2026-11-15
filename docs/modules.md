@@ -8,7 +8,7 @@ Uma frase por módulo (P1): se a frase precisa de "e também", o módulo está g
 | `ads-contracts` | `crates/contracts` | Tipos de mensagem e de evento gerados dos Schemas, sem lógica. |
 | `ads-core` | `crates/core` | Política do produto: tarefas, aprovações, escopo, roteamento e orçamento. |
 | `ads-storage` | `crates/storage` | Estado local: SQLite, cifra por coluna e auditoria encadeada. |
-| `ads-ptyhost` | `crates/ptyhost` | Processo estável que segura as sessões de terminal e o anel de replay. |
+| `ads-ptyhost` | `crates/ptyhost` | Processo estável que segura as sessões de terminal e o anel de replay, servidos ao núcleo pelo contrato `pty-host/1`. |
 | `ads-daemon` | `crates/daemon` | Composição que liga o núcleo, os adaptadores e a API local de HTTP e WebSocket. |
 | `ads-launcher` | `crates/launcher` | Supervisor estável que inicia os outros processos e aplica as atualizações. |
 | `ads-shell` | `crates/shell` | Casca Tauri (janela, bandeja e painel) como cliente fino do núcleo. |

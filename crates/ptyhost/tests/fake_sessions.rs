@@ -1,6 +1,7 @@
 //! Session behavior on the fake terminal: no real process, no sleeping.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use ads_ptyhost::{
@@ -15,6 +16,14 @@ fn spec() -> SpawnSpec {
         program: "fake-shell".to_owned(),
         ..SpawnSpec::default()
     }
+}
+
+/// Opens a session under a name no other session of this test binary has.
+fn open(host: &PtyHost, spec: &SpawnSpec) -> SessionId {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    let id = SessionId::new(&format!("s{:03}", NEXT.fetch_add(1, Ordering::Relaxed))).unwrap();
+    host.open(&id, spec).unwrap();
+    id
 }
 
 fn host_with(backend: &Arc<FakeBackend>, overrides: &str) -> PtyHost {
@@ -57,7 +66,7 @@ fn text(chunks: &[OutputChunk]) -> String {
 }
 
 /// Waits until the session has numbered `count` chunks.
-async fn wait_until_numbered(host: &PtyHost, id: SessionId, count: u64) {
+async fn wait_until_numbered(host: &PtyHost, id: &SessionId, count: u64) {
     tokio::time::timeout(STEP_TIMEOUT, async {
         while host.subscribe(id, ReplayFrom::Seq(Seq(count + 1))).is_err() {
             tokio::task::yield_now().await;
@@ -71,8 +80,8 @@ async fn wait_until_numbered(host: &PtyHost, id: SessionId, count: u64) {
 async fn live_output_arrives_numbered_and_in_order() {
     let backend = Arc::new(FakeBackend::new());
     let host = host_with(&backend, "");
-    let id = host.open(&spec()).unwrap();
-    let mut subscription = host.subscribe(id, ReplayFrom::Oldest).unwrap();
+    let id = open(&host, &spec());
+    let mut subscription = host.subscribe(&id, ReplayFrom::Oldest).unwrap();
 
     let terminal = &backend.terminals()[0];
     terminal.emit(b"one ");
@@ -82,17 +91,17 @@ async fn live_output_arrives_numbered_and_in_order() {
     let chunks = take(&mut subscription, 3).await;
     assert_eq!(seqs(&chunks), [1, 2, 3]);
     assert_eq!(text(&chunks), "one two three");
-    host.close(id).await.unwrap();
+    host.close(&id).await.unwrap();
 }
 
 #[tokio::test]
 async fn reconnect_replays_from_the_requested_seq_then_goes_live() {
     let backend = Arc::new(FakeBackend::new());
     let host = host_with(&backend, "");
-    let id = host.open(&spec()).unwrap();
+    let id = open(&host, &spec());
     let terminal = &backend.terminals()[0];
 
-    let mut first = host.subscribe(id, ReplayFrom::Oldest).unwrap();
+    let mut first = host.subscribe(&id, ReplayFrom::Oldest).unwrap();
     terminal.emit(b"a");
     terminal.emit(b"b");
     let seen = take(&mut first, 2).await;
@@ -102,23 +111,23 @@ async fn reconnect_replays_from_the_requested_seq_then_goes_live() {
     // Output keeps coming while the client is away.
     terminal.emit(b"c");
     terminal.emit(b"d");
-    wait_until_numbered(&host, id, 4).await;
+    wait_until_numbered(&host, &id, 4).await;
 
     let mut second = host
-        .subscribe(id, ReplayFrom::Seq(Seq(last_seen + 1)))
+        .subscribe(&id, ReplayFrom::Seq(Seq(last_seen + 1)))
         .unwrap();
     terminal.emit(b"e");
     let resumed = take(&mut second, 3).await;
     assert_eq!(seqs(&resumed), [3, 4, 5]);
     assert_eq!(text(&resumed), "cde");
-    host.close(id).await.unwrap();
+    host.close(&id).await.unwrap();
 }
 
 #[tokio::test]
 async fn many_reconnects_see_every_byte_once() {
     let backend = Arc::new(FakeBackend::new());
     let host = host_with(&backend, "");
-    let id = host.open(&spec()).unwrap();
+    let id = open(&host, &spec());
     let terminal = backend.terminals()[0].clone();
 
     let expected: String = (0..200).map(|n| format!("line {n}\n")).collect();
@@ -133,7 +142,7 @@ async fn many_reconnects_see_every_byte_once() {
     let mut collected = Vec::new();
     let mut next_seq = 1;
     loop {
-        let mut subscription = host.subscribe(id, ReplayFrom::Seq(Seq(next_seq))).unwrap();
+        let mut subscription = host.subscribe(&id, ReplayFrom::Seq(Seq(next_seq))).unwrap();
         let mut ended = false;
         for _ in 0..7 {
             match next(&mut subscription).await {
@@ -155,7 +164,7 @@ async fn many_reconnects_see_every_byte_once() {
     writer.join().unwrap();
 
     assert_eq!(text(&collected), expected);
-    assert_eq!(host.close(id).await.unwrap(), ExitStatus { code: 0 });
+    assert_eq!(host.close(&id).await.unwrap(), ExitStatus { code: 0 });
 }
 
 #[tokio::test]
@@ -165,70 +174,70 @@ async fn replay_is_bounded_and_refuses_what_it_dropped() {
         &backend,
         "replay_capacity_bytes = 16\nread_buffer_bytes = 8",
     );
-    let id = host.open(&spec()).unwrap();
+    let id = open(&host, &spec());
     let terminal = &backend.terminals()[0];
 
     for n in 0..10 {
         terminal.emit(format!("chunk{n:03}").as_bytes());
     }
-    wait_until_numbered(&host, id, 10).await;
+    wait_until_numbered(&host, &id, 10).await;
 
-    let mut replay = host.subscribe(id, ReplayFrom::Oldest).unwrap();
+    let mut replay = host.subscribe(&id, ReplayFrom::Oldest).unwrap();
     let held = take(&mut replay, 2).await;
     assert_eq!(seqs(&held), [9, 10]);
     assert_eq!(text(&held), "chunk008chunk009");
 
     assert_eq!(
-        host.subscribe(id, ReplayFrom::Seq(Seq(3))).err(),
+        host.subscribe(&id, ReplayFrom::Seq(Seq(3))).err(),
         Some(PtyError::ReplayEvicted {
             requested: Seq(3),
             oldest: Seq(9)
         })
     );
     assert_eq!(
-        host.subscribe(id, ReplayFrom::Seq(Seq(50))).err(),
+        host.subscribe(&id, ReplayFrom::Seq(Seq(50))).err(),
         Some(PtyError::ReplayAhead {
             requested: Seq(50),
             next: Seq(11)
         })
     );
-    host.close(id).await.unwrap();
+    host.close(&id).await.unwrap();
 }
 
 #[tokio::test]
 async fn slow_subscriber_is_dropped_and_recovers_by_replay() {
     let backend = Arc::new(FakeBackend::new());
     let host = host_with(&backend, "subscriber_queue_chunks = 2");
-    let id = host.open(&spec()).unwrap();
+    let id = open(&host, &spec());
     let terminal = &backend.terminals()[0];
 
-    let mut slow = host.subscribe(id, ReplayFrom::Oldest).unwrap();
+    let mut slow = host.subscribe(&id, ReplayFrom::Oldest).unwrap();
     for n in 0..6 {
         terminal.emit(format!("{n}").as_bytes());
     }
-    wait_until_numbered(&host, id, 6).await;
+    wait_until_numbered(&host, &id, 6).await;
 
     // The queue held two chunks; the third overflowed it and ended the subscription.
     let before = drain(&mut slow).await;
     assert_eq!(seqs(&before), [1, 2]);
 
-    let mut resumed = host.subscribe(id, ReplayFrom::Seq(Seq(3))).unwrap();
+    let mut resumed = host.subscribe(&id, ReplayFrom::Seq(Seq(3))).unwrap();
     let after = take(&mut resumed, 4).await;
     assert_eq!(seqs(&after), [3, 4, 5, 6]);
     assert_eq!(format!("{}{}", text(&before), text(&after)), "012345");
-    host.close(id).await.unwrap();
+    host.close(&id).await.unwrap();
 }
 
 #[tokio::test]
 async fn input_and_resize_reach_the_terminal() {
     let backend = Arc::new(FakeBackend::with_echo());
     let host = host_with(&backend, "");
-    let id = host.open(&spec()).unwrap();
-    let mut subscription = host.subscribe(id, ReplayFrom::Oldest).unwrap();
+    let id = open(&host, &spec());
+    let mut subscription = host.subscribe(&id, ReplayFrom::Oldest).unwrap();
 
-    host.write(id, b"dir\r").unwrap();
+    host.write(&id, b"dir\r").unwrap();
     host.resize(
-        id,
+        &id,
         TerminalSize {
             rows: 40,
             cols: 120,
@@ -246,49 +255,49 @@ async fn input_and_resize_reach_the_terminal() {
         }
     );
     assert_eq!(text(&take(&mut subscription, 1).await), "dir\r");
-    host.close(id).await.unwrap();
+    host.close(&id).await.unwrap();
 }
 
 #[tokio::test]
 async fn natural_exit_ends_the_stream_and_keeps_the_replay() {
     let backend = Arc::new(FakeBackend::new());
     let host = host_with(&backend, "");
-    let id = host.open(&spec()).unwrap();
-    let mut subscription = host.subscribe(id, ReplayFrom::Oldest).unwrap();
+    let id = open(&host, &spec());
+    let mut subscription = host.subscribe(&id, ReplayFrom::Oldest).unwrap();
 
     let terminal = &backend.terminals()[0];
     terminal.emit(b"bye");
     terminal.exit(7);
 
     assert_eq!(text(&drain(&mut subscription).await), "bye");
-    assert_eq!(host.wait_exit(id).await.unwrap(), ExitStatus { code: 7 });
+    assert_eq!(host.wait_exit(&id).await.unwrap(), ExitStatus { code: 7 });
     assert!(!terminal.was_killed());
 
-    let mut late = host.subscribe(id, ReplayFrom::Oldest).unwrap();
+    let mut late = host.subscribe(&id, ReplayFrom::Oldest).unwrap();
     assert_eq!(text(&drain(&mut late).await), "bye");
-    assert_eq!(host.close(id).await.unwrap(), ExitStatus { code: 7 });
+    assert_eq!(host.close(&id).await.unwrap(), ExitStatus { code: 7 });
 }
 
 #[tokio::test]
 async fn close_kills_the_terminal_and_forgets_the_session() {
     let backend = Arc::new(FakeBackend::new());
     let host = host_with(&backend, "");
-    let id = host.open(&spec()).unwrap();
-    let mut subscription = host.subscribe(id, ReplayFrom::Oldest).unwrap();
-    assert_eq!(host.exit_status(id).unwrap(), None);
+    let id = open(&host, &spec());
+    let mut subscription = host.subscribe(&id, ReplayFrom::Oldest).unwrap();
+    assert_eq!(host.exit_status(&id).unwrap(), None);
 
-    host.close(id).await.unwrap();
+    host.close(&id).await.unwrap();
 
     assert!(backend.terminals()[0].was_killed());
     assert!(next(&mut subscription).await.is_none());
     assert!(host.session_ids().is_empty());
     assert_eq!(
-        host.write(id, b"x").err(),
-        Some(PtyError::UnknownSession(id))
+        host.write(&id, b"x").err(),
+        Some(PtyError::UnknownSession(id.clone()))
     );
     assert_eq!(
-        host.close(id).await.err(),
-        Some(PtyError::UnknownSession(id))
+        host.close(&id).await.err(),
+        Some(PtyError::UnknownSession(id.clone()))
     );
 }
 
@@ -296,7 +305,7 @@ async fn close_kills_the_terminal_and_forgets_the_session() {
 async fn dropping_the_host_kills_open_terminals() {
     let backend = Arc::new(FakeBackend::new());
     let host = host_with(&backend, "");
-    host.open(&spec()).unwrap();
+    open(&host, &spec());
     drop(host);
     assert!(backend.terminals()[0].was_killed());
 }
@@ -306,23 +315,29 @@ async fn session_limit_is_enforced_and_failed_spawns_take_no_slot() {
     let backend = Arc::new(FakeBackend::new());
     let host = host_with(&backend, "max_sessions = 2");
 
+    let name = |text: &str| SessionId::new(text).unwrap();
     assert!(matches!(
-        host.open(&SpawnSpec::default()),
+        host.open(&name("empty"), &SpawnSpec::default()),
         Err(PtyError::Spawn(_))
     ));
-    let first = host.open(&spec()).unwrap();
-    let second = host.open(&spec()).unwrap();
+    let first = open(&host, &spec());
+    let second = open(&host, &spec());
     assert_eq!(
-        host.open(&spec()).err(),
+        host.open(&name("over"), &spec()).err(),
         Some(PtyError::TooManySessions { limit: 2 })
     );
-    assert_eq!(host.session_ids(), [first, second]);
+    // A name in use is refused, and says so even when the host is full.
+    assert_eq!(
+        host.open(&first, &spec()).err(),
+        Some(PtyError::SessionExists(first.clone()))
+    );
+    assert_eq!(host.session_ids(), [first.clone(), second.clone()]);
 
-    host.close(first).await.unwrap();
-    let third = host.open(&spec()).unwrap();
+    host.close(&first).await.unwrap();
+    let third = open(&host, &spec());
     assert_ne!(third, first);
-    host.close(second).await.unwrap();
-    host.close(third).await.unwrap();
+    host.close(&second).await.unwrap();
+    host.close(&third).await.unwrap();
 }
 
 #[tokio::test]
@@ -333,7 +348,7 @@ async fn the_child_environment_is_exactly_what_the_spec_carries() {
         env: vec![("LANG".to_owned(), "C".to_owned())],
         ..spec()
     };
-    let id = host.open(&wanted).unwrap();
+    let id = open(&host, &wanted);
     assert_eq!(backend.terminals()[0].spec(), wanted);
-    host.close(id).await.unwrap();
+    host.close(&id).await.unwrap();
 }

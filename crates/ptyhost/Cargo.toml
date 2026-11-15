@@ -9,20 +9,22 @@ publish.workspace = true
 [dependencies]
 portable-pty = { workspace = true }
 serde = { workspace = true }
-tokio = { workspace = true, features = ["rt", "sync"] }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync"] }
 toml = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = [
   "Win32_Foundation",
   "Win32_Security",
+  "Win32_Security_Authorization",
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_JobObjects",
   "Win32_System_Threading",
 ] }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 
 # Copia dos lints do workspace com `unsafe_code` em "deny" no lugar de "forbid": as chamadas do sistema
 # ficam num unico modulo (`win`), que libera o lint. Ver docs/unsafe.md.

@@ -1,9 +1,12 @@
 //! Helpers for the tests that start a real, harmless system command.
 #![allow(dead_code)]
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use ads_ptyhost::{OutputChunk, SpawnSpec, Subscription};
+use ads_ptyhost::{OutputChunk, PtyHost, SessionId, SpawnSpec, Subscription};
+
+pub mod client;
 
 pub const STEP_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -12,6 +15,14 @@ pub const STEP_TIMEOUT: Duration = Duration::from_secs(30);
 const ENV_ALLOWLIST: &[&str] = &["SystemRoot", "windir", "ComSpec", "PATH", "PATHEXT"];
 #[cfg(not(windows))]
 const ENV_ALLOWLIST: &[&str] = &["PATH"];
+
+/// Opens a session under a name no other session of this test binary has.
+pub fn open(host: &PtyHost, spec: &SpawnSpec) -> SessionId {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    let id = SessionId::new(&format!("s{:03}", NEXT.fetch_add(1, Ordering::Relaxed))).unwrap();
+    host.open(&id, spec).unwrap();
+    id
+}
 
 pub fn allowed_env() -> Vec<(String, String)> {
     std::env::vars()

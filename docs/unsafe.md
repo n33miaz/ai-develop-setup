@@ -6,12 +6,12 @@ Exceção prevista, ainda não usada: `ads-adapter-vault` vai precisar de chamad
 
 | Crate | Blocos `unsafe` | Motivo |
 |---|---|---|
-| `ads-ptyhost` | 11 | chamadas da API do Windows, listadas abaixo |
+| `ads-ptyhost` | 22 | chamadas da API do Windows, listadas abaixo |
 | demais | 0 | nenhum |
 
 ## `ads-ptyhost` (`crates/ptyhost/src/win.rs`)
 
-Cada bloco é uma única chamada da API do Windows (crate `windows`) e leva um comentário `SAFETY` no código. Os handles criados passam na hora para um `OwnedHandle` da biblioteca padrão, que os fecha sozinho.
+Cada bloco é uma única operação (uma chamada da API do Windows pelo crate `windows`, a criação do pipe pelo `tokio`, ou a leitura de um dado que a chamada anterior preencheu) e leva um comentário `SAFETY` no código. Os handles criados passam na hora para um `OwnedHandle` da biblioteca padrão, que os fecha sozinho; a memória que o sistema aloca para o chamador fica num guarda que a libera ao sair de escopo.
 
 | Onde | Blocos | Chamada | Motivo |
 |---|---|---|---|
@@ -21,3 +21,8 @@ Cada bloco é uma única chamada da API do Windows (crate `windows`) e leva um c
 | `JobObject::process_ids` | 1 | `QueryInformationJobObject` | listar os processos vivos da sessão |
 | `own_handle_count` | 1 | `GetProcessHandleCount` | medir os handles abertos do próprio processo (prova de que não vazam) |
 | `process_table` | 4 | `CreateToolhelp32Snapshot`, `OwnedHandle::from_raw_handle`, `Process32FirstW`, `Process32NextW` | listar os processos do sistema com o pai (prova de que não sobra filho) |
+| `LocalMemory::drop` | 1 | `LocalFree` | liberar a memória que o sistema alocou (texto do identificador, descritor de segurança) |
+| `take_text` | 1 | `PWSTR::to_string` | copiar um texto devolvido pelo sistema antes de liberá-lo |
+| `current_user_sid` | 5 | `OpenProcessToken`, `OwnedHandle::from_raw_handle`, `GetTokenInformation`, leitura do `TOKEN_USER` preenchido, `ConvertSidToStringSidW` | saber quem é o usuário do processo, para nomear o canal e restringi-lo a ele |
+| `create_user_pipe` | 2 | `ConvertStringSecurityDescriptorToSecurityDescriptorW`, `ServerOptions::create_with_security_attributes_raw` (do `tokio`) | criar o named pipe com lista de acesso de uma entrada só, a do usuário atual |
+| `access_list_text` | 2 | `GetSecurityInfo`, `ConvertSecurityDescriptorToStringSecurityDescriptorW` | ler a lista de acesso de um objeto (prova de que só o usuário abre o canal) |
