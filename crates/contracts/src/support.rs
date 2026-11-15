@@ -21,11 +21,16 @@ pub struct ContractError {
 }
 
 impl ContractError {
+    /// How much of a refused value the error keeps: enough to find it, not the whole payload.
+    pub const DETAIL_MAX: usize = 120;
+
     pub fn new(what: &'static str, detail: impl Into<String>) -> Self {
-        Self {
-            what,
-            detail: detail.into(),
+        let mut detail = detail.into();
+        if let Some((at, _)) = detail.char_indices().nth(Self::DETAIL_MAX) {
+            detail.truncate(at);
+            detail.push('…');
         }
+        Self { what, detail }
     }
 }
 
@@ -377,6 +382,15 @@ mod tests {
         ] {
             assert!(!is_date_time(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn the_error_keeps_only_the_start_of_a_long_value() {
+        let short = ContractError::new("X", "çã");
+        assert_eq!(short.detail, "çã");
+        let long = ContractError::new("X", "ç".repeat(500));
+        assert_eq!(long.detail.chars().count(), ContractError::DETAIL_MAX + 1);
+        assert!(long.detail.ends_with('…'));
     }
 
     #[test]
