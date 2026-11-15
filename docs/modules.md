@@ -5,7 +5,7 @@ Uma frase por módulo (P1): se a frase precisa de "e também", o módulo está g
 | Módulo | Pasta | Responsabilidade |
 |---|---|---|
 | `ads-contract-schemas` | `contracts` | Fonte dos contratos: JSON Schemas versionados, arquivos dourados e os tipos gerados a partir deles. |
-| `ads-contracts` | `crates/contracts` | Tipos de mensagem e de evento gerados dos Schemas, sem lógica. |
+| `ads-contracts` | `crates/contracts` | Tipos Rust de mensagem e de registro gerados dos Schemas, válidos por construção. |
 | `ads-core` | `crates/core` | Política do produto: tarefas, aprovações, escopo, roteamento e orçamento. |
 | `ads-storage` | `crates/storage` | Estado local: SQLite, cifra por coluna e auditoria encadeada. |
 | `ads-ptyhost` | `crates/ptyhost` | Processo estável que segura as sessões de terminal e o anel de replay, servidos ao núcleo pelo contrato `pty-host/1`. |
