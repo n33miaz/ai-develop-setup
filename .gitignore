@@ -32,6 +32,9 @@ coverage/
 .vite/
 crates/shell/gen/
 
+# Arquivos de trabalho dos testes de script (regravados a cada rodada, nunca apagados pelo teste)
+.test-tmp/
+
 # Spikes e rascunhos fora do repo
 spikes/
 *.bak

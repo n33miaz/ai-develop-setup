@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Testes do checador de commits e do hook. Roda local, sem repositório: bash .github/scripts/check-commits.test.sh
-# Usa só arquivos temporários (mktemp -d). Saída 0 = todos passaram.
+# Os arquivos de trabalho ficam numa pasta fixa da própria árvore, ignorada pelo git (.test-tmp/), regravados a cada
+# rodada; o teste não apaga nada. Saída 0 = todos passaram.
 set -u
 export LC_ALL=C
 
@@ -8,8 +9,8 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
 checker="$here/check-commits.sh"
 hook="$root/.githooks/commit-msg"
-tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
+tmp="$root/.test-tmp/check-commits"
+mkdir -p "$tmp" || exit 2
 
 author='12345+usuario@users.noreply.github.com'
 other='usuario@example.org'
@@ -34,6 +35,16 @@ expect_fail() { # <nome> [e-mail do autor]
     failed=$((failed + 1)); echo "FALHA deveria reprovar: $1"
   else
     passed=$((passed + 1)); echo "ok    reprova: $1"
+  fi
+}
+
+expect_rc() { # <código esperado> <descrição> <mensagem> [toml]: confere o código de saída exato
+  local rc=0
+  ADS_DEVFLOW_TOML="${4:-$root/defaults/devflow.toml}" bash "$checker" --message "$tmp/$3.txt" --author "$author" > "$tmp/out.txt" 2>&1 || rc=$?
+  if [ "$rc" -eq "$1" ]; then
+    passed=$((passed + 1)); echo "ok    sai com $1: $2"
+  else
+    failed=$((failed + 1)); echo "FALHA esperava saída $1 e veio $rc: $2"; sed 's/^/        /' "$tmp/out.txt"
   fi
 }
 
@@ -106,6 +117,21 @@ expect_fail f-signoff-sem-email
 msg f-autor "feat: add thing\n\nSigned-off-by: Fulano <$other>\n"
 expect_fail f-autor "$other"
 
+# ---- Minúsculas na descrição inteira (não só na primeira letra); o código de saída é 1, não 2
+msg f-maiuscula-meio "feat: add UPPERCASE words\n\n$sob\n"
+msg f-maiuscula-fim "feat: add thinG\n\n$sob\n"
+msg f-sigla "docs: describe the API\n\n$sob\n"
+msg f-identificador "fix(core): handle planHash\n\n$sob\n"
+msg f-maiuscula-apos-digito "fix: 3D preview crash\n\n$sob\n"
+msg p-minusculas-com-simbolos "fix(ci): keep utf-8, pty-host/1 and m1 ids\n\n$sob\n"
+expect_rc 1 "maiúscula no meio da descrição" f-maiuscula-meio
+expect_rc 1 "maiúscula no fim da descrição" f-maiuscula-fim
+expect_rc 1 "sigla em maiúsculas" f-sigla
+expect_rc 1 "identificador com maiúscula" f-identificador
+expect_rc 1 "maiúscula depois de dígito" f-maiuscula-apos-digito
+expect_rc 1 "maiúscula na primeira letra" f-maiuscula
+expect_rc 0 "siglas, dígitos e símbolos em minúsculas" p-minusculas-com-simbolos
+
 # ---- Parâmetros: o arquivo de configuração manda (P8)
 sed -e 's/^ai_attribution = .*/ai_attribution = "none"/' "$root/defaults/devflow.toml" > "$tmp/none.toml"
 if ADS_DEVFLOW_TOML="$tmp/none.toml" bash "$checker" --message "$tmp/p-claude.txt" --author "$author" > /dev/null 2>&1; then
@@ -130,6 +156,54 @@ if ADS_DEVFLOW_TOML="$tmp/nao-existe.toml" bash "$checker" --message "$tmp/p-bas
 else
   passed=$((passed + 1)); echo "ok    reprova: configuração ausente falha fechado"
 fi
+
+sed -e 's/^commits.subject_lowercase = .*/commits.subject_lowercase = false/' "$root/defaults/devflow.toml" > "$tmp/livre.toml"
+expect_rc 0 "subject_lowercase=false aceita maiúscula no meio" f-maiuscula-meio "$tmp/livre.toml"
+expect_rc 0 "subject_lowercase=false aceita maiúscula no começo" f-maiuscula "$tmp/livre.toml"
+expect_rc 1 "subject_lowercase=false não solta o tipo" f-tipo-maiusculo "$tmp/livre.toml"
+
+# ---- Configuração inválida: sai com 2 antes de analisar a mensagem (que aqui é válida)
+bad_cfg() { # <descrição> <expressão sed sobre o devflow.toml padrão>
+  sed -e "$2" "$root/defaults/devflow.toml" > "$tmp/bad.toml"
+  expect_rc 2 "configuração: $1" p-basico "$tmp/bad.toml"
+}
+bad_cfg "subject_max com texto" 's/^commits.subject_max = .*/commits.subject_max = "invalid"/'
+bad_cfg "subject_max entre aspas" 's/^commits.subject_max = .*/commits.subject_max = "50"/'
+bad_cfg "subject_max zero" 's/^commits.subject_max = .*/commits.subject_max = 0/'
+bad_cfg "subject_max negativo" 's/^commits.subject_max = .*/commits.subject_max = -5/'
+bad_cfg "subject_max acima do teto" 's/^commits.subject_max = .*/commits.subject_max = 1000/'
+bad_cfg "subject_max fracionário" 's/^commits.subject_max = .*/commits.subject_max = 50.5/'
+bad_cfg "subject_max vazio" 's/^commits.subject_max = .*/commits.subject_max =/'
+bad_cfg "subject_max com expressão" 's/^commits.subject_max = .*/commits.subject_max = a[$(id)]/'
+bad_cfg "max_coauthors com texto" 's/^commits.max_coauthors = .*/commits.max_coauthors = many/'
+bad_cfg "enabled fora de true/false" 's/^commits.enabled = .*/commits.enabled = yes/'
+bad_cfg "enabled entre aspas" 's/^commits.enabled = .*/commits.enabled = "false"/'
+bad_cfg "signoff_required numérico" 's/^commits.signoff_required = .*/commits.signoff_required = 1/'
+bad_cfg "subject_lowercase fora de true/false" 's/^commits.subject_lowercase = .*/commits.subject_lowercase = sometimes/'
+bad_cfg "ai_attribution fora do domínio" 's/^ai_attribution = .*/ai_attribution = "robot"/'
+bad_cfg "ai_attribution sem aspas" 's/^ai_attribution = .*/ai_attribution = none/'
+bad_cfg "signature.mode fora do domínio" 's/^signature.mode = .*/signature.mode = "strict"/'
+bad_cfg "profile fora do domínio" 's/^profile = .*/profile = "fast"/'
+bad_cfg "types vazio" 's/^commits.types = .*/commits.types = []/'
+bad_cfg "types não é lista" 's/^commits.types = .*/commits.types = "feat"/'
+bad_cfg "types com metacaractere de regex" 's/^commits.types = .*/commits.types = ["feat", ".*"]/'
+bad_cfg "types com lista aberta" 's/^commits.types = .*/commits.types = ["feat", "fix"/'
+bad_cfg "allowed_trailers vazio" 's/^commits.allowed_trailers = .*/commits.allowed_trailers = []/'
+bad_cfg "coauthors.allowed sem e-mail" 's/^coauthors.allowed = .*/coauthors.allowed = ["not an email"]/'
+bad_cfg "author_email_regex que não compila" "s/^commits.author_email_regex = .*/commits.author_email_regex = '('/"
+bad_cfg "blocked_patterns com regex que não compila" "s/^commits.blocked_patterns = .*/commits.blocked_patterns = ['generated', '(']/"
+# o erro de configuração vence o desligamento e a mensagem ruim
+sed -e 's/^commits.enabled = .*/commits.enabled = false/' -e 's/^commits.subject_max = .*/commits.subject_max = "invalid"/' "$root/defaults/devflow.toml" > "$tmp/bad.toml"
+expect_rc 2 "configuração: inválida mesmo com commits.enabled=false" f-tipo "$tmp/bad.toml"
+sed -e 's/^signature.mode = .*/signature.mode = "strict"/' "$root/defaults/devflow.toml" > "$tmp/bad.toml"
+expect_rc 2 "configuração: inválida vence mensagem fora do padrão" f-tipo "$tmp/bad.toml"
+# chave ausente continua caindo no padrão embutido; listas opcionais podem ficar vazias
+printf 'commits.subject_max = 50\n' > "$tmp/parcial.toml"
+expect_rc 0 "configuração parcial usa os padrões" p-basico "$tmp/parcial.toml"
+expect_rc 1 "configuração parcial mantém a regra de minúsculas" f-maiuscula-meio "$tmp/parcial.toml"
+sed -e 's/^commits.blocked_patterns = .*/commits.blocked_patterns = []/' -e 's/^coauthors.allowed = .*/coauthors.allowed = []/' "$root/defaults/devflow.toml" > "$tmp/vazias.toml"
+expect_rc 0 "listas opcionais vazias são aceitas" p-basico "$tmp/vazias.toml"
+expect_rc 1 "coautor fora de lista vazia é recusado" p-claude "$tmp/vazias.toml"
 
 # ---- Hook (precisa do git instalado, não de repositório)
 hook_run() { # <nome> <ADS_AI_AUTHOR> [toml]: roda o hook sobre o arquivo <nome>.txt
@@ -174,6 +248,10 @@ printf 'feat(core): add thing\n\n# Please enter the commit message\n# Lines star
 if hook_run h8 claude && grep -q '^Co-authored-by' "$tmp/h8.txt"; then
   hook_ok "hook: mensagem com comentários do editor continua válida"
 else hook_bad "hook comentários"; fi
+
+msg h9 "feat(core): add thing\n"
+sed -e 's/^commits.subject_max = .*/commits.subject_max = "invalid"/' "$root/defaults/devflow.toml" > "$tmp/bad.toml"
+if hook_run h9 claude "$tmp/bad.toml"; then hook_bad "hook deveria recusar configuração inválida"; else hook_ok "hook: recusa commit com configuração inválida"; fi
 
 echo
 echo "Resultado: $passed passaram, $failed falharam."

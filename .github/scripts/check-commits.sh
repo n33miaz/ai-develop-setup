@@ -9,6 +9,7 @@
 # As regras e seus valores ficam em defaults/devflow.toml (P8); o arquivo pode ser trocado por ADS_DEVFLOW_TOML.
 # Formato exigido: assunto de uma linha (Conventional Commits, inglês, minúsculo), linha em branco e trailers.
 # Sem corpo descritivo. Saída 0 = tudo certo; 1 = há problema; 2 = erro de uso ou de configuração.
+# A configuração é validada inteira (tipo e domínio de cada chave) antes de qualquer mensagem ser lida.
 set -u
 export LC_ALL=C
 
@@ -21,6 +22,119 @@ if [ ! -r "$cfg" ]; then
   echo "erro: arquivo de parâmetros não encontrado: $cfg" >&2
   exit 2
 fi
+
+# ---- Validação da configuração (sai com 2 antes de olhar qualquer mensagem) -------------------------------
+# Confere o valor cru de cada chave presente; chave ausente continua caindo no padrão embutido.
+# O texto da configuração nunca é avaliado: só comparado com padrões fixos (os valores entram em regex e em testes).
+cfg_errors=0
+cfg_fail() { # <chave> <texto>
+  if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+    echo "::error::configuração: $1: $2"
+  else
+    echo "erro de configuração: $1: $2" >&2
+  fi
+  cfg_errors=$((cfg_errors + 1))
+}
+
+cfg_has() { # <chave>: a chave está no arquivo?
+  local k="${1//./\\.}"
+  grep -Eq "^${k}[[:space:]]*=" "$cfg"
+}
+
+cfg_check_bool() { # <chave>
+  cfg_has "$1" || return 0
+  case "$(cfg_raw "$1")" in
+    true | false) ;;
+    *) cfg_fail "$1" "esperado true ou false, sem aspas." ;;
+  esac
+}
+
+cfg_check_int() { # <chave> <mínimo> <máximo, até 999>
+  cfg_has "$1" || return 0
+  local v
+  v="$(cfg_raw "$1")"
+  local int_re='^(0|[1-9][0-9]{0,2})$'
+  if ! [[ "$v" =~ $int_re ]] || [ "$v" -lt "$2" ] || [ "$v" -gt "$3" ]; then
+    cfg_fail "$1" "esperado número inteiro de $2 a $3, sem aspas."
+  fi
+}
+
+cfg_check_enum() { # <chave> <valor>...
+  cfg_has "$1" || return 0
+  local k="$1" v opt
+  v="$(cfg_raw "$k")"
+  shift
+  for opt in "$@"; do
+    [ "$v" = "\"$opt\"" ] && return 0
+  done
+  cfg_fail "$k" "esperado um destes textos entre aspas: $*."
+}
+
+regex_ok() { # <regex estendida>: compila?
+  printf '' | grep -Eq -- "$1" 2> /dev/null
+  [ $? -lt 2 ]
+}
+
+cfg_check_regex() { # <chave>
+  cfg_has "$1" || return 0
+  local v
+  local quoted_re="^('[^']+'|\"[^\"]+\")\$"
+  v="$(cfg_raw "$1")"
+  if ! [[ "$v" =~ $quoted_re ]]; then
+    cfg_fail "$1" "esperado um texto não vazio entre aspas."
+  elif ! regex_ok "$(cfg_str "$1")"; then
+    cfg_fail "$1" "a expressão regular não compila."
+  fi
+}
+
+cfg_check_list() { # <chave> <0 = pode ser vazia; 1 = precisa de item> <regex de cada item | "regex">
+  cfg_has "$1" || return 0
+  local v item n=0
+  v="$(cfg_raw "$1")"
+  local item_re="(\"[^\"]*\"|'[^']*')"
+  local list_re="^\[[[:space:]]*(${item_re}([[:space:]]*,[[:space:]]*${item_re})*)?[[:space:]]*\]$"
+  if ! [[ "$v" =~ $list_re ]]; then
+    cfg_fail "$1" "esperada uma lista de textos entre aspas, numa linha só."
+    return 0
+  fi
+  while IFS= read -r item; do
+    n=$((n + 1))
+    if [ "$3" = "regex" ]; then
+      if [ -z "$item" ] || ! regex_ok "$item"; then
+        cfg_fail "$1" "o item $n não é uma expressão regular válida."
+      fi
+    elif ! [[ "$item" =~ $3 ]]; then
+      cfg_fail "$1" "o item $n está fora do formato aceito."
+    fi
+  done < <(cfg_arr "$1")
+  if [ "$2" = 1 ] && [ "$n" -eq 0 ]; then
+    cfg_fail "$1" "a lista precisa de pelo menos um item."
+  fi
+}
+
+validate_config() {
+  cfg_check_enum profile express full
+  cfg_check_bool workflow.issue_per_task
+  cfg_check_enum ai_attribution executor none
+  cfg_check_list coauthors.allowed 0 '^[^[:space:]<>@]+@[^[:space:]<>@]+$'
+  cfg_check_int commits.max_coauthors 0 99
+  cfg_check_bool commits.enabled
+  cfg_check_int commits.subject_max 1 999
+  cfg_check_bool commits.subject_lowercase
+  cfg_check_list commits.types 1 '^[a-z]+$'
+  cfg_check_list commits.allowed_trailers 1 '^[A-Za-z][A-Za-z0-9-]*$'
+  cfg_check_bool commits.signoff_required
+  cfg_check_bool commits.signoff_email_must_match_author
+  cfg_check_bool commits.signoff_autoadd
+  cfg_check_regex commits.author_email_regex
+  cfg_check_list commits.blocked_patterns 0 regex
+  cfg_check_enum signature.mode warn block off
+  if [ "$cfg_errors" -gt 0 ]; then
+    echo "Configuração inválida em $cfg: $cfg_errors problema(s). Nenhuma mensagem foi analisada." >&2
+    exit 2
+  fi
+}
+validate_config
 
 errors=0
 report() { # <rótulo> <texto>
@@ -49,10 +163,11 @@ check_message() {
   local -a raw=() lines=()
   local line first=-1 last=-1 i
 
-  local enabled max_subject types allowed_trailers signoff_req signoff_match max_co ai email_re
+  local enabled max_subject lowercase types allowed_trailers signoff_req signoff_match max_co ai email_re
   enabled="$(cfg_str commits.enabled true)"
   [ "$enabled" = "false" ] && return 0
   max_subject="$(cfg_str commits.subject_max 50)"
+  lowercase="$(cfg_str commits.subject_lowercase true)"
   types="$(cfg_arr commits.types)"
   [ -z "$types" ] && types=$'feat\nfix\nchore\nrefactor\ndocs\ntest\nperf\nbuild\nci\nstyle\nrevert'
   allowed_trailers="$(cfg_arr commits.allowed_trailers)"
@@ -91,9 +206,15 @@ check_message() {
   fi
   local type_re
   type_re="$(printf '%s\n' "$types" | paste -sd'|' -)"
-  local pat='^('"$type_re"')(\([a-z0-9-]+\))?!?: [a-z0-9]'
+  local first_re='[a-z0-9]'
+  [ "$lowercase" = "false" ] && first_re='[A-Za-z0-9]'
+  local pat='^('"$type_re"')(\([a-z0-9-]+\))?!?: '"$first_re"
+  local upper='[A-Z]'
   if ! [[ "$subject" =~ $pat ]]; then
     report "$label" "o assunto \"$subject\" não segue tipo(escopo): descrição, em minúsculas."
+  elif [ "$lowercase" != "false" ] && [[ "${subject#*: }" =~ $upper ]]; then
+    # Vale para a descrição inteira, sem exceção: siglas e identificadores também vão em minúsculas.
+    report "$label" "a descrição do assunto \"$subject\" tem letra maiúscula; use só minúsculas (siglas e nomes também)."
   fi
   if [ "${#subject}" -gt "$max_subject" ]; then
     report "$label" "o assunto tem ${#subject} caracteres; o máximo é $max_subject."
