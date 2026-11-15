@@ -20,9 +20,10 @@ use serde_json::Value;
 /// Invalid golden files the types are known not to refuse, as `schema/file`. Empty on purpose.
 const NOT_COVERED_BY_TYPES: &[&str] = &[];
 
-/// Valid golden files whose stream names another entity than their `data` does. The Schemas
-/// do not tie the two; the machine always writes the stream of the entity in `data`.
-const STREAM_OF_ANOTHER_ENTITY: &[&str] = &["event.approval.expired/02-variant1.json"];
+/// Valid golden files whose stream names another entity than their `data` does. Empty on
+/// purpose: the contracts tie the two, and the machine always writes the stream of the entity
+/// in `data`.
+const STREAM_OF_ANOTHER_ENTITY: &[&str] = &[];
 
 const BUILD: &str = "C:\\Users\\user-a\\work\\proj\\build";
 /// Before the instant of every golden event.

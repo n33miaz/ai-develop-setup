@@ -1,7 +1,7 @@
 /* Gerado por tools/gen-ts.mjs a partir de schemas/event.task.created.v1.schema.json. Não edite à mão. */
 
 /**
- * Tarefa criada. Uma tarefa nasceu. Só o hash do objetivo vai no evento; o texto fica no pacote da tarefa.
+ * Tarefa criada. Uma tarefa nasceu. O objetivo vai só como hash (o texto fica no pacote da tarefa); o título, opcional, é o rótulo curto que a interface mostra.
  */
 export type EventTaskCreatedV1 = EventEnvelopeV1 & {
   type: "urn:ads:event:task.created:1";
@@ -14,6 +14,10 @@ export type EventTaskCreatedV1 = EventEnvelopeV1 & {
     kind: CommonIdV1;
     risk: CommonRiskV1;
     oracle_declared: boolean;
+    /**
+     * Título curto e legível da tarefa, numa linha.
+     */
+    title?: string;
   };
 };
 /**

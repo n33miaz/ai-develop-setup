@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
+import { crossRuleErrors } from "./rules.mjs";
 
 export const SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema";
 export const URN_RE =
@@ -118,7 +119,11 @@ function checkGolden(root, key, validate, errors, stats) {
     const data = readJson(path.join(base, "valid", f), errors);
     if (data === undefined) continue;
     stats.valid++;
-    if (!validate(data)) errors.push(`golden/${key}/valid/${f}: deveria passar e falhou (${describeErrors(validate.errors)})`);
+    if (!validate(data)) {
+      errors.push(`golden/${key}/valid/${f}: deveria passar e falhou (${describeErrors(validate.errors)})`);
+      continue;
+    }
+    for (const problem of crossRuleErrors(key, data)) errors.push(`golden/${key}/valid/${f}: ${problem}`);
   }
 
   const indexFile = path.join(invalidDir, "index.json");

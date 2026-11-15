@@ -29,5 +29,25 @@
     "rule": "risk é low, medium ou high.",
     "keyword": "enum",
     "instancePath": "/data/risk"
+  },
+  "06-empty-title.json": {
+    "rule": "title é opcional, mas nunca vazio.",
+    "keyword": "minLength",
+    "instancePath": "/data/title"
+  },
+  "07-title-too-long.json": {
+    "rule": "title tem no máximo 120 caracteres.",
+    "keyword": "maxLength",
+    "instancePath": "/data/title"
+  },
+  "08-title-with-line-break.json": {
+    "rule": "title é uma linha só, sem caractere de controle.",
+    "keyword": "pattern",
+    "instancePath": "/data/title"
+  },
+  "09-public-title.json": {
+    "rule": "Evento com title leva texto do usuário e nunca é public.",
+    "keyword": "enum",
+    "instancePath": "/data_class"
   }
 }

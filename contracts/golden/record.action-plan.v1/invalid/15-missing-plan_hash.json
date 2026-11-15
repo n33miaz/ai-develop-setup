@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "action_id": "act-01",
+  "operation": "fs.delete_recursive",
+  "work_root": "/work/proj",
+  "destination": null,
+  "targets": [
+    {
+      "path": "/work/proj/a",
+      "pattern": null,
+      "repo_root": false
+    },
+    {
+      "path": "/work/proj/b",
+      "pattern": null,
+      "repo_root": false
+    }
+  ],
+  "estimate": {
+    "items": 3,
+    "bytes": 4096
+  },
+  "verdict": {
+    "decision": "allowed",
+    "risk": "low",
+    "reasons": []
+  },
+  "quarantined": false
+}

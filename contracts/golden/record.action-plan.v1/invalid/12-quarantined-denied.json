@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "action_id": "act-02",
+  "plan_hash": "sha256:9150c21c6a47485619086edda50a14b82f978e87ea9f592539481e6effdc1859",
+  "operation": "fs.delete",
+  "work_root": "C:\\work\\proj",
+  "destination": "C:\\work\\proj\\.ads\\quarantine\\34eb640f9b81d171",
+  "targets": [
+    {
+      "path": "C:\\work\\proj\\build",
+      "pattern": null,
+      "repo_root": false
+    }
+  ],
+  "estimate": null,
+  "verdict": {
+    "decision": "denied",
+    "risk": "low",
+    "reasons": []
+  },
+  "quarantined": true
+}

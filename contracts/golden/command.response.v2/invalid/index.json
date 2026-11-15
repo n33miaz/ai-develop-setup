@@ -1,0 +1,38 @@
+{
+  "01-both-result-and-error.json": {
+    "rule": "Resposta tem result ou error, não os dois.",
+    "keyword": "oneOf",
+    "instancePath": ""
+  },
+  "02-neither.json": {
+    "rule": "Sem result nem error a resposta não diz nada.",
+    "keyword": "oneOf",
+    "instancePath": ""
+  },
+  "03-missing-replayed.json": {
+    "rule": "replayed é obrigatório: quem lê precisa saber se é repetição.",
+    "keyword": "required",
+    "instancePath": "/result",
+    "params": {
+      "missingProperty": "replayed"
+    }
+  },
+  "04-not-accepted.json": {
+    "rule": "result só existe para comando aceito; recusa vai em error.",
+    "keyword": "const",
+    "instancePath": "/result/accepted"
+  },
+  "05-extra-result-field.json": {
+    "rule": "result é fechado: campo desconhecido reprova.",
+    "keyword": "additionalProperties",
+    "instancePath": "/result",
+    "params": {
+      "additionalProperty": "unexpected"
+    }
+  },
+  "06-replayed-not-boolean.json": {
+    "rule": "replayed é booleano.",
+    "keyword": "type",
+    "instancePath": "/result/replayed"
+  }
+}

@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:event:action.denied:1",
+  "title": "Ação negada",
+  "description": "O portão negou o plano: nada será executado e não cabe aprovação. É o único evento da ação (vem no lugar de action.planned) e cita o hash do plano negado e as regras que o negaram; os caminhos ficam no registro do plano.",
+  "allOf": [
+    {
+      "$ref": "urn:ads:event:envelope:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "type",
+        "stream",
+        "data"
+      ],
+      "properties": {
+        "type": {
+          "const": "urn:ads:event:action.denied:1"
+        },
+        "stream": {
+          "type": "string",
+          "pattern": "^action/"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action_id",
+            "verb",
+            "plan_hash",
+            "rules"
+          ],
+          "properties": {
+            "action_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "verb": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
+              "maxLength": 64
+            },
+            "plan_hash": {
+              "$ref": "urn:ads:common:sha256:1"
+            },
+            "rules": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 100,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "urn:ads:common:action-rule:1"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+      "type": "urn:ads:event:action.denied:1",
+      "ts": "2030-01-02T03:04:05Z",
+      "stream": "action/act-01",
+      "seq": 1,
+      "actor": {
+        "kind": "daemon",
+        "id": "core-01"
+      },
+      "cause": null,
+      "data_class": "internal",
+      "data": {
+        "action_id": "act-01",
+        "verb": "fs.delete_recursive",
+        "plan_hash": "sha256:abababababababababababababababababababababababababababababababab",
+        "rules": [
+          "work_root_itself",
+          "repository_root"
+        ]
+      }
+    }
+  ]
+}

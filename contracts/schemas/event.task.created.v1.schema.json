@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:ads:event:task.created:1",
   "title": "Tarefa criada",
-  "description": "Uma tarefa nasceu. Só o hash do objetivo vai no evento; o texto fica no pacote da tarefa.",
+  "description": "Uma tarefa nasceu. O objetivo vai só como hash (o texto fica no pacote da tarefa); o título, opcional, é o rótulo curto que a interface mostra.",
   "allOf": [
     {
       "$ref": "urn:ads:event:envelope:1"
@@ -62,7 +62,38 @@
             },
             "oracle_declared": {
               "type": "boolean"
+            },
+            "title": {
+              "description": "Título curto e legível da tarefa, numa linha.",
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120,
+              "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]*$"
             }
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": [
+              "title"
+            ]
+          }
+        },
+        "required": [
+          "data"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data_class": {
+            "enum": [
+              "internal",
+              "private",
+              "secret"
+            ]
           }
         }
       }

@@ -2,7 +2,7 @@
   "id": "01ARZ3NDEKTSV4RRFFQ69G5FAC",
   "type": "urn:ads:event:approval.requested:1",
   "ts": "2030-01-02T03:04:05Z",
-  "stream": "approval/appr-01",
+  "stream": "approval/appr-02",
   "seq": 42,
   "actor": {
     "kind": "agent",
