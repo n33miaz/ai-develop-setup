@@ -10,7 +10,8 @@
   "scripts": {
     "validate": "node tools/validate.mjs",
     "gen:ts": "node tools/gen-ts.mjs",
-    "gen:check": "node tools/gen-ts.mjs --check",
+    "gen:rust": "node tools/gen-rust.mjs",
+    "gen:check": "node tools/gen-ts.mjs --check && node tools/gen-rust.mjs --check",
     "test": "node --test \"tools/*.test.mjs\""
   },
   "devDependencies": {
