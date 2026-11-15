@@ -47,6 +47,41 @@ describe('fake core client: connection', () => {
     expect(seen).toEqual([])
   })
 
+  it('stays disconnected when disconnect is called before the connection completes', async () => {
+    const client = createFakeCoreClient()
+    const seen: ConnectionState[] = []
+    client.onStateChange((state) => seen.push(state))
+
+    const pending = client.connect()
+    client.disconnect()
+
+    await expect(pending).rejects.toMatchObject({ code: 'not_connected' })
+    expect(client.getState()).toBe('disconnected')
+    expect(seen).toEqual(['connecting', 'disconnected'])
+  })
+
+  it('connects on a new attempt made after a cancelled one', async () => {
+    const client = createFakeCoreClient()
+    const cancelled = client.connect()
+    client.disconnect()
+
+    const retry = client.connect()
+
+    await expect(cancelled).rejects.toBeInstanceOf(CoreClientError)
+    await expect(retry).resolves.toBeUndefined()
+    expect(client.getState()).toBe('connected')
+  })
+
+  it('shares one attempt between calls made while connecting', async () => {
+    const client = createFakeCoreClient()
+    const seen: ConnectionState[] = []
+    client.onStateChange((state) => seen.push(state))
+
+    await Promise.all([client.connect(), client.connect()])
+
+    expect(seen).toEqual(['connecting', 'connected'])
+  })
+
   it('refuses to subscribe or send while disconnected', async () => {
     const client = createFakeCoreClient()
 
@@ -150,6 +185,41 @@ describe('fake core client: event replay', () => {
     client.subscribe('session/a', seen.at(-1) ?? 0, (event) => seen.push(event.seq))
 
     expect(seen).toEqual([1, 2, 3])
+  })
+
+  it('delivers nothing to a subscriber after the connection drops', async () => {
+    const client = await connected()
+    const seen: number[] = []
+    client.subscribe('session/a', 0, (event) => seen.push(event.seq))
+    client.emit(resized('a'))
+
+    client.disconnect()
+    client.emit(resized('a'))
+    await client.connect()
+    client.emit(resized('a'))
+
+    expect(seen).toEqual([1])
+  })
+
+  it('keeps a recorded event out of reach of the draft and of other subscribers', async () => {
+    const client = await connected()
+    const draft = resized('a', 80)
+    const recorded = client.emit(draft)
+    draft.data.cols = 1
+
+    const tamper = (event: EventEnvelopeV1): void => {
+      Object.assign(event, { seq: 99 })
+    }
+    const tamperData = (event: EventEnvelopeV1): void => {
+      Object.assign(event.data, { cols: 2 })
+    }
+    expect(() => client.subscribe('session/a', 0, tamper)).toThrow(TypeError)
+    expect(() => client.subscribe('session/a', 0, tamperData)).toThrow(TypeError)
+    const seen: EventEnvelopeV1[] = []
+    client.subscribe('session/a', 0, (event) => seen.push(event))
+
+    expect(seen).toEqual([recorded])
+    expect(seen[0]).toMatchObject({ seq: 1, data: { session_id: 'a', cols: 80, rows: 24 } })
   })
 
   it('stops delivering after unsubscribe', async () => {

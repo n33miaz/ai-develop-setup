@@ -16,7 +16,7 @@ function renderSidebar(
         open
         tasks={tasks}
         sessions={sessions}
-        selectedSessionId={sessions[0]?.id ?? ''}
+        selectedSessionId={sessions[0]?.id ?? null}
         onSelectSession={() => undefined}
       />
     </I18nContext>,
@@ -47,6 +47,26 @@ describe('Sidebar', () => {
 
     expect(screen.getByText(task)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: session })).toBeInTheDocument()
+  })
+
+  it.each([
+    ['pt-BR', ['Pendente', 'Em andamento', 'Concluída', 'Falhou', 'Cancelada']],
+    ['en', ['Pending', 'In progress', 'Done', 'Failed', 'Cancelled']],
+  ] as const)('names every task state in words (%s)', (locale, labels) => {
+    const states = ['pending', 'running', 'done', 'failed', 'cancelled'] as const
+    renderSidebar(
+      states.map((state) => ({ id: `task-${state}`, title: `title-${state}`, state })),
+      [],
+      locale,
+    )
+
+    states.forEach((state, index) => {
+      const item = screen.getByText(`title-${state}`).closest('li')
+      if (!item) throw new Error(`missing item of ${state}`)
+      const label = within(item).getByText(labels[index] ?? '')
+      expect(label).toHaveAttribute('data-state', state)
+    })
+    expect(new Set(labels).size).toBe(states.length)
   })
 
   it('tells active from idle by text and by the shape of the dot, not only by colour', () => {

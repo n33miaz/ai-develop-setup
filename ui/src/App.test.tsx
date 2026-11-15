@@ -1,10 +1,15 @@
 import { act, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it } from 'vitest'
-import { createFakeCoreClient, type FakeCoreClient } from './api'
+import {
+  createFakeCoreClient,
+  type EventDraft,
+  type FakeCoreClient,
+  type SessionEvent,
+} from './api'
 import { App } from './App'
-import { createTranslator, I18nContext, type Locale } from './i18n'
-import type { SampleEvents } from './sample/data'
+import { createTranslator, I18nContext, type Locale, type Translate } from './i18n'
+import { sampleSessionEvents, type SampleEvents } from './sample/data'
 import { THEME_STORAGE_KEY } from './theme/theme'
 
 function renderApp(locale: Locale = 'pt-BR', events?: () => SampleEvents): FakeCoreClient {
@@ -50,6 +55,88 @@ const UNNAMED: SampleEvents = {
     },
   ],
 }
+
+function ended(sessionId: string): EventDraft<SessionEvent> {
+  return {
+    type: 'urn:ads:event:session.ended:1',
+    stream: `session/${sessionId}`,
+    data: { session_id: sessionId, reason: 'exit', exit_code: 0 },
+  }
+}
+
+/** A tela com uma fonte de eventos de sessão trocável, como quando chegam eventos novos. */
+function renderSessions(first: (t: Translate) => EventDraft<SessionEvent>[]) {
+  const client = createFakeCoreClient()
+  const tree = (sessions: (t: Translate) => EventDraft<SessionEvent>[]) => (
+    <I18nContext value={createTranslator('pt-BR')}>
+      <App client={client} events={(t) => ({ tasks: [], sessions: sessions(t) })} />
+    </I18nContext>
+  )
+  const { rerender } = render(tree(first))
+  return (next: (t: Translate) => EventDraft<SessionEvent>[]) => {
+    rerender(tree(next))
+  }
+}
+
+function current(name: RegExp): string | null {
+  return screen.getByRole('button', { name }).getAttribute('aria-current')
+}
+
+describe('App: session selection', () => {
+  it('moves to the first open session when the selected one ends', () => {
+    const update = renderSessions(sampleSessionEvents)
+    expect(current(/Sessão de exemplo A/)).toBe('true')
+
+    update((t) => [...sampleSessionEvents(t), ended('session-a')])
+
+    expect(screen.queryByRole('button', { name: /Sessão de exemplo A/ })).not.toBeInTheDocument()
+    expect(current(/Sessão de exemplo B/)).toBe('true')
+    expect(current(/Sessão de exemplo C/)).toBe('false')
+    expect(
+      screen.getByRole('region', { name: 'Terminal da sessão Sessão de exemplo B' }),
+    ).toBeInTheDocument()
+  })
+
+  it('keeps the chosen session when another one ends', async () => {
+    const user = userEvent.setup()
+    const update = renderSessions(sampleSessionEvents)
+    await user.click(screen.getByRole('button', { name: /Sessão de exemplo C/ }))
+
+    update((t) => [...sampleSessionEvents(t), ended('session-a')])
+
+    expect(current(/Sessão de exemplo C/)).toBe('true')
+    expect(current(/Sessão de exemplo B/)).toBe('false')
+    expect(
+      screen.getByRole('region', { name: 'Terminal da sessão Sessão de exemplo C' }),
+    ).toBeInTheDocument()
+  })
+
+  it('selects the first session when the screen starts empty and sessions arrive', () => {
+    const update = renderSessions(() => [])
+    expect(screen.getByText('Nenhuma sessão.')).toBeInTheDocument()
+
+    update(sampleSessionEvents)
+
+    expect(current(/Sessão de exemplo A/)).toBe('true')
+    expect(
+      screen.getByRole('region', { name: 'Terminal da sessão Sessão de exemplo A' }),
+    ).toBeInTheDocument()
+  })
+
+  it('selects nothing once every session has ended', () => {
+    const update = renderSessions(sampleSessionEvents)
+
+    update((t) => [
+      ...sampleSessionEvents(t),
+      ended('session-a'),
+      ended('session-b'),
+      ended('session-c'),
+    ])
+
+    expect(screen.getByText('Nenhuma sessão.')).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Terminal da sessão' })).toBeInTheDocument()
+  })
+})
 
 describe('App', () => {
   it('shows the final structure: sidebar, terminal area and core connection', () => {

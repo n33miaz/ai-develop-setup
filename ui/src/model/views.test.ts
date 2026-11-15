@@ -69,6 +69,51 @@ describe('tasks from events', () => {
     expect(task).toEqual({ id: 'task-1', state: 'pending' })
   })
 
+  it.each([
+    [
+      'failed',
+      {
+        type: 'urn:ads:event:task.failed:1',
+        stream: 'task/task-1',
+        data: { task_id: 'task-1', error_code: 'E_TIMEOUT', retriable: false },
+      },
+    ],
+    [
+      'cancelled',
+      {
+        type: 'urn:ads:event:task.cancelled:1',
+        stream: 'task/task-1',
+        data: { task_id: 'task-1', reason: 'owner' },
+      },
+    ],
+  ] as const)('ends a task as %s, started or not', (state, last) => {
+    const started: EventDraft<TaskEvent> = {
+      type: 'urn:ads:event:task.started:1',
+      stream: 'task/task-1',
+      data: { task_id: 'task-1', session_id: null },
+    }
+
+    const [afterStart] = tasksFrom([taskCreated('task-1'), started, last])
+    const [beforeStart] = tasksFrom([taskCreated('task-1'), last])
+
+    expect(afterStart?.state).toBe(state)
+    expect(beforeStart?.state).toBe(state)
+  })
+
+  it('does not let the end of one task change another', () => {
+    const tasks = tasksFrom([
+      taskCreated('task-1'),
+      taskCreated('task-2'),
+      {
+        type: 'urn:ads:event:task.failed:1',
+        stream: 'task/task-2',
+        data: { task_id: 'task-2', error_code: 'E_TIMEOUT', retriable: true },
+      },
+    ])
+
+    expect(tasks.map((task) => task.state)).toEqual(['pending', 'failed'])
+  })
+
   it('ignores events of a task that was never created', () => {
     const tasks = tasksFrom([
       {

@@ -3,7 +3,7 @@ import type { EventDraft, EventSessionActivityChangedV1, SessionEvent, TaskEvent
 // O que a barra lateral mostra de cada tarefa e de cada sessão, reconstruído só dos eventos.
 
 /** Estado local da tela: os contratos trazem os eventos da tarefa, não um estado pronto. */
-export type TaskState = 'pending' | 'running' | 'done'
+export type TaskState = 'pending' | 'running' | 'done' | 'failed' | 'cancelled'
 
 export type SessionActivity = EventSessionActivityChangedV1['data']['activity']
 
@@ -21,9 +21,13 @@ export interface SessionView {
   activity: SessionActivity
 }
 
-const TASK_STATE_AFTER: Partial<Record<TaskEvent['type'], TaskState>> = {
+// Um estado por tipo de evento: evento de tarefa novo nos contratos não compila sem entrar aqui.
+const TASK_STATE_AFTER: Record<TaskEvent['type'], TaskState> = {
+  'urn:ads:event:task.created:1': 'pending',
   'urn:ads:event:task.started:1': 'running',
   'urn:ads:event:task.completed:1': 'done',
+  'urn:ads:event:task.failed:1': 'failed',
+  'urn:ads:event:task.cancelled:1': 'cancelled',
 }
 
 /** As tarefas, na ordem em que nasceram, depois de aplicar os eventos em ordem. */
@@ -32,12 +36,15 @@ export function tasksFrom(events: readonly EventDraft<TaskEvent>[]): TaskView[] 
   for (const event of events) {
     if (event.type === 'urn:ads:event:task.created:1') {
       const { task_id: id, title } = event.data
-      tasks.set(id, { id, state: 'pending', ...(title === undefined ? {} : { title }) })
+      tasks.set(id, {
+        id,
+        state: TASK_STATE_AFTER[event.type],
+        ...(title === undefined ? {} : { title }),
+      })
       continue
     }
     const task = tasks.get(event.data.task_id)
-    const next = TASK_STATE_AFTER[event.type]
-    if (task && next) task.state = next
+    if (task) task.state = TASK_STATE_AFTER[event.type]
   }
   return [...tasks.values()]
 }
