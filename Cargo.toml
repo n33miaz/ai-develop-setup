@@ -16,6 +16,7 @@ members = [
   "crates/adapters/vault",
   "crates/adapters/collectors",
   "crates/adapters/relay",
+  "crates/adapters/fs",
 ]
 # A casca Tauri fica de fora: `cargo check`, `clippy` e `test` sem `-p` nao a compilam (ela compila so no CI).
 default-members = [
@@ -33,6 +34,7 @@ default-members = [
   "crates/adapters/vault",
   "crates/adapters/collectors",
   "crates/adapters/relay",
+  "crates/adapters/fs",
 ]
 
 [workspace.package]
