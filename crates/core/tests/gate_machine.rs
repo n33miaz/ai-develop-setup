@@ -72,14 +72,14 @@ fn other_hash() -> PlanHash {
 
 /// A permit for the same plan, taken from another action.
 fn foreign_permit(verdict: &Verdict) -> ExecutionPermit {
-    let (other, _) = Action::plan(id("act-02"), verdict, meta(T0, 1)).unwrap();
-    other.authorize(verdict.plan(), &at(T1)).unwrap().1
+    let (other, _, _) = Action::plan(id("act-02"), verdict, meta(T0, 1)).unwrap();
+    other.authorize(verdict.plan(), meta(T1, 2)).unwrap().1
 }
 
 #[test]
 fn allowed_plan_runs_without_approval() {
     let verdict = allowed();
-    let (action, event) = Action::plan(id("act-01"), &verdict, meta(T0, 1)).unwrap();
+    let (action, event, _) = Action::plan(id("act-01"), &verdict, meta(T0, 1)).unwrap();
     assert_eq!(action.state(), &State::Planned);
     assert!(!action.needs_approval());
     assert_eq!(action.plan_hash(), &verdict.plan().hash());
@@ -91,13 +91,19 @@ fn allowed_plan_runs_without_approval() {
     assert_eq!(event.data().plan_hash, verdict.plan().hash());
     assert!(!event.data().needs_elevation);
 
-    let (action, permit) = action.authorize(verdict.plan(), &at(T1)).unwrap();
+    let (action, permit, event) = action.authorize(verdict.plan(), meta(T1, 2)).unwrap();
     assert_eq!(action.state(), &State::Executing { approval_id: None });
     assert_eq!(permit.plan(), verdict.plan());
     assert_eq!(permit.approval_id(), None);
+    let Event::ActionStarted(event) = event else {
+        panic!("not action.started");
+    };
+    assert_eq!(event.stream(), "action/act-01");
+    assert_eq!(event.data().approval_id, None);
+    assert_eq!(&event.data().plan_hash, action.plan_hash());
 
     let (action, event) = action
-        .apply(Command::Executed { permit }, meta(T1, 2))
+        .apply(Command::Executed { permit }, meta(T1, 3))
         .unwrap();
     assert_eq!(action.state(), &State::Executed);
     let Event::ActionExecuted(event) = event else {
@@ -118,8 +124,12 @@ fn approved_plan_runs_with_its_approval() {
     let action = grant(&action);
     assert!(matches!(action.state(), State::Approved { .. }));
 
-    let (action, permit) = action.authorize(verdict.plan(), &at(T1)).unwrap();
+    let (action, permit, event) = action.authorize(verdict.plan(), meta(T1, 2)).unwrap();
     assert_eq!(permit.approval_id(), Some(&id("appr-01")));
+    let Event::ActionStarted(event) = event else {
+        panic!("not action.started");
+    };
+    assert_eq!(event.data().approval_id, Some(id("appr-01")));
     let (action, event) = action
         .apply(Command::Executed { permit }, meta(T1, 2))
         .unwrap();
@@ -131,13 +141,110 @@ fn approved_plan_runs_with_its_approval() {
 }
 
 #[test]
-fn denied_verdict_starts_no_action_and_emits_no_event() {
+fn denied_verdict_emits_action_denied_and_ends_the_action() {
     let verdict = win(Op::DeleteRecursive, &[WIN_HOME]);
-    let refused = Action::plan(id("act-01"), &verdict, meta(T0, 1));
+    assert_eq!(verdict.decision(), Decision::Denied);
+    let (action, event, record) = Action::plan(id("act-01"), &verdict, meta(T0, 1)).unwrap();
+    assert_eq!(action.state(), &State::Denied);
+    assert!(action.state().is_terminal());
+    let Event::ActionDenied(event) = event else {
+        panic!("not action.denied");
+    };
+    assert_eq!(event.stream(), "action/act-01");
+    assert_eq!(event.data().verb.as_str(), "fs.delete_recursive");
+    assert_eq!(event.data().plan_hash, verdict.plan().hash());
+    let rules: Vec<&str> = event
+        .data()
+        .rules
+        .as_slice()
+        .iter()
+        .map(|rule| rule.as_str())
+        .collect();
     assert_eq!(
-        refused,
-        Err(TransitionError::PlanDenied(verdict.findings().to_vec()))
+        rules,
+        [
+            "protected.user_home",
+            "work_root_itself",
+            "outside_allowed_roots",
+            "quarantine_itself"
+        ]
     );
+    assert_eq!(record.fields().verdict.decision, Decision::Denied);
+    assert!(!record.fields().quarantined);
+
+    // Nothing comes out of a denied action: no permit, no approval, not even a failure.
+    assert!(matches!(
+        action.authorize(verdict.plan(), meta(T1, 2)),
+        Err(TransitionError::InvalidTransition { .. })
+    ));
+    let commands = [
+        Command::RequestApproval {
+            approval_id: id("appr-01"),
+            summary: ShortText::new("Mesmo assim").unwrap(),
+            expires_at: at(EXPIRES),
+        },
+        Command::Grant {
+            approval_id: id("appr-01"),
+            plan_hash: action.plan_hash().clone(),
+            via: Via::LocalUi,
+        },
+        fail(),
+    ];
+    for command in commands {
+        assert!(matches!(
+            action.apply(command, meta(T1, 2)),
+            Err(TransitionError::InvalidTransition { .. })
+        ));
+    }
+}
+
+#[test]
+fn denied_event_lists_each_denying_rule_once_and_no_approval_rule() {
+    // Two targets outside every root, with no estimate: the same deny rule fires twice and an
+    // approval rule fires too.
+    let mut request = request(
+        Op::DeleteRecursive,
+        WIN_ROOT,
+        &["D:\\other\\a", "D:\\other\\b"],
+    );
+    request.estimate = None;
+    let verdict = classify(
+        &ActionPlan::normalize(&request).unwrap(),
+        &policy(WIN_HOME, ""),
+    );
+    let fired: Vec<String> = verdict
+        .findings()
+        .iter()
+        .map(|finding| finding.rule.code().to_string())
+        .collect();
+    assert_eq!(
+        fired,
+        [
+            "outside_allowed_roots",
+            "outside_work_root",
+            "outside_allowed_roots",
+            "outside_work_root",
+            "estimate_unknown"
+        ]
+    );
+    let (_, event, record) = Action::plan(id("act-01"), &verdict, meta(T0, 1)).unwrap();
+    assert_eq!(
+        event.to_json()["data"]["rules"],
+        serde_json::json!(["outside_allowed_roots"])
+    );
+    // The record keeps every rule that fired, with the path it fired on.
+    assert_eq!(record.fields().verdict.reasons.len(), 5);
+}
+
+#[test]
+fn plan_that_does_not_fit_the_record_starts_nothing() {
+    let long = format!("{WIN_ROOT}\\{}", "a".repeat(4096));
+    let verdict = win(Op::Overwrite, &[&long]);
+    assert_eq!(verdict.decision(), Decision::Allowed);
+    assert!(matches!(
+        Action::plan(id("act-01"), &verdict, meta(T0, 1)),
+        Err(TransitionError::Unrecordable(_))
+    ));
 }
 
 #[test]
@@ -145,12 +252,12 @@ fn execution_without_the_required_approval_is_refused() {
     let verdict = approval_needed(&[BUILD]);
     let action = planned(&verdict);
     assert_eq!(
-        action.authorize(verdict.plan(), &at(T1)),
+        action.authorize(verdict.plan(), meta(T1, 2)),
         Err(TransitionError::ApprovalRequired)
     );
     let waiting = request_approval(&action);
     assert_eq!(
-        waiting.authorize(verdict.plan(), &at(T1)),
+        waiting.authorize(verdict.plan(), meta(T1, 2)),
         Err(TransitionError::ApprovalRequired)
     );
     // No permit, no `executed`: the command needs a permit and the state is not `Executing`.
@@ -179,7 +286,7 @@ fn approval_reused_after_changing_a_target_is_refused() {
 
     // 1. The approved action does not authorize the changed plan.
     assert_eq!(
-        approved_action.authorize(changed_verdict.plan(), &at(T1)),
+        approved_action.authorize(changed_verdict.plan(), meta(T1, 2)),
         Err(TransitionError::PlanHashMismatch)
     );
 
@@ -187,7 +294,7 @@ fn approval_reused_after_changing_a_target_is_refused() {
     //    carrying the old hash, nor relabelled with the new one.
     let changed_action = planned(&changed_verdict);
     assert_eq!(
-        changed_action.authorize(changed_verdict.plan(), &at(T1)),
+        changed_action.authorize(changed_verdict.plan(), meta(T1, 2)),
         Err(TransitionError::ApprovalRequired)
     );
     let old_grant = Command::Grant {
@@ -225,8 +332,8 @@ fn approval_reused_after_changing_a_target_is_refused() {
     );
 
     // 3. The permit of the approved plan does not close the changed action.
-    let (_, old_permit) = approved_action
-        .authorize(approved_verdict.plan(), &at(T1))
+    let (_, old_permit, _) = approved_action
+        .authorize(approved_verdict.plan(), meta(T1, 2))
         .unwrap();
     let changed_approved = changed_waiting
         .apply(
@@ -239,8 +346,8 @@ fn approval_reused_after_changing_a_target_is_refused() {
         )
         .unwrap()
         .0;
-    let (changed_executing, _) = changed_approved
-        .authorize(changed_verdict.plan(), &at(T1))
+    let (changed_executing, _, _) = changed_approved
+        .authorize(changed_verdict.plan(), meta(T1, 2))
         .unwrap();
     assert_eq!(
         changed_executing.apply(Command::Executed { permit: old_permit }, meta(T1, 3)),
@@ -270,7 +377,7 @@ fn changing_any_part_of_the_plan_invalidates_the_permit_check() {
     ];
     for other in variants {
         assert_eq!(
-            action.authorize(&other, &at(T1)),
+            action.authorize(&other, meta(T1, 2)),
             Err(TransitionError::PlanHashMismatch),
             "{}",
             other.canonical()
@@ -362,7 +469,7 @@ fn denied_approval_ends_the_action() {
     assert_eq!(denied.state(), &State::ApprovalDenied);
     assert!(matches!(event, Event::ApprovalDenied(_)));
     assert!(matches!(
-        denied.authorize(verdict.plan(), &at(T1)),
+        denied.authorize(verdict.plan(), meta(T1, 2)),
         Err(TransitionError::InvalidTransition { .. })
     ));
 }
@@ -383,7 +490,7 @@ fn approval_expires_only_after_its_validity() {
     assert_eq!(expired.state(), &State::ApprovalExpired);
     assert!(matches!(event, Event::ApprovalExpired(_)));
     assert!(matches!(
-        expired.authorize(verdict.plan(), &at(AFTER)),
+        expired.authorize(verdict.plan(), meta(AFTER, 2)),
         Err(TransitionError::InvalidTransition { .. })
     ));
 }
@@ -394,7 +501,7 @@ fn granted_approval_does_not_outlive_its_validity() {
     let action = approved(&verdict);
     for late in [EXPIRES, AFTER] {
         assert_eq!(
-            action.authorize(verdict.plan(), &at(late)),
+            action.authorize(verdict.plan(), meta(late, 2)),
             Err(TransitionError::ApprovalLapsed)
         );
     }
@@ -411,12 +518,12 @@ fn granted_approval_does_not_outlive_its_validity() {
 #[test]
 fn permit_is_single_use_and_bound_to_its_action() {
     let verdict = allowed();
-    let (executing, permit) = planned(&verdict)
-        .authorize(verdict.plan(), &at(T1))
+    let (executing, permit, _) = planned(&verdict)
+        .authorize(verdict.plan(), meta(T1, 2))
         .unwrap();
     // A second permit is not handed out.
     assert!(matches!(
-        executing.authorize(verdict.plan(), &at(T1)),
+        executing.authorize(verdict.plan(), meta(T1, 2)),
         Err(TransitionError::InvalidTransition { .. })
     ));
     // The permit of another action does not close this one.
@@ -446,8 +553,8 @@ fn permit_is_single_use_and_bound_to_its_action() {
 #[test]
 fn execution_can_fail() {
     let verdict = allowed();
-    let (executing, _) = planned(&verdict)
-        .authorize(verdict.plan(), &at(T1))
+    let (executing, _, _) = planned(&verdict)
+        .authorize(verdict.plan(), meta(T1, 2))
         .unwrap();
     let (failed, event) = executing.apply(fail(), meta(T1, 2)).unwrap();
     assert_eq!(failed.state(), &State::Failed);
@@ -480,7 +587,9 @@ fn terminal_states_accept_nothing() {
         )
         .unwrap()
         .0;
-    let (executing, permit) = grant(&waiting).authorize(verdict.plan(), &at(T1)).unwrap();
+    let (executing, permit, _) = grant(&waiting)
+        .authorize(verdict.plan(), meta(T1, 2))
+        .unwrap();
     let executed = executing
         .apply(
             Command::Executed {
@@ -530,7 +639,7 @@ fn terminal_states_accept_nothing() {
             );
         }
         assert!(matches!(
-            end.authorize(verdict.plan(), &at(T1)),
+            end.authorize(verdict.plan(), meta(T1, 2)),
             Err(TransitionError::InvalidTransition { .. })
         ));
     }
@@ -607,7 +716,7 @@ fn estimate_is_part_of_what_was_approved() {
         &policy(WIN_HOME, ""),
     );
     assert_eq!(
-        action.authorize(measured.plan(), &at(T1)),
+        action.authorize(measured.plan(), meta(T1, 2)),
         Err(TransitionError::PlanHashMismatch)
     );
 }

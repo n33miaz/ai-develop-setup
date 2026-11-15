@@ -30,6 +30,29 @@ pub enum Protection {
     OtherPathStyle,
 }
 
+impl Protection {
+    pub const ALL: [Protection; 6] = [
+        Self::FilesystemRoot,
+        Self::UserHome,
+        Self::UserHomeAncestor,
+        Self::UserProfile,
+        Self::SystemDir,
+        Self::OtherPathStyle,
+    ];
+
+    /// The detail of a rule code: `protected.<this>`.
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::FilesystemRoot => "filesystem_root",
+            Self::UserHome => "user_home",
+            Self::UserHomeAncestor => "user_home_ancestor",
+            Self::UserProfile => "user_profile",
+            Self::SystemDir => "system_dir",
+            Self::OtherPathStyle => "other_path_style",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PolicyError {
     Toml(String),

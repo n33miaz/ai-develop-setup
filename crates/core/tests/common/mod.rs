@@ -75,3 +75,59 @@ pub fn meta(ts: &str, seq: u64) -> EventMeta {
         data_class: DataClass::Internal,
     }
 }
+
+/// The canonical serialization of `contracts/README.md`, written again here from the JSON of
+/// a `record.action-plan`, so the tests do not check the core against its own code.
+pub fn canonical_of(record: &serde_json::Value) -> String {
+    let text = |value: &serde_json::Value| value.as_str().unwrap().to_owned();
+    let field = |text: &str| format!("{}:{text}", text.len());
+    let operation = if record["quarantined"] == true {
+        "fs.move".to_owned()
+    } else {
+        text(&record["operation"])
+    };
+    let mut lines = vec![
+        "ads.action-plan/1".to_owned(),
+        format!("op:{operation}"),
+        format!("work_root:{}", field(&text(&record["work_root"]))),
+    ];
+    lines.push(match record["destination"].as_str() {
+        Some(destination) => format!("destination:{}", field(destination)),
+        None => "destination:-".to_owned(),
+    });
+    lines.push(match &record["estimate"] {
+        serde_json::Value::Null => "estimate:unknown".to_owned(),
+        estimate => format!("estimate:{}:{}", estimate["items"], estimate["bytes"]),
+    });
+    let targets = record["targets"].as_array().unwrap();
+    lines.push(format!("targets:{}", targets.len()));
+    for target in targets {
+        let path = text(&target["path"]);
+        let whole = match target["pattern"].as_str() {
+            None => path,
+            Some(pattern) => {
+                let windows = !path.starts_with('/');
+                let root = path == "/" || (windows && path.len() == 3);
+                let separator = match (root, windows) {
+                    (true, _) => "",
+                    (false, true) => "\\",
+                    (false, false) => "/",
+                };
+                format!("{path}{separator}{pattern}")
+            }
+        };
+        let repo_root = u8::from(target["repo_root"] == true);
+        lines.push(format!("target:{repo_root}:{}", field(&whole)));
+    }
+    lines.join("\n") + "\n"
+}
+
+/// `sha256:` and the digest of `text`, computed here and not by the core.
+pub fn sha256_of(text: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let hex: String = Sha256::digest(text.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    format!("sha256:{hex}")
+}

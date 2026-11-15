@@ -2,9 +2,7 @@
 
 use std::fmt;
 
-use sha2::{Digest, Sha256};
-
-use super::event::{PlanHash, Verb};
+use super::event::{PlanEstimate, PlanHash, PlanOperation, Verb, canonical_plan};
 use super::path::{AbsPath, PathError, TargetPath};
 
 /// What the caller wants done, as raw text. Nothing here is trusted until normalized.
@@ -54,16 +52,20 @@ pub enum Operation {
 }
 
 impl Operation {
-    /// The `verb` of `action.planned`.
+    /// The operation as the contracts name it.
+    pub fn name(&self) -> PlanOperation {
+        match self {
+            Self::Delete => PlanOperation::Delete,
+            Self::DeleteRecursive => PlanOperation::DeleteRecursive,
+            Self::Move { .. } => PlanOperation::Move,
+            Self::Overwrite => PlanOperation::Overwrite,
+            Self::CleanUntracked => PlanOperation::CleanUntracked,
+        }
+    }
+
+    /// The `verb` of `action.planned` and of `action.denied`.
     pub fn verb(&self) -> Verb {
-        let verb = match self {
-            Self::Delete => "fs.delete",
-            Self::DeleteRecursive => "fs.delete_recursive",
-            Self::Move { .. } => "fs.move",
-            Self::Overwrite => "fs.overwrite",
-            Self::CleanUntracked => "fs.clean_untracked",
-        };
-        Verb::new(verb).expect("the verbs above follow the contract pattern")
+        Verb::new(self.name().as_str()).expect("the operation names follow the verb pattern")
     }
 }
 
@@ -176,44 +178,33 @@ impl ActionPlan {
         }
     }
 
-    /// The text the hash is taken over: one field per line, in a fixed order, every path
-    /// prefixed by its length in bytes so no path can pass for two fields.
-    pub fn canonical(&self) -> String {
-        let field = |text: String| format!("{}:{text}", text.len());
-        let mut out = String::from("ads.action-plan/1\n");
-        out.push_str(&format!("op:{}\n", self.operation.verb()));
-        out.push_str(&format!(
-            "work_root:{}\n",
-            field(self.work_root.to_string())
-        ));
+    /// Where the targets go: the destination of a move, quarantine included.
+    pub fn destination(&self) -> Option<&AbsPath> {
         match &self.operation {
-            Operation::Move { destination } => {
-                out.push_str(&format!("destination:{}\n", field(destination.to_string())));
-            }
-            _ => out.push_str("destination:-\n"),
+            Operation::Move { destination } => Some(destination),
+            _ => None,
         }
-        match self.estimate {
-            Some(estimate) => {
-                out.push_str(&format!("estimate:{}:{}\n", estimate.items, estimate.bytes));
-            }
-            None => out.push_str("estimate:unknown\n"),
-        }
-        out.push_str(&format!("targets:{}\n", self.targets.len()));
-        for target in &self.targets {
-            out.push_str(&format!(
-                "target:{}:{}\n",
-                u8::from(target.repo_root),
-                field(target.path.to_string())
-            ));
-        }
-        out
+    }
+
+    /// The text the hash is taken over: the canonical serialization of the contracts.
+    pub fn canonical(&self) -> String {
+        canonical_plan(
+            self.operation.name(),
+            &self.work_root.to_string(),
+            self.destination().map(AbsPath::to_string).as_deref(),
+            self.estimate.map(|estimate| PlanEstimate {
+                items: estimate.items,
+                bytes: estimate.bytes,
+            }),
+            self.targets
+                .iter()
+                .map(|target| (target.repo_root, target.path.to_string())),
+        )
     }
 
     /// SHA-256 of [`Self::canonical`]. Approval and execution are tied to this exact value.
     pub fn hash(&self) -> PlanHash {
-        let digest = Sha256::digest(self.canonical().as_bytes());
-        let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
-        PlanHash::new(format!("sha256:{hex}")).expect("a SHA-256 digest in lower-case hex")
+        PlanHash::of(&self.canonical())
     }
 }
 
@@ -341,12 +332,27 @@ mod tests {
     }
 
     #[test]
-    fn sha256_matches_a_known_vector() {
-        let digest = Sha256::digest(b"abc");
-        let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    fn targets_follow_the_canonical_order_of_the_contract() {
+        let spelled = [
+            "/a-b", "/a/b/*.o", "/a/b", "/a/B", "/a", "D:\\x", "c:\\x\\?", "C:\\x\\*", "C:\\x",
+            "C:\\X",
+        ];
+        let mut request = request(&spelled);
+        request.work_root = "/a".to_owned();
+        let plan = ActionPlan::normalize(&request).unwrap();
+        let ordered: Vec<String> = plan
+            .targets()
+            .iter()
+            .map(|target| target.path().to_string())
+            .collect();
+        // Windows first, then by drive, then component by component (bytes, the shorter path
+        // first), then no wildcard before a wildcard: `/a/b` comes before `/a-b`.
         assert_eq!(
-            hex,
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+            ordered,
+            [
+                "C:\\X", "C:\\x", "C:\\x\\*", "C:\\x\\?", "D:\\x", "/a", "/a/B", "/a/b",
+                "/a/b/*.o", "/a-b",
+            ]
         );
     }
 }

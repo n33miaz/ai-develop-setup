@@ -2,11 +2,14 @@
 //! The oracle works on the pieces each path was built from, never on the gate's own parsing
 //! or containment code. Paths are synthetic text; nothing is touched.
 
+mod common;
+
 use ads_core::gate::{
-    Action, ActionPlan, Actor, ActorKind, DataClass, Decision, Estimate, EventMeta, GatePolicy,
-    HostFacts, Id, Operation, OperationRequest, PlanRequest, TargetRequest, Timestamp, Ulid,
-    classify,
+    Action, ActionPlan, Actor, ActorKind, DataClass, Decision, Estimate, Event, EventMeta,
+    GatePolicy, HostFacts, Id, Operation, OperationRequest, PlanRequest, State, TargetRequest,
+    Timestamp, Ulid, classify,
 };
+use common::{canonical_of, sha256_of};
 
 const CASES: usize = 30_000;
 
@@ -401,6 +404,20 @@ fn no_plan_with_a_target_outside_the_allowed_roots_gets_past_denied() {
             .unwrap_or_else(|err| panic!("case {index}: {:?}: {err}", case.request));
         let verdict = classify(&plan, &case.policy);
 
+        // Whatever the verdict, the plan has a record, and the hash of the plan in force is
+        // the one of the canonical text rebuilt here from the record alone.
+        let record = verdict
+            .record(Id::new("act-01").unwrap())
+            .unwrap_or_else(|err| panic!("case {index}: {:?}: {err}", case.request))
+            .to_json();
+        assert_eq!(record["plan_hash"], verdict.plan().hash().as_str());
+        assert_eq!(
+            record["plan_hash"],
+            sha256_of(&canonical_of(&record)),
+            "case {index}: {record}"
+        );
+        assert_eq!(record["quarantined"], verdict.is_quarantined());
+
         if case.other_style {
             other_style += 1;
             assert_eq!(
@@ -420,9 +437,18 @@ fn no_plan_with_a_target_outside_the_allowed_roots_gets_past_denied() {
             );
             assert!(!verdict.is_quarantined(), "case {index}");
             assert_eq!(verdict.plan(), &plan, "case {index}");
-            // And a denied plan cannot become an action.
-            let action = Action::plan(Id::new("act-01").unwrap(), &verdict, meta());
-            assert!(action.is_err(), "case {index}: {:?}", case.request);
+            // And a denied plan is an action born dead: `action.denied`, then nothing.
+            let (action, event, record) =
+                Action::plan(Id::new("act-01").unwrap(), &verdict, meta()).unwrap();
+            assert_eq!(action.state(), &State::Denied, "case {index}");
+            assert!(matches!(event, Event::ActionDenied(_)), "case {index}");
+            assert_eq!(event.to_json()["data"]["plan_hash"], plan.hash().as_str());
+            assert_eq!(record.fields().plan_hash, plan.hash(), "case {index}");
+            assert!(
+                action.authorize(&plan, meta()).is_err(),
+                "case {index}: {:?}",
+                case.request
+            );
         } else if verdict.decision() == Decision::Denied {
             inside_denied += 1;
         } else {
