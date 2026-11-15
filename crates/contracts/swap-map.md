@@ -78,7 +78,7 @@ Continuam escritos à mão, por serem comportamento e não Schema: `EventMeta`, 
 
 | Escrito à mão | Gerado | Diferença |
 |---|---|---|
-| `OutputHeader` | `ContractPtyHostFrameV1` | mesmos campos (`session_id`, `seq`, `length`) |
+| `OutputHeader` | `ContractPtyHostFrameV1` | `length` é `NonZeroU64` (o Schema não dá teto), não `NonZeroU32`: o limite de 32 bits do quadro continua conferido no codec |
 | `JsonRpc` | um tipo sem dados por mensagem (`ContractPtyHostResponseV1Jsonrpc`, `ContractPtyHostRequestV1HostHelloJsonrpc`, …) | um por lugar; todos têm `Default` |
 | `RequestId` | `NonZeroU64` | nenhuma |
 | `SessionId` | `CommonIdV1` | guarda `String`, não `Arc<str>`, e não deriva `Ord`: se o host precisa de cópia barata ou de ordem, embrulha |
@@ -88,14 +88,15 @@ Continuam escritos à mão, por serem comportamento e não Schema: `EventMeta`, 
 | `HelloParams` | `ContractPtyHostRequestV1HostHelloParams` | `contract` é o valor fixo `pty-host/1`: versão desconhecida é recusada na leitura. Para responder `-32009`, o host lê o `contract` antes da leitura tipada (como já faz `Request::parse` com o método) |
 | `OpenParams` | `ContractPtyHostRequestV1SessionOpenParams` | `program`, cada item de `args` e `cwd` são textos validados com tipo próprio |
 | `WriteParams`, `ResizeParams`, `SubscribeParams`, `SessionParams`, `NoParams` | `ContractPtyHostRequestV1SessionWriteParams`, `…SessionResizeParams`, `…SessionSubscribeParams`, `…SessionCloseParams`, `…SessionListParams` | mesmos campos |
-| `Response` | `ContractPtyHostResponseV1` (`ContractPtyHostResponseV1Fields`) | conferido: `result` e `error` são dois `Option` e a regra do Schema exige exatamente um |
+| `Response { id, outcome }` | `ContractPtyHostResponseV1` (`ContractPtyHostResponseV1Fields`) | no lugar de `outcome: Result<ResultBody, ErrorBody>` há dois `Option` (`result` e `error`), e a regra do Schema exige exatamente um; o host converte para `Result` ao ler. Há o campo `jsonrpc` |
 | `ResultBody` | `ContractPtyHostResponseV1Result` | `enum` sem marca, variantes `Empty`, `Hello`, `ReplayBounds`, `Closed`, `SessionList` |
-| `HelloResult`, `ReplayBounds`, `Closed`, `SessionList`, `SessionEntry` | `ContractPtyHostResponseV1Hello`, `…ReplayBounds`, `…Closed`, `…SessionList`, `…SessionListSessionsItem` | mesmos campos |
+| `HelloResult` | `ContractPtyHostResponseV1Hello` | `contract` é o valor fixo `pty-host/1`, não `String` |
+| `ReplayBounds`, `Closed`, `SessionList`, `SessionEntry` | `ContractPtyHostResponseV1ReplayBounds`, `…Closed`, `…SessionList`, `…SessionListSessionsItem` | mesmos campos e mesmos tipos (`NonZeroU64`, `Option<i64>`) |
 | `ErrorCode` | `ContractPtyHostResponseV1ErrorCode` | variantes pelo número (`Neg32004`), não pelo significado; `number()` igual. Os nomes com significado continuam no host, como constantes |
-| `ErrorBody` | `ContractPtyHostResponseV1Error` (`…ErrorFields`) | conferido: `-32004` exige `data.oldest_seq` e `-32005` exige `data.next_seq`; `message` é texto validado |
+| `ErrorBody` | `ContractPtyHostResponseV1Error` (`…ErrorFields`) | conferido: `-32004` exige `data.oldest_seq` e `-32005` exige `data.next_seq`; `message` é texto validado de 1 a 500 caracteres (`ContractPtyHostResponseV1ErrorMessage`), não `String` |
 | `ErrorData` | `ContractPtyHostResponseV1ErrorData` | mesmos campos |
 | `Notification` | `ContractPtyHostNotificationV1` | `enum` com a marca `method`; cada variante guarda `jsonrpc` e `params` |
-| `SessionExited`, `SubscriptionClosed` | `ContractPtyHostNotificationV1SessionExitedParams`, `…SubscriptionClosedParams` | mesmos campos |
+| `SessionExited`, `SubscriptionClosed` | `ContractPtyHostNotificationV1SessionExitedParams`, `…SubscriptionClosedParams` | mesmos campos e mesmos tipos (`last_seq` é `u64`) |
 | `CloseReason` | `ContractPtyHostNotificationV1SubscriptionClosedParamsReason` | nenhuma |
 
 Continuam escritos à mão, por serem comportamento e não Schema: o codec do quadro binário (`Frame`, `WireError`, `encode_json`, `encode_output`, `decode_payload`, as constantes `KIND_*`), `Rejection` e `Request::parse` (que erro JSON-RPC responder a um pedido malformado), `HostMessage` (resposta ou notificação) e a conversão de `Base64` em bytes.
