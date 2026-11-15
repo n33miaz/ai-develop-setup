@@ -1,5 +1,7 @@
 //! Policy: tasks, approvals, scope, routing and budget.
 
+pub mod gate;
+
 /// Package name as declared in the manifest.
 pub const fn crate_name() -> &'static str {
     env!("CARGO_PKG_NAME")

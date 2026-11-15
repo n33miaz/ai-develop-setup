@@ -1,0 +1,70 @@
+# Parametros do portao de acoes destrutivas (P8). Lido por `ads-core` (embutido na compilacao como padrao;
+# uma camada do usuario pode sobrepor qualquer chave, e a que faltar cai no valor daqui).
+# Formato: uma chave por linha, `chave = valor`, sem tabelas.
+#
+# O que NAO e parametro, porque vale sempre: alvo que e raiz de unidade ou `/`, a pasta do usuario ou um
+# ancestral dela, a propria raiz de trabalho, raiz de repositorio e qualquer alvo fora das raizes permitidas
+# sao negados. A pasta do usuario nao fica neste arquivo: quem chama o nucleo a informa.
+#
+# As quatro listas de pastas protegidas so crescem: a camada do usuario ACRESCENTA entradas as daqui,
+# nunca tira. As demais chaves sao substituidas pelo valor da camada.
+
+# Raizes permitidas alem da raiz de trabalho do plano (caminhos absolutos). Alvo fora da raiz de trabalho
+# e de todas estas e negado. Dentro de uma destas, mas fora da raiz de trabalho, toda acao pede aprovacao.
+# Padrao vazio: so a raiz de trabalho. Uma raiz permitida nao pode ser uma pasta protegida.
+allowed_roots = []
+
+# Pastas do sistema no Windows: nomes no primeiro nivel de QUALQUER unidade. A pasta e tudo dentro dela
+# sao negados.
+windows_system_dirs = [
+  "Windows",
+  "Program Files",
+  "Program Files (x86)",
+  "ProgramData",
+  "System Volume Information",
+  "Recovery",
+]
+
+# Pastas do sistema nos demais (caminhos absolutos). A pasta, tudo dentro dela e os ancestrais sao negados.
+posix_system_dirs = [
+  "/bin",
+  "/boot",
+  "/dev",
+  "/etc",
+  "/lib",
+  "/lib32",
+  "/lib64",
+  "/libx32",
+  "/opt",
+  "/proc",
+  "/root",
+  "/run",
+  "/sbin",
+  "/sys",
+  "/usr",
+  "/var",
+  "/Applications",
+  "/Library",
+  "/System",
+  "/private",
+]
+
+# Pastas que guardam os perfis de usuario. A propria pasta e cada filha direta (o perfil de qualquer
+# usuario, nao so o de quem roda) sao negadas; o que fica mais fundo segue as outras regras.
+# No Windows, nomes no primeiro nivel de qualquer unidade; nos demais, caminhos absolutos.
+windows_user_parents = ["Users", "Documents and Settings"]
+posix_user_parents = ["/home", "/Users"]
+
+# Apagar recursivo e limpar nao rastreados pedem aprovacao quando o plano estima MAIS itens ou MAIS bytes
+# que estes limites. Plano sem estimativa conta como acima do limite. Zero: sempre pede aprovacao.
+approval_item_limit = 500
+approval_byte_limit = 104857600
+
+# Quarentena por padrao: apagar e apagar recursivo viram "mover para a pasta de quarentena", e e esse
+# plano reescrito que recebe o hash, a aprovacao e a execucao. false: apaga de verdade.
+quarantine_enabled = true
+
+# Pasta de quarentena, relativa a raiz de trabalho (barra normal; letras, digitos e . _ -; sem `..`).
+# Cada plano ganha uma subpasta com o comeco do hash do plano original. Alvo que e esta pasta ou a contem
+# e negado; apagar algo ja dentro dela (purga) nao tem como ir para a quarentena e pede aprovacao.
+quarantine_dir = ".ads/quarantine"
