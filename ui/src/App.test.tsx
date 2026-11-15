@@ -94,6 +94,15 @@ describe('App', () => {
     ).toBeInTheDocument()
   })
 
+  it('does not invent a session name when there is no session', () => {
+    renderApp('pt-BR', () => ({ tasks: [], sessions: [] }))
+
+    expect(screen.getByText('Nenhuma tarefa.')).toBeInTheDocument()
+    expect(screen.getByText('Nenhuma sessão.')).toBeInTheDocument()
+    expect(screen.queryByText('Sessão sem nome')).not.toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Terminal da sessão' })).toBeInTheDocument()
+  })
+
   it('follows the connection state of the client', async () => {
     const client = renderApp()
 
