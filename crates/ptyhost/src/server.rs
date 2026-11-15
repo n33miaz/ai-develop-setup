@@ -228,9 +228,8 @@ where
                     rows: params.rows.get(),
                     cols: params.cols.get(),
                 };
-                self.host
-                    .resize(&params.session_id, size)
-                    .map_err(|err| error_body(&err))?;
+                let host = Arc::clone(&self.host);
+                blocking(move || host.resize(&params.session_id, size)).await?;
                 empty()
             }
             Call::Subscribe(params) => {
@@ -287,6 +286,10 @@ where
     /// Starts carrying a subscription. A client has one per session.
     async fn forward(&mut self, session_id: SessionId, subscription: Subscription) {
         self.stop_forwarding(&session_id).await;
+        // Subscriptions that ran to their end leave nothing here: a client that lives long
+        // would otherwise keep one entry for every session it ever followed.
+        self.forwarders
+            .retain(|_, forwarder| !forwarder.task.is_finished());
         let (cancel, cancelled) = oneshot::channel();
         let task = tokio::spawn(forward(
             Arc::clone(&self.writer),
@@ -338,5 +341,50 @@ async fn forward<S: AsyncWrite>(
     };
     if let Ok(frame) = wire::encode_json(&notification) {
         let _ = write_frame(&writer, &frame).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::HostConfig;
+    use crate::fake::FakeBackend;
+
+    #[tokio::test]
+    async fn forwarders_of_finished_subscriptions_are_not_kept() {
+        let host = Arc::new(
+            PtyHost::new(Arc::new(FakeBackend::new()), HostConfig::defaults())
+                .expect("the shipped defaults are valid"),
+        );
+        let (mut near, far) = tokio::io::duplex(64 * 1024);
+        let (_, writer) = tokio::io::split(far);
+        let mut client = Client {
+            host: Arc::clone(&host),
+            writer: Arc::new(Mutex::new(writer)),
+            greeted: true,
+            forwarders: HashMap::new(),
+        };
+        let spec = SpawnSpec {
+            program: "fake-shell".to_owned(),
+            ..SpawnSpec::default()
+        };
+
+        for round in 0..50 {
+            let id = SessionId::new(&format!("s{round}")).expect("a valid name");
+            host.open(&id, &spec).expect("the fake terminal opens");
+            let subscription = host
+                .subscribe(&id, ReplayFrom::Oldest)
+                .expect("the session is open");
+            client.forward(id.clone(), subscription).await;
+            assert_eq!(client.forwarders.len(), 1, "round {round}");
+
+            // The session ends, the client is told, and the task that carried it is over.
+            host.close(&id).await.expect("the session closes");
+            let told = wire::read_frame(&mut near, 4096).await;
+            assert!(matches!(told, Ok(Some(Frame::Json(_)))), "{told:?}");
+            while !client.forwarders[&id].task.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        }
     }
 }

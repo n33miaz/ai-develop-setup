@@ -471,3 +471,46 @@ async fn a_new_subscription_replaces_the_previous_one_of_the_same_client() {
         Some(Incoming::Notification(Notification::SessionExited(_)))
     ));
 }
+
+/// Waits until the session holds exactly `count` subscriptions.
+async fn wait_for_subscribers(host: &PtyHost, session: &str, count: usize) {
+    let settled = tokio::time::timeout(common::STEP_TIMEOUT, async {
+        while host.subscriber_count(&id(session)).unwrap() != count {
+            tokio::task::yield_now().await;
+        }
+    });
+    if settled.await.is_err() {
+        panic!(
+            "expected {count} subscriptions, the session still holds {}",
+            host.subscriber_count(&id(session)).unwrap()
+        );
+    }
+}
+
+#[tokio::test]
+async fn clients_that_leave_or_subscribe_again_leave_nothing_behind_on_an_idle_session() {
+    const CYCLES: usize = 200;
+    let backend = Arc::new(FakeBackend::new());
+    let host = host_with(&backend, "");
+    let mut owner = greeted(&host).await;
+    owner.call(open("sess-a")).await.unwrap();
+
+    // Clients that subscribe and drop the connection.
+    for _ in 0..CYCLES {
+        let mut leaver = greeted(&host).await;
+        leaver.subscribe(&id("sess-a"), None).await.unwrap();
+    }
+    wait_for_subscribers(&host, "sess-a", 0).await;
+
+    // One client subscribing over and over: only its latest subscription stays.
+    for _ in 0..CYCLES {
+        owner.subscribe(&id("sess-a"), None).await.unwrap();
+    }
+    wait_for_subscribers(&host, "sess-a", 1).await;
+    drop(owner);
+    wait_for_subscribers(&host, "sess-a", 0).await;
+
+    // The terminal never printed anything.
+    let mut observer = greeted(&host).await;
+    assert_eq!(sessions(&mut observer).await[0].next_seq, seq(1));
+}

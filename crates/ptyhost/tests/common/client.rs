@@ -149,11 +149,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
         }
     }
 
-    pub async fn call(&mut self, call: Call) -> Result<ResultBody, ErrorBody> {
+    /// Sends a request and leaves the answer for a later `response`.
+    pub async fn request(&mut self, call: Call) -> NonZeroU64 {
         let id = NonZeroU64::new(self.next_id).unwrap();
         self.next_id += 1;
         let frame = wire::encode_json(&Request { id, call }).unwrap();
         self.send_bytes(&frame).await;
+        id
+    }
+
+    pub async fn call(&mut self, call: Call) -> Result<ResultBody, ErrorBody> {
+        let id = self.request(call).await;
         let response = self.response().await;
         assert_eq!(response.id, Some(id), "response to another request");
         response.outcome

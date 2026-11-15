@@ -39,6 +39,9 @@ O contrato está em [`contracts/README.md`](../../contracts/README.md). O que es
 - Quando a saída de uma sessão termina, cada assinante que recebeu tudo recebe `session.exited`. Quem não está assinando vê o estado em `session.list`.
 - Assinante lento recebe o que já estava na fila dele e depois `subscription.closed` com `reason: "slow_subscriber"`; fechar a sessão avisa os assinantes com `reason: "session_closed"`. Nos dois, `last_seq` é o último pedaço entregue naquela assinatura.
 - Cliente que cai (no meio de um quadro ou não) não afeta a sessão: ao voltar, assina a partir do último `seq` que recebeu inteiro, mais 1.
+- Enquanto o terminal de um `session.open` está sendo criado, o nome e a vaga já estão reservados: outro `session.open` com o mesmo nome volta `-32002` e a reserva conta em `max_sessions`. A sessão só aparece em `session.list` e só aceita os outros pedidos (que até lá voltam `-32001`) depois de criada. Se a criação falha, nome e vaga são devolvidos.
+- Um pedido que espera pelo terminal (criar, escrever, redimensionar, encerrar) segura só a conexão que o fez. Os outros clientes continuam sendo atendidos e a saída das outras sessões continua saindo: esse trabalho roda fora das threads do atendimento, e a trava do conjunto de sessões só é segurada para consultar ou alterar o conjunto.
+- Uma assinatura que acabou (o cliente saiu, assinou de novo ou ficou para trás) deixa de ocupar memória na hora, mesmo que a sessão nunca mais produza saída.
 
 ## Regras do replay
 
@@ -55,4 +58,5 @@ O contrato está em [`contracts/README.md`](../../contracts/README.md). O que es
 - Fora do Windows só o processo raiz recebe o sinal de encerramento; o resto da árvore depende do fechamento do terminal. O produto roda no Windows; o caminho Unix existe para os testes do CI em Linux.
 - O processo roda até ser encerrado por quem o iniciou; não há pedido de desligamento no contrato `pty-host/1`. Quem o inicia destacado é o lançador, que ainda não existe.
 - Um cliente conectado que para de ler não segura memória além da fila dele (`subscriber_queue_chunks`), mas a conexão fica aberta até ele sair.
+- Não há teto para o número de conexões nem de assinaturas vivas ao mesmo tempo, nem prazo para um pedido que espera pelo terminal: um terminal que nunca responde segura a conexão que pediu e uma thread de trabalho até a sessão ser encerrada.
 - Fora do Windows, sem `XDG_RUNTIME_DIR` o processo só sobe com `channel_path` preenchido.
