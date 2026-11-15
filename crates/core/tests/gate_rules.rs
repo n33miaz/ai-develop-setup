@@ -737,3 +737,85 @@ fn classification_is_deterministic() {
     let policy = policy(WIN_HOME, "");
     assert_eq!(classify(&asked, &policy), classify(&asked, &policy));
 }
+
+// ---- Rule codes -------------------------------------------------------------------------------
+
+/// The codes are part of the contract: they go into `action.denied` and into the action plan
+/// record, so a code never changes. Renaming one here fails this test.
+#[test]
+fn every_rule_has_its_stable_code() {
+    let protections = [
+        "filesystem_root",
+        "user_home",
+        "user_home_ancestor",
+        "user_profile",
+        "system_dir",
+        "other_path_style",
+    ];
+    let mut denied: Vec<String> = Vec::new();
+    for rule in ["protected", "work_root_protected", "destination_protected"] {
+        denied.extend(protections.iter().map(|detail| format!("{rule}.{detail}")));
+    }
+    for rule in [
+        "work_root_itself",
+        "outside_allowed_roots",
+        "repository_root",
+        "quarantine_itself",
+        "destination_outside_allowed_roots",
+        "destination_inside_target",
+    ] {
+        denied.push(rule.to_owned());
+    }
+    let approval = [
+        "outside_work_root",
+        "destination_outside_work_root",
+        "estimate_unknown",
+        "item_limit_exceeded",
+        "byte_limit_exceeded",
+        "quarantine_purge",
+    ];
+
+    let codes_of = |decision: Decision| -> Vec<String> {
+        Rule::all()
+            .into_iter()
+            .filter(|rule| rule.decision() == decision)
+            .map(|rule| rule.code().to_string())
+            .collect()
+    };
+    assert_eq!(codes_of(Decision::Denied), denied);
+    assert_eq!(codes_of(Decision::RequiresApproval), approval);
+    assert!(codes_of(Decision::Allowed).is_empty());
+    assert_eq!(Rule::all().len(), 30);
+
+    assert_eq!(
+        Rule::Protected(Protection::UserHome).code().as_str(),
+        "protected.user_home"
+    );
+    assert_eq!(
+        Rule::DestinationProtected(Protection::SystemDir)
+            .code()
+            .as_str(),
+        "destination_protected.system_dir"
+    );
+}
+
+/// The two places that list the codes for readers (the contracts and this crate) name every
+/// code the gate can write.
+#[test]
+fn every_rule_code_is_documented() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    for readme in ["../../contracts/README.md", "README.md"] {
+        let text = std::fs::read_to_string(root.join(readme)).unwrap();
+        for rule in Rule::all() {
+            let code = rule.code().to_string();
+            let listed = match code.split_once('.') {
+                Some((name, detail)) => {
+                    text.contains(&format!("`{name}.<proteção>`"))
+                        && text.contains(&format!("`{detail}`"))
+                }
+                None => text.contains(&format!("`{code}`")),
+            };
+            assert!(listed, "{code} is not in {readme}");
+        }
+    }
+}

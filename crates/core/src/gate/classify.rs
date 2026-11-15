@@ -1,28 +1,12 @@
 //! The rules: `plan + policy -> verdict`. Pure; the answer depends on nothing else.
 
-use super::event::Risk;
+use super::event::{
+    ActionPlanFields, ActionPlanRecord, ContractError, Decision, Id, PathText, PatternText,
+    PlanEstimate, PlanReason, PlanTarget, PlanVerdict, Risk, RuleCode, RuleList, SubjectText,
+};
 use super::path::AbsPath;
 use super::plan::{ActionPlan, Operation};
 use super::policy::{GatePolicy, Protection};
-
-/// The three levels of a verdict, from the mildest to the strictest.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum Decision {
-    Allowed,
-    RequiresApproval,
-    Denied,
-}
-
-impl Decision {
-    /// One level of `urn:ads:common:risk:1` for each level of the verdict.
-    pub fn risk(self) -> Risk {
-        match self {
-            Self::Allowed => Risk::Low,
-            Self::RequiresApproval => Risk::Medium,
-            Self::Denied => Risk::High,
-        }
-    }
-}
 
 /// The rule behind a finding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -57,6 +41,58 @@ pub enum Rule {
 }
 
 impl Rule {
+    /// Every rule of the gate, one entry per protection where the rule has that detail.
+    pub fn all() -> Vec<Rule> {
+        let detailed = [
+            Self::Protected,
+            Self::WorkRootProtected,
+            Self::DestinationProtected,
+        ];
+        let mut all: Vec<Rule> = detailed
+            .iter()
+            .flat_map(|rule| Protection::ALL.map(rule))
+            .collect();
+        all.extend([
+            Self::WorkRootItself,
+            Self::OutsideAllowedRoots,
+            Self::RepositoryRoot,
+            Self::QuarantineItself,
+            Self::DestinationOutsideAllowedRoots,
+            Self::DestinationInsideTarget,
+            Self::OutsideWorkRoot,
+            Self::DestinationOutsideWorkRoot,
+            Self::EstimateUnknown,
+            Self::ItemLimitExceeded,
+            Self::ByteLimitExceeded,
+            Self::QuarantinePurge,
+        ]);
+        all
+    }
+
+    /// The stable code of the rule (`urn:ads:common:action-rule:1`). A code never changes its
+    /// meaning: logs and records written with it stay readable.
+    pub fn code(self) -> RuleCode {
+        let detailed = |name: &str, protection: Protection| format!("{name}.{}", protection.code());
+        let code = match self {
+            Self::Protected(protection) => detailed("protected", protection),
+            Self::WorkRootProtected(protection) => detailed("work_root_protected", protection),
+            Self::DestinationProtected(protection) => detailed("destination_protected", protection),
+            Self::WorkRootItself => "work_root_itself".to_owned(),
+            Self::OutsideAllowedRoots => "outside_allowed_roots".to_owned(),
+            Self::RepositoryRoot => "repository_root".to_owned(),
+            Self::QuarantineItself => "quarantine_itself".to_owned(),
+            Self::DestinationOutsideAllowedRoots => "destination_outside_allowed_roots".to_owned(),
+            Self::DestinationInsideTarget => "destination_inside_target".to_owned(),
+            Self::OutsideWorkRoot => "outside_work_root".to_owned(),
+            Self::DestinationOutsideWorkRoot => "destination_outside_work_root".to_owned(),
+            Self::EstimateUnknown => "estimate_unknown".to_owned(),
+            Self::ItemLimitExceeded => "item_limit_exceeded".to_owned(),
+            Self::ByteLimitExceeded => "byte_limit_exceeded".to_owned(),
+            Self::QuarantinePurge => "quarantine_purge".to_owned(),
+        };
+        RuleCode::new(code).expect("the codes above follow the contract pattern")
+    }
+
     pub fn decision(self) -> Decision {
         match self {
             Self::Protected(_)
@@ -91,6 +127,8 @@ pub struct Verdict {
     decision: Decision,
     findings: Vec<Finding>,
     plan: ActionPlan,
+    /// The operation as asked, which the quarantine rewrite replaces in `plan`.
+    requested: Operation,
     quarantined: bool,
 }
 
@@ -121,6 +159,63 @@ impl Verdict {
     /// Whether [`Self::plan`] is a delete rewritten as a move to quarantine.
     pub fn is_quarantined(&self) -> bool {
         self.quarantined
+    }
+
+    /// The operation of the plan as it was asked, before any rewrite.
+    pub fn requested_operation(&self) -> &Operation {
+        &self.requested
+    }
+
+    /// The codes of the rules that denied the plan, each one once, in the order they fired.
+    /// Rules that only ask for approval are left out. `None` when the plan was not denied.
+    pub fn denying_rules(&self) -> Option<RuleList> {
+        let mut codes: Vec<RuleCode> = Vec::new();
+        for finding in &self.findings {
+            let code = finding.rule.code();
+            if finding.rule.decision() == Decision::Denied && !codes.contains(&code) {
+                codes.push(code);
+            }
+        }
+        RuleList::new(codes).ok()
+    }
+
+    /// The `record.action-plan` of this verdict for the action `action_id`: the operation as
+    /// asked, the plan in force and every rule that fired. Refused when the plan does not fit
+    /// the limits of the contract (path length, number of targets or of reasons).
+    pub fn record(&self, action_id: Id) -> Result<ActionPlanRecord, ContractError> {
+        let path = |path: &AbsPath| PathText::new(path.to_string());
+        let targets = self.plan.targets().iter().map(|target| {
+            Ok(PlanTarget {
+                path: path(target.path().scope())?,
+                pattern: target.path().pattern().map(PatternText::new).transpose()?,
+                repo_root: target.is_repo_root(),
+            })
+        });
+        let reasons = self.findings.iter().map(|finding| {
+            Ok(PlanReason {
+                rule: finding.rule.code(),
+                subject: SubjectText::new(finding.subject.as_str())?,
+            })
+        });
+        ActionPlanRecord::try_from(ActionPlanFields {
+            version: 1,
+            action_id,
+            plan_hash: self.plan.hash(),
+            operation: self.requested.name(),
+            work_root: path(self.plan.work_root())?,
+            destination: self.plan.destination().map(path).transpose()?,
+            targets: targets.collect::<Result<_, ContractError>>()?,
+            estimate: self.plan.estimate().map(|estimate| PlanEstimate {
+                items: estimate.items,
+                bytes: estimate.bytes,
+            }),
+            verdict: PlanVerdict {
+                decision: self.decision,
+                risk: self.risk(),
+                reasons: reasons.collect::<Result<_, ContractError>>()?,
+            },
+            quarantined: self.quarantined,
+        })
     }
 }
 
@@ -243,6 +338,7 @@ pub fn classify(plan: &ActionPlan, policy: &GatePolicy) -> Verdict {
         decision,
         findings,
         plan: rewrite.unwrap_or_else(|| plan.clone()),
+        requested: plan.operation().clone(),
         quarantined,
     }
 }

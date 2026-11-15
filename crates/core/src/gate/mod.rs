@@ -3,8 +3,9 @@
 //!
 //! The types only fit together one way: a [`PlanRequest`] becomes an [`ActionPlan`] only by
 //! normalization, a [`Verdict`] comes only from [`classify`], an [`Action`] only from a verdict
-//! that is not "denied", and an [`ExecutionPermit`] only from an action whose plan hash and
-//! approval match.
+//! (a denied one is born in its final state), and an [`ExecutionPermit`] only from an action
+//! whose plan hash and approval match. Every state is rebuilt from the events alone
+//! ([`replay`]).
 
 mod classify;
 mod event;
@@ -13,13 +14,18 @@ mod path;
 mod plan;
 mod policy;
 
-pub use classify::{Decision, Finding, Rule, Verdict, classify};
+pub use classify::{Finding, Rule, Verdict, classify};
 pub use event::{
-    ActionExecuted, ActionFailed, ActionPlanned, Actor, ActorKind, ApprovalDenied, ApprovalExpired,
-    ApprovalGranted, ApprovalRequested, ContractError, DataClass, Envelope, ErrorCode, Event,
-    EventData, EventMeta, Id, PlanHash, Risk, ShortText, Timestamp, Ulid, Verb, Via,
+    ActionDenied, ActionExecuted, ActionFailed, ActionPlanFields, ActionPlanRecord, ActionPlanned,
+    ActionStarted, Actor, ActorKind, ApprovalDenied, ApprovalExpired, ApprovalGranted,
+    ApprovalRequested, ApprovalRequestedV1, ContractError, DataClass, Decision, Envelope,
+    ErrorCode, Event, EventData, EventMeta, Id, PathText, PatternText, PlanEstimate, PlanHash,
+    PlanOperation, PlanReason, PlanTarget, PlanVerdict, Risk, RuleCode, RuleList, ShortText,
+    SubjectText, Timestamp, Ulid, Verb, Via,
 };
-pub use machine::{Action, Command, ExecutionPermit, State, TransitionError};
+pub use machine::{
+    Action, ActionSnapshot, Command, ExecutionPermit, ReplayError, State, TransitionError, replay,
+};
 pub use path::{AbsPath, PathError, PathStyle, TargetPath};
 pub use plan::{
     ActionPlan, Estimate, Operation, OperationRequest, PlanError, PlanRequest, Target,
