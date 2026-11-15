@@ -5,8 +5,9 @@ import { ConnectionStatus } from './components/ConnectionStatus'
 import { Sidebar } from './components/Sidebar/Sidebar'
 import { staticByteSource } from './components/Terminal/byteSource'
 import { Terminal } from './components/Terminal/Terminal'
-import { useT, type MessageKey } from './i18n'
-import { sampleOutput, sampleSessions, sampleTasks } from './sample/data'
+import { useT, type MessageKey, type Translate } from './i18n'
+import { sessionsFrom, tasksFrom } from './model/views'
+import { sampleEvents, sampleOutput, type SampleEvents } from './sample/data'
 import type { ThemePreference } from './theme/theme'
 import { useTheme } from './theme/useTheme'
 
@@ -18,17 +19,27 @@ const THEME_LABEL: Record<ThemePreference, MessageKey> = {
 
 const TERMINAL_ID = 'terminal'
 
+interface AppProps {
+  client: CoreClient
+  /** Os eventos que a tela reproduz; enquanto o núcleo não a alimenta, os de exemplo. */
+  events?: (t: Translate) => SampleEvents
+}
+
 /** Tela "em construção": a estrutura final (barra lateral, terminal, conexão) com dados de exemplo. */
-export function App({ client }: { client: CoreClient }) {
+export function App({ client, events = sampleEvents }: AppProps) {
   const t = useT()
   const sidebarId = useId()
   const connection = useConnectionState(client)
   const { preference, cycle } = useTheme()
   const [menuOpen, setMenuOpen] = useState(false)
-  const [selectedSessionId, setSelectedSessionId] = useState(sampleSessions[0]?.id ?? '')
+  const { tasks, sessions } = useMemo(() => {
+    const replayed = events(t)
+    return { tasks: tasksFrom(replayed.tasks), sessions: sessionsFrom(replayed.sessions) }
+  }, [events, t])
+  const [selectedSessionId, setSelectedSessionId] = useState(() => sessions[0]?.id ?? '')
 
-  const session = sampleSessions.find((item) => item.id === selectedSessionId)
-  const sessionName = session ? t(session.nameKey) : ''
+  const session = sessions.find((item) => item.id === selectedSessionId)
+  const sessionName = session?.displayName ?? t('session.unnamed')
   const source = useMemo(
     () =>
       staticByteSource(decodeBase64(sampleOutput(t, selectedSessionId, sessionName).data.payload)),
@@ -63,8 +74,8 @@ export function App({ client }: { client: CoreClient }) {
         <Sidebar
           id={sidebarId}
           open={menuOpen}
-          tasks={sampleTasks}
-          sessions={sampleSessions}
+          tasks={tasks}
+          sessions={sessions}
           selectedSessionId={selectedSessionId}
           onSelectSession={(id) => {
             setSelectedSessionId(id)

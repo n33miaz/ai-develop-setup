@@ -4,16 +4,51 @@ import { describe, expect, it } from 'vitest'
 import { createFakeCoreClient, type FakeCoreClient } from './api'
 import { App } from './App'
 import { createTranslator, I18nContext, type Locale } from './i18n'
+import type { SampleEvents } from './sample/data'
 import { THEME_STORAGE_KEY } from './theme/theme'
 
-function renderApp(locale: Locale = 'pt-BR'): FakeCoreClient {
+function renderApp(locale: Locale = 'pt-BR', events?: () => SampleEvents): FakeCoreClient {
   const client = createFakeCoreClient()
   render(
     <I18nContext value={createTranslator(locale)}>
-      <App client={client} />
+      {events ? <App client={client} events={events} /> : <App client={client} />}
     </I18nContext>,
   )
   return client
+}
+
+// Eventos sem `title` nem `display_name`, que são opcionais nos contratos.
+const UNNAMED: SampleEvents = {
+  tasks: [
+    {
+      type: 'urn:ads:event:task.created:1',
+      stream: 'task/task-9',
+      data: {
+        task_id: 'task-9',
+        parent_task_id: null,
+        project_id: 'sample-project',
+        objective_hash: `sha256:${'e'.repeat(64)}`,
+        kind: 'sample',
+        risk: 'low',
+        oracle_declared: false,
+      },
+    },
+  ],
+  sessions: [
+    {
+      type: 'urn:ads:event:session.created:1',
+      stream: 'session/session-9',
+      data: {
+        session_id: 'session-9',
+        task_id: null,
+        harness: 'sample-harness',
+        mode: 'interactive',
+        cols: 80,
+        rows: 24,
+        workdir_alias: 'sample-workdir',
+      },
+    },
+  ],
 }
 
 describe('App', () => {
@@ -29,6 +64,34 @@ describe('App', () => {
     ).toBeInTheDocument()
     expect(screen.getByRole('status')).toHaveTextContent('Núcleo: desconectado')
     expect(screen.getByText(/Em construção/)).toBeInTheDocument()
+  })
+
+  it('shows the title, the name and the activity carried by the events', () => {
+    renderApp()
+
+    const nav = screen.getByRole('navigation')
+    expect(within(nav).getByText('Revisar o plano do módulo de contratos')).toBeInTheDocument()
+    expect(within(nav).queryByText('Tarefa sem título')).not.toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: /^Sessão de exemplo A\s*Ativa$/ }),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: /^Sessão de exemplo B\s*Ociosa$/ }),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: /^Sessão de exemplo C\s*Ociosa$/ }),
+    ).toBeInTheDocument()
+  })
+
+  it('falls back to neutral texts when the events bring no title and no name', () => {
+    renderApp('pt-BR', () => UNNAMED)
+
+    const nav = screen.getByRole('navigation')
+    expect(within(nav).getByText('Tarefa sem título')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Sessão sem nome\s*Ativa$/ })).toBeInTheDocument()
+    expect(
+      screen.getByRole('region', { name: 'Terminal da sessão Sessão sem nome' }),
+    ).toBeInTheDocument()
   })
 
   it('follows the connection state of the client', async () => {
@@ -124,5 +187,6 @@ describe('App', () => {
     expect(screen.getByRole('navigation', { name: 'Tasks and sessions' })).toBeInTheDocument()
     expect(screen.getByRole('status')).toHaveTextContent('Core: disconnected')
     expect(screen.getByRole('button', { name: 'Theme: automatic' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Sample session B\s*Idle$/ })).toBeInTheDocument()
   })
 })

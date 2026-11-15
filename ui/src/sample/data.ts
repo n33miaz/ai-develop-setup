@@ -1,36 +1,28 @@
 import {
   encodeBase64,
   type EventDraft,
-  type EventSessionCreatedV1,
   type EventSessionOutputV1,
   type EventTaskCreatedV1,
+  type SessionEvent,
   type TaskEvent,
 } from '../api'
-import type { MessageKey, Translate } from '../i18n'
+import type { Translate } from '../i18n'
 
 // Dados de exemplo locais: a tela ainda não lê nada do núcleo. Os fatos são eventos no formato dos
-// contratos; os textos vêm do catálogo de i18n.
+// contratos; os textos (título da tarefa, nome da sessão, saída do terminal) vêm do catálogo de
+// i18n e viajam dentro dos eventos, como o texto do usuário viajará.
 
-export type TaskState = 'pending' | 'running' | 'done'
-
-// PROVISÓRIO: os contratos não têm evento de sessão parada nem de atividade; só criada e encerrada.
-export type SessionState = 'active' | 'idle'
-
-export interface SampleTask {
-  id: string
-  // PROVISÓRIO: o evento da tarefa leva só o hash do objetivo; falta de onde a tela lê o título.
-  titleKey: MessageKey
-  state: TaskState
+/** Os eventos que a tela reproduz enquanto o núcleo não a alimenta. */
+export interface SampleEvents {
+  tasks: readonly EventDraft<TaskEvent>[]
+  sessions: readonly EventDraft<SessionEvent>[]
 }
 
-export interface SampleSession {
-  id: string
-  // PROVISÓRIO: o evento de sessão criada não traz nome de exibição.
-  nameKey: MessageKey
-  state: SessionState
-}
-
-function taskCreated(taskId: string, hashDigit: string): EventDraft<EventTaskCreatedV1> {
+function taskCreated(
+  taskId: string,
+  hashDigit: string,
+  title: string,
+): EventDraft<EventTaskCreatedV1> {
   return {
     type: 'urn:ads:event:task.created:1',
     stream: `task/${taskId}`,
@@ -42,81 +34,77 @@ function taskCreated(taskId: string, hashDigit: string): EventDraft<EventTaskCre
       kind: 'sample',
       risk: 'low',
       oracle_declared: false,
+      title,
     },
   }
 }
 
-export const sampleTaskEvents: readonly EventDraft<TaskEvent>[] = [
-  taskCreated('task-1', 'a'),
-  {
-    type: 'urn:ads:event:task.started:1',
-    stream: 'task/task-1',
-    data: { task_id: 'task-1', session_id: 'session-a' },
-  },
-  taskCreated('task-2', 'b'),
-  taskCreated('task-3', 'c'),
-  {
-    type: 'urn:ads:event:task.started:1',
-    stream: 'task/task-3',
-    data: { task_id: 'task-3', session_id: null },
-  },
-  {
-    type: 'urn:ads:event:task.completed:1',
-    stream: 'task/task-3',
-    data: { task_id: 'task-3', tests_passed: true, diff_sha: null },
-  },
-]
-
-const TASK_STATE_AFTER: Partial<Record<TaskEvent['type'], TaskState>> = {
-  'urn:ads:event:task.created:1': 'pending',
-  'urn:ads:event:task.started:1': 'running',
-  'urn:ads:event:task.completed:1': 'done',
+export function sampleTaskEvents(t: Translate): EventDraft<TaskEvent>[] {
+  return [
+    taskCreated('task-1', 'a', t('sample.task.1')),
+    {
+      type: 'urn:ads:event:task.started:1',
+      stream: 'task/task-1',
+      data: { task_id: 'task-1', session_id: 'session-a' },
+    },
+    taskCreated('task-2', 'b', t('sample.task.2')),
+    taskCreated('task-3', 'c', t('sample.task.3')),
+    {
+      type: 'urn:ads:event:task.started:1',
+      stream: 'task/task-3',
+      data: { task_id: 'task-3', session_id: null },
+    },
+    {
+      type: 'urn:ads:event:task.completed:1',
+      stream: 'task/task-3',
+      data: { task_id: 'task-3', tests_passed: true, diff_sha: null },
+    },
+  ]
 }
 
-/** Estado de cada tarefa depois de aplicar os eventos em ordem. */
-export function taskStates(events: readonly EventDraft<TaskEvent>[]): Map<string, TaskState> {
-  const states = new Map<string, TaskState>()
-  for (const event of events) {
-    const next = TASK_STATE_AFTER[event.type]
-    if (next) states.set(event.data.task_id, next)
-  }
-  return states
-}
-
-const sampleTaskStates = taskStates(sampleTaskEvents)
-
-const SAMPLE_TASK_TITLES: readonly Pick<SampleTask, 'id' | 'titleKey'>[] = [
-  { id: 'task-1', titleKey: 'sample.task.1' },
-  { id: 'task-2', titleKey: 'sample.task.2' },
-  { id: 'task-3', titleKey: 'sample.task.3' },
-]
-
-export const sampleTasks: readonly SampleTask[] = SAMPLE_TASK_TITLES.map((task) => ({
-  ...task,
-  state: sampleTaskStates.get(task.id) ?? 'pending',
-}))
-
-export const sampleSessions: readonly SampleSession[] = [
-  { id: 'session-a', nameKey: 'sample.session.a', state: 'active' },
-  { id: 'session-b', nameKey: 'sample.session.b', state: 'idle' },
-  { id: 'session-c', nameKey: 'sample.session.c', state: 'idle' },
-]
-
-export const sampleSessionEvents: readonly EventDraft<EventSessionCreatedV1>[] = sampleSessions.map(
-  (session) => ({
+function sessionCreated(
+  sessionId: string,
+  taskId: string | null,
+  displayName: string,
+): EventDraft<SessionEvent> {
+  return {
     type: 'urn:ads:event:session.created:1',
-    stream: `session/${session.id}`,
+    stream: `session/${sessionId}`,
     data: {
-      session_id: session.id,
-      task_id: session.id === 'session-a' ? 'task-1' : null,
+      session_id: sessionId,
+      task_id: taskId,
       harness: 'sample-harness',
       mode: 'interactive',
       cols: 80,
       rows: 24,
       workdir_alias: 'sample-workdir',
+      display_name: displayName,
     },
-  }),
-)
+  }
+}
+
+function sessionIdle(sessionId: string): EventDraft<SessionEvent> {
+  return {
+    type: 'urn:ads:event:session.activity_changed:1',
+    stream: `session/${sessionId}`,
+    data: { session_id: sessionId, activity: 'idle' },
+  }
+}
+
+// A sessão A fica sem evento de atividade: sessão recém-criada conta como ativa.
+export function sampleSessionEvents(t: Translate): EventDraft<SessionEvent>[] {
+  return [
+    sessionCreated('session-a', 'task-1', t('sample.session.a')),
+    sessionCreated('session-b', null, t('sample.session.b')),
+    sessionIdle('session-b'),
+    sessionCreated('session-c', null, t('sample.session.c')),
+    sessionIdle('session-c'),
+  ]
+}
+
+export function sampleEvents(t: Translate): SampleEvents {
+  return { tasks: sampleTaskEvents(t), sessions: sampleSessionEvents(t) }
+}
 
 const RESET = '\x1b[0m'
 const BOLD = '\x1b[1m'

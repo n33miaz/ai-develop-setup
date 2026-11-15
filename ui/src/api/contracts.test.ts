@@ -1,14 +1,21 @@
 import addFormats from 'ajv-formats'
 import Ajv2020, { type AnySchema, type ValidateFunction } from 'ajv/dist/2020.js'
 import { describe, expect, it } from 'vitest'
-import { createFakeCoreClient, decodeBase64, newCommand, newIdempotencyKey, newUlid } from '.'
-import { createTranslator } from '../i18n'
+import {
+  createFakeCoreClient,
+  decodeBase64,
+  newCommand,
+  newIdempotencyKey,
+  newUlid,
+  type EventDraft,
+} from '.'
+import { streamBindingError } from '../../../contracts/tools/rules.mjs'
+import { createTranslator, type Locale } from '../i18n'
+import { sessionsFrom } from '../model/views'
 import {
   sampleOutput,
   sampleSessionEvents,
-  sampleSessions,
   sampleTaskEvents,
-  sampleTasks,
   sampleTerminalText,
 } from '../sample/data'
 
@@ -41,7 +48,7 @@ function violations(urn: string, message: unknown): string[] {
 
 const ENVELOPE = 'urn:ads:event:envelope:1'
 const REQUEST = 'urn:ads:command:request:1'
-const RESPONSE = 'urn:ads:command:response:1'
+const RESPONSE = 'urn:ads:command:response:2'
 
 async function connected() {
   const client = createFakeCoreClient()
@@ -49,27 +56,124 @@ async function connected() {
   return client
 }
 
+/** Tudo o que os dados de exemplo põem na tela, no idioma dado. */
+function sampleDrafts(locale: Locale): EventDraft[] {
+  const t = createTranslator(locale)
+  const sessions = sampleSessionEvents(t)
+  return [
+    ...sampleTaskEvents(t),
+    ...sessions,
+    ...sessionsFrom(sessions).map((session) =>
+      sampleOutput(t, session.id, session.displayName ?? ''),
+    ),
+  ]
+}
+
+function without(data: object, field: string): object {
+  return Object.fromEntries(Object.entries(data).filter(([key]) => key !== field))
+}
+
 describe('messages against the contract schemas', () => {
   it('loads every contract schema', () => {
     expect(Object.keys(schemas).length).toBeGreaterThanOrEqual(55)
   })
 
-  it('emits sample task and session events that follow their schemas', async () => {
+  it.each(['pt-BR', 'en'] as const)(
+    'emits sample task and session events that follow their schemas (%s)',
+    async (locale) => {
+      const client = await connected()
+      const drafts = sampleDrafts(locale)
+      expect(drafts).toHaveLength(14)
+
+      const events = drafts.map((draft) => client.emit(draft))
+
+      for (const event of events) {
+        expect(violations(ENVELOPE, event), `${event.type} envelope`).toEqual([])
+        expect(violations(event.type, event), event.type).toEqual([])
+        expect(streamBindingError(event), event.type).toBeNull()
+      }
+      expect(new Set(events.map((event) => event.type))).toEqual(
+        new Set([
+          'urn:ads:event:task.created:1',
+          'urn:ads:event:task.started:1',
+          'urn:ads:event:task.completed:1',
+          'urn:ads:event:session.created:1',
+          'urn:ads:event:session.activity_changed:1',
+          'urn:ads:event:session.output:1',
+        ]),
+      )
+      expect(events.filter((event) => 'title' in event.data)).toHaveLength(3)
+      expect(events.filter((event) => 'display_name' in event.data)).toHaveLength(3)
+    },
+  )
+
+  it('accepts both activities and rejects an unknown one', async () => {
     const client = await connected()
-    const t = createTranslator('pt-BR')
-    const drafts = [
-      ...sampleTaskEvents,
-      ...sampleSessionEvents,
-      ...sampleSessions.map((session) => sampleOutput(t, session.id, t(session.nameKey))),
-    ]
-    expect(drafts).toHaveLength(12)
+    const idle = client.emit({
+      type: 'urn:ads:event:session.activity_changed:1',
+      stream: 'session/session-a',
+      data: { session_id: 'session-a', activity: 'idle' },
+    })
+    const active = client.emit({
+      type: 'urn:ads:event:session.activity_changed:1',
+      stream: 'session/session-a',
+      data: { session_id: 'session-a', activity: 'active' },
+    })
 
-    for (const draft of drafts) {
-      const event = client.emit(draft)
+    expect(violations(idle.type, idle)).toEqual([])
+    expect(violations(active.type, active)).toEqual([])
+    expect(
+      violations(idle.type, { ...idle, data: { session_id: 'session-a', activity: 'paused' } }),
+    ).toContain('enum@/data/activity')
+  })
 
-      expect(violations(ENVELOPE, event), `${event.type} envelope`).toEqual([])
-      expect(violations(event.type, event), event.type).toEqual([])
+  it.each([
+    ['title', 'urn:ads:event:task.created:1'],
+    ['display_name', 'urn:ads:event:session.created:1'],
+  ])('never classifies an event that carries %s as public', async (field, type) => {
+    const client = await connected()
+    const draft = sampleDrafts('pt-BR').find((item) => item.type === type)
+    if (!draft) throw new Error(`missing sample ${type}`)
+    const event = client.emit(draft)
+    expect(event.data).toHaveProperty(field)
+
+    expect(event.data_class).not.toBe('public')
+    for (const dataClass of ['internal', 'private', 'secret']) {
+      expect(violations(type, { ...event, data_class: dataClass }), dataClass).toEqual([])
     }
+    expect(violations(type, { ...event, data_class: 'public' })).toContain('enum@/data_class')
+    // Sem o texto do usuário o mesmo evento pode ser público: a regra é do campo, não do tipo.
+    expect(
+      violations(type, { ...event, data_class: 'public', data: without(event.data, field) }),
+    ).toEqual([])
+  })
+
+  it('rejects user text that is empty, too long or has a line break', async () => {
+    const client = await connected()
+    const [created] = sampleTaskEvents(createTranslator('en'))
+    if (!created) throw new Error('missing sample task')
+    const event = client.emit(created)
+    const titled = (title: string) => ({ ...event, data: { ...event.data, title } })
+
+    expect(violations(event.type, titled(''))).toContain('minLength@/data/title')
+    expect(violations(event.type, titled('x'.repeat(121)))).toContain('maxLength@/data/title')
+    expect(violations(event.type, titled('one\ntwo'))).toContain('pattern@/data/title')
+    expect(violations(event.type, titled('x'.repeat(120)))).toEqual([])
+  })
+
+  it('tells when the stream is not the one of the entity named in data', async () => {
+    const client = await connected()
+    const event = client.emit({
+      type: 'urn:ads:event:session.activity_changed:1',
+      stream: 'session/session-b',
+      data: { session_id: 'session-a', activity: 'idle' },
+    })
+
+    // O Schema fixa só a família do stream; a igualdade com o id é regra de contrato à parte.
+    expect(violations(event.type, event)).toEqual([])
+    expect(streamBindingError(event)).toContain('data.session_id')
+    expect(streamBindingError({ ...event, stream: 'session/session-a' })).toBeNull()
+    expect(streamBindingError({ ...event, stream: 'task/session-a' })).toContain('data.task_id')
   })
 
   it('emits events of the other families the interface imports', async () => {
@@ -116,7 +220,10 @@ describe('messages against the contract schemas', () => {
       }),
     ]
 
-    for (const event of events) expect(violations(event.type, event), event.type).toEqual([])
+    for (const event of events) {
+      expect(violations(event.type, event), event.type).toEqual([])
+      expect(streamBindingError(event), event.type).toBeNull()
+    }
   })
 
   it('builds commands and answers that follow the command schemas', async () => {
@@ -129,6 +236,23 @@ describe('messages against the contract schemas', () => {
     expect(violations(REQUEST, command)).toEqual([])
     expect(violations(RESPONSE, response)).toEqual([])
     expect(violations(RESPONSE, repeated)).toEqual([])
+    expect(response.result).toEqual({ accepted: true, replayed: false })
+    expect(repeated.result).toEqual({ accepted: true, replayed: true })
+  })
+
+  it('rejects an answer without the replay flag or with an open result', async () => {
+    const client = await connected()
+    const response = await client.send(newCommand('session.write', { session_id: 'session-a' }))
+
+    expect(violations(RESPONSE, { ...response, result: { accepted: true } })).toContain(
+      'required@/result',
+    )
+    expect(
+      violations(RESPONSE, { ...response, result: { accepted: false, replayed: false } }),
+    ).toContain('const@/result/accepted')
+    expect(
+      violations(RESPONSE, { ...response, result: { accepted: true, replayed: false, seq: 1 } }),
+    ).toContain('additionalProperties@/result')
   })
 
   it('generates identifiers in the contract format', () => {
@@ -160,14 +284,6 @@ describe('messages against the contract schemas', () => {
 })
 
 describe('sample data', () => {
-  it('derives the task states from the task events', () => {
-    expect(sampleTasks.map((task) => [task.id, task.state])).toEqual([
-      ['task-1', 'running'],
-      ['task-2', 'pending'],
-      ['task-3', 'done'],
-    ])
-  })
-
   it('carries the terminal text as the bytes of a session output event', () => {
     const t = createTranslator('en')
     const text = sampleTerminalText(t, 'núcleo')

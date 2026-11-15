@@ -1,4 +1,4 @@
-import type { CommandRequestV1, CommandResponseV1, EventEnvelopeV1 } from './contracts'
+import type { CommandRequestV1, CommandResponseV2, EventEnvelopeV1 } from './contracts'
 
 export type Unsubscribe = () => void
 
@@ -36,7 +36,8 @@ export interface CoreClient {
   ): Unsubscribe
   /**
    * Envia o comando. A chave de idempotência vai em `params._meta`; repetir a mesma chave não
-   * repete o efeito. Um comando não é um evento: o efeito volta como evento.
+   * repete o efeito e a resposta volta com `replayed: true`. Um comando não é um evento: o efeito
+   * volta como evento.
    */
-  send(command: CommandRequestV1): Promise<CommandResponseV1>
+  send(command: CommandRequestV1): Promise<CommandResponseV2>
 }

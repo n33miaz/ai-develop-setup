@@ -1,19 +1,11 @@
 import { CoreClientError, type ConnectionState, type CoreClient, type Unsubscribe } from './client'
-import type {
-  CommandRequestV1,
-  CommandResponseV1,
-  CommonActorV1,
-  EventDraft,
-  EventEnvelopeV1,
-} from './contracts'
+import type { CommandResponseV2, CommonActorV1, EventDraft, EventEnvelopeV1 } from './contracts'
 import { newUlid } from './ulid'
 
 /** Cliente falso em memória: dá para testar a UI sem núcleo. Não simula rede nem atraso. */
 export interface FakeCoreClient extends CoreClient {
   /** Grava um evento no fluxo (como se o núcleo o tivesse produzido) e entrega aos assinantes. */
   emit(draft: EventDraft): EventEnvelopeV1
-  /** Comandos que tiveram efeito, na ordem; um reenvio com a mesma chave não entra de novo. */
-  applied(): readonly CommandRequestV1[]
 }
 
 interface Subscription {
@@ -29,8 +21,7 @@ export function createFakeCoreClient(): FakeCoreClient {
   const stateListeners = new Set<(state: ConnectionState) => void>()
   const logs = new Map<string, EventEnvelopeV1[]>()
   const subscriptions = new Set<Subscription>()
-  const applied: CommandRequestV1[] = []
-  const results = new Map<string, { accepted: true }>()
+  const acceptedKeys = new Set<string>()
 
   function setState(next: ConnectionState): void {
     if (state === next) return
@@ -104,19 +95,17 @@ export function createFakeCoreClient(): FakeCoreClient {
     send(command) {
       if (state !== 'connected') return Promise.reject(notConnected())
       const key = command.params._meta.idempotency_key
-      let result = results.get(key)
-      if (!result) {
-        // O contrato deixa `result` aberto; o falso só confirma o aceite, como o exemplo do Schema.
-        result = { accepted: true }
-        results.set(key, result)
-        applied.push(command)
+      // O falso não tem efeito a repetir: só lembra a chave para marcar a repetição.
+      const replayed = acceptedKeys.has(key)
+      acceptedKeys.add(key)
+      const response: CommandResponseV2 = {
+        jsonrpc: '2.0',
+        id: command.id,
+        result: { accepted: true, replayed },
       }
-      const response: CommandResponseV1 = { jsonrpc: '2.0', id: command.id, result }
       return Promise.resolve(response)
     },
 
     emit: append,
-
-    applied: () => [...applied],
   }
 }
