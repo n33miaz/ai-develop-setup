@@ -100,8 +100,14 @@ allow = ["ads-contracts", "ads-core"]
 path = "crates/adapters/relay"
 allow = ["ads-contracts", "ads-core"]
 
+# Unico crate que altera arquivos do usuario: so com a licenca de execucao do portao do nucleo.
+
+[crates.ads-adapter-fs]
+path = "crates/adapters/fs"
+allow = ["ads-contracts", "ads-core"]
+
 # Composicao: enxerga tudo, menos a casca e o supervisor.
 
 [crates.ads-daemon]
 path = "crates/daemon"
-allow = ["ads-contracts", "ads-core", "ads-storage", "ads-ptyhost", "ads-e2e", "ads-adapter-claude", "ads-adapter-codex", "ads-adapter-antigravity", "ads-adapter-api", "ads-adapter-vault", "ads-adapter-collectors", "ads-adapter-relay"]
+allow = ["ads-contracts", "ads-core", "ads-storage", "ads-ptyhost", "ads-e2e", "ads-adapter-claude", "ads-adapter-codex", "ads-adapter-antigravity", "ads-adapter-api", "ads-adapter-vault", "ads-adapter-collectors", "ads-adapter-relay", "ads-adapter-fs"]
