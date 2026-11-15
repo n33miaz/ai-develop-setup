@@ -27,9 +27,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Hoje só há workflows. Quando existir código, acrescente aqui (gatilho: o primeiro crate Rust ou pacote da UI):
-        # rust e javascript-typescript, com build-mode none.
-        language: [actions]
+        # Workflows, os pacotes JavaScript/TypeScript (ui/ e contracts/) e os crates Rust, todos com build-mode none.
+        # As três linguagens estão na lista embutida da versão fixada abaixo (src/languages/builtin.json no SHA; CLI 2.27.3).
+        # Linguagem nova no repositório entra aqui na mesma entrega que a traz.
+        language: [actions, javascript-typescript, rust]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
