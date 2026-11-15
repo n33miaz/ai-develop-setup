@@ -1,31 +1,121 @@
 # Proteção das branches
 
-Regras de proteção das três branches no modo expresso (`profile = "express"` em `defaults/devflow.toml`). Os comandos usam o `gh` e a API de rulesets do GitHub; troque `<dono>/<repo>` pelo repositório. Este documento só descreve e guarda os comandos: aplicar é decisão do mantenedor, depois da ordem de criação do repositório abaixo.
+Regras de proteção das branches `develop`, `homolog` e `main`, **como estão aplicadas no repositório**. Este documento descreve o estado real e guarda os comandos; mudar a proteção é decisão do mantenedor. Os comandos usam o `gh` e a API de rulesets do GitHub; troque `<dono>/<repo>` pelo repositório.
+
+Estado conferido em 15/11/2026 com os comandos de leitura da seção [Conferir](#conferir). Se a resposta deles divergir deste texto, o que vale é a resposta, e este arquivo tem de ser corrigido.
 
 ## Resumo
 
-| Branch | Regra no modo expresso |
+Há **um** ruleset, `protected-branches-base`, ativo, que cobre as três branches com as mesmas regras:
+
+| Regra | Valor aplicado |
 |---|---|
-| `develop` | É a produção. PR obrigatório; check `ci-ok` obrigatório; junção só por rebase; **sem** exigir branch atualizada; sem force-push; sem apagar; vale também para o administrador (ninguém tem bypass); nenhum aprovador exigido (mantenedor único) |
-| `homolog` | Protegida e parada: sem criar, atualizar, apagar nem force-push; sem bypass |
-| `main` | Igual à `homolog` |
+| Branches | `develop`, `homolog` e `main` |
+| Pull request | obrigatório; nenhum aprovador exigido (mantenedor único) |
+| Check obrigatório | `ci-ok`; **sem** exigir branch atualizada; não cobrado na criação da branch |
+| Exclusão da branch | bloqueada |
+| Force-push | bloqueado |
+| Forma de junção | o ruleset admite `rebase` e `merge`; o repositório só deixa ligado o rebase (`allow_merge_commit` e `allow_squash_merge` desligados), então na prática a junção é só por rebase |
+| Exceção (bypass) | o papel de **administrador do repositório**, sempre |
 
-Sair do modo expresso é trocar as regras de `homolog` e `main` para PR obrigatório com `ci-ok` e religar as promoções develop → homolog → main. Gatilho para exigir "branch atualizada" na `develop`: ela ficar vermelha duas vezes por PRs incompatíveis entre si.
+A exceção do administrador é decisão do mantenedor, de 15/11/2026, para ele poder fazer push direto quando precisar. Ela **diverge da ADR 0014**, que registra a regra valendo também para o administrador; a ADR não foi alterada. A exceção é do mantenedor: agentes nunca a usam, seguem sempre por PR com `ci-ok` verde, sem `--admin` e sem push direto (ver `AGENTS.md`).
 
-## Ordem
+No modo expresso (`profile = "express"` em `defaults/devflow.toml`) a `develop` é a produção; `homolog` e `main` existem, sob a mesma proteção, e ficam sem uso. Elas não estão travadas contra atualização: um PR com `ci-ok` verde entraria. Sair do modo expresso é religar as promoções develop → homolog → main; a proteção já serve. Gatilho para exigir "branch atualizada": a `develop` ficar vermelha duas vezes por PRs incompatíveis entre si.
 
-1. Crie o repositório, faça o primeiro push e crie as branches `develop`, `homolog` e `main` a partir do mesmo commit (as regras de `homolog` e `main` impedem criar e atualizar, então elas têm de existir antes).
-2. Ajuste as configurações do repositório (comando 1).
-3. Aplique os três rulesets (comandos 2 a 4).
-4. Confira com `gh api repos/<dono>/<repo>/rulesets`.
+## Conferir
 
-O check `ci-ok` só pode ser escolhido como obrigatório depois de ter rodado ao menos uma vez; se a API recusar, abra um PR de teste antes.
-
-## Comandos
-
-### 1. Configurações do repositório
+Só leitura. Foram estes os comandos executados na conferência de 15/11/2026:
 
 ```bash
+# lista os rulesets, com o id de cada um
+gh api repos/<dono>/<repo>/rulesets
+
+# detalhe de um ruleset: regras, branches cobertas e exceções
+gh api repos/<dono>/<repo>/rulesets/<id>
+
+# regras que valem de fato para uma branch
+gh api repos/<dono>/<repo>/rules/branches/develop
+
+# configurações do repositório que completam a proteção
+gh api repos/<dono>/<repo> -q '{default_branch,allow_rebase_merge,allow_squash_merge,allow_merge_commit,allow_auto_merge,delete_branch_on_merge,security_and_analysis}'
+
+# relato privado de vulnerabilidade
+gh api repos/<dono>/<repo>/private-vulnerability-reporting
+```
+
+O que eles responderam:
+
+- um ruleset só, `protected-branches-base`, `enforcement: active`, com o conteúdo da seção [Ruleset aplicado](#ruleset-aplicado);
+- `rules/branches/develop` e `rules/branches/homolog`: `deletion`, `non_fast_forward`, `pull_request` e `required_status_checks`;
+- repositório: `default_branch: develop`, `allow_rebase_merge: true`, `allow_squash_merge: false`, `allow_merge_commit: false`, `allow_auto_merge: true`, `delete_branch_on_merge: true`; `secret_scanning` e `secret_scanning_push_protection` ligados;
+- relato privado de vulnerabilidade: ligado;
+- a proteção de branch clássica (`gh api repos/<dono>/<repo>/branches/develop/protection`) responde 404: não há; tudo vem do ruleset.
+
+## Ruleset aplicado
+
+Transcrição do que a API devolve para o ruleset (sem os campos de identificação e de data), no formato que a criação aceita:
+
+```json
+{
+  "name": "protected-branches-base",
+  "target": "branch",
+  "enforcement": "active",
+  "bypass_actors": [
+    { "actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always" }
+  ],
+  "conditions": {
+    "ref_name": {
+      "include": ["refs/heads/develop", "refs/heads/homolog", "refs/heads/main"],
+      "exclude": []
+    }
+  },
+  "rules": [
+    { "type": "deletion" },
+    { "type": "non_fast_forward" },
+    {
+      "type": "pull_request",
+      "parameters": {
+        "required_approving_review_count": 0,
+        "dismiss_stale_reviews_on_push": false,
+        "required_reviewers": [],
+        "require_code_owner_review": false,
+        "require_last_push_approval": false,
+        "required_review_thread_resolution": false,
+        "require_extra_approval_for_unattributed_changes": true,
+        "allowed_merge_methods": ["rebase", "merge"]
+      }
+    },
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "strict_required_status_checks_policy": false,
+        "do_not_enforce_on_create": true,
+        "required_status_checks": [ { "context": "ci-ok" } ]
+      }
+    }
+  ]
+}
+```
+
+Como ler:
+
+- `bypass_actors`: `RepositoryRole` com `actor_id` 5 é o papel de administrador do repositório; `always` vale para push direto e para junção de PR. Lista vazia faria a regra valer também para o administrador.
+- `strict_required_status_checks_policy: false` é o "sem exigir branch atualizada".
+- `do_not_enforce_on_create: true` deixa criar a branch sem o check.
+- `allowed_merge_methods` lista `merge` além de `rebase`, mas o commit de merge está desligado nas configurações do repositório.
+
+## Recriar ou mudar
+
+Estes comandos **não foram executados** na conferência de 15/11/2026 (ela só leu). O corpo é a transcrição acima; rode e confira a resposta da API.
+
+```bash
+# recriar em outro repositório: salve o JSON acima em ruleset.json
+gh api -X POST repos/<dono>/<repo>/rulesets --input ruleset.json
+
+# mudar o que existe (o PUT substitui o ruleset inteiro)
+gh api -X PUT repos/<dono>/<repo>/rulesets/<id> --input ruleset.json
+
+# configurações do repositório
 gh api -X PATCH repos/<dono>/<repo> \
   -F default_branch=develop \
   -F allow_rebase_merge=true \
@@ -43,92 +133,15 @@ JSON
 gh api -X PUT repos/<dono>/<repo>/private-vulnerability-reporting
 ```
 
-`default_branch` só pode apontar para uma branch que já exista no remoto.
+Ordem num repositório novo: primeiro push, criar `develop`, `homolog` e `main` a partir do mesmo commit, configurações do repositório, ruleset, conferência. `default_branch` só pode apontar para uma branch que já exista no remoto. O check `ci-ok` só pode ser escolhido como obrigatório depois de ter rodado ao menos uma vez; se a API recusar, abra um PR de teste antes.
 
-### 2. Ruleset da `develop`
-
-```bash
-gh api -X POST repos/<dono>/<repo>/rulesets --input - <<'JSON'
-{
-  "name": "develop",
-  "target": "branch",
-  "enforcement": "active",
-  "bypass_actors": [],
-  "conditions": { "ref_name": { "include": ["refs/heads/develop"], "exclude": [] } },
-  "rules": [
-    { "type": "deletion" },
-    { "type": "non_fast_forward" },
-    {
-      "type": "pull_request",
-      "parameters": {
-        "required_approving_review_count": 0,
-        "dismiss_stale_reviews_on_push": false,
-        "require_code_owner_review": false,
-        "require_last_push_approval": false,
-        "required_review_thread_resolution": false,
-        "allowed_merge_methods": ["rebase"]
-      }
-    },
-    {
-      "type": "required_status_checks",
-      "parameters": {
-        "strict_required_status_checks_policy": false,
-        "required_status_checks": [ { "context": "ci-ok" } ]
-      }
-    }
-  ]
-}
-JSON
-```
-
-`bypass_actors` vazio faz a regra valer também para o administrador. `strict_required_status_checks_policy: false` é o "sem exigir branch atualizada".
-
-### 3. Ruleset da `homolog`
-
-```bash
-gh api -X POST repos/<dono>/<repo>/rulesets --input - <<'JSON'
-{
-  "name": "homolog-parada",
-  "target": "branch",
-  "enforcement": "active",
-  "bypass_actors": [],
-  "conditions": { "ref_name": { "include": ["refs/heads/homolog"], "exclude": [] } },
-  "rules": [
-    { "type": "creation" },
-    { "type": "update" },
-    { "type": "deletion" },
-    { "type": "non_fast_forward" }
-  ]
-}
-JSON
-```
-
-### 4. Ruleset da `main`
-
-```bash
-gh api -X POST repos/<dono>/<repo>/rulesets --input - <<'JSON'
-{
-  "name": "main-parada",
-  "target": "branch",
-  "enforcement": "active",
-  "bypass_actors": [],
-  "conditions": { "ref_name": { "include": ["refs/heads/main"], "exclude": [] } },
-  "rules": [
-    { "type": "creation" },
-    { "type": "update" },
-    { "type": "deletion" },
-    { "type": "non_fast_forward" }
-  ]
-}
-JSON
-```
-
-Os tipos de regra `creation`, `update`, `deletion` e `non_fast_forward` e os parâmetros acima foram escritos de memória, sem conferir a documentação do GitHub: rode antes do uso e confira a resposta da API.
+Para tirar a exceção do administrador, envie o ruleset com `"bypass_actors": []`.
 
 ## Desfazer
 
+Também não executados na conferência.
+
 ```bash
-gh api repos/<dono>/<repo>/rulesets            # lista, com o id de cada um
 gh api -X DELETE repos/<dono>/<repo>/rulesets/<id>
 ```
 
@@ -140,4 +153,4 @@ Para desligar sem apagar, troque `enforcement` para `disabled` com `gh api -X PU
 gh secret set FORBIDDEN_TERMS --repo <dono>/<repo> < lista-de-termos.txt
 ```
 
-A lista fica fora do git. Uma regra por linha; `#` comenta; o prefixo `re:` marca expressão regular. Sem o segredo, o job `terms` reprova (falha fechada).
+A lista fica fora do git. Uma regra por linha; `#` comenta; o prefixo `re:` marca expressão regular. O job `terms` só roda com a variável de repositório `TERMS_CHECK = on`; ligado e sem o segredo, ele reprova (falha fechada).
