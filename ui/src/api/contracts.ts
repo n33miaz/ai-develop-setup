@@ -9,6 +9,7 @@ import type { EventEnvelopeV1 } from '../../../contracts/generated/ts/event.enve
 import type { EventHostAlertAckedV1 } from '../../../contracts/generated/ts/event.host.alert_acked.v1'
 import type { EventHostAlertRaisedV1 } from '../../../contracts/generated/ts/event.host.alert_raised.v1'
 import type { EventHostSampleRecordedV1 } from '../../../contracts/generated/ts/event.host.sample_recorded.v1'
+import type { EventSessionActivityChangedV1 } from '../../../contracts/generated/ts/event.session.activity_changed.v1'
 import type { EventSessionCreatedV1 } from '../../../contracts/generated/ts/event.session.created.v1'
 import type { EventSessionEndedV1 } from '../../../contracts/generated/ts/event.session.ended.v1'
 import type { EventSessionOutputV1 } from '../../../contracts/generated/ts/event.session.output.v1'
@@ -23,7 +24,7 @@ import type { EventUsageReconciledV1 } from '../../../contracts/generated/ts/eve
 import type { EventUsageRecordedV1 } from '../../../contracts/generated/ts/event.usage.recorded.v1'
 
 export type { CommandRequestV1 } from '../../../contracts/generated/ts/command.request.v1'
-export type { CommandResponseV1 } from '../../../contracts/generated/ts/command.response.v1'
+export type { CommandResponseV2 } from '../../../contracts/generated/ts/command.response.v2'
 export type {
   CommonActorV1,
   CommonDataClassV1,
@@ -40,6 +41,7 @@ export type {
   EventHostAlertAckedV1,
   EventHostAlertRaisedV1,
   EventHostSampleRecordedV1,
+  EventSessionActivityChangedV1,
   EventSessionCreatedV1,
   EventSessionEndedV1,
   EventSessionOutputV1,
@@ -55,6 +57,7 @@ export type {
 }
 
 export type SessionEvent =
+  | EventSessionActivityChangedV1
   | EventSessionCreatedV1
   | EventSessionEndedV1
   | EventSessionOutputV1

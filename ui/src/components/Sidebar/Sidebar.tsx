@@ -1,28 +1,31 @@
 import { useT, type MessageKey } from '../../i18n'
-import type { SampleSession, SampleTask } from '../../sample/data'
+import type { SessionActivity, SessionView, TaskState, TaskView } from '../../model/views'
 import styles from './Sidebar.module.css'
 
 interface SidebarProps {
   id: string
   open: boolean
-  tasks: readonly SampleTask[]
-  sessions: readonly SampleSession[]
+  tasks: readonly TaskView[]
+  sessions: readonly SessionView[]
   selectedSessionId: string
   onSelectSession: (id: string) => void
 }
 
-const TASK_STATE: Record<SampleTask['state'], MessageKey> = {
+const TASK_STATE: Record<TaskState, MessageKey> = {
   pending: 'task.state.pending',
   running: 'task.state.running',
   done: 'task.state.done',
 }
 
-const SESSION_STATE: Record<SampleSession['state'], MessageKey> = {
+const SESSION_ACTIVITY: Record<SessionActivity, MessageKey> = {
   active: 'session.state.active',
   idle: 'session.state.idle',
 }
 
-/** Caixa de tarefas e lista de sessões. Só mostra o que recebe e avisa qual sessão foi escolhida. */
+/**
+ * Caixa de tarefas e lista de sessões. Só mostra o que recebe e avisa qual sessão foi escolhida.
+ * A forma do ponto e o texto mudam com a atividade da sessão, para não depender só de cor.
+ */
 export function Sidebar({
   id,
   open,
@@ -42,7 +45,7 @@ export function Sidebar({
           <ul className={styles.list}>
             {tasks.map((task) => (
               <li key={task.id} className={styles.item}>
-                <span>{t(task.titleKey)}</span>
+                <span className={styles.name}>{task.title ?? t('task.untitled')}</span>
                 <span className={styles.state}>{t(TASK_STATE[task.state])}</span>
               </li>
             ))}
@@ -65,8 +68,11 @@ export function Sidebar({
                     onSelectSession(session.id)
                   }}
                 >
-                  <span>{t(session.nameKey)}</span>
-                  <span className={styles.state}>{t(SESSION_STATE[session.state])}</span>
+                  <span className={styles.name}>{session.displayName ?? t('session.unnamed')}</span>
+                  <span className={styles.state} data-activity={session.activity}>
+                    <span className={styles.dot} aria-hidden="true" />
+                    {t(SESSION_ACTIVITY[session.activity])}
+                  </span>
                 </button>
               </li>
             ))}

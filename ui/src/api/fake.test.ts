@@ -54,7 +54,17 @@ describe('fake core client: connection', () => {
     await expect(client.send(newCommand('task.create'))).rejects.toMatchObject({
       code: 'not_connected',
     })
-    expect(client.applied()).toEqual([])
+  })
+
+  it('does not accept a command that was refused while disconnected', async () => {
+    const client = createFakeCoreClient()
+    const command = newCommand('task.create')
+    await expect(client.send(command)).rejects.toBeInstanceOf(CoreClientError)
+
+    await client.connect()
+    const response = await client.send(command)
+
+    expect(response.result).toEqual({ accepted: true, replayed: false })
   })
 })
 
@@ -155,37 +165,58 @@ describe('fake core client: event replay', () => {
 })
 
 describe('fake core client: idempotent commands', () => {
-  it('applies a command once and answers with the request id', async () => {
+  it('accepts a new command and answers with the request id', async () => {
     const client = await connected()
     const command = newCommand('task.create', { title: 't' })
 
     const response = await client.send(command)
 
-    expect(response).toEqual({ jsonrpc: '2.0', id: command.id, result: { accepted: true } })
-    expect(client.applied()).toEqual([command])
+    expect(response).toEqual({
+      jsonrpc: '2.0',
+      id: command.id,
+      result: { accepted: true, replayed: false },
+    })
   })
 
-  it('does not repeat the effect when the same key is sent again', async () => {
+  it('marks every resend of the same key as replayed', async () => {
+    const client = await connected()
+    const command = newCommand('task.create')
+    const retry = { ...command, id: newCommand('task.create').id }
+
+    const first = await client.send(command)
+    const again = await client.send(command)
+    const retried = await client.send(retry)
+
+    expect(first.result).toEqual({ accepted: true, replayed: false })
+    expect(again).toEqual({
+      jsonrpc: '2.0',
+      id: command.id,
+      result: { accepted: true, replayed: true },
+    })
+    expect(retried).toEqual({
+      jsonrpc: '2.0',
+      id: retry.id,
+      result: { accepted: true, replayed: true },
+    })
+  })
+
+  it('keeps an answer already given when the command is replayed', async () => {
     const client = await connected()
     const command = newCommand('task.create')
 
     const first = await client.send(command)
-    const again = await client.send(command)
-    const retried = await client.send({ ...command, id: newCommand('task.create').id })
+    await client.send(command)
 
-    expect(client.applied()).toEqual([command])
-    expect(again).toEqual(first)
-    expect(retried.result).toEqual(first.result)
+    expect(first.result).toEqual({ accepted: true, replayed: false })
   })
 
-  it('applies commands with different keys separately', async () => {
+  it('accepts commands with different keys separately', async () => {
     const client = await connected()
-    const first = newCommand('task.create')
-    const second = newCommand('task.create')
 
-    await client.send(first)
-    await client.send(second)
+    const first = await client.send(newCommand('task.create'))
+    const second = await client.send(newCommand('task.create'))
 
-    expect(client.applied()).toEqual([first, second])
+    expect(first.result?.replayed).toBe(false)
+    expect(second.result?.replayed).toBe(false)
   })
 })
