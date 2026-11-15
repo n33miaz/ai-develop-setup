@@ -2,6 +2,12 @@
 //! executed or failed. Every transition is a pure function that refuses any jump and yields the
 //! contract event; the state after an event is computed from the event alone, so the log
 //! rebuilds it ([`replay`]).
+//!
+//! A transition takes the action by value and neither the action nor the permit can be copied:
+//! in one process, an approval yields one permit and a permit closes one execution. The core
+//! keeps no state between calls, so across processes or restarts that is the duty of whoever
+//! persists the events: append `action.started` atomically, refusing a second one for the same
+//! action, before handing the permit to an executor, and give each approval id to one action.
 
 use std::fmt;
 
@@ -50,8 +56,9 @@ impl State {
 }
 
 /// What may happen to a planned action, apart from handing out the execution permit
-/// ([`Action::authorize`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// ([`Action::authorize`]). The decisions of an approval name the action they were taken for:
+/// two actions with the same plan do not share one.
+#[derive(Debug, PartialEq, Eq)]
 pub enum Command {
     RequestApproval {
         approval_id: Id,
@@ -59,16 +66,19 @@ pub enum Command {
         expires_at: Timestamp,
     },
     Grant {
+        action_id: Id,
         approval_id: Id,
         plan_hash: PlanHash,
         via: Via,
     },
     Deny {
+        action_id: Id,
         approval_id: Id,
         plan_hash: PlanHash,
         reason: Option<ShortText>,
     },
     Expire {
+        action_id: Id,
         approval_id: Id,
         plan_hash: PlanHash,
     },
@@ -87,10 +97,7 @@ pub enum TransitionError {
     /// there is no action and no event.
     Unrecordable(ContractError),
     /// The command does not fit the current state.
-    InvalidTransition {
-        state: State,
-        command: &'static str,
-    },
+    InvalidTransition { state: State, command: &'static str },
     /// The verdict allowed the plan as it is; there is nothing to approve.
     ApprovalNotRequired,
     /// Execution asked for a plan the verdict sent to approval, with no approval granted.
@@ -99,6 +106,7 @@ pub enum TransitionError {
     PlanHashMismatch,
     /// The approval or the permit named is not the one of this action.
     ApprovalMismatch,
+    /// The decision or the permit was issued for another action.
     ActionMismatch,
     /// The approval would be born expired.
     ExpiryNotInFuture,
@@ -173,9 +181,24 @@ impl fmt::Display for ReplayError {
     }
 }
 
+/// A command or a permit request that was refused. Nothing changed: the action comes back as
+/// it was.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Refused {
+    pub action: Action,
+    pub error: TransitionError,
+}
+
+impl fmt::Display for Refused {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.error.fmt(f)
+    }
+}
+
 /// The only thing an executor accepts: proof that this exact plan passed the gate. Only
-/// [`Action::authorize`] builds one, and each action hands out a single permit.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// [`Action::authorize`] builds one, each action hands out a single permit, and a permit
+/// cannot be copied: reporting the execution consumes it.
+#[derive(Debug, PartialEq, Eq)]
 pub struct ExecutionPermit {
     action_id: Id,
     plan_hash: PlanHash,
@@ -211,8 +234,9 @@ pub struct ActionSnapshot {
     pub state: State,
 }
 
-/// One action going through the gate. Only [`Action::plan`] builds one, from a verdict.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One action going through the gate. Only [`Action::plan`] builds one, from a verdict. It
+/// cannot be copied, and every transition consumes it: the state before a transition is gone.
+#[derive(Debug, PartialEq, Eq)]
 pub struct Action {
     action_id: Id,
     plan_hash: PlanHash,
@@ -474,8 +498,11 @@ impl Action {
             }
         };
         Ok(Action {
+            action_id: self.action_id.clone(),
+            plan_hash: self.plan_hash.clone(),
+            risk: self.risk,
+            needs_approval: self.needs_approval,
             state,
-            ..self.clone()
         })
     }
 
@@ -485,10 +512,12 @@ impl Action {
         Ok((action, event))
     }
 
-    /// The pending approval, after checking that the command names it and this plan.
+    /// The pending approval, after checking that the command names it, this action and this
+    /// plan.
     fn pending(
         &self,
         command: &'static str,
+        action_id: &Id,
         approval_id: &Id,
         plan_hash: &PlanHash,
     ) -> Result<&Timestamp, TransitionError> {
@@ -499,6 +528,9 @@ impl Action {
         else {
             return Err(self.invalid(command));
         };
+        if action_id != &self.action_id {
+            return Err(TransitionError::ActionMismatch);
+        }
         if plan_hash != &self.plan_hash {
             return Err(TransitionError::PlanHashMismatch);
         }
@@ -511,8 +543,23 @@ impl Action {
     /// Hands out the permit to execute `plan` at the instant `meta.ts`, moves to `Executing`
     /// and yields `action.started` (`meta.seq` counts in `action/<id>`). Refused when the plan
     /// is not the one planned, when the verdict asked for an approval that was not granted, or
-    /// when the granted approval is no longer valid.
+    /// when the granted approval is no longer valid. Consumes the action: the state that could
+    /// ask for a permit does not exist afterwards.
     pub fn authorize(
+        self,
+        plan: &ActionPlan,
+        meta: EventMeta,
+    ) -> Result<(Action, ExecutionPermit, Event), Box<Refused>> {
+        match self.try_authorize(plan, meta) {
+            Ok(done) => Ok(done),
+            Err(error) => Err(Box::new(Refused {
+                action: self,
+                error,
+            })),
+        }
+    }
+
+    fn try_authorize(
         &self,
         plan: &ActionPlan,
         meta: EventMeta,
@@ -554,8 +601,18 @@ impl Action {
 
     /// Applies one command. `meta.ts` is the instant of the transition; `meta.seq` counts in
     /// the stream of the event produced (`approval/<id>` for approvals, `action/<id>` for the
-    /// rest).
-    pub fn apply(
+    /// rest). Consumes the action, and the permit of `Command::Executed` with it.
+    pub fn apply(self, command: Command, meta: EventMeta) -> Result<(Action, Event), Box<Refused>> {
+        match self.try_apply(command, meta) {
+            Ok(done) => Ok(done),
+            Err(error) => Err(Box::new(Refused {
+                action: self,
+                error,
+            })),
+        }
+    }
+
+    fn try_apply(
         &self,
         command: Command,
         meta: EventMeta,
@@ -587,11 +644,12 @@ impl Action {
                 self.step(Event::ApprovalRequested(Envelope::new(meta, data)))
             }
             Command::Grant {
+                action_id,
                 approval_id,
                 plan_hash,
                 via,
             } => {
-                let expires_at = self.pending("grant", &approval_id, &plan_hash)?;
+                let expires_at = self.pending("grant", &action_id, &approval_id, &plan_hash)?;
                 if !meta.ts.is_before(expires_at) {
                     return Err(TransitionError::ApprovalLapsed);
                 }
@@ -603,11 +661,12 @@ impl Action {
                 self.step(Event::ApprovalGranted(Envelope::new(meta, data)))
             }
             Command::Deny {
+                action_id,
                 approval_id,
                 plan_hash,
                 reason,
             } => {
-                self.pending("deny", &approval_id, &plan_hash)?;
+                self.pending("deny", &action_id, &approval_id, &plan_hash)?;
                 let data = ApprovalDenied {
                     approval_id,
                     plan_hash,
@@ -616,10 +675,11 @@ impl Action {
                 self.step(Event::ApprovalDenied(Envelope::new(meta, data)))
             }
             Command::Expire {
+                action_id,
                 approval_id,
                 plan_hash,
             } => {
-                let expires_at = self.pending("expire", &approval_id, &plan_hash)?;
+                let expires_at = self.pending("expire", &action_id, &approval_id, &plan_hash)?;
                 if meta.ts.is_before(expires_at) {
                     return Err(TransitionError::NotYetExpired);
                 }

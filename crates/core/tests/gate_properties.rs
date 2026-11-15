@@ -398,6 +398,7 @@ fn meta() -> EventMeta {
 fn no_plan_with_a_target_outside_the_allowed_roots_gets_past_denied() {
     let mut rng = Rng(0x00AD_5C0D_E000_0001);
     let (mut outside, mut inside_passed, mut inside_denied, mut other_style) = (0, 0, 0, 0);
+    let mut rewritten_with_approval = 0;
     for index in 0..CASES {
         let case = generate(&mut rng);
         let plan = ActionPlan::normalize(&case.request)
@@ -417,6 +418,19 @@ fn no_plan_with_a_target_outside_the_allowed_roots_gets_past_denied() {
             "case {index}: {record}"
         );
         assert_eq!(record["quarantined"], verdict.is_quarantined());
+        // Judging again the plan that came out never asks for less; the case that matters is
+        // the delete that needed approval and was rewritten as a move to quarantine.
+        rewritten_with_approval += usize::from(
+            verdict.is_quarantined() && verdict.decision() == Decision::RequiresApproval,
+        );
+        let again = classify(verdict.plan(), &case.policy);
+        assert!(
+            again.decision() >= verdict.decision(),
+            "case {index}: {:?} became {:?}: {:?}",
+            verdict.decision(),
+            again.decision(),
+            case.request
+        );
 
         if case.other_style {
             other_style += 1;
@@ -466,6 +480,10 @@ fn no_plan_with_a_target_outside_the_allowed_roots_gets_past_denied() {
         "inside, denied: {inside_denied}"
     );
     assert!(other_style > CASES / 50, "other style: {other_style}");
+    assert!(
+        rewritten_with_approval > CASES / 500,
+        "rewritten with approval: {rewritten_with_approval}"
+    );
 }
 
 #[test]

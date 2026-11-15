@@ -18,6 +18,8 @@ pub enum Rule {
     WorkRootProtected(Protection),
     /// The target is the work root or contains it.
     WorkRootItself,
+    /// The target is an allowed root or contains one, even when another root contains it.
+    AllowedRootItself,
     /// The target is not strictly inside the work root or an allowed root.
     OutsideAllowedRoots,
     RepositoryRoot,
@@ -54,6 +56,7 @@ impl Rule {
             .collect();
         all.extend([
             Self::WorkRootItself,
+            Self::AllowedRootItself,
             Self::OutsideAllowedRoots,
             Self::RepositoryRoot,
             Self::QuarantineItself,
@@ -78,6 +81,7 @@ impl Rule {
             Self::WorkRootProtected(protection) => detailed("work_root_protected", protection),
             Self::DestinationProtected(protection) => detailed("destination_protected", protection),
             Self::WorkRootItself => "work_root_itself".to_owned(),
+            Self::AllowedRootItself => "allowed_root_itself".to_owned(),
             Self::OutsideAllowedRoots => "outside_allowed_roots".to_owned(),
             Self::RepositoryRoot => "repository_root".to_owned(),
             Self::QuarantineItself => "quarantine_itself".to_owned(),
@@ -98,6 +102,7 @@ impl Rule {
             Self::Protected(_)
             | Self::WorkRootProtected(_)
             | Self::WorkRootItself
+            | Self::AllowedRootItself
             | Self::OutsideAllowedRoots
             | Self::RepositoryRoot
             | Self::QuarantineItself
@@ -258,6 +263,13 @@ pub fn classify(plan: &ActionPlan, policy: &GatePolicy) -> Verdict {
         if work_root.is_loosely_within(scope) {
             find(Rule::WorkRootItself, subject);
         }
+        let holds_a_root = policy
+            .allowed_roots()
+            .iter()
+            .any(|root| root.is_loosely_within(scope));
+        if holds_a_root {
+            find(Rule::AllowedRootItself, subject);
+        }
         if !strictly_allowed(scope) {
             find(Rule::OutsideAllowedRoots, subject);
         }
@@ -301,17 +313,25 @@ pub fn classify(plan: &ActionPlan, policy: &GatePolicy) -> Verdict {
         }
     }
 
-    if matches!(
-        plan.operation(),
-        Operation::DeleteRecursive | Operation::CleanUntracked
-    ) {
+    // A move into quarantine is a delete that was rewritten, and nothing in it says which
+    // one: it is judged as the recursive one, so judging a rewrite again never asks for less.
+    let sized = match plan.operation() {
+        Operation::DeleteRecursive | Operation::CleanUntracked => true,
+        Operation::Move { destination } => quarantine
+            .as_ref()
+            .is_some_and(|quarantine| destination.is_loosely_within(quarantine)),
+        Operation::Delete | Operation::Overwrite => false,
+    };
+    if sized {
+        // A limit of zero always asks, whatever the estimate says.
+        let over = |measured: u64, limit: u64| measured > limit || limit == 0;
         match plan.estimate() {
             None => find(Rule::EstimateUnknown, work_root),
             Some(estimate) => {
-                if estimate.items > policy.approval_item_limit() {
+                if over(estimate.items, policy.approval_item_limit()) {
                     find(Rule::ItemLimitExceeded, work_root);
                 }
-                if estimate.bytes > policy.approval_byte_limit() {
+                if over(estimate.bytes, policy.approval_byte_limit()) {
                     find(Rule::ByteLimitExceeded, work_root);
                 }
             }

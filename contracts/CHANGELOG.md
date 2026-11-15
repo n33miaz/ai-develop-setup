@@ -17,6 +17,7 @@ Lacunas apontadas pelos consumidores (interface e portão de ações). Nenhum co
   - `event.task.created:1`: `title`.
   - `event.session.created:1`: `display_name`.
   - Evento que leva um desses campos não pode ser `public`.
+- Código de regra novo na lista do README (a versão de `action-rule` e de `action-plan` não muda): `allowed_root_itself`, alvo que é uma raiz permitida ou a contém.
 - Regra `stream` ↔ identificador em `data` documentada no README e conferida pelo validador em todo dourado válido. Dourados corrigidos, que citavam no `stream` outra entidade que a de `data`: `event.approval.expired.v1/valid/02-variant1.json`, `event.approval.requested.v1/valid/02-variant1.json` e `event.task.created.v1/valid/02-variant1.json`.
 
 ## 2026-11-14

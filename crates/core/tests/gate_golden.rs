@@ -11,7 +11,7 @@ use std::path::Path;
 
 use ads_core::gate::{
     Action, ActionDenied, ActionExecuted, ActionFailed, ActionPlan, ActionPlanRecord,
-    ActionPlanned, ActionStarted, ApprovalDenied, ApprovalExpired, ApprovalGranted,
+    ActionPlanned, ActionStarted, ApprovalDenied, ApprovalExpired, ApprovalGranted, ApprovalRecord,
     ApprovalRequested, ApprovalRequestedV1, Command, Decision, Envelope, ErrorCode, Estimate,
     Event, EventMeta, Id, OperationRequest as Op, PathText, PlanRequest, RuleCode, ShortText,
     TargetRequest, Timestamp, Verdict, Via, classify,
@@ -24,7 +24,7 @@ use serde_json::Value;
 /// Invalid golden files the types are known not to refuse, as `folder/file`. Empty on purpose.
 const NOT_COVERED_BY_TYPES: &[&str] = &[];
 
-/// The golden folders of the gate: its events, its record and the two common types that came
+/// The golden folders of the gate: its events, its records and the two common types that came
 /// with them.
 const GATE_FOLDERS: &[&str] = &[
     "common.abspath.v1",
@@ -40,6 +40,7 @@ const GATE_FOLDERS: &[&str] = &[
     "event.approval.requested.v1",
     "event.approval.requested.v2",
     "record.action-plan.v1",
+    "record.approval.v1",
 ];
 
 const BUILD: &str = "C:\\Users\\user-a\\work\\proj\\build";
@@ -154,6 +155,7 @@ fn types_match_the_golden_files_of_every_version() {
         types_match::<Envelope<ApprovalExpired>>,
     );
     check("record.action-plan.v1", types_match::<ActionPlanRecord>);
+    check("record.approval.v1", types_match::<ApprovalRecord>);
     assert_eq!(checked, GATE_FOLDERS.iter().copied().collect());
 }
 
@@ -162,9 +164,14 @@ fn types_match_the_golden_files_of_every_version() {
 #[test]
 fn every_golden_folder_of_the_gate_is_covered() {
     let of_the_gate = |name: &str| {
-        ["event.action.", "event.approval.", "record.action-plan."]
-            .iter()
-            .any(|prefix| name.starts_with(prefix))
+        [
+            "event.action.",
+            "event.approval.",
+            "record.action-plan.",
+            "record.approval.",
+        ]
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
             || GATE_FOLDERS.contains(&name)
     };
     let found: BTreeSet<String> = std::fs::read_dir(golden_root())
@@ -272,6 +279,7 @@ fn ready(action_id: Id, approval_id: Option<Id>) -> (Action, ActionPlan) {
     let action = waiting(action_id, approval_id.clone(), at(LATER));
     let grant = Command::Grant {
         approval_id,
+        action_id: action.action_id().clone(),
         plan_hash: action.plan_hash().clone(),
         via: Via::LocalUi,
     };
@@ -382,6 +390,7 @@ fn generated_approval_decisions_are_the_golden_events() {
         let action = waiting(act("act-01"), data_id(&golden, "approval_id"), at(LATER));
         let command = Command::Grant {
             approval_id: data_id(&golden, "approval_id"),
+            action_id: action.action_id().clone(),
             plan_hash: action.plan_hash().clone(),
             via: serde_json::from_value(golden["data"]["via"].clone()).unwrap(),
         };
@@ -393,6 +402,7 @@ fn generated_approval_decisions_are_the_golden_events() {
         let action = waiting(act("act-01"), data_id(&golden, "approval_id"), at(LATER));
         let command = Command::Deny {
             approval_id: data_id(&golden, "approval_id"),
+            action_id: action.action_id().clone(),
             plan_hash: action.plan_hash().clone(),
             reason: serde_json::from_value(golden["data"]["reason"].clone()).unwrap(),
         };
@@ -406,6 +416,7 @@ fn generated_approval_decisions_are_the_golden_events() {
         let action = waiting(act("act-01"), data_id(&golden, "approval_id"), expires_at);
         let command = Command::Expire {
             approval_id: data_id(&golden, "approval_id"),
+            action_id: action.action_id().clone(),
             plan_hash: action.plan_hash().clone(),
         };
         let (_, event) = action.apply(command, meta_of(&golden)).unwrap();

@@ -758,6 +758,7 @@ fn every_rule_has_its_stable_code() {
     }
     for rule in [
         "work_root_itself",
+        "allowed_root_itself",
         "outside_allowed_roots",
         "repository_root",
         "quarantine_itself",
@@ -785,7 +786,7 @@ fn every_rule_has_its_stable_code() {
     assert_eq!(codes_of(Decision::Denied), denied);
     assert_eq!(codes_of(Decision::RequiresApproval), approval);
     assert!(codes_of(Decision::Allowed).is_empty());
-    assert_eq!(Rule::all().len(), 30);
+    assert_eq!(Rule::all().len(), 31);
 
     assert_eq!(
         Rule::Protected(Protection::UserHome).code().as_str(),

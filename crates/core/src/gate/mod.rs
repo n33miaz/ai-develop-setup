@@ -17,14 +17,15 @@ mod policy;
 pub use classify::{Finding, Rule, Verdict, classify};
 pub use event::{
     ActionDenied, ActionExecuted, ActionFailed, ActionPlanFields, ActionPlanRecord, ActionPlanned,
-    ActionStarted, Actor, ActorKind, ApprovalDenied, ApprovalExpired, ApprovalGranted,
-    ApprovalRequested, ApprovalRequestedV1, ContractError, DataClass, Decision, Envelope,
-    ErrorCode, Event, EventData, EventMeta, Id, PathText, PatternText, PlanEstimate, PlanHash,
-    PlanOperation, PlanReason, PlanTarget, PlanVerdict, Risk, RuleCode, RuleList, ShortText,
-    SubjectText, Timestamp, Ulid, Verb, Via,
+    ActionStarted, Actor, ActorKind, ApprovalDenied, ApprovalExpired, ApprovalFields,
+    ApprovalGranted, ApprovalRecord, ApprovalRequested, ApprovalRequestedV1, ApprovalStatus,
+    ContractError, DataClass, Decision, Envelope, ErrorCode, Event, EventData, EventMeta, Id,
+    PathText, PatternText, PlanEstimate, PlanHash, PlanOperation, PlanReason, PlanTarget,
+    PlanVerdict, Risk, RuleCode, RuleList, ShortText, SubjectText, Timestamp, Ulid, Verb, Via,
 };
 pub use machine::{
-    Action, ActionSnapshot, Command, ExecutionPermit, ReplayError, State, TransitionError, replay,
+    Action, ActionSnapshot, Command, ExecutionPermit, Refused, ReplayError, State, TransitionError,
+    replay,
 };
 pub use path::{AbsPath, PathError, PathStyle, TargetPath};
 pub use plan::{
