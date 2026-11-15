@@ -150,6 +150,7 @@ jobs:
       ui: ${{ steps.filter.outputs.ui }}
       contracts: ${{ steps.filter.outputs.contracts }}
       pty: ${{ steps.filter.outputs.pty }}
+      fs: ${{ steps.filter.outputs.fs }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -170,6 +171,9 @@ jobs:
           CONTRACTS_PATHS: '^contracts/'
           # PTY: o crate, os parâmetros dele, este workflow e tudo que muda o resultado da compilação.
           PTY_PATHS: '^(crates/ptyhost/|defaults/ptyhost\.toml$|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
+          # Executor de arquivos: o crate, o portão que ele julga de novo, os parâmetros dos dois, este workflow e
+          # tudo que muda o resultado da compilação.
+          FS_PATHS: '^(crates/adapters/fs/|crates/core/|defaults/action-gate\.toml$|defaults/fs-executor\.toml$|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
         run: |
           set -euo pipefail
           # Na dúvida (disparo manual, push sem base conhecida, diff impossível), roda.
@@ -177,6 +181,7 @@ jobs:
           ui=true
           contracts=true
           pty=true
+          fs=true
           range=""
           case "$EVENT" in
             pull_request) range="$PR_BASE_SHA...$PR_HEAD_SHA" ;;
@@ -193,12 +198,14 @@ jobs:
             if echo "$files" | grep -Eq "$UI_PATHS"; then ui=true; else ui=false; fi
             if echo "$files" | grep -Eq "$CONTRACTS_PATHS"; then contracts=true; else contracts=false; fi
             if echo "$files" | grep -Eq "$PTY_PATHS"; then pty=true; else pty=false; fi
+            if echo "$files" | grep -Eq "$FS_PATHS"; then fs=true; else fs=false; fi
           fi
           echo "shell=$shell" >> "$GITHUB_OUTPUT"
           echo "ui=$ui" >> "$GITHUB_OUTPUT"
           echo "contracts=$contracts" >> "$GITHUB_OUTPUT"
           echo "pty=$pty" >> "$GITHUB_OUTPUT"
-          echo "shell-check roda: $shell; ui roda: $ui; contracts roda: $contracts; pty-windows roda: $pty"
+          echo "fs=$fs" >> "$GITHUB_OUTPUT"
+          echo "shell-check roda: $shell; ui roda: $ui; contracts roda: $contracts; pty-windows roda: $pty; fs-windows roda: $fs"
 
   contracts:
     name: contracts
@@ -352,10 +359,38 @@ jobs:
       - name: Testes do ptyhost (inclui os 20 ciclos de ConPTY)
         run: cargo test --locked -p ads-ptyhost -- --nocapture
 
+  # Junção, ponto de reanálise e a remoção de link de pasta só existem no Windows: os testes do executor de
+  # arquivos rodam aqui também (no Linux eles já rodam no job `rust`), e só quando o código dele muda (ADR 0013).
+  fs-windows:
+    name: fs-windows
+    needs: changes
+    if: needs.changes.outputs.fs == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Instalar a versão fixada em rust-toolchain.toml
+        run: |
+          rustup toolchain install
+          rustc --version
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Lint do executor no Windows (avisos como erro)
+        run: cargo clippy --locked -p ads-adapter-fs --all-targets -- -D warnings
+      - name: Testes do executor (inclui a junção)
+        run: cargo test --locked -p ads-adapter-fs -- --nocapture
+
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [commits, secrets, terms, changes, contracts, rust, shell-check, ui, pty-windows]
+    needs: [commits, secrets, terms, changes, contracts, rust, shell-check, ui, pty-windows, fs-windows]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:

@@ -7,6 +7,7 @@ Exceção prevista, ainda não usada: `ads-adapter-vault` vai precisar de chamad
 | Crate | Blocos `unsafe` | Motivo |
 |---|---|---|
 | `ads-ptyhost` | 22 | chamadas da API do Windows, listadas abaixo |
+| `ads-adapter-fs` | 0 | move e apaga arquivos só pela biblioteca padrão; a junção dos testes é criada com `mklink /J`, sem `unsafe` |
 | demais | 0 | nenhum |
 
 ## `ads-ptyhost` (`crates/ptyhost/src/win.rs`)

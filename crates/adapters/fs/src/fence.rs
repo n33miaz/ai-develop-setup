@@ -241,6 +241,13 @@ impl Fence {
         text
     }
 
+    /// Where `rel` would be, to name it to a probe. Checks nothing: never used for I/O.
+    pub(crate) fn path_of(&self, rel: &[String]) -> PathBuf {
+        let mut path = self.root.clone();
+        path.extend(rel);
+        path
+    }
+
     /// The names of `path` below the fence; empty when it is the fence itself. By text only.
     pub(crate) fn relative(&self, path: &AbsPath) -> Result<Vec<String>, Stop> {
         let parts = parts_of_text(path)?;

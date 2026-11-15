@@ -63,7 +63,6 @@ impl From<Kind> for ItemKind {
 }
 
 impl Manifest {
-    #[cfg(test)]
     pub(crate) fn to_bytes(&self) -> Vec<u8> {
         let mut text = serde_json::to_string_pretty(self).expect("a manifest is plain data");
         text.push('\n');

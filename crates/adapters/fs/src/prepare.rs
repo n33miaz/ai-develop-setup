@@ -29,9 +29,11 @@ pub(crate) struct Op {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Act {
     /// Move to `to`, making the missing folders between `to[..floor]` and its parent.
+    /// `taken` is the refusal when something already is at `to`.
     MoveTo {
         to: Vec<String>,
         floor: usize,
+        taken: Reason,
     },
     Remove {
         recursive: bool,
@@ -41,8 +43,9 @@ pub(crate) enum Act {
 /// A plan that passed every check, ready to run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Job {
-    /// The work root; every mutation stays strictly below it.
-    pub work: Vec<String>,
+    /// Every mutation stays strictly below this folder: the work root, or its quarantine when
+    /// the job empties it.
+    pub floor: Vec<String>,
     /// Folders to make if they are missing, in order.
     pub ensure: Vec<Vec<String>>,
     /// Folders that must not exist and are made exclusively, in order.
@@ -226,7 +229,12 @@ pub(crate) fn prepare(
                 }
             }
             let recursive = matches!(plan.operation(), Operation::DeleteRecursive);
-            delete_job(fence, work, &targets, recursive)
+            let floor = if policy.quarantine_enabled() {
+                fence.relative(&quarantine)?
+            } else {
+                work
+            };
+            delete_job(fence, floor, &targets, recursive)
         }
         Operation::Move { destination } => {
             let into_quarantine =
@@ -349,7 +357,7 @@ fn delete_job(
         }));
     }
     Ok(Job {
-        work,
+        floor: work,
         ensure: Vec::new(),
         reserve: Vec::new(),
         manifest: None,
@@ -422,6 +430,7 @@ fn quarantine_job(
             act: Act::MoveTo {
                 to: stored,
                 floor: items.len(),
+                taken: Reason::DestinationTaken,
             },
         }));
     }
@@ -434,7 +443,7 @@ fn quarantine_job(
         items: listed,
     };
     Ok(Job {
-        work,
+        floor: work,
         ensure,
         reserve: vec![batch.clone(), items],
         manifest: Some((child(&batch, MANIFEST_NAME), manifest)),
@@ -550,6 +559,7 @@ fn restore_job(
             act: Act::MoveTo {
                 to: original,
                 floor: work.len(),
+                taken: Reason::RestorePlaceTaken,
             },
         }));
     }
@@ -560,7 +570,7 @@ fn restore_job(
         ));
     }
     Ok(Job {
-        work,
+        floor: work,
         ensure: Vec::new(),
         reserve: Vec::new(),
         manifest: None,
