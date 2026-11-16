@@ -118,7 +118,7 @@ bash .github/scripts/check-commits.test.sh
 
 ## Módulos de segurança
 
-Proposta, aguardando ratificação do mantenedor. Mudança nos módulos abaixo pede **revisão independente** (outro modelo ou outra pessoa, que não escreveu a mudança) antes de juntar, além do `ci-ok` verde. Os achados da revisão viram commits novos no mesmo PR ou issues abertas antes da junção. O PR diz quem revisou e o que foi apontado.
+Proposta, aguardando ratificação do mantenedor. Mudanças nos módulos abaixo exigem uma segunda revisão antes de juntar, além do `ci-ok` verde. O que a revisão apontar vira commit novo no mesmo PR ou issue aberta antes da junção.
 
 | Módulo | Por quê |
 |---|---|

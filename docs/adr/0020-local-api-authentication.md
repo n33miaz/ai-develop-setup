@@ -47,7 +47,7 @@ Parâmetros (P8): a lista de origens permitidas e o prazo do `auth.hello` ficam 
 - A interface lê o fragmento, guarda o token na sessão da aba, limpa a URL e manda `auth.hello` antes de tudo. Sem token, fica no modo de exemplo.
 - Reiniciar o núcleo troca a porta e o token: a interface aberta perde a conexão e o usuário abre a URL nova.
 - A casca Tauri recebe a URL do núcleo por outro caminho (a definir junto com ela), sem passar por arquivo que outro usuário leia.
-- Este módulo entra na lista de módulos de segurança do `CONTRIBUTING.md`: mudança nele pede revisão independente antes de juntar.
+- Este módulo entra na lista de módulos de segurança do `CONTRIBUTING.md`: mudanças nele exigem uma segunda revisão antes de juntar.
 
 ## Condição de reversão
 Trocar o mecanismo se a casca Tauri, verificada no Windows, não conseguir mandar um `Origin` estável e exclusivo dela; se uma revisão de segurança mostrar caminho para ler o fragmento ou o token de fora da aba; ou se o núcleo passar a escutar fora do loopback (aí o transporte é o remoto, ADR 0008, com cifra e assinatura).
