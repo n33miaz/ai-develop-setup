@@ -6,6 +6,7 @@ const DEFAULTS: &str = include_str!("../../../defaults/storage.toml");
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StorageConfig {
     pub(crate) busy_timeout_ms: u32,
+    pub(crate) inspection_max_bytes: usize,
     pub(crate) integrity_check_on_open: bool,
 }
 
@@ -13,6 +14,7 @@ pub struct StorageConfig {
 #[serde(deny_unknown_fields)]
 struct Layer {
     busy_timeout_ms: Option<u32>,
+    inspection_max_bytes: Option<usize>,
     integrity_check_on_open: Option<bool>,
     encryption: Option<String>,
     cipher: Option<String>,
@@ -44,6 +46,11 @@ impl StorageConfig {
             .ok_or(StorageError::Configuration)?;
         Ok(Self {
             busy_timeout_ms,
+            inspection_max_bytes: over
+                .inspection_max_bytes
+                .or(base.inspection_max_bytes)
+                .filter(|n| (512..=1_073_741_824).contains(n))
+                .ok_or(StorageError::Configuration)?,
             integrity_check_on_open: over
                 .integrity_check_on_open
                 .or(base.integrity_check_on_open)
@@ -73,6 +80,8 @@ mod tests {
         );
         for text in [
             "unknown = 1",
+            "inspection_max_bytes = 511",
+            "inspection_max_bytes = 1073741825",
             "busy_timeout_ms = 60001",
             "synchronous = 'normal'",
             "encryption = 'none'",

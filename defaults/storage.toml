@@ -7,3 +7,6 @@ integrity_check_on_open = true
 encryption = "column"
 cipher = "xchacha20poly1305"
 journal_mode = "wal"
+# Teto por arquivo e imagem de inspeção em memória: recomendado 64 MiB.
+# Aceita 512 bytes a 1 GiB; exceder recusa com Full, sem tocar o banco.
+inspection_max_bytes = 67108864

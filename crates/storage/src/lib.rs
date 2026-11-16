@@ -6,6 +6,7 @@ pub mod config;
 pub mod error;
 mod migrate;
 pub mod open;
+mod snapshot;
 pub use config::StorageConfig;
 pub use error::StorageError;
 pub use open::AuditStore;
