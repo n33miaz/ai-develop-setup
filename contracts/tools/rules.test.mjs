@@ -133,6 +133,12 @@ test("plano: todo dourado válido do registro tem o hash da serialização canô
   assert.equal(files[0][1].plan_hash, VECTOR_HASH);
   assert.ok(files.some(([, plan]) => plan.quarantined), "falta um dourado com quarentena");
   assert.ok(files.some(([, plan]) => plan.targets.some((t) => t.pattern !== null)), "falta um dourado com curinga");
+  // A versão 2 do registro: mesmas regras, mesmo vetor (o hash não cobre a versão).
+  const v2 = goldenValid("record.action-plan.v2");
+  assert.ok(v2.length >= 2);
+  for (const [name, plan] of v2) assert.deepEqual(actionPlanErrors(plan), [], name);
+  assert.equal(v2[0][1].plan_hash, VECTOR_HASH);
+  assert.ok(v2.some(([, plan]) => plan.quarantined), "falta um dourado com quarentena na versão 2");
 });
 
 test("caminho absoluto: aceita só a forma normalizada, Windows e POSIX", () => {

@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { createAjv, loadSchemas } from "./lib.mjs";
+import { planHash } from "./rules.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const corpus = JSON.parse(fs.readFileSync(path.join(root, "corpus", "abspath.json"), "utf8"));
@@ -63,9 +64,37 @@ test("a versão 2 só aperta a versão 1, e só em nome de dispositivo e nome cu
   for (const p of tightened) assert.match(p, /^[A-Z]:\\/, `${JSON.stringify(p)}: só o estilo Windows foi apertado`);
 });
 
+// Os mesmos valores de fronteira que crates/core/tests/gate_golden.rs passa pelo leitor Rust do registro.
+test("a estimativa do registro action-plan:2 vai de 0 a 2^53 - 1, e a :1 não tinha máximo", () => {
+  const errors = [];
+  const ajv = createAjv();
+  for (const { schema } of loadSchemas(root, errors)) ajv.addSchema(schema);
+  const v1 = ajv.getSchema("urn:ads:record:action-plan:1");
+  const v2 = ajv.getSchema("urn:ads:record:action-plan:2");
+  const base = JSON.parse(
+    fs.readFileSync(path.join(root, "golden", "record.action-plan.v2", "valid", "06-estimate-at-the-limit.json"), "utf8"),
+  );
+  const withEstimate = (version, items, bytes) => {
+    const record = { ...base, version, estimate: { items, bytes } };
+    record.plan_hash = planHash(record);
+    return record;
+  };
+  const MAX = 9007199254740991;
+  assert.equal(MAX, Number.MAX_SAFE_INTEGER);
+  for (const [items, bytes] of [[0, 0], [MAX, 0], [0, MAX], [MAX, MAX], [MAX - 1, 1]]) {
+    assert.ok(v2(withEstimate(2, items, bytes)), `${items}:${bytes}`);
+  }
+  for (const [items, bytes] of [[MAX + 1, 0], [0, MAX + 1], [2 ** 63, 0], [18446744073709551615, 0], [18446744073709551616, 0], [-1, 0], [0.5, 0]]) {
+    assert.ok(!v2(withEstimate(2, items, bytes)), `${items}:${bytes}`);
+  }
+  // A divergência que a :2 fecha: a :1 aceita o que nenhum leitor de 64 bits lê.
+  assert.ok(v1(withEstimate(1, 18446744073709551616, 0)));
+  assert.ok(v1(withEstimate(1, MAX, MAX)));
+});
+
 test("todo caminho dos dourados válidos de record.action-plan cabe na abspath:2", () => {
   const { v2 } = validators();
-  const dir = path.join(root, "golden", "record.action-plan.v1", "valid");
+  const dir = path.join(root, "golden", "record.action-plan.v2", "valid");
   let checked = 0;
   for (const file of fs.readdirSync(dir)) {
     const record = JSON.parse(fs.readFileSync(path.join(dir, file), "utf8"));

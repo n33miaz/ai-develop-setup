@@ -71,7 +71,9 @@ quarantine_enabled = true
 # Pasta de quarentena, relativa a raiz de trabalho (barra normal; letras, digitos e . _ -; sem `..`).
 # Cada plano ganha uma subpasta com o comeco do hash do plano original. Alvo que e esta pasta ou a contem
 # e negado; apagar algo ja dentro dela (purga) nao tem como ir para a quarentena e pede aprovacao.
-# Recusado na carga: caminho absoluto ou com `..` (fora da raiz de trabalho), nome que o Windows trata como
-# dispositivo (`nul`, `com1`), e subcaminho que cairia numa pasta protegida: o que comeca onde termina uma
-# pasta de sistema ou de perfis das listas acima (`etc/q`, `home/q`, `Windows/q`).
+# Recusado na carga: caminho absoluto ou com `..` (fora da raiz de trabalho); em politica Windows, nome que la
+# nao e pasta (`nul`, `com1`); em politica POSIX com a quarentena ligada, o subcaminho que comeca onde termina
+# uma pasta de sistema ou de perfis de mais de um nivel (`/srv/vault` com `vault/q`). Nome so compartilhado com
+# pasta protegida de primeiro nivel ou do outro estilo (`etc/q`, `Windows/q`) e pasta comum. O destino gerado
+# e julgado de novo em cada plano, com a raiz de trabalho dele.
 quarantine_dir = ".ads/quarantine"

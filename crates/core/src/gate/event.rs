@@ -843,7 +843,8 @@ pub struct PlanVerdict {
     pub reasons: Vec<PlanReason>,
 }
 
-/// The fields of `urn:ads:record:action-plan:1`, before the rules between them are checked.
+/// The fields of `urn:ads:record:action-plan`, versions 1 and 2 (the same fields; version 2
+/// narrows the paths and bounds the estimate), before the rules between them are checked.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ActionPlanFields {
@@ -861,32 +862,24 @@ pub struct ActionPlanFields {
     pub quarantined: bool,
 }
 
-/// `urn:ads:record:action-plan:1`: the plan as the gate judged it. One exists only when it
-/// keeps every rule of the contract, the order of the targets and the `plan_hash` included.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "ActionPlanFields", into = "ActionPlanFields")]
-pub struct ActionPlanRecord(ActionPlanFields);
+/// The largest count an estimate of the record holds: 2^53 - 1, the largest integer every
+/// reader of the contract represents exactly (a JSON number in JavaScript is a double).
+pub const ESTIMATE_MAX: u64 = (1 << 53) - 1;
 
-impl From<ActionPlanRecord> for ActionPlanFields {
-    fn from(record: ActionPlanRecord) -> Self {
-        record.0
-    }
-}
-
-impl TryFrom<ActionPlanFields> for ActionPlanRecord {
-    type Error = ContractError;
-
-    fn try_from(fields: ActionPlanFields) -> Result<Self, ContractError> {
+impl ActionPlanFields {
+    /// The rules between the fields that the Schema cannot express, for the record of
+    /// `version`.
+    fn checked(self, version: u64) -> Result<Self, ContractError> {
         let broken = |what: &'static str, value: String| Err(ContractError { what, value });
-        if fields.version != 1 {
-            return broken("action plan version", fields.version.to_string());
+        if self.version != version {
+            return broken("action plan version", self.version.to_string());
         }
-        let count = fields.targets.len();
+        let count = self.targets.len();
         if !(1..=10_000).contains(&count) {
             return broken("count of 1 to 10000 targets", count.to_string());
         }
         let mut previous: Option<TargetPath> = None;
-        for target in &fields.targets {
+        for target in &self.targets {
             let text = target.text();
             let Ok(key) = TargetPath::parse(&text) else {
                 return broken("target", text);
@@ -896,7 +889,15 @@ impl TryFrom<ActionPlanFields> for ActionPlanRecord {
             }
             previous = Some(key);
         }
-        let verdict = &fields.verdict;
+        if let Some(estimate) = self.estimate
+            && (estimate.items > ESTIMATE_MAX || estimate.bytes > ESTIMATE_MAX)
+        {
+            return broken(
+                "estimate of at most 2^53 - 1 items and bytes",
+                format!("{}:{}", estimate.items, estimate.bytes),
+            );
+        }
+        let verdict = &self.verdict;
         let coherent = verdict.decision.risk() == verdict.risk
             && verdict.reasons.len() <= 1000
             && (verdict.decision == Decision::Allowed) == verdict.reasons.is_empty();
@@ -910,23 +911,66 @@ impl TryFrom<ActionPlanFields> for ActionPlanRecord {
                 ),
             );
         }
-        let operation = fields.operation.as_str().to_owned();
+        let operation = self.operation.as_str().to_owned();
         let deletes = matches!(
-            fields.operation,
+            self.operation,
             PlanOperation::Delete | PlanOperation::DeleteRecursive
         );
-        if fields.quarantined && !(deletes && verdict.decision != Decision::Denied) {
+        if self.quarantined && !(deletes && verdict.decision != Decision::Denied) {
             return broken("quarantine of a delete that was not denied", operation);
         }
-        let needs_destination = fields.quarantined || fields.operation == PlanOperation::Move;
-        if needs_destination != fields.destination.is_some() {
+        let needs_destination = self.quarantined || self.operation == PlanOperation::Move;
+        if needs_destination != self.destination.is_some() {
             return broken("destination of a move or of a quarantine only", operation);
         }
-        let record = Self(fields);
-        if record.0.plan_hash != PlanHash::of(&record.canonical()) {
-            return broken("hash of the canonical plan", record.0.plan_hash.0);
+        if self.plan_hash != PlanHash::of(&self.canonical()) {
+            return broken("hash of the canonical plan", self.plan_hash.0);
         }
-        Ok(record)
+        Ok(self)
+    }
+
+    /// The text `plan_hash` is taken over, rebuilt from the fields alone. The same for every
+    /// version of the record: the version is not part of the plan.
+    fn canonical(&self) -> String {
+        canonical_plan(
+            if self.quarantined {
+                PlanOperation::Move
+            } else {
+                self.operation
+            },
+            self.work_root.as_str(),
+            self.destination.as_ref().map(PathText::as_str),
+            self.estimate,
+            self.targets
+                .iter()
+                .map(|target| (target.repo_root, target.text())),
+        )
+    }
+}
+
+/// `urn:ads:record:action-plan:2`, the one the gate writes: the plan as the gate judged it.
+/// One exists only when it keeps every rule of the contract, the order of the targets, the
+/// range of the estimate and the `plan_hash` included.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "ActionPlanFields", into = "ActionPlanFields")]
+pub struct ActionPlanRecord(ActionPlanFields);
+
+impl ActionPlanRecord {
+    /// The `version` field of the record this gate writes.
+    pub const VERSION: u64 = 2;
+}
+
+impl From<ActionPlanRecord> for ActionPlanFields {
+    fn from(record: ActionPlanRecord) -> Self {
+        record.0
+    }
+}
+
+impl TryFrom<ActionPlanFields> for ActionPlanRecord {
+    type Error = ContractError;
+
+    fn try_from(fields: ActionPlanFields) -> Result<Self, ContractError> {
+        fields.checked(Self::VERSION).map(Self)
     }
 }
 
@@ -942,25 +986,43 @@ impl ActionPlanRecord {
 
     /// The text `plan_hash` is taken over, rebuilt from the record alone.
     pub fn canonical(&self) -> String {
-        let fields = &self.0;
-        canonical_plan(
-            if fields.quarantined {
-                PlanOperation::Move
-            } else {
-                fields.operation
-            },
-            fields.work_root.as_str(),
-            fields.destination.as_ref().map(PathText::as_str),
-            fields.estimate,
-            fields
-                .targets
-                .iter()
-                .map(|target| (target.repo_root, target.text())),
-        )
+        self.0.canonical()
     }
 }
 
-/// The canonical serialization of a plan (`contracts/README.md`): one field per line, in a
+/// `urn:ads:record:action-plan:1`. Read only: the gate writes version 2. Its Schema is wider
+/// than this type (paths of `abspath:1`, estimate with no upper bound); what this type reads
+/// is what version 2 would also hold.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "ActionPlanFields", into = "ActionPlanFields")]
+pub struct ActionPlanRecordV1(ActionPlanFields);
+
+impl From<ActionPlanRecordV1> for ActionPlanFields {
+    fn from(record: ActionPlanRecordV1) -> Self {
+        record.0
+    }
+}
+
+impl TryFrom<ActionPlanFields> for ActionPlanRecordV1 {
+    type Error = ContractError;
+
+    fn try_from(fields: ActionPlanFields) -> Result<Self, ContractError> {
+        fields.checked(1).map(Self)
+    }
+}
+
+impl ActionPlanRecordV1 {
+    pub fn fields(&self) -> &ActionPlanFields {
+        &self.0
+    }
+
+    /// The text `plan_hash` is taken over, rebuilt from the record alone.
+    pub fn canonical(&self) -> String {
+        self.0.canonical()
+    }
+}
+
+// The canonical serialization of a plan (`contracts/README.md`): one field per line, in a
 /// fixed order, every path prefixed by its length in bytes so no path can pass for two fields.
 pub(crate) fn canonical_plan(
     operation: PlanOperation,

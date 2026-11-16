@@ -96,7 +96,7 @@ O que continua sendo só do núcleo, porque texto nenhum resolve:
 - **Política.** Pasta protegida, raiz de trabalho, raízes permitidas e quarentena dependem da configuração e do plano, não do caminho sozinho.
 - **Regras entre campos** do registro do plano: ordem canônica e não repetição dos alvos e o `plan_hash` (abaixo).
 
-`urn:ads:record:action-plan:1` continua referindo a `abspath:1`: apertar os caminhos do registro é mudança de versão do registro (regra 2), que ainda não foi feita. Até lá o Schema do registro aceita nome de dispositivo e nome curto, e quem os recusa é o núcleo, na escrita e na leitura; um teste confere que todo caminho dos dourados válidos do registro cabe na `:2`.
+`urn:ads:record:action-plan:2` refere a `abspath:2`; a `:1` do registro continua referindo a `abspath:1` e por isso ainda aceita nome de dispositivo e nome curto (quem os recusa, na `:1`, é o núcleo). O portão escreve a `:2`.
 
 ## Stream e entidade
 
@@ -147,7 +147,14 @@ Ordem no tempo dentro de uma aprovação, conferida pelo portão na escrita e na
 
 ### Registro do plano
 
-`urn:ads:record:action-plan:1` guarda o plano como o portão o julgou:
+`urn:ads:record:action-plan:2` guarda o plano como o portão o julgou. A `:1` tem os mesmos campos; a `:2` a aperta em dois pontos (regra 2 de versão), e é a que o portão escreve:
+
+- os caminhos (`work_root`, `destination`, `targets[].path`) são `urn:ads:common:abspath:2`;
+- `estimate.items` e `estimate.bytes` vão de 0 a 9007199254740991 (2^53 − 1). É o intervalo comum a todo leitor: um número JSON lido em JavaScript é um double e só representa inteiros sem perda até aí, e o leitor Rust usa 64 bits sem sinal. Na `:1` o Schema não tinha máximo e o leitor Rust recusava acima de 2^64 − 1: dois leitores, dois vereditos. Plano com estimativa acima do máximo não tem registro e, por isso, não vira ação.
+
+O `version` do registro acompanha a versão da URN (`1` ou `2`). O texto do `plan_hash` não muda entre as duas: a primeira linha continua `ads.action-plan/1`, que é a versão da serialização, não a do registro.
+
+Campos:
 
 - `operation` é a operação **pedida** (`fs.delete`, `fs.delete_recursive`, `fs.move`, `fs.overwrite`, `fs.clean_untracked`).
 - `targets`: cada alvo tem `path` (caminho absoluto literal), `pattern` (curinga sobre os filhos de `path`, ou `null`) e `repo_root` (o chamador viu que o alvo é raiz de repositório). Vêm na ordem canônica, sem repetição.
@@ -203,7 +210,7 @@ target:0:12:/work/proj/b
 
 resulta em `sha256:c7b870d89ef435eb431fcdf8e99f82f2b10c9b05a25eb86eb2ed603fa366eb94`.
 
-O validador recalcula o hash e confere a ordem dos alvos em todo dourado válido do registro (`planHash` e `actionPlanErrors` em `tools/rules.mjs`).
+O validador recalcula o hash e confere a ordem dos alvos em todo dourado válido do registro, nas duas versões (`planHash` e `actionPlanErrors` em `tools/rules.mjs`).
 
 ## Contrato pty-host/1
 
@@ -382,7 +389,8 @@ O manifesto (`urn:ads:record:update-manifest:1`) é assinado no CI. A assinatura
 |---|---|
 | `urn:ads:record:task-packet:1` | O que um agente recebe para executar uma tarefa: objetivo, critérios de aceite, restrições, orçamento e entradas. O receptor trata o pacote como dado, nunca como instrução; permissões vêm da configuração do usuário. |
 | `urn:ads:record:usage_event:1` | Uma linha do livro-caixa: uma chamada ou turno de IA medido, com tokens, duração, custo de lista, custo faturável (só chave de API), janela de cota, fonte e chave de deduplicação. Só-anexo; alias de conta nunca é credencial nem e-mail. |
-| `urn:ads:record:action-plan:1` | O plano de uma ação destrutiva sobre arquivos, como o portão o julgou: operação, alvos, raiz de trabalho, estimativa, veredito com as regras que dispararam, marca de quarentena e destino. O plan_hash é reconferível pela [serialização canônica](#serialização-canônica-do-plan_hash). |
+| `urn:ads:record:action-plan:1` | O plano de uma ação destrutiva sobre arquivos, como o portão o julgou: operação, alvos, raiz de trabalho, estimativa, veredito com as regras que dispararam, marca de quarentena e destino. O plan_hash é reconferível pela [serialização canônica](#serialização-canônica-do-plan_hash). Caminhos `abspath:1` e estimativa sem máximo. |
+| `urn:ads:record:action-plan:2` | O mesmo registro com os caminhos em `abspath:2` e a estimativa limitada a 2^53 − 1. Convive com a `:1`; é a que o portão escreve. |
 | `urn:ads:record:approval:1` | Estado de uma aprovação: vale para o hash de um plano e expira. Pendente e expirada não têm decisor; concedida e negada têm autor e instante da decisão. |
 | `urn:ads:record:host_sample:1` | Uma observação de um sinal da máquina (disco, memória, etc.) feita por um coletor só leitura. Amostra ausente nunca vira zero; corrigir é gravar outra amostra com outro sample_id. |
 | `urn:ads:record:host_event:1` | Um alerta derivado de amostras: cita a regra, a gravidade e os sample_id que o justificam. Confirmar é um evento posterior; o alerta original não muda. |

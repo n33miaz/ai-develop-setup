@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "action_id": "act-06",
+  "plan_hash": "sha256:98db68ae2f7210a34624f70e715fa12c2031b4557856967ca1e32960042aab50",
+  "operation": "fs.overwrite",
+  "work_root": "/work/proj",
+  "destination": null,
+  "targets": [
+    {
+      "path": "/work/proj/out.bin",
+      "pattern": null,
+      "repo_root": false
+    }
+  ],
+  "estimate": {
+    "items": 9007199254740991,
+    "bytes": 9007199254740991
+  },
+  "verdict": {
+    "decision": "allowed",
+    "risk": "low",
+    "reasons": []
+  },
+  "quarantined": false
+}
