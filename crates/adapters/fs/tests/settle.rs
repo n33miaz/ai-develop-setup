@@ -498,3 +498,46 @@ fn a_folder_moved_while_the_fence_is_walked_does_not_give_the_fence_another_name
     let on_disk = fs::read(base.join("fence").join("work").join("file.txt")).unwrap();
     assert_eq!(facts.bytes, on_disk.len() as u64);
 }
+
+// ---- holds go away with the execution that took them -------------------------------------------
+
+/// A removal that stops in the middle, its folders held in place, gives every hold back on
+/// the way out: right after the failure, with the executor still alive, the folders it held
+/// can be moved again. Where nothing is held (Linux) there is nothing to give back.
+#[test]
+fn the_holds_of_a_removal_that_stops_are_given_back() {
+    if !cfg!(windows) {
+        return;
+    }
+    let sandbox = Sandbox::new("released");
+    sandbox.file("work/tree/a.txt", "a");
+    sandbox.file("work/tree/sub/b.txt", "b");
+    let flow = through_gate(
+        &sandbox.policy(QUARANTINE_OFF),
+        delete_of(&sandbox, "act-1", &["work/tree"]),
+    );
+    let mut executor = hooked(
+        sandbox.executor(QUARANTINE_OFF),
+        |moment, mutation| match mutation {
+            Mutation::Remove(path) if moment == Moment::Opened && path.ends_with("b.txt") => {
+                Err(io::Error::other("the file is in use"))
+            }
+            _ => Ok(()),
+        },
+    );
+    let failure = run(&mut executor, flow).unwrap_err();
+    assert!(matches!(
+        failure.report.steps[0].status,
+        Status::Held { .. }
+    ));
+    // The deepest folder that was held, then every folder above it inside the work root.
+    let holding = sandbox.path(&format!("{}/act-1", sandbox.private_dir()));
+    fs::rename(holding.join("0").join("sub"), sandbox.outside.join("sub")).unwrap();
+    fs::rename(&holding, sandbox.outside.join("act-1")).unwrap();
+    fs::rename(sandbox.path("work"), sandbox.path("work-moved")).unwrap();
+    assert_eq!(
+        fs::read_to_string(sandbox.outside.join("sub").join("b.txt")).unwrap(),
+        "b"
+    );
+    drop(executor);
+}
