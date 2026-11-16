@@ -2,7 +2,7 @@
 
 use crate::auth::{Token, permits_upgrade};
 use crate::events::EventLog;
-use crate::pty_client::{Event, PtyClient};
+use crate::pty_client::{ClientError, ErrorCode, Event, PtyClient};
 use ads_contracts::CommandSessionOpenV1Params;
 use ads_ptyhost::wire::{Notification, OpenParams, ResizeParams, SessionParams, WriteParams};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -16,8 +16,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, Semaphore, mpsc, oneshot};
-use tokio::time::timeout;
+use tokio::time::{Instant, timeout, timeout_at};
 use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
+use zeroize::Zeroizing;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApiError {
@@ -29,6 +30,7 @@ pub enum ApiError {
     Conflict,
     Replay,
     Unavailable,
+    Host(ErrorCode),
 }
 impl ApiError {
     pub fn code(self) -> i64 {
@@ -41,6 +43,7 @@ impl ApiError {
             Self::Conflict => -32012,
             Self::Replay => -32004,
             Self::Unavailable => -32603,
+            Self::Host(code) => code.number(),
         }
     }
     pub fn message(self) -> &'static str {
@@ -53,6 +56,7 @@ impl ApiError {
             Self::Conflict => "idempotency key conflict",
             Self::Replay => "replay unavailable",
             Self::Unavailable => "service unavailable",
+            Self::Host(_) => "host refused command",
         }
     }
 }
@@ -72,6 +76,8 @@ pub(crate) fn checked(schema: &str, value: Value) -> Result<Value, ApiError> {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApiConfig {
+    pub ui_base_url: String,
+    #[serde(default)]
     pub allowed_origins: Vec<String>,
     pub auth_timeout_ms: u64,
     pub max_sessions: usize,
@@ -80,6 +86,8 @@ pub struct ApiConfig {
     pub idempotency_keys: usize,
     pub command_queue: usize,
     pub max_connections: usize,
+    pub max_pending_auth: usize,
+    pub accept_retry_ms: u64,
     pub max_message_bytes: usize,
     pub send_timeout_ms: u64,
     pub host_timeout_ms: u64,
@@ -92,7 +100,12 @@ impl ApiConfig {
         base.as_table_mut()
             .ok_or(ApiError::Invalid)?
             .extend(over.as_table().ok_or(ApiError::Invalid)?.clone());
-        let config: Self = base.try_into().map_err(|_| ApiError::Invalid)?;
+        let mut config: Self = base.try_into().map_err(|_| ApiError::Invalid)?;
+        if config.allowed_origins.is_empty() {
+            config
+                .allowed_origins
+                .push(config.ui_base_url.trim_end_matches('/').to_owned());
+        }
         config.validate()?;
         Ok(config)
     }
@@ -104,18 +117,21 @@ impl ApiConfig {
             self.idempotency_keys,
             self.command_queue,
             self.max_connections,
+            self.max_pending_auth,
             self.max_message_bytes,
         ];
         if positive.iter().any(|n| *n == 0 || *n > 1_048_576)
             || self.max_write_bytes > 65536
             || self.max_message_bytes < 1024
             || [
+                self.accept_retry_ms,
                 self.auth_timeout_ms,
                 self.send_timeout_ms,
                 self.host_timeout_ms,
             ]
             .iter()
             .any(|n| *n == 0 || *n > 300_000)
+            || !valid_ui_base(&self.ui_base_url)
             || self.allowed_origins.is_empty()
             || self.allowed_origins.iter().any(|s| {
                 let Ok(uri) = s.parse::<tokio_tungstenite::tungstenite::http::Uri>() else {
@@ -132,6 +148,26 @@ impl ApiConfig {
             return Err(ApiError::Invalid);
         }
         Ok(())
+    }
+}
+
+fn valid_ui_base(base: &str) -> bool {
+    let Ok(uri) = base.parse::<tokio_tungstenite::tungstenite::http::Uri>() else {
+        return false;
+    };
+    matches!(uri.scheme_str(), Some("http" | "https"))
+        && uri
+            .authority()
+            .is_some_and(|a| !a.as_str().contains(['*', '@']))
+        && uri.path_and_query().is_none_or(|p| p.as_str() == "/")
+        && !base.contains('#')
+}
+fn host_error(error: ClientError) -> ApiError {
+    match error {
+        ClientError::Host { code, .. } => ApiError::Host(code),
+        ClientError::Capacity => ApiError::Capacity,
+        ClientError::SequenceOverflow | ClientError::InvalidConfig => ApiError::Invalid,
+        _ => ApiError::Unavailable,
     }
 }
 
@@ -204,6 +240,7 @@ impl Service {
         params: &Value,
         cause: Option<&str>,
     ) -> Result<(), ApiError> {
+        let host = self.host.commands();
         let mut host_params = params.clone();
         host_params
             .as_object_mut()
@@ -227,10 +264,7 @@ impl Service {
                 {
                     return Err(ApiError::Invalid);
                 }
-                self.host
-                    .open(open)
-                    .await
-                    .map_err(|_| ApiError::Unavailable)?;
+                self.wait_host(host.open(open)).await?;
                 self.sessions.insert(
                     id.to_owned(),
                     Session {
@@ -240,11 +274,22 @@ impl Service {
                         closing: false,
                     },
                 );
-                self.log.lock().await.append(id, "created", json!({"session_id": id, "task_id": null, "harness": params["harness"], "mode": "interactive", "cols": params["cols"], "rows": params["rows"], "workdir_alias": params["workdir_alias"]}), cause)?;
-                self.host
-                    .subscribe(request.session_id, Some(0))
-                    .await
-                    .map_err(|_| ApiError::Unavailable)?;
+                let setup = async {
+                    self.log.lock().await.append(id, "created", json!({"session_id": id, "task_id": null, "harness": params["harness"], "mode": "interactive", "cols": params["cols"], "rows": params["rows"], "workdir_alias": params["workdir_alias"]}), cause)?;
+                    self.wait_host(host.subscribe(request.session_id.clone(), Some(0))).await?;
+                    Ok(())
+                }.await;
+                if let Err(error) = setup {
+                    let cleanup = self
+                        .wait_host(host.close(SessionParams {
+                            session_id: request.session_id,
+                        }))
+                        .await;
+                    self.sessions.remove(id);
+                    self.log.lock().await.remove(id);
+                    cleanup?;
+                    return Err(error);
+                }
             }
             "session.write" => {
                 self.active(id)?;
@@ -256,19 +301,13 @@ impl Service {
                 if bytes.is_empty() || bytes.len() > self.config.max_write_bytes {
                     return Err(ApiError::Capacity);
                 }
-                self.host
-                    .write(write)
-                    .await
-                    .map_err(|_| ApiError::Unavailable)?;
+                self.wait_host(host.write(write)).await?;
             }
             "session.resize" => {
                 self.active(id)?;
                 let resize: ResizeParams =
                     serde_json::from_value(host_params).map_err(|_| ApiError::Invalid)?;
-                self.host
-                    .resize(resize)
-                    .await
-                    .map_err(|_| ApiError::Unavailable)?;
+                self.wait_host(host.resize(resize)).await?;
                 self.log.lock().await.append(
                     id,
                     "resized",
@@ -280,11 +319,11 @@ impl Service {
                 self.active(id)?;
                 let close: SessionParams =
                     serde_json::from_value(host_params).map_err(|_| ApiError::Invalid)?;
-                self.host
-                    .close(close)
-                    .await
-                    .map_err(|_| ApiError::Unavailable)?;
                 self.sessions.get_mut(id).ok_or(ApiError::Invalid)?.closing = true;
+                if let Err(error) = self.wait_host(host.close(close)).await {
+                    self.sessions.get_mut(id).ok_or(ApiError::Invalid)?.closing = false;
+                    return Err(error);
+                }
             }
             "events.subscribe" => {
                 self.log.lock().await.after(
@@ -295,6 +334,18 @@ impl Service {
             _ => return Err(ApiError::Method),
         }
         Ok(())
+    }
+    async fn wait_host<T>(
+        &mut self,
+        future: impl Future<Output = Result<T, ClientError>>,
+    ) -> Result<T, ApiError> {
+        tokio::pin!(future);
+        loop {
+            tokio::select! {
+                result = &mut future => return result.map_err(host_error),
+                event = self.host.next() => self.event(event.map_err(host_error)?).await?,
+            }
+        }
     }
     fn active(&self, id: &str) -> Result<(), ApiError> {
         if self
@@ -311,9 +362,13 @@ impl Service {
         match event {
             Event::Output { header, bytes } => {
                 let id = header.session_id.as_str();
-                let session = self.sessions.get_mut(id).ok_or(ApiError::Unavailable)?;
+                let Some(session) = self.sessions.get_mut(id) else {
+                    return Ok(());
+                };
                 if session.ended || header.seq.get() != session.last_host_seq + 1 {
-                    return Err(ApiError::Replay);
+                    session.ended = true;
+                    self.log.lock().await.invalidate(id);
+                    return Ok(());
                 }
                 self.log.lock().await.append(id, "output", json!({"session_id": id, "offset": session.offset, "length": bytes.len(), "encoding": "base64", "payload": STANDARD.encode(&bytes)}), None)?;
                 session.offset = session
@@ -331,7 +386,9 @@ impl Service {
                     return Ok(());
                 }
                 if exit.last_seq != session.last_host_seq {
-                    return Err(ApiError::Replay);
+                    session.ended = true;
+                    self.log.lock().await.invalidate(id);
+                    return Ok(());
                 }
                 session.ended = true;
                 self.log.lock().await.append(id, "ended", json!({"session_id": id, "reason": if session.closing { "killed" } else if exit.exit_code.is_some() { "exit" } else { "error" }, "exit_code": exit.exit_code}), None)?;
@@ -345,7 +402,9 @@ impl Service {
                 };
                 if !session.ended {
                     if closed.last_seq != session.last_host_seq {
-                        return Err(ApiError::Replay);
+                        session.ended = true;
+                        self.log.lock().await.invalidate(id);
+                        return Ok(());
                     }
                     session.ended = true;
                     self.log.lock().await.append(
@@ -356,13 +415,20 @@ impl Service {
                     )?;
                 }
             }
-            Event::ResubscribeFailed { session_id, .. }
+            Event::ResubscribeFailed { session_id, error }
                 if self
                     .sessions
                     .get(session_id.as_str())
                     .is_some_and(|s| !s.ended) =>
             {
-                return Err(ApiError::Unavailable);
+                self.sessions
+                    .get_mut(session_id.as_str())
+                    .ok_or(ApiError::Invalid)?
+                    .ended = true;
+                self.log.lock().await.invalidate(session_id.as_str());
+                if host_error(error) == ApiError::Unavailable {
+                    return Err(ApiError::Unavailable);
+                }
             }
             _ => (),
         }
@@ -386,6 +452,7 @@ impl LocalApi {
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
             .await
             .map_err(|_| ApiError::Unavailable)?;
+        host.enable_backpressure();
         let token = Token::generate()?;
         let log = Arc::new(Mutex::new(EventLog::new(config.events_per_stream)));
         let service = Service {
@@ -410,7 +477,9 @@ impl LocalApi {
             .map_err(|_| ApiError::Unavailable)
     }
     pub fn launch_url(&self) -> Result<String, ApiError> {
-        Ok(self.token.launch_url(self.port()?))
+        Ok(self
+            .token
+            .launch_url(&self.config.ui_base_url, self.port()?))
     }
     pub async fn run(self) -> Result<(), ApiError> {
         let Self {
@@ -427,11 +496,15 @@ impl LocalApi {
             .port();
         let log = service.log.clone();
         let permits = Arc::new(Semaphore::new(config.max_connections));
+        let pending = Arc::new(Semaphore::new(config.max_pending_auth));
         let (commands, mut incoming) = mpsc::channel::<Request>(config.command_queue);
         let mut connections = tokio::task::JoinSet::new();
+        let mut accepting = Box::pin(accept_retry(&listener, config.accept_retry_ms));
         loop {
             tokio::select! {
-                event = service.host.next() => service.event(event.map_err(|_| ApiError::Unavailable)?).await?,
+                event = service.host.next() => {
+                    if service.event(event.map_err(host_error)?).await == Err(ApiError::Unavailable) { return Err(ApiError::Unavailable); }
+                },
                 Some(request) = incoming.recv() => {
                     let outcome = timeout(Duration::from_millis(config.host_timeout_ms), service.command(&request.command)).await;
                     match outcome {
@@ -443,13 +516,14 @@ impl LocalApi {
                         Err(_) => return Err(ApiError::Unavailable),
                     }
                 }
-                accepted = listener.accept() => {
-                    let (stream, _) = accepted.map_err(|_| ApiError::Unavailable)?;
-                    if let Ok(permit) = permits.clone().try_acquire_owned() {
+                accepted = &mut accepting => {
+                    accepting.set(accept_retry(&listener, config.accept_retry_ms));
+                    let (stream, _) = accepted;
+                    if let Ok(permit) = pending.clone().try_acquire_owned() {
                         let (token, config, commands, log) = (token.clone(), config.clone(), commands.clone(), log.clone());
+                        let authenticated = permits.clone();
                         connections.spawn(async move {
-                            let _permit = permit;
-                            let _ = connection(stream, port, token, config, commands, log).await;
+                            let _ = connection(stream, port, token, config, commands, log, (permit, authenticated)).await;
                         });
                     }
                 }
@@ -457,6 +531,25 @@ impl LocalApi {
             }
         }
     }
+}
+
+async fn retry_io<T, F, Fut>(mut operation: F, delay_ms: u64) -> T
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = std::io::Result<T>>,
+{
+    loop {
+        match operation().await {
+            Ok(value) => return value,
+            Err(_) => {
+                eprintln!("ads-daemon: local accept failed; retrying");
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            }
+        }
+    }
+}
+async fn accept_retry(listener: &TcpListener, delay_ms: u64) -> (TcpStream, std::net::SocketAddr) {
+    retry_io(|| listener.accept(), delay_ms).await
 }
 
 fn response(id: &Value, result: Result<bool, ApiError>) -> Value {
@@ -485,6 +578,15 @@ fn validate_command(value: Value) -> Result<Value, ApiError> {
     checked(&format!("urn:ads:command:{method}:1"), value)
 }
 
+fn consume_hello(hello: &mut Option<Value>) -> Result<Value, ApiError> {
+    let mut value = hello.take().ok_or(ApiError::Invalid)?;
+    let id = value["id"].take();
+    if let Value::String(secret) = value["params"]["token"].take() {
+        drop(Zeroizing::new(secret));
+    }
+    Ok(id)
+}
+
 #[allow(clippy::result_large_err)] // A assinatura do callback é definida pela biblioteca WebSocket.
 async fn connection(
     stream: TcpStream,
@@ -493,13 +595,14 @@ async fn connection(
     config: Arc<ApiConfig>,
     commands: mpsc::Sender<Request>,
     log: Arc<Mutex<EventLog>>,
+    permits: (tokio::sync::OwnedSemaphorePermit, Arc<Semaphore>),
 ) -> Result<(), ApiError> {
     use tokio_tungstenite::tungstenite::handshake::server::{Request as HttpRequest, Response};
     let ws_config = WebSocketConfig::default()
         .max_message_size(Some(config.max_message_bytes))
         .max_frame_size(Some(config.max_message_bytes));
-    let deadline = Duration::from_millis(config.auth_timeout_ms);
-    let mut ws = timeout(
+    let deadline = Instant::now() + Duration::from_millis(config.auth_timeout_ms);
+    let mut ws = timeout_at(
         deadline,
         tokio_tungstenite::accept_hdr_async_with_config(
             stream,
@@ -519,8 +622,8 @@ async fn connection(
     .await
     .map_err(|_| ApiError::Unavailable)?
     .map_err(|_| ApiError::Invalid)?;
-    let first = timeout(deadline, ws.next()).await;
-    let hello = match first {
+    let first = timeout_at(deadline, ws.next()).await;
+    let mut hello = match first {
         Ok(Some(Ok(Message::Text(text)))) => serde_json::from_str::<Value>(&text)
             .ok()
             .and_then(|v| validate_command(v).ok()),
@@ -541,10 +644,15 @@ async fn connection(
         .await;
         return Err(ApiError::Invalid);
     }
-    let hello = hello.ok_or(ApiError::Invalid)?;
-    send(&mut ws, response(&hello["id"], Ok(false)), &config).await?;
+    let id = consume_hello(&mut hello)?;
+    let (pending, authenticated) = permits;
+    let _authenticated = authenticated
+        .try_acquire_owned()
+        .map_err(|_| ApiError::Capacity)?;
+    drop(pending);
+    send(&mut ws, response(&id, Ok(false)), &config).await?;
     let mut changed = log.lock().await.watch();
-    let mut subscriptions = HashMap::<String, u64>::new();
+    let mut subscriptions = HashMap::<String, (u64, Value)>::new();
     loop {
         let message = tokio::select! {
             message = ws.next() => Some(message),
@@ -597,13 +705,25 @@ async fn connection(
                     let outcome = answer.await.map_err(|_| ApiError::Unavailable)?;
                     send(&mut ws, response(&id, outcome), &config).await?;
                     if subscribe && outcome.is_ok() {
-                        subscriptions.insert(stream, after);
+                        subscriptions.insert(stream, (after, id));
                     }
                 }
             }
         }
-        for (stream, after) in &mut subscriptions {
-            let events = log.lock().await.after(stream, *after)?;
+        for (stream, (after, subscription_id)) in &mut subscriptions {
+            let events = log.lock().await.after(stream, *after);
+            let events = match events {
+                Ok(events) => events,
+                Err(error) => {
+                    send(&mut ws, response(subscription_id, Err(error)), &config).await?;
+                    let _ = timeout(
+                        Duration::from_millis(config.send_timeout_ms),
+                        ws.close(None),
+                    )
+                    .await;
+                    return Err(error);
+                }
+            };
             for event in events {
                 *after = event["seq"].as_u64().ok_or(ApiError::Unavailable)?;
                 send(&mut ws, event, &config).await?;
@@ -633,9 +753,165 @@ mod tests {
 
     #[test]
     fn malformed_credentials_never_escape_validation_errors() {
-        let secret = "private-credential-sentinel";
-        let value = json!({"jsonrpc": "2.0", "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB", "method": "auth.hello", "params": {"token": secret, "_meta": {"origin": "local", "idempotency_key": "01ARZ3NDEKTSV4RRFFQ69G5FAB"}}});
+        let token = Token::generate().unwrap();
+        let url = token.launch_url("http://localhost:5173", 1234);
+        let secret = url.split_once("&token=").unwrap().1;
+        let terminal = "private-terminal-output-sentinel";
+        let value = json!({"jsonrpc": "2.0", "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB", "method": "auth.hello", "params": {"token": secret, "terminal": terminal, "_meta": {"origin": "local", "idempotency_key": "01ARZ3NDEKTSV4RRFFQ69G5FAB"}}});
         let error = validate_command(value).unwrap_err();
-        assert!(!format!("{error:?} {error}").contains(secret));
+        let diagnostics = format!("{error:?} {error} {token:?}");
+        assert!(!diagnostics.contains(secret));
+        assert!(!diagnostics.contains(terminal));
+    }
+    #[tokio::test]
+    async fn transient_accept_errors_retry_with_delay() {
+        let mut attempts = 0;
+        let start = Instant::now();
+        let value = retry_io(
+            || {
+                attempts += 1;
+                std::future::ready(if attempts < 3 {
+                    Err(std::io::Error::from(std::io::ErrorKind::ConnectionAborted))
+                } else {
+                    Ok(42)
+                })
+            },
+            10,
+        )
+        .await;
+        assert_eq!(value, 42);
+        assert_eq!(attempts, 3);
+        assert!(start.elapsed() >= Duration::from_millis(20));
+    }
+
+    #[test]
+    fn hello_is_consumed_before_the_connection_loop() {
+        let mut hello = Some(json!({"id": "request", "params": {"token": "credential-sentinel"}}));
+        assert_eq!(consume_hello(&mut hello).unwrap(), "request");
+        assert!(hello.is_none());
+    }
+    #[tokio::test]
+    async fn failed_created_event_closes_the_opened_host_session() {
+        use crate::pty_client::ClientConfig;
+        use ads_ptyhost::{FakeBackend, HostConfig, PtyHost, server};
+        struct FakeLauncher;
+        impl Launcher for FakeLauncher {
+            fn prepare(
+                &self,
+                request: &CommandSessionOpenV1Params,
+            ) -> Result<OpenParams, ApiError> {
+                serde_json::from_value(json!({"session_id": request.session_id, "cols": request.cols, "rows": request.rows, "program": "fake", "args": [], "env": {}, "cwd": null})).map_err(|_| ApiError::Invalid)
+            }
+        }
+        let backend = Arc::new(FakeBackend::new());
+        let host = Arc::new(PtyHost::new(backend.clone(), HostConfig::defaults()).unwrap());
+        let (near, far) = tokio::io::duplex(4096);
+        let peer = tokio::spawn(server::connection(host.clone(), far));
+        let client = PtyClient::over(near, ClientConfig::recommended(host.config()))
+            .await
+            .unwrap();
+        let mut api = LocalApi::bind(
+            ApiConfig::from_toml_str("").unwrap(),
+            client,
+            Arc::new(FakeLauncher),
+        )
+        .await
+        .unwrap();
+        api.service.log.lock().await.exhaust_sequence("session");
+        let params = json!({"session_id": "session", "harness": "test", "workdir_alias": "workspace", "cols": 80, "rows": 24, "_meta": {"origin": "local", "idempotency_key": "01ARZ3NDEKTSV4RRFFQ69G5FAB"}});
+        assert_eq!(
+            api.service.execute("session.open", &params, None).await,
+            Err(ApiError::Capacity)
+        );
+        assert!(backend.terminals()[0].was_killed());
+        assert!(host.sessions().is_empty());
+        assert!(api.service.sessions.is_empty());
+        assert!(
+            api.service
+                .log
+                .lock()
+                .await
+                .after("session/session", 0)
+                .unwrap()
+                .is_empty()
+        );
+        peer.abort();
+    }
+    #[tokio::test]
+    async fn bounded_host_queue_survives_a_paused_consumer() {
+        use crate::pty_client::ClientConfig;
+        use ads_ptyhost::wire::{self, Call, ResultBody};
+        use tokio::io::AsyncWriteExt;
+        let (near, mut far) = tokio::io::duplex(4096);
+        let (begin, ready) = oneshot::channel();
+        let peer = tokio::spawn(async move {
+            let wire::Frame::Json(payload) =
+                wire::read_frame(&mut far, 131072).await.unwrap().unwrap()
+            else {
+                panic!()
+            };
+            let hello = wire::Request::parse(&payload).unwrap();
+            far.write_all(
+                &wire::encode_json(&wire::Response {
+                    id: Some(hello.id),
+                    outcome: Ok(ResultBody::Hello(wire::HelloResult {
+                        contract: Default::default(),
+                    })),
+                })
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+            ready.await.unwrap();
+            let id = "unknown".to_owned().try_into().unwrap();
+            for seq in 1..=40 {
+                far.write_all(&wire::encode_output(&id, seq, b"terminal-sentinel").unwrap())
+                    .await
+                    .unwrap();
+            }
+            let wire::Frame::Json(payload) =
+                wire::read_frame(&mut far, 131072).await.unwrap().unwrap()
+            else {
+                panic!()
+            };
+            let request = wire::Request::parse(&payload).unwrap();
+            assert!(matches!(request.call, Call::List(_)));
+            far.write_all(
+                &wire::encode_json(&wire::Response {
+                    id: Some(request.id),
+                    outcome: Ok(ResultBody::SessionList(wire::SessionList {
+                        sessions: vec![],
+                    })),
+                })
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+            std::future::pending::<()>().await;
+        });
+        let client = PtyClient::over(
+            near,
+            ClientConfig {
+                max_frame_bytes: 131072,
+                queue_capacity: 2,
+            },
+        )
+        .await
+        .unwrap();
+        let mut api = LocalApi::bind(
+            ApiConfig::from_toml_str("").unwrap(),
+            client,
+            Arc::new(DisabledLauncher),
+        )
+        .await
+        .unwrap();
+        begin.send(()).unwrap();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let host = api.service.host.commands();
+        let result = timeout(Duration::from_secs(2), api.service.wait_host(host.list()))
+            .await
+            .unwrap();
+        peer.abort();
+        assert!(result.unwrap().sessions.is_empty());
     }
 }

@@ -29,6 +29,8 @@ origem ausente e query string também são recusados.
 o arquivo de configuração. Outro TOML pode sobrepor só as chaves desejadas;
 chaves desconhecidas e valores inválidos são recusados sem reproduzir seu conteúdo.
 O host usa o canal padrão do usuário, cuja identidade é conferida antes da conexão.
+`--host-config <arquivo>` permite selecionar outra configuração do host (inclusive
+um canal exclusivo para testes), com as mesmas validações de `HostConfig`.
 
 ## Comandos, limites e recuperação
 
@@ -46,14 +48,17 @@ Padrões em [defaults/daemon.toml](../../defaults/daemon.toml), aplicados ao ini
 
 | Chave | Padrão | Efeito e alternativa |
 |---|---|---|
-| `allowed_origins` | `http://localhost:5173`, `http://127.0.0.1:5173` | Lista exata; substitua pelas origens verificadas da interface, sem curingas ou caminhos. |
-| `auth_timeout_ms` | 5000 | Prazo do upgrade e, depois, da primeira mensagem; reduza para limitar conexões ociosas. |
+| `ui_base_url` | `http://localhost:5173` | URL base da interface, sem caminho, query ou fragmento; substitua pela interface cuja porta foi verificada. |
+| `allowed_origins` | `[]` (deriva `http://localhost:5173`) | Vazia deriva somente a origem de `ui_base_url`; lista explícita substitui a derivação, sem curingas ou caminhos. |
+| `auth_timeout_ms` | 5000 | Prazo total único do upgrade e da primeira mensagem; reduza para limitar conexões ociosas. |
 | `max_sessions` | 32 | Total de streams por execução, incluindo encerrados; aumente para mais sessões, com maior teto de memória. |
 | `max_write_bytes` | 65536 | Bytes decodificados por escrita; pode diminuir, nunca exceder o contrato. |
 | `events_per_stream` | 256 | Eventos retidos por stream; aumente para ampliar o replay. |
 | `idempotency_keys` | 1024 | Chaves aceitas retidas em FIFO; aumente para ampliar a janela de deduplicação. |
 | `command_queue` | 64 | Pedidos esperando o host; aumente para mais concorrência. |
-| `max_connections` | 32 | Conexões simultâneas, incluindo não autenticadas; excedentes são fechadas. |
+| `max_connections` | 32 | Conexões autenticadas simultâneas; excedentes são fechadas ao autenticar. |
+| `max_pending_auth` | 4 | Conexões pendentes, inclusive sem handshake; separadas das autenticadas. |
+| `accept_retry_ms` | 50 | Espera após erro de aceitação TCP; reduz tentativas sob falta de recursos. |
 | `max_message_bytes` | 131072 | Limite de mensagem e quadro WebSocket recebido; reduzir pode impedir escritas grandes. |
 | `send_timeout_ms` | 5000 | Prazo por envio; cliente lento é desconectado. |
 | `host_timeout_ms` | 10000 | Prazo por comando no host e na conexão inicial; falha encerra o serviço para evitar repetir efeito incerto. |
@@ -70,15 +75,23 @@ sem repetir o efeito; outro conteúdo com a mesma chave recebe `-32012`. O id do
 pedido pode mudar. A cache guarda só a chave e SHA-256 dos parâmetros, nunca a
 entrada do terminal. Depois da expulsão FIFO não há garantia de deduplicação.
 `after_seq = 0` pede tudo que resta no stream; cursor descartado ou futuro recebe
-`-32004`. Se o cliente ficar para trás durante uma assinatura, a conexão fecha;
+`-32004`. Se o cliente ficar para trás durante uma assinatura, recebe `-32004`
+com o id do pedido de assinatura antes de a conexão fechar;
 nenhum buraco é ocultado. Reconecte com o último seq recebido ou peça 0
 explicitamente para aceitar o histórico ainda disponível.
 
 Eventos `created`, `output`, `resized` e `ended` ficam só na memória, em ordem por
 stream; saída usa base64 com offset em bytes. Encerramento solicitado só gera
-`ended` depois da saída pendente do host. Falha do canal ou prazo do host encerra
-o daemon; as sessões continuam sob responsabilidade do ptyhost. Reiniciar não
-adota sessões antigas nesta implementação. Para desfazer, pare o daemon e volte
+`ended` depois da saída pendente do host. Recusas explícitas do host voltam ao
+cliente com o código do contrato `pty-host/1`,
+sem encerrar o serviço. Falha do canal ou prazo do host encerra
+o daemon; as sessões continuam sob responsabilidade do ptyhost.
+Eventos são consumidos também durante chamadas ao host; a fila limitada aplica
+contrapressão ao canal, e o anel limitado recusa assinantes lentos. Falha depois
+de abrir uma sessão dispara seu fechamento no host antes de liberar o id.
+Lacuna na sequência ou recusa da reassinatura do host invalida somente o stream
+afetado, que passa a recusar replay até reiniciar; os demais continuam disponíveis.
+Reiniciar não adota sessões antigas nesta implementação. Para desfazer, pare o daemon e volte
 ao consumidor anterior do cliente, sem migração de dados.
 
 ## Dependências e diagnóstico
@@ -99,7 +112,9 @@ e mensagens estáticas. `pty_client::Event` também omite bytes em `Debug`.
 macros da fachada `log` são eliminadas do executável, inclusive nas dependências,
 pois o transporte tem diagnóstico capaz de mostrar payloads. Isso vale também
 em debug e não é configurável, por segurança. Não há logger nem arquivo de saída.
-`zeroize`, já presente no workspace, limpa o token ao descartá-lo. A única
+`zeroize`, já presente no workspace, limpa o token ao descartá-lo e a URL logo
+após a impressão, inclusive quando o envio falha. O `auth.hello` é consumido
+antes do laço autenticado; sua cópia do token é limpa. A única
 exposição intencional do token é a linha inicial na saída padrão.
 
 Os testes exercitam recusas de upgrade e autenticação, comandos negados,
@@ -132,9 +147,10 @@ limites do host. Não há salto silencioso quando o replay foi descartado. Após
 `ClientConfig` é alterável a cada conexão. O padrão recomendado vem de
 `ClientConfig::recommended(&host_config)`: `max_frame_bytes` usa o limite de quadro
 do host; `queue_capacity` usa `subscriber_queue_chunks`. Este último limita a fila
-de eventos, a fila de comandos e o número de pedidos pendentes. Uma fila de eventos
+de eventos, a fila de comandos e o número de pedidos pendentes. Para consumidores comuns, uma fila de eventos
 cheia encerra a conexão com `Capacity`; o consumidor drena os eventos já guardados
-e reconecta com a última sequência consumida. A memória é limitada pelo produto do
+e reconecta com a última sequência consumida. A composição da API habilita contrapressão nessa fila e a consome também ao
+esperar respostas, preservando o canal sob rajadas de saída. A memória é limitada pelo produto do
 limite de quadro pelo tamanho das filas, além dos comandos fornecidos pelo chamador.
 Erros guardam apenas categorias, códigos e limites; mensagens do host e payloads
 recusados não são registrados. Não há persistência de saída nem telemetria.
@@ -159,3 +175,14 @@ shells interativos. Os demais testes usam `FakeBackend` e rodam também em Linux
 Para desfazer a integração, remova o consumidor da biblioteca; nenhuma sessão é
 migrada nem formato de armazenamento é alterado. A contiguidade de `seq`, os códigos
 de erro e a saída do comando real são as evidências de funcionamento nos testes.
+
+## Porta da interface em desenvolvimento
+
+Antes de abrir a URL, confira que a porta de `ui_base_url` pertence ao próprio
+usuário. Inicie o servidor da interface com porta fixa e `strictPort` (por exemplo,
+`npm run dev -- --host localhost --port 5173 --strictPort` na pasta `ui`).
+Se a porta estiver ocupada, pare e investigue; não abra a URL nem aceite outra
+porta automaticamente. Configurar uma URL diferente não comprova sua propriedade.
+Outro usuário pode servir uma página nessa porta e ler o fragmento com o token.
+O risco e o próximo passo estão na [ADR 0020](../../docs/adr/0020-local-api-authentication.md#limite-conhecido)
+e em [riscos](../../docs/risks.md#outro-usuário-ocupa-a-porta-da-interface).

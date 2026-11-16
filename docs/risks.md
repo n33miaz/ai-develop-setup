@@ -105,9 +105,19 @@ Estado da mitigação, em cada risco:
 - **Impacto.** Comando arbitrário num terminal do usuário com uma ferramenta de IA dentro.
 - **Dono.** Daemon (API local).
 - **Teto.** Prazo do `auth.hello` (padrão proposto 5 s).
-- **Mitigação existente (decidida como proposta, não implementada).** [ADR 0020](adr/0020-local-api-authentication.md): porta efêmera em `127.0.0.1`, conferência de `Host` e `Origin`, token por execução entregue pelo fragmento e conferido em tempo constante, recusa de origem remota. O Schema `urn:ads:command:auth.hello:1` existe.
+- **Mitigação existente (implementada, ADR ainda proposta).** [ADR 0020](adr/0020-local-api-authentication.md): porta efêmera em `127.0.0.1`, conferência de `Host` e `Origin`, token por execução entregue pelo fragmento e conferido em tempo constante, recusa de origem remota. O Schema `urn:ads:command:auth.hello:1` existe.
 - **Plano B.** Condição de reversão da ADR 0020.
-- **O que falta.** A ADR aguarda ratificação. O daemon ainda não escuta WebSocket nenhum, então nada do lado do servidor (porta, `Host`, `Origin`, token, prazo) existe. O lado da interface já lê o token do fragmento, guarda só na aba e manda `auth.hello` primeiro ([README da raiz](../README.md#interface-e-conexão-local)).
+- **O que falta.** A ADR aguarda ratificação. A API local implementa porta efêmera, `Host`, `Origin`, token e prazo único, com testes em `crates/daemon/tests/local_api.rs`. A propriedade da porta da interface ainda exige conferência manual (risco abaixo). O lado da interface já lê o token do fragmento, guarda só na aba e manda `auth.hello` primeiro ([README da raiz](../README.md#interface-e-conexão-local)).
+
+### Outro usuário ocupa a porta da interface
+
+- **Descrição.** Outra conta ocupa a porta de desenvolvimento da interface antes do servidor legítimo; sua página recebe o token no fragmento da URL impressa.
+- **Impacto.** Controle das sessões do usuário, mesmo com a API escutando só em loopback.
+- **Dono.** Daemon (entrega do token) e interface (servidor de desenvolvimento).
+- **Teto.** Um token por execução; o alcance fica nas sessões dessa execução. Não há teto de dano dentro de um terminal autorizado, portanto não abrir a URL sem verificar a propriedade da porta.
+- **Mitigação existente.** `ui_base_url` parametrizável em `defaults/daemon.toml`; `allowed_origins` vazio deriva somente a origem dessa URL. Em desenvolvimento, usar porta fixa e `strictPort` e só abrir depois de conferir que o processo que escuta é do próprio usuário. Configuração e igualdade exata das origens têm testes; a propriedade da porta da interface ainda depende da conferência manual.
+- **Plano B.** Não abrir a URL quando a propriedade não puder ser confirmada; parar o daemon para invalidar o token e reiniciá-lo depois de resolver a ocupação da porta.
+- **O que falta.** O daemon servir a interface na sua porta efêmera ou a casca Tauri entregar o token por canal do usuário, conforme o [limite conhecido da ADR 0020](adr/0020-local-api-authentication.md#limite-conhecido). O teste com duas contas no Windows ainda falta.
 
 ## Estado local
 

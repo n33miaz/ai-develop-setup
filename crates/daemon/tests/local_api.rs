@@ -49,8 +49,15 @@ async fn bounded<T>(future: impl Future<Output = T>) -> T {
         .expect("test timeout")
 }
 async fn fixture(overrides: &str, launcher: Arc<dyn Launcher>) -> Fixture {
+    fixture_with_host(overrides, launcher, HostConfig::defaults()).await
+}
+async fn fixture_with_host(
+    overrides: &str,
+    launcher: Arc<dyn Launcher>,
+    host_config: HostConfig,
+) -> Fixture {
     let backend = Arc::new(FakeBackend::with_echo());
-    let host = Arc::new(PtyHost::new(backend.clone(), HostConfig::defaults()).unwrap());
+    let host = Arc::new(PtyHost::new(backend.clone(), host_config).unwrap());
     let (near, far) = tokio::io::duplex(262144);
     let peer = tokio::spawn(server::connection(host.clone(), far));
     let client = bounded(PtyClient::over(
@@ -181,7 +188,7 @@ async fn upgrade_rejects_wrong_or_missing_origin_and_host() {
             _ => panic!("expected 403"),
         }
     }
-    for origin in ["http://localhost:5173", "http://127.0.0.1:5173"] {
+    for origin in ["http://localhost:5173"] {
         for host in [
             format!("localhost:{}", f.port),
             format!("127.0.0.1:{}", f.port),
@@ -449,6 +456,10 @@ async fn idempotency_cache_evicts_oldest_key() {
 fn configuration_rejects_invalid_bounds_and_origins() {
     for config in [
         "max_sessions = 0",
+        "max_pending_auth = 0",
+        "max_pending_auth = 1048577",
+        "accept_retry_ms = 0",
+        "accept_retry_ms = 300001",
         "max_write_bytes = 65537",
         "auth_timeout_ms = 0",
         "events_per_stream = 0",
@@ -468,7 +479,7 @@ fn configuration_rejects_invalid_bounds_and_origins() {
 #[test]
 fn credentials_only_appear_in_launch_fragment_and_diagnostics_are_redacted() {
     let token = Token::generate().unwrap();
-    let url = token.launch_url(12345);
+    let url = token.launch_url("http://localhost:5173", 12345);
     let (http, fragment) = url.split_once('#').unwrap();
     let secret = fragment.split_once("&token=").unwrap().1;
     assert_eq!(http, "http://localhost:5173/");
@@ -476,7 +487,12 @@ fn credentials_only_appear_in_launch_fragment_and_diagnostics_are_redacted() {
     assert!(token.matches(secret));
     assert!(!token.matches(&"X".repeat(43)));
     assert!(!token.matches(""));
-    assert_ne!(Token::generate().unwrap().launch_url(12345), url);
+    assert_ne!(
+        Token::generate()
+            .unwrap()
+            .launch_url("http://localhost:5173", 12345),
+        url
+    );
     let mut log = EventLog::new(2);
     log.append("secret", "output", json!({"session_id": "secret", "offset": 0, "length": secret.len(), "encoding": "base64", "payload": STANDARD.encode(secret)}), None).unwrap();
     let mut diagnostics = format!("{token:?} {log:?}");
@@ -501,6 +517,11 @@ fn credentials_only_appear_in_launch_fragment_and_diagnostics_are_redacted() {
     ] {
         diagnostics.push_str(&format!("{error:?} {error}"));
     }
+    let terminal = "private-terminal-output-sentinel";
+    let error = log.append("secret", "output", json!({"session_id": "secret", "offset": 0, "length": 1, "encoding": "base64", "payload": STANDARD.encode(format!("{terminal}{secret}")), "unexpected": secret}), None).unwrap_err();
+    diagnostics.push_str(&format!("{error:?} {error}"));
+    assert!(!diagnostics.contains(terminal));
+    assert!(!diagnostics.contains(&STANDARD.encode(format!("{terminal}{secret}"))));
     assert!(!diagnostics.contains(secret));
     assert!(!diagnostics.contains(&STANDARD.encode(secret)));
     assert!(!diagnostics.contains(&format!("{:?}", secret.as_bytes())));
@@ -540,11 +561,15 @@ async fn connection_and_message_limits_close_excess_clients() {
     )
     .await;
     let mut ws = authenticated(&f).await;
-    assert!(
-        connect(&f, Some("http://localhost:5173"), None)
-            .await
-            .is_err()
-    );
+    let mut excess = connect(&f, Some("http://localhost:5173"), None)
+        .await
+        .unwrap();
+    transmit(
+        &mut excess,
+        &command("auth.hello", json!({"token": f.token})),
+    )
+    .await;
+    closed(&mut excess).await;
     transmit(
         &mut ws,
         &command("unknown", json!({"padding": "x".repeat(2048)})),
@@ -625,4 +650,715 @@ async fn unsafe_open_parameters_and_invalid_sizes_never_reach_the_host() {
         );
     }
     assert!(f.backend.terminals().is_empty());
+}
+
+#[test]
+fn interface_origin_is_derived_and_overridable() {
+    let defaults = ApiConfig::from_toml_str("").unwrap();
+    assert_eq!(defaults.allowed_origins, ["http://localhost:5173"]);
+    let custom = ApiConfig::from_toml_str("ui_base_url = 'http://localhost:8271/'").unwrap();
+    assert_eq!(custom.allowed_origins, ["http://localhost:8271"]);
+    let url = Token::generate()
+        .unwrap()
+        .launch_url(&custom.ui_base_url, 42);
+    assert!(url.starts_with("http://localhost:8271/#core=ws://127.0.0.1:42&token="));
+    let explicit = ApiConfig::from_toml_str(
+        "ui_base_url = 'https://localhost:8271'\nallowed_origins = ['https://localhost:9000']",
+    )
+    .unwrap();
+    assert_eq!(explicit.allowed_origins, ["https://localhost:9000"]);
+    for value in [
+        "null",
+        "http://localhost:5173/path",
+        "http://localhost:5173/#token=x",
+        "http://user@localhost:5173",
+        "http://*.invalid",
+    ] {
+        assert!(ApiConfig::from_toml_str(&format!("ui_base_url = '{value}'")).is_err());
+    }
+}
+
+#[tokio::test]
+async fn exact_host_and_origin_variants_are_refused() {
+    let f = fixture("", Arc::new(TestLauncher)).await;
+    for host in [
+        format!("LOCALHOST:{}", f.port),
+        format!("localhost.:{}", f.port),
+        format!("[::1]:{}", f.port),
+        "127.0.0.1".into(),
+        "localhost".into(),
+        format!("localhost:{}", if f.port == 65535 { 1 } else { f.port + 1 }),
+    ] {
+        assert!(
+            connect(&f, Some("http://localhost:5173"), Some(&host))
+                .await
+                .is_err(),
+            "accepted {host}"
+        );
+    }
+    for origin in [
+        "http://127.0.0.1:5173",
+        "http://localhost:5174",
+        "HTTP://LOCALHOST:5173",
+        "http://localhost.:5173",
+        "http://[::1]:5173",
+        "http://localhost",
+        "http://localhost:5173/",
+        "https://localhost:5173",
+        "null",
+    ] {
+        assert!(
+            connect(&f, Some(origin), None).await.is_err(),
+            "accepted {origin}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn authentication_frames_are_single_attempt_and_ping_works_after_authentication() {
+    let f = fixture("", Arc::new(TestLauncher)).await;
+    for frame in [
+        Message::Ping(vec![1].into()),
+        Message::Binary(vec![1].into()),
+    ] {
+        let mut ws = connect(&f, Some("http://localhost:5173"), None)
+            .await
+            .unwrap();
+        ws.send(frame).await.unwrap();
+        closed(&mut ws).await;
+    }
+    for token in [
+        "".to_owned(),
+        "x".repeat(42),
+        "x".repeat(44),
+        "x".repeat(43),
+    ] {
+        let mut ws = connect(&f, Some("http://localhost:5173"), None)
+            .await
+            .unwrap();
+        transmit(&mut ws, &command("auth.hello", json!({"token": token}))).await;
+        closed(&mut ws).await;
+    }
+    let mut ws = authenticated(&f).await;
+    ws.send(Message::Ping(vec![7, 8].into())).await.unwrap();
+    assert_eq!(
+        bounded(ws.next()).await.unwrap().unwrap(),
+        Message::Pong(vec![7, 8].into())
+    );
+    transmit(&mut ws, &command("auth.hello", json!({"token": f.token}))).await;
+    closed(&mut ws).await;
+    let mut ws = authenticated(&f).await;
+    ws.send(Message::Binary(vec![1].into())).await.unwrap();
+    closed(&mut ws).await;
+}
+
+fn remote(mut value: Value) -> Value {
+    value["params"]["_meta"]["origin"] = json!("remote");
+    value["params"]["_meta"]["remote"] = json!({"device_id": "other", "signature": STANDARD.encode([0;64]), "nonce": STANDARD.encode([0;16]), "counter": 1, "expires_at": "2030-01-01T00:00:00Z"});
+    value
+}
+#[tokio::test]
+async fn remote_commands_never_change_sessions_or_subscriptions() {
+    let f = fixture("", Arc::new(TestLauncher)).await;
+    let mut ws = authenticated(&f).await;
+    call(&mut ws, "session.open", open_params("local")).await;
+    for (method, params) in [
+        (
+            "session.write",
+            json!({"session_id": "local", "data": STANDARD.encode(b"secret-terminal")}),
+        ),
+        (
+            "session.resize",
+            json!({"session_id": "local", "cols": 90, "rows": 30}),
+        ),
+        ("session.close", json!({"session_id": "local"})),
+        (
+            "events.subscribe",
+            json!({"stream": "session/local", "after_seq": 0}),
+        ),
+    ] {
+        transmit(&mut ws, &remote(command(method, params))).await;
+        assert_eq!(receive(&mut ws).await["error"]["code"], -32010);
+    }
+    assert!(f.backend.terminals()[0].input().is_empty());
+    assert_eq!(f.backend.terminals()[0].size().cols, 80);
+    assert!(!f.backend.terminals()[0].was_killed());
+    let mut unauth = connect(&f, Some("http://localhost:5173"), None)
+        .await
+        .unwrap();
+    transmit(
+        &mut unauth,
+        &remote(command("auth.hello", json!({"token": f.token}))),
+    )
+    .await;
+    closed(&mut unauth).await;
+    assert_eq!(
+        call(&mut ws, "session.close", json!({"session_id": "local"})).await["result"]["accepted"],
+        true
+    );
+}
+
+#[tokio::test]
+async fn subscriptions_have_a_per_connection_limit() {
+    let f = fixture("max_sessions = 1", Arc::new(TestLauncher)).await;
+    let mut ws = authenticated(&f).await;
+    for stream in ["session/a", "session/a"] {
+        assert_eq!(
+            call(
+                &mut ws,
+                "events.subscribe",
+                json!({"stream": stream, "after_seq": 0})
+            )
+            .await["result"]["accepted"],
+            true
+        );
+    }
+    assert_eq!(
+        call(
+            &mut ws,
+            "events.subscribe",
+            json!({"stream": "session/b", "after_seq": 0})
+        )
+        .await["error"]["code"],
+        -32003
+    );
+    let mut other = authenticated(&f).await;
+    assert_eq!(
+        call(
+            &mut other,
+            "events.subscribe",
+            json!({"stream": "session/b", "after_seq": 0})
+        )
+        .await["result"]["accepted"],
+        true
+    );
+}
+
+#[tokio::test]
+async fn unauthenticated_sockets_have_separate_bounded_slots() {
+    let f = fixture(
+        "max_connections = 1\nmax_pending_auth = 2\nauth_timeout_ms = 200",
+        Arc::new(TestLauncher),
+    )
+    .await;
+    let mut ws = authenticated(&f).await;
+    let a = TcpStream::connect(("127.0.0.1", f.port)).await.unwrap();
+    let b = TcpStream::connect(("127.0.0.1", f.port)).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(
+        connect(&f, Some("http://localhost:5173"), None)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        call(&mut ws, "unknown", json!({})).await["error"]["code"],
+        -32601
+    );
+    tokio::time::sleep(Duration::from_millis(220)).await;
+    drop((a, b));
+    let mut available = connect(&f, Some("http://localhost:5173"), None)
+        .await
+        .unwrap();
+    available.close(None).await.unwrap();
+}
+
+#[tokio::test]
+async fn handshake_and_hello_share_one_deadline() {
+    use tokio::io::AsyncWriteExt;
+    let f = fixture("auth_timeout_ms = 400", Arc::new(TestLauncher)).await;
+    let mut stream = TcpStream::connect(("127.0.0.1", f.port)).await.unwrap();
+    stream.write_all(b"G").await.unwrap();
+    tokio::time::sleep(Duration::from_millis(280)).await;
+    // Complete the pending HTTP request with the client codec without writing its G twice.
+    let request = format!(
+        "ET / HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nOrigin: http://localhost:5173\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+        f.port
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    use tokio::io::AsyncReadExt;
+    let start = tokio::time::Instant::now();
+    let mut bytes = Vec::new();
+    bounded(stream.read_to_end(&mut bytes)).await.unwrap();
+    assert!(bytes.starts_with(b"HTTP/1.1 101"));
+    assert!(start.elapsed() < Duration::from_millis(300));
+}
+
+// A peer implements the public codec and injects refusals independent of terminal timing.
+async fn refusing_fixture(
+    overrides: &str,
+    target: &'static str,
+    code: ads_ptyhost::wire::ErrorCode,
+    burst: usize,
+) -> (Fixture, Arc<std::sync::Mutex<Vec<String>>>) {
+    use ads_ptyhost::wire::{self, Call, ResultBody};
+    use tokio::io::AsyncWriteExt;
+    let backend = Arc::new(FakeBackend::new());
+    let host = Arc::new(PtyHost::new(backend.clone(), HostConfig::defaults()).unwrap());
+    let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let observed = calls.clone();
+    let error_text = Arc::new(std::sync::Mutex::new(String::new()));
+    let peer_error = error_text.clone();
+    let (near, mut far) = tokio::io::duplex(4096);
+    let peer = tokio::spawn(async move {
+        let mut refused = false;
+        let mut subscriptions = 0;
+        while let Ok(Some(wire::Frame::Json(payload))) = wire::read_frame(&mut far, 131072).await {
+            let request = wire::Request::parse(&payload).unwrap();
+            let method = match &request.call {
+                Call::Hello(_) => "hello",
+                Call::Open(_) => "open",
+                Call::Write(_) => "write",
+                Call::Resize(_) => "resize",
+                Call::Close(_) => "close",
+                Call::Subscribe(_) => "subscribe",
+                Call::List(_) => "list",
+            };
+            observed.lock().unwrap().push(method.to_owned());
+            if method == "subscribe" {
+                subscriptions += 1;
+            }
+            let outcome = if (method == target
+                || (target == "recover" && method == "subscribe" && subscriptions > 1))
+                && !refused
+            {
+                refused = true;
+                Err(wire::ErrorBody::new(
+                    code,
+                    &peer_error.lock().unwrap(),
+                    Some(wire::ErrorData {
+                        oldest_seq: Some(1.try_into().unwrap()),
+                        next_seq: Some(1.try_into().unwrap()),
+                        limit: None,
+                    }),
+                ))
+            } else {
+                Ok(match &request.call {
+                    Call::Hello(_) => ResultBody::Hello(wire::HelloResult {
+                        contract: Default::default(),
+                    }),
+                    Call::Subscribe(_) => ResultBody::ReplayBounds(wire::ReplayBounds {
+                        oldest_seq: 1.try_into().unwrap(),
+                        next_seq: 1.try_into().unwrap(),
+                    }),
+                    Call::Close(_) => ResultBody::Closed(wire::Closed { exit_code: None }),
+                    _ => ResultBody::Empty(wire::Empty {}),
+                })
+            };
+            if let Call::Close(params) = &request.call
+                && target == "exit-before-close-response"
+            {
+                far.write_all(
+                    &wire::encode_json(&wire::Notification::SessionExited(wire::SessionExited {
+                        session_id: params.session_id.clone(),
+                        last_seq: 0,
+                        exit_code: Some(0),
+                    }))
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            if let Call::Write(params) = &request.call {
+                if target == "stall" {
+                    std::future::pending::<()>().await;
+                }
+                if target == "recover" {
+                    far.write_all(
+                        &wire::encode_json(&wire::Notification::SubscriptionClosed(
+                            wire::SubscriptionClosed {
+                                session_id: params.session_id.clone(),
+                                last_seq: 0,
+                                reason: wire::CloseReason::SlowSubscriber,
+                            },
+                        ))
+                        .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                }
+                match target {
+                    "gap-output" => far
+                        .write_all(
+                            &wire::encode_output(&params.session_id, 2, b"terminal-sentinel")
+                                .unwrap(),
+                        )
+                        .await
+                        .unwrap(),
+                    "gap-exit" => far
+                        .write_all(
+                            &wire::encode_json(&wire::Notification::SessionExited(
+                                wire::SessionExited {
+                                    session_id: params.session_id.clone(),
+                                    last_seq: 1,
+                                    exit_code: Some(0),
+                                },
+                            ))
+                            .unwrap(),
+                        )
+                        .await
+                        .unwrap(),
+                    "gap-close" => far
+                        .write_all(
+                            &wire::encode_json(&wire::Notification::SubscriptionClosed(
+                                wire::SubscriptionClosed {
+                                    session_id: params.session_id.clone(),
+                                    last_seq: 1,
+                                    reason: wire::CloseReason::SessionClosed,
+                                },
+                            ))
+                            .unwrap(),
+                        )
+                        .await
+                        .unwrap(),
+                    _ => (),
+                }
+                for seq in 1..=burst {
+                    far.write_all(
+                        &wire::encode_output(&params.session_id, seq as u64, b"terminal-sentinel")
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                }
+                if burst > 0 {
+                    tokio::time::sleep(Duration::from_millis(30)).await;
+                }
+            }
+            if far
+                .write_all(
+                    &wire::encode_json(&wire::Response {
+                        id: Some(request.id),
+                        outcome,
+                    })
+                    .unwrap(),
+                )
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+    let client = PtyClient::over(
+        near,
+        ClientConfig {
+            max_frame_bytes: 131072,
+            queue_capacity: 2,
+        },
+    )
+    .await
+    .unwrap();
+    let api = LocalApi::bind(
+        ApiConfig::from_toml_str(overrides).unwrap(),
+        client,
+        Arc::new(TestLauncher),
+    )
+    .await
+    .unwrap();
+    let token = api
+        .launch_url()
+        .unwrap()
+        .split_once("&token=")
+        .unwrap()
+        .1
+        .to_owned();
+    *error_text.lock().unwrap() = format!("{token} credential-and-terminal-sentinel");
+    (
+        Fixture {
+            port: api.port().unwrap(),
+            token,
+            backend,
+            host,
+            api: tokio::spawn(api.run()),
+            peer,
+        },
+        calls,
+    )
+}
+
+#[tokio::test]
+async fn every_host_refusal_returns_its_code_and_service_survives() {
+    use ads_ptyhost::wire::ErrorCode::*;
+    for code in [
+        ParseError,
+        InvalidRequest,
+        MethodNotFound,
+        InvalidParams,
+        InternalError,
+        UnknownSession,
+        SessionExists,
+        TooManySessions,
+        ReplayEvicted,
+        ReplayAhead,
+        SessionEnded,
+        SpawnFailed,
+        TerminalIo,
+        UnsupportedContract,
+    ] {
+        for target in ["open", "write", "resize", "close", "subscribe"] {
+            let (f, _) = refusing_fixture("", target, code, 0).await;
+            let mut ws = authenticated(&f).await;
+            let result = call(&mut ws, "session.open", open_params("session")).await;
+            let result = match target {
+                "write" => call(
+                    &mut ws,
+                    "session.write",
+                    json!({"session_id": "session", "data": STANDARD.encode(f.token.as_bytes())}),
+                )
+                .await,
+                "resize" => {
+                    call(
+                        &mut ws,
+                        "session.resize",
+                        json!({"session_id": "session", "cols": 90, "rows": 30}),
+                    )
+                    .await
+                }
+                "close" => call(&mut ws, "session.close", json!({"session_id": "session"})).await,
+                _ => result,
+            };
+            assert_eq!(result["error"]["code"], code.number(), "{target}: {code:?}");
+            if target == "close" {
+                assert_eq!(
+                    call(&mut ws, "session.close", json!({"session_id": "session"})).await["result"]
+                        ["accepted"],
+                    true
+                );
+            }
+            let diagnostics = result.to_string();
+            assert!(!diagnostics.contains(&f.token));
+            assert!(!diagnostics.contains("credential-and-terminal-sentinel"));
+            assert_eq!(
+                call(
+                    &mut ws,
+                    "events.subscribe",
+                    json!({"stream": "session/alive", "after_seq": 0})
+                )
+                .await["result"]["accepted"],
+                true
+            );
+            assert!(!f.api.is_finished());
+        }
+    }
+}
+
+#[tokio::test]
+async fn failed_open_subscription_closes_host_and_allows_retry() {
+    use ads_ptyhost::wire::ErrorCode;
+    let (f, calls) = refusing_fixture("", "subscribe", ErrorCode::SessionEnded, 0).await;
+    let mut ws = authenticated(&f).await;
+    assert_eq!(
+        call(&mut ws, "session.open", open_params("session")).await["error"]["code"],
+        -32006
+    );
+    assert_eq!(
+        &*calls.lock().unwrap(),
+        &["hello", "open", "subscribe", "close"]
+    );
+    assert_eq!(
+        call(&mut ws, "session.open", open_params("session")).await["result"]["accepted"],
+        true
+    );
+}
+
+#[tokio::test]
+async fn output_is_consumed_during_host_wait_and_overflow_notifies_slow_subscriber() {
+    let (f, _) = refusing_fixture(
+        "events_per_stream = 2\nhost_timeout_ms = 500",
+        "never",
+        ads_ptyhost::wire::ErrorCode::InternalError,
+        40,
+    )
+    .await;
+    let mut ws = authenticated(&f).await;
+    call(&mut ws, "session.open", open_params("session")).await;
+    let subscription = command(
+        "events.subscribe",
+        json!({"stream": "session/session", "after_seq": 0}),
+    );
+    transmit(&mut ws, &subscription).await;
+    assert_eq!(receive(&mut ws).await["result"]["accepted"], true);
+    assert_eq!(receive(&mut ws).await["seq"], 1);
+    let result = call(
+        &mut ws,
+        "session.write",
+        json!({"session_id": "session", "data": "YQ=="}),
+    )
+    .await;
+    assert_eq!(result["result"]["accepted"], true);
+    let error = receive(&mut ws).await;
+    assert_eq!(error["id"], subscription["id"]);
+    assert_eq!(error["error"]["code"], -32004);
+    closed(&mut ws).await;
+    let mut other = authenticated(&f).await;
+    assert_eq!(
+        call(&mut other, "unknown", json!({})).await["error"]["code"],
+        -32601
+    );
+}
+
+#[tokio::test]
+async fn fake_backend_existing_session_and_full_host_do_not_stop_service() {
+    let f = fixture_with_host(
+        "",
+        Arc::new(TestLauncher),
+        HostConfig::from_toml_str("max_sessions = 1").unwrap(),
+    )
+    .await;
+    let id = ads_ptyhost::wire::SessionId::new("existing").unwrap();
+    f.host
+        .open(
+            &id,
+            &ads_ptyhost::SpawnSpec {
+                program: "fake-terminal".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let mut ws = authenticated(&f).await;
+    assert_eq!(
+        call(&mut ws, "session.open", open_params("existing")).await["error"]["code"],
+        -32002
+    );
+    assert_eq!(
+        call(&mut ws, "session.open", open_params("extra")).await["error"]["code"],
+        -32003
+    );
+    f.host.close(&id).await.unwrap();
+    assert_eq!(
+        call(&mut ws, "session.open", open_params("new")).await["result"]["accepted"],
+        true
+    );
+}
+
+#[tokio::test]
+async fn failed_host_resubscribe_invalidates_only_the_affected_stream() {
+    let (f, _) = refusing_fixture(
+        "",
+        "recover",
+        ads_ptyhost::wire::ErrorCode::ReplayEvicted,
+        0,
+    )
+    .await;
+    let mut ws = authenticated(&f).await;
+    call(&mut ws, "session.open", open_params("session")).await;
+    call(
+        &mut ws,
+        "session.write",
+        json!({"session_id": "session", "data": "YQ=="}),
+    )
+    .await;
+    // A following request also acts as a barrier after the recovery refusal.
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert_eq!(
+        call(
+            &mut ws,
+            "events.subscribe",
+            json!({"stream": "session/session", "after_seq": 0})
+        )
+        .await["error"]["code"],
+        -32004
+    );
+    assert_eq!(
+        call(
+            &mut ws,
+            "events.subscribe",
+            json!({"stream": "session/other", "after_seq": 0})
+        )
+        .await["result"]["accepted"],
+        true
+    );
+    assert!(!f.api.is_finished());
+}
+
+#[tokio::test]
+async fn host_timeout_ends_the_service_after_an_uncertain_command() {
+    let (mut f, _) = refusing_fixture(
+        "host_timeout_ms = 50",
+        "stall",
+        ads_ptyhost::wire::ErrorCode::InternalError,
+        0,
+    )
+    .await;
+    let mut ws = authenticated(&f).await;
+    call(&mut ws, "session.open", open_params("session")).await;
+    transmit(
+        &mut ws,
+        &command(
+            "session.write",
+            json!({"session_id": "session", "data": "YQ=="}),
+        ),
+    )
+    .await;
+    assert_eq!(
+        bounded(&mut f.api).await.unwrap(),
+        Err(ApiError::Unavailable)
+    );
+    closed(&mut ws).await;
+}
+
+#[tokio::test]
+async fn host_event_gaps_refuse_replay_without_stopping_the_service() {
+    for target in ["gap-output", "gap-exit", "gap-close"] {
+        let (f, _) =
+            refusing_fixture("", target, ads_ptyhost::wire::ErrorCode::InternalError, 0).await;
+        let mut ws = authenticated(&f).await;
+        call(&mut ws, "session.open", open_params("session")).await;
+        assert_eq!(
+            call(
+                &mut ws,
+                "session.write",
+                json!({"session_id": "session", "data": "YQ=="})
+            )
+            .await["result"]["accepted"],
+            true
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(
+            call(
+                &mut ws,
+                "events.subscribe",
+                json!({"stream": "session/session", "after_seq": 0})
+            )
+            .await["error"]["code"],
+            -32004
+        );
+        assert_eq!(
+            call(&mut ws, "unknown", json!({})).await["error"]["code"],
+            -32601
+        );
+        assert!(!f.api.is_finished());
+    }
+}
+
+#[tokio::test]
+async fn exit_before_close_reply_is_reported_as_requested_termination() {
+    let (f, _) = refusing_fixture(
+        "",
+        "exit-before-close-response",
+        ads_ptyhost::wire::ErrorCode::InternalError,
+        0,
+    )
+    .await;
+    let mut control = authenticated(&f).await;
+    let mut events = authenticated(&f).await;
+    call(&mut control, "session.open", open_params("session")).await;
+    call(
+        &mut events,
+        "events.subscribe",
+        json!({"stream": "session/session", "after_seq": 0}),
+    )
+    .await;
+    assert_eq!(receive(&mut events).await["seq"], 1);
+    assert_eq!(
+        call(
+            &mut control,
+            "session.close",
+            json!({"session_id": "session"})
+        )
+        .await["result"]["accepted"],
+        true
+    );
+    assert_eq!(receive(&mut events).await["data"]["reason"], "killed");
 }

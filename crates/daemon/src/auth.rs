@@ -34,9 +34,10 @@ impl Token {
         self.0.as_bytes().ct_eq(candidate.as_bytes()).into()
     }
 
-    pub fn launch_url(&self, port: u16) -> String {
+    pub fn launch_url(&self, base: &str, port: u16) -> String {
         format!(
-            "http://localhost:5173/#core=ws://127.0.0.1:{port}&token={}",
+            "{}/#core=ws://127.0.0.1:{port}&token={}",
+            base.trim_end_matches('/'),
             self.0
         )
     }

@@ -31,6 +31,7 @@ pub fn new_id() -> Result<String, ApiError> {
 #[derive(Default)]
 struct Stream {
     last: u64,
+    invalid: bool,
     events: VecDeque<Value>,
 }
 
@@ -58,6 +59,26 @@ impl EventLog {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn exhaust_sequence(&mut self, session: &str) {
+        self.streams.insert(
+            format!("session/{session}"),
+            Stream {
+                last: u64::MAX,
+                ..Stream::default()
+            },
+        );
+    }
+    pub(crate) fn remove(&mut self, session: &str) {
+        self.streams.remove(&format!("session/{session}"));
+    }
+    pub(crate) fn invalidate(&mut self, session: &str) {
+        if let Some(stream) = self.streams.get_mut(&format!("session/{session}")) {
+            stream.events.clear();
+            stream.invalid = true;
+        }
+        self.changed.send_replace(());
+    }
     pub fn watch(&self) -> watch::Receiver<()> {
         self.changed.subscribe()
     }
@@ -110,6 +131,9 @@ impl EventLog {
                 Err(ApiError::Replay)
             };
         };
+        if entry.invalid {
+            return Err(ApiError::Replay);
+        }
         let oldest = entry
             .events
             .front()
