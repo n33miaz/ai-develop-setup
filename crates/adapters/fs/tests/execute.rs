@@ -173,12 +173,10 @@ fn a_delete_goes_to_quarantine_and_comes_back_whole() {
 
     // The spent permit only closes the action; the journal saw the one start.
     assert_eq!(rest.journal.events().len(), 1);
-    let (command, _) = done.close();
-    assert!(matches!(command, Command::Executed { .. }));
-    let (_, event) = rest
-        .action
-        .apply(command, meta("2026-11-15T12:00:09Z", 3))
+    let (action, event, _) = done
+        .close(rest.action, meta("2026-11-15T12:00:09Z", 3))
         .unwrap();
+    assert!(action.state().is_terminal());
     assert!(matches!(event, Event::ActionExecuted(_)));
 
     // Back from the manifest: same structure, same content.

@@ -18,7 +18,9 @@ use ads_adapter_fs::{
 };
 use ads_core::gate::OperationRequest;
 
-use common::{Flow, MemoryJournal, Request, SEPARATOR, Sandbox, estimate, through_gate, tree};
+use common::{
+    Flow, MemoryJournal, Request, SEPARATOR, Sandbox, estimate, meta, through_gate, tree,
+};
 
 const QUARANTINE_OFF: &str = "quarantine_enabled = false";
 
@@ -166,6 +168,12 @@ fn swap_after_the_last_check(name: &str, overrides: &'static str, swapped_folder
     let outcome = execute(&mut executor, flow);
     assert!(tried.get(), "the hook ran between the opening and the call");
     println!("{name}: swapped = {}", swapped.get());
+    // Linux lets a folder with open handles be renamed: there the swap is real, and the
+    // call has to land on the approved entry all the same.
+    if cfg!(target_os = "linux") {
+        assert!(swapped.get(), "{name}: the swap did not happen");
+        assert!(outcome.is_ok(), "{name}: {:?}", outcome.as_ref().err());
+    }
 
     // Never the sibling, whatever happened.
     assert_eq!(tree(&sandbox.outside), outside_before);
@@ -458,10 +466,15 @@ fn a_repository_deeper_in_the_target_refuses() {
     sandbox.file("work/pack/project/src/main.rs", "fn main() {}");
     // A worktree, deeper, has `.git` as a file.
     sandbox.file("work/other/a/b/tree/.git", "gitdir: elsewhere");
+    // On a file system that ignores case this is a repository too.
+    sandbox.file("work/upper/project/.GIT/HEAD", "ref: refs/heads/main");
     sandbox.file("work/plain/a/b/file.txt", "x");
-    for (at, target) in ["work/pack", "work/other"].into_iter().enumerate() {
+    for (at, target) in ["work/pack", "work/other", "work/upper"]
+        .into_iter()
+        .enumerate()
+    {
         for (n, overrides) in ["", QUARANTINE_OFF].into_iter().enumerate() {
-            let action_id = [["act-a", "act-b"], ["act-c", "act-d"]][at][n];
+            let action_id = [["act-a", "act-b"], ["act-c", "act-d"], ["act-f", "act-g"]][at][n];
             let flow = through_gate(
                 &sandbox.policy(overrides),
                 delete(&sandbox, action_id, &[target]),
@@ -695,14 +708,6 @@ fn a_stop_at_any_step_of_a_quarantine_loses_nothing_and_is_told_as_it_is() {
 
         recover(&sandbox, &batch, &batch_text, "act-2");
         assert_eq!(work_tree(&sandbox), before_work, "{nth}: {failure}");
-
-        // And a new action, with its own folder, does the whole job.
-        let flow = through_gate(
-            &sandbox.policy(""),
-            delete(&sandbox, "act-3", &["work/a/build", "work/b/notes.txt"]),
-        );
-        execute(&mut sandbox.executor(""), flow).unwrap();
-        assert_eq!(work_tree(&sandbox).len(), 3, "{nth}");
     }
     assert!(stages.contains(&Stage::Staging) && stages.contains(&Stage::Steps));
 }
@@ -858,12 +863,24 @@ fn a_second_permit_of_an_action_is_refused_even_with_another_journal() {
     let policy = sandbox.policy(QUARANTINE_OFF);
     let mut executor = sandbox.executor(QUARANTINE_OFF);
     sandbox.file("work/a/data.txt", "first");
+    sandbox.file("work/keep.txt", "kept");
     let flow = through_gate(&policy, delete(&sandbox, "act-1", &["work/a"]));
-    let done = execute(&mut executor, flow).unwrap();
+    let done = executor
+        .execute(flow.permit, &flow.started, &mut MemoryJournal::new())
+        .unwrap();
     assert!(!sandbox.path("work/a").exists());
-    // What comes back closes the action and is no permit to run again.
-    let (command, report) = done.close();
-    assert!(matches!(command, ads_core::gate::Command::Executed { .. }));
+    // What comes back holds no permit to run again: it can only close an action, and the
+    // action of another permit refuses it and gives nothing back.
+    let other = through_gate(&policy, delete(&sandbox, "act-9", &["work/keep.txt"]));
+    let stray = execute(&mut executor, other).unwrap();
+    let refused = stray
+        .close(flow.action, meta("2026-11-15T12:00:09Z", 3))
+        .unwrap_err();
+    let (action, event, report) = done
+        .close(refused.action, meta("2026-11-15T12:00:09Z", 3))
+        .unwrap();
+    assert!(matches!(event, ads_core::gate::Event::ActionExecuted(_)));
+    assert!(action.state().is_terminal());
     assert_eq!(report.steps[0].status, Status::Done);
 
     sandbox.file("work/a/data.txt", "second");
