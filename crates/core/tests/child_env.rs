@@ -107,7 +107,35 @@ fn parent() -> Vec<(String, String)> {
             .iter()
             .map(|n| (n.to_string(), "s3cr3t".to_string())),
     );
-    env.push(("RANDOM_VAR".into(), "x".into()));
+    // Common variables outside the list: a wider allow list in the defaults lets one through.
+    for name in [
+        "HOME",
+        "USER",
+        "USERNAME",
+        "USERDOMAIN",
+        "COMPUTERNAME",
+        "LOGONSERVER",
+        "OS",
+        "LANG",
+        "SHELL",
+        "PWD",
+        "PROMPT",
+        "PSModulePath",
+        "ProgramFiles",
+        "ProgramData",
+        "PUBLIC",
+        "OneDrive",
+        "NUMBER_OF_PROCESSORS",
+        "PROCESSOR_ARCHITECTURE",
+        "SESSIONNAME",
+        "XDG_CONFIG_HOME",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NODE_OPTIONS",
+        "RANDOM_VAR",
+    ] {
+        env.push((name.into(), "x".into()));
+    }
     env
 }
 
