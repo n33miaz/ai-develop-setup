@@ -3,24 +3,25 @@
 //! relative to its open folder, and no link is ever followed. What an operation reaches is
 //! decided by what is open, not by how a path is spelled.
 //!
-//! The only path taken is the one of [`Node::root`], once, for the fence.
+//! The only path taken is the one of [`Node::anchor`]: the root of the volume, from which the
+//! fence itself is reached name by name.
 
 use std::io;
 
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
-pub use linux::{Claim, Node};
+pub use linux::{Claim, HOLDS, Node};
 
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
-pub use windows::{Claim, Node};
+pub use windows::{Claim, HOLDS, Node};
 
 #[cfg(not(any(target_os = "linux", windows)))]
 mod unsupported;
 #[cfg(not(any(target_os = "linux", windows)))]
-pub use unsupported::{Claim, Node};
+pub use unsupported::{Claim, HOLDS, Node};
 
 /// What an entry is, as seen on its own handle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -10,6 +10,26 @@
 # recusada antes de qualquer alteracao.
 max_depth = 128
 
+# Quando uma entrada pode ser apagada de verdade (e nao movida para a quarentena): a purga da quarentena e
+# o apagar com `quarantine_enabled = false` na politica. Apagar age sobre um nome dentro de uma pasta aberta;
+# se outro processo tira essa pasta de dentro da cerca entre a ultima conferencia e a chamada, a exclusao
+# vai junto. So ha contencao onde o sistema segura a pasta no lugar enquanto ela esta aberta.
+#   "contained" (padrao): so apaga onde o sistema segura a pasta no lugar (Windows). No Linux TODO apagar
+#                definitivo e recusado (E_FS_DELETE_UNCONTAINED): la o executor so faz quarentena e
+#                restauracao, e a quarentena nao e esvaziada por ele.
+#   "isolated":  apaga nos dois sistemas. No Linux fica o risco acima, contra um processo do mesmo usuario
+#                que mova pastas durante a exclusao; o executor reconfere o caminho antes de cada remocao,
+#                o que estreita a janela e nao a fecha. Use so onde nenhum outro processo mexe na arvore.
+#   "refuse":    nunca apaga de verdade.
+# Nos tres modos uma arvore nunca e esvaziada onde esta: e movida inteira, sem substituir nada, para uma
+# pasta propria da execucao dentro de `private_dir`, e removida la.
+definitive_delete = "contained"
+
+# Pasta privada do executor, abaixo da raiz de trabalho (nomes separados por `/`). Cada execucao que apaga
+# uma arvore cria nela, de forma exclusiva, a pasta `<action_id>` (no Linux, so para o usuario do executor)
+# e a remove ao terminar. O que sobrar de uma exclusao interrompida fica nessa pasta.
+private_dir = ".ads/tmp"
+
 # Maior manifesto de quarentena, em bytes. Vale nos dois sentidos: uma leva cujo manifesto passaria disso e
 # recusada antes de qualquer alteracao, e na restauracao a leitura para neste tamanho.
 max_manifest_bytes = 16777216

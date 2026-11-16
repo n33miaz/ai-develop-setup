@@ -30,8 +30,19 @@ impl Executor {
     /// the trusted one: the plan of every permit is judged with it again before anything
     /// happens.
     pub fn new(fence: &Path, policy: GatePolicy) -> Result<Self, FenceError> {
+        Self::new_watched(fence, policy, || {})
+    }
+
+    /// Like [`Self::new`], calling `resolved` after the path of the fence was resolved and
+    /// before the fence is opened. For tests of that instant.
+    #[doc(hidden)]
+    pub fn new_watched(
+        fence: &Path,
+        policy: GatePolicy,
+        resolved: impl FnOnce(),
+    ) -> Result<Self, FenceError> {
         Ok(Self {
-            fence: Fence::new(fence)?,
+            fence: Fence::build(fence, resolved)?,
             policy,
             limits: Limits::defaults(),
             probe: None,
@@ -132,9 +143,12 @@ impl Executor {
             .manifest_bytes(&self.limits)
             .map_err(Failure::before_anything)?;
         let floor = job.floor.clone();
+        let private = job.private.clone();
         let mut disk = Disk {
             fence: &self.fence,
             floor: &floor,
+            private: private.as_deref(),
+            work: job.work,
             probe: self.probe.as_deref_mut(),
             limits: &self.limits,
             laid: Vec::new(),

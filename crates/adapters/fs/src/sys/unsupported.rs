@@ -7,6 +7,8 @@ use std::path::Path;
 
 use super::{Error, Identity, Meta};
 
+pub const HOLDS: bool = false;
+
 #[derive(Debug)]
 pub struct Node {
     never: std::convert::Infallible,
@@ -18,7 +20,7 @@ pub struct Claim<'a> {
 }
 
 impl Node {
-    pub fn root(_path: &Path) -> io::Result<Self> {
+    pub fn anchor(_path: &Path) -> io::Result<Self> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "this system is not supported",
@@ -30,6 +32,18 @@ impl Node {
     }
 
     pub fn meta(&self) -> io::Result<Meta> {
+        match self.never {}
+    }
+
+    pub fn hold(&self) -> io::Result<Self> {
+        match self.never {}
+    }
+
+    pub fn holds(&self, _name: &str, _expected: Identity) -> Result<bool, Error> {
+        match self.never {}
+    }
+
+    pub fn arrived(&self, _name: &str, _expected: Identity) -> Result<bool, Error> {
         match self.never {}
     }
 
@@ -49,7 +63,11 @@ impl Node {
         match self.never {}
     }
 
-    pub fn write_new(&self, _name: &str, _bytes: &[u8]) -> Result<(), Error> {
+    pub fn make_private_dir(&self, _name: &str) -> Result<Self, Error> {
+        match self.never {}
+    }
+
+    pub fn create_file(&self, _name: &str) -> Result<std::fs::File, Error> {
         match self.never {}
     }
 
@@ -67,6 +85,10 @@ impl Node {
 }
 
 impl Claim<'_> {
+    pub fn meta(&self) -> &Meta {
+        match self.parent.never {}
+    }
+
     pub fn remove(self) -> Result<(), Error> {
         match self.parent.never {}
     }

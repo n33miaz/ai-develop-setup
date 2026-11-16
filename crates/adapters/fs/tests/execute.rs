@@ -464,7 +464,6 @@ fn swap_test(name: &str, overrides: &'static str) {
         failure.report.steps[0].status,
         Status::Failed {
             reason: Reason::LinkInPath,
-            removed: 0,
             ..
         }
     ));
@@ -643,12 +642,14 @@ fn with_the_quarantine_off_a_tree_is_deleted_entry_by_entry() {
     );
     let (outcome, _) = execute(&mut sandbox.executor(QUARANTINE_OFF), flow);
     outcome.unwrap();
-    let left = tree(&sandbox.path("work"));
+    let left = work_tree(&sandbox);
     assert_eq!(
         left.keys().collect::<Vec<_>>(),
         ["keep", "keep/c.txt"],
         "only the target went away"
     );
+    // The folder the tree was held in while it went is gone too.
+    assert!(tree(&sandbox.path(sandbox.private_dir())).is_empty());
 }
 
 #[test]
@@ -799,17 +800,23 @@ fn a_recursive_delete_that_fails_in_the_middle_says_how_far_it_went() {
         }));
     let (outcome, _) = execute(&mut executor, flow);
     let failure = outcome.unwrap_err();
-    // `other` (two entries) went; in `tree`, one file went and the second removal failed.
+    // `other` (two entries) went; `tree` was moved to its holding folder, where one file
+    // went and the second removal failed. What is left of it is there, and the report says
+    // where.
     assert_eq!(failure.report.steps[0].status, Status::Done);
     assert!(matches!(
         failure.report.steps[1].status,
-        Status::Failed { removed: 1, .. }
+        Status::Held {
+            removed: 1,
+            confirmed: 1,
+            ..
+        }
     ));
-    let left = tree(&sandbox.path("work"));
-    assert_eq!(
-        left.keys().collect::<Vec<_>>(),
-        ["tree", "tree/b.txt", "tree/c.txt"]
-    );
+    assert!(!failure.report.untouched());
+    assert!(work_tree(&sandbox).is_empty());
+    let held = PathBuf::from(failure.report.steps[1].held.as_ref().unwrap());
+    assert!(held.starts_with(sandbox.path(sandbox.private_dir())));
+    assert_eq!(tree(&held).keys().collect::<Vec<_>>(), ["b.txt", "c.txt"]);
 }
 
 // ---- order with the log -------------------------------------------------------------------------

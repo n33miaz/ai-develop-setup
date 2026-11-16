@@ -30,19 +30,23 @@ pub enum Status {
     Done,
     /// Listed in the manifest, not in quarantine: there was nothing to move.
     Absent,
-    /// The step stopped here. `removed` counts the entries of a recursive delete that were
-    /// already gone; a move either happened or did not.
-    Failed {
+    /// The step stopped before its target was changed: it is where it was, whole.
+    Failed { reason: Reason, detail: String },
+    /// A definitive delete stopped after its target was moved to its holding folder (`held`
+    /// of the step): what is left of it is there. `removed` counts the entries seen to go;
+    /// `confirmed`, those whose folder was confirmed on disk afterwards.
+    Held {
         reason: Reason,
         detail: String,
         removed: u64,
+        confirmed: u64,
     },
     /// The change was made, but the system did not confirm it is on disk: after a power
     /// loss it may or may not be there.
     Unconfirmed { detail: String },
-    /// A move took another entry than the approved one: it took the name at the last
-    /// instant. It is at the destination, whole, and can be moved back.
-    Misplaced { detail: String },
+    /// The system made the move, but the check after it did not confirm what is under the
+    /// destination name. The target left its place; where it is now is not promised.
+    Unverified { detail: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,6 +55,9 @@ pub struct Step {
     pub target: String,
     pub effect: Effect,
     pub facts: Facts,
+    /// Where a tree is held while it is removed for good: it is moved there first, whole,
+    /// and removed there. `None` for every other step.
+    pub held: Option<String>,
     pub status: Status,
 }
 
@@ -69,9 +76,12 @@ pub enum Laid {
     AlreadyThere,
     /// Created, and confirmed on disk.
     Made,
+    /// Created for this execution and removed at its end.
+    Cleared,
     /// Not created.
     Failed { reason: Reason, detail: String },
-    /// Created, but the system did not confirm it is on disk.
+    /// Created, and it stopped there: a file whose content was not written to the end, or
+    /// something the system did not confirm is on disk. It exists; it is not to be trusted.
     Unconfirmed { detail: String },
 }
 
@@ -104,14 +114,18 @@ impl Report {
     /// Nothing on disk was changed: no folder or manifest was created and no target was
     /// moved or removed, not even in part.
     pub fn untouched(&self) -> bool {
-        let laid = self
-            .staging
-            .iter()
-            .any(|staged| matches!(staged.status, Laid::Made | Laid::Unconfirmed { .. }));
+        let laid = self.staging.iter().any(|staged| {
+            !matches!(
+                staged.status,
+                Laid::Pending | Laid::AlreadyThere | Laid::Failed { .. }
+            )
+        });
         let stepped = self.steps.iter().any(|step| match &step.status {
-            Status::Pending | Status::Absent => false,
-            Status::Failed { removed, .. } => *removed > 0,
-            Status::Done | Status::Unconfirmed { .. } | Status::Misplaced { .. } => true,
+            Status::Pending | Status::Absent | Status::Failed { .. } => false,
+            Status::Done
+            | Status::Held { .. }
+            | Status::Unconfirmed { .. }
+            | Status::Unverified { .. } => true,
         });
         !laid && !stepped
     }

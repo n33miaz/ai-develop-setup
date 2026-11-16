@@ -17,11 +17,11 @@ mod report;
 mod survey;
 mod sys;
 
-pub use disk::{Mutation, Probe};
+pub use disk::{Midway, Mutation, Probe};
 pub use executor::Executor;
 pub use fence::FenceError;
 pub use journal::{Journal, JournalError};
-pub use limits::Limits;
+pub use limits::{DefinitiveDelete, Limits};
 pub use manifest::{ITEMS_DIR, ItemKind, MANIFEST_NAME, MANIFEST_VERSION, Manifest, ManifestItem};
 pub use reason::{Reason, Stop};
 pub use report::{Completed, Effect, Failure, Laid, Report, Scaffold, Stage, Staged, Status, Step};
