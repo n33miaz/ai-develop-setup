@@ -1,0 +1,51 @@
+/* Gerado por tools/gen-ts.mjs a partir de schemas/command.session.open.v1.schema.json. Não edite à mão. */
+
+/**
+ * Abrir sessão. Pede ao núcleo uma sessão de terminal com uma ferramenta configurada, numa pasta configurada. A interface escolhe só pelo nome: a ferramenta pelo identificador do adaptador e a pasta pelo apelido. Programa, argumentos, ambiente e pasta vêm da configuração do usuário no núcleo, nunca do comando. O efeito volta como evento session.created.
+ */
+export type CommandSessionOpenV1 = CommandRequestV1 & {
+  method: "session.open";
+  params: {
+    _meta: unknown;
+    session_id: CommonIdV1;
+    harness: CommonIdV1;
+    workdir_alias: CommonIdV1;
+    cols: number;
+    rows: number;
+  };
+};
+/**
+ * Identificador ULID. Identificador de evento ou de comando: ULID de 26 caracteres em Crockford base32, ordenável por tempo.
+ */
+export type CommonUlidV1 = string;
+/**
+ * Identificador opaco. Identificador opaco de entidade (tarefa, sessão, aparelho, alias): 1 a 64 caracteres de letras, dígitos e . _ : -, sem espaço nem arroba.
+ */
+export type CommonIdV1 = string;
+/**
+ * Instante em UTC. Instante em UTC no formato RFC 3339 com sufixo Z, com fração opcional de até 6 dígitos.
+ */
+export type CommonTimestampV1 = string;
+
+/**
+ * Envelope de comando. Comando JSON-RPC 2.0 enviado ao núcleo. Comando é pedido, não fato; a chave de idempotência evita executar duas vezes, e a origem remota exige assinatura do aparelho, nonce, contador e validade.
+ */
+export interface CommandRequestV1 {
+  jsonrpc: "2.0";
+  id: CommonUlidV1;
+  method: string;
+  params: {
+    _meta: {
+      idempotency_key: CommonUlidV1;
+      origin: "local" | "remote";
+      remote?: {
+        device_id: CommonIdV1;
+        signature: string;
+        nonce: string;
+        counter: number;
+        expires_at: CommonTimestampV1;
+      };
+    };
+    [k: string]: unknown;
+  };
+}

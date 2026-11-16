@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:command:session.open:1",
+  "title": "Abrir sessão",
+  "description": "Pede ao núcleo uma sessão de terminal com uma ferramenta configurada, numa pasta configurada. A interface escolhe só pelo nome: a ferramenta pelo identificador do adaptador e a pasta pelo apelido. Programa, argumentos, ambiente e pasta vêm da configuração do usuário no núcleo, nunca do comando. O efeito volta como evento session.created.",
+  "allOf": [
+    {
+      "$ref": "urn:ads:command:request:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "method",
+        "params"
+      ],
+      "properties": {
+        "method": {
+          "const": "session.open"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "_meta",
+            "session_id",
+            "harness",
+            "workdir_alias",
+            "cols",
+            "rows"
+          ],
+          "properties": {
+            "_meta": true,
+            "session_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "harness": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "workdir_alias": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "cols": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000
+            },
+            "rows": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000
+            }
+          }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "jsonrpc": "2.0",
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAD",
+      "method": "session.open",
+      "params": {
+        "session_id": "sess-01",
+        "harness": "harness-a",
+        "workdir_alias": "wd-01",
+        "cols": 120,
+        "rows": 30,
+        "_meta": {
+          "idempotency_key": "01ARZ3NDEKTSV4RRFFQ69G5FAE",
+          "origin": "local"
+        }
+      }
+    }
+  ]
+}

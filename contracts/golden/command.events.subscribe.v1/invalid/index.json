@@ -1,0 +1,25 @@
+{
+  "01-negative-seq.json": {
+    "rule": "after_seq começa em 0.",
+    "keyword": "minimum",
+    "instancePath": "/params/after_seq"
+  },
+  "02-stream-without-family.json": {
+    "rule": "stream é <família>/<id>, como no envelope de evento.",
+    "keyword": "pattern",
+    "instancePath": "/params/stream"
+  },
+  "03-null-seq.json": {
+    "rule": "after_seq é inteiro: 0 pede tudo.",
+    "keyword": "type",
+    "instancePath": "/params/after_seq"
+  },
+  "04-missing-stream.json": {
+    "rule": "O stream é obrigatório.",
+    "keyword": "required",
+    "instancePath": "/params",
+    "params": {
+      "missingProperty": "stream"
+    }
+  }
+}

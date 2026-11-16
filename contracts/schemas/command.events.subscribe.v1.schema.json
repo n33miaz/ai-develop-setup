@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:command:events.subscribe:1",
+  "title": "Assinar eventos",
+  "description": "Pede ao núcleo os eventos de um stream com seq maior que after_seq (0: tudo o que o núcleo ainda guarda), em ordem, e depois os novos, até a conexão cair. Os eventos chegam como mensagens do servidor (local-api.server-message).",
+  "allOf": [
+    {
+      "$ref": "urn:ads:command:request:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "method",
+        "params"
+      ],
+      "properties": {
+        "method": {
+          "const": "events.subscribe"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "_meta",
+            "stream",
+            "after_seq"
+          ],
+          "properties": {
+            "_meta": true,
+            "stream": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]*/[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$"
+            },
+            "after_seq": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "jsonrpc": "2.0",
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAD",
+      "method": "events.subscribe",
+      "params": {
+        "stream": "session/sess-01",
+        "after_seq": 0,
+        "_meta": {
+          "idempotency_key": "01ARZ3NDEKTSV4RRFFQ69G5FAE",
+          "origin": "local"
+        }
+      }
+    }
+  ]
+}

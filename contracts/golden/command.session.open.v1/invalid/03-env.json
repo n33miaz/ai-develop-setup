@@ -1,0 +1,19 @@
+{
+  "jsonrpc": "2.0",
+  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAD",
+  "method": "session.open",
+  "params": {
+    "session_id": "sess-01",
+    "harness": "harness-a",
+    "workdir_alias": "wd-01",
+    "cols": 120,
+    "rows": 30,
+    "_meta": {
+      "idempotency_key": "01ARZ3NDEKTSV4RRFFQ69G5FAE",
+      "origin": "local"
+    },
+    "env": {
+      "NAME": "value"
+    }
+  }
+}

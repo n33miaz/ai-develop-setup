@@ -4,9 +4,15 @@ use serde_json::Value;
 
 use crate::support;
 
+pub mod command_auth_hello_v1;
+pub mod command_events_subscribe_v1;
 pub mod command_request_v1;
 pub mod command_response_v1;
 pub mod command_response_v2;
+pub mod command_session_close_v1;
+pub mod command_session_open_v1;
+pub mod command_session_resize_v1;
+pub mod command_session_write_v1;
 pub mod common_abspath_v1;
 pub mod common_abspath_v2;
 pub mod common_action_rule_v1;
@@ -20,6 +26,7 @@ pub mod common_sha256_v1;
 pub mod common_timestamp_v1;
 pub mod common_ulid_v1;
 pub mod contract_harness_adapter_v1;
+pub mod contract_local_api_server_message_v1;
 pub mod contract_pty_host_frame_v1;
 pub mod contract_pty_host_notification_v1;
 pub mod contract_pty_host_request_v1;
@@ -73,9 +80,15 @@ pub mod record_usage_event_v1;
 pub mod relay_device_v1;
 pub mod relay_envelope_v1;
 
+pub use command_auth_hello_v1::*;
+pub use command_events_subscribe_v1::*;
 pub use command_request_v1::*;
 pub use command_response_v1::*;
 pub use command_response_v2::*;
+pub use command_session_close_v1::*;
+pub use command_session_open_v1::*;
+pub use command_session_resize_v1::*;
+pub use command_session_write_v1::*;
 pub use common_abspath_v1::*;
 pub use common_abspath_v2::*;
 pub use common_action_rule_v1::*;
@@ -89,6 +102,7 @@ pub use common_sha256_v1::*;
 pub use common_timestamp_v1::*;
 pub use common_ulid_v1::*;
 pub use contract_harness_adapter_v1::*;
+pub use contract_local_api_server_message_v1::*;
 pub use contract_pty_host_frame_v1::*;
 pub use contract_pty_host_notification_v1::*;
 pub use contract_pty_host_request_v1::*;
@@ -144,9 +158,27 @@ pub use relay_envelope_v1::*;
 
 /// Every Schema a type was generated from: its file key and its `$id`.
 pub const SCHEMAS: &[(&str, &str)] = &[
+    ("command.auth.hello.v1", "urn:ads:command:auth.hello:1"),
+    (
+        "command.events.subscribe.v1",
+        "urn:ads:command:events.subscribe:1",
+    ),
     ("command.request.v1", "urn:ads:command:request:1"),
     ("command.response.v1", "urn:ads:command:response:1"),
     ("command.response.v2", "urn:ads:command:response:2"),
+    (
+        "command.session.close.v1",
+        "urn:ads:command:session.close:1",
+    ),
+    ("command.session.open.v1", "urn:ads:command:session.open:1"),
+    (
+        "command.session.resize.v1",
+        "urn:ads:command:session.resize:1",
+    ),
+    (
+        "command.session.write.v1",
+        "urn:ads:command:session.write:1",
+    ),
     ("common.abspath.v1", "urn:ads:common:abspath:1"),
     ("common.abspath.v2", "urn:ads:common:abspath:2"),
     ("common.action-rule.v1", "urn:ads:common:action-rule:1"),
@@ -162,6 +194,10 @@ pub const SCHEMAS: &[(&str, &str)] = &[
     (
         "contract.harness-adapter.v1",
         "urn:ads:contract:harness-adapter:1",
+    ),
+    (
+        "contract.local-api.server-message.v1",
+        "urn:ads:contract:local-api.server-message:1",
     ),
     (
         "contract.pty-host.frame.v1",
@@ -318,6 +354,7 @@ pub const PATTERNS: &[&str] = &[
     r"^[A-Za-z0-9+/]{43}=$",
     r"^[A-Za-z0-9._-][A-Za-z0-9._/-]*$",
     r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+    r"^[A-Za-z0-9_-]{43}$",
     r"^[^\\/$%]*[*?][^\\/$%]*$",
     r"^[^\x{0000}-\x{001f}\x{007f}-\x{009f}]*$",
     r"^[a-z][a-z0-9_-]*/[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
@@ -343,9 +380,17 @@ pub const PATTERNS: &[&str] = &[
 /// `None` when no Schema has that `$id`.
 pub fn reencode(id: &str, value: Value) -> Option<Result<Value, serde_json::Error>> {
     let written = match id {
+        "urn:ads:command:auth.hello:1" => support::reencode::<CommandAuthHelloV1>(value),
+        "urn:ads:command:events.subscribe:1" => {
+            support::reencode::<CommandEventsSubscribeV1>(value)
+        }
         "urn:ads:command:request:1" => support::reencode::<CommandRequestV1>(value),
         "urn:ads:command:response:1" => support::reencode::<CommandResponseV1>(value),
         "urn:ads:command:response:2" => support::reencode::<CommandResponseV2>(value),
+        "urn:ads:command:session.close:1" => support::reencode::<CommandSessionCloseV1>(value),
+        "urn:ads:command:session.open:1" => support::reencode::<CommandSessionOpenV1>(value),
+        "urn:ads:command:session.resize:1" => support::reencode::<CommandSessionResizeV1>(value),
+        "urn:ads:command:session.write:1" => support::reencode::<CommandSessionWriteV1>(value),
         "urn:ads:common:abspath:1" => support::reencode::<CommonAbspathV1>(value),
         "urn:ads:common:abspath:2" => support::reencode::<CommonAbspathV2>(value),
         "urn:ads:common:action-rule:1" => support::reencode::<CommonActionRuleV1>(value),
@@ -360,6 +405,9 @@ pub fn reencode(id: &str, value: Value) -> Option<Result<Value, serde_json::Erro
         "urn:ads:common:ulid:1" => support::reencode::<CommonUlidV1>(value),
         "urn:ads:contract:harness-adapter:1" => {
             support::reencode::<ContractHarnessAdapterV1>(value)
+        }
+        "urn:ads:contract:local-api.server-message:1" => {
+            support::reencode::<ContractLocalApiServerMessageV1>(value)
         }
         "urn:ads:contract:pty-host.frame:1" => support::reencode::<ContractPtyHostFrameV1>(value),
         "urn:ads:contract:pty-host.notification:1" => {

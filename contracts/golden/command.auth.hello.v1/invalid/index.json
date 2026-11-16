@@ -1,0 +1,33 @@
+{
+  "01-missing-token.json": {
+    "rule": "O token é obrigatório.",
+    "keyword": "required",
+    "instancePath": "/params",
+    "params": {
+      "missingProperty": "token"
+    }
+  },
+  "02-token-too-short.json": {
+    "rule": "O token tem exatamente 43 caracteres (256 bits).",
+    "keyword": "pattern",
+    "instancePath": "/params/token"
+  },
+  "03-token-padded.json": {
+    "rule": "O token é base64url sem preenchimento.",
+    "keyword": "pattern",
+    "instancePath": "/params/token"
+  },
+  "04-extra-param.json": {
+    "rule": "params é fechado: campo desconhecido reprova.",
+    "keyword": "additionalProperties",
+    "instancePath": "/params",
+    "params": {
+      "additionalProperty": "user"
+    }
+  },
+  "05-wrong-method.json": {
+    "rule": "O método é exatamente auth.hello.",
+    "keyword": "const",
+    "instancePath": "/method"
+  }
+}

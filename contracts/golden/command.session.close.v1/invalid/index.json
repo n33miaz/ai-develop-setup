@@ -1,0 +1,23 @@
+{
+  "01-missing-session.json": {
+    "rule": "A sessão é obrigatória.",
+    "keyword": "required",
+    "instancePath": "/params",
+    "params": {
+      "missingProperty": "session_id"
+    }
+  },
+  "02-session-with-at.json": {
+    "rule": "O identificador da sessão é opaco, sem arroba.",
+    "keyword": "pattern",
+    "instancePath": "/params/session_id"
+  },
+  "03-extra-param.json": {
+    "rule": "params é fechado: campo desconhecido reprova.",
+    "keyword": "additionalProperties",
+    "instancePath": "/params",
+    "params": {
+      "additionalProperty": "force"
+    }
+  }
+}
