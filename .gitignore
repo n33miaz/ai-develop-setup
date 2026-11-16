@@ -17,6 +17,7 @@ data/
 
 # Perfis e sobreposições locais de agentes
 AGENTS.local.md
+AGENTS.override.md
 CLAUDE.local.md
 .claude/settings.local.json
 
