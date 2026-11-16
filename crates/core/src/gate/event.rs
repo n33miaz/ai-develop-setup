@@ -862,8 +862,9 @@ pub struct ActionPlanFields {
     pub quarantined: bool,
 }
 
-/// The largest count an estimate of the record holds: 2^53 - 1, the largest integer every
-/// reader of the contract represents exactly (a JSON number in JavaScript is a double).
+/// The largest count an estimate of the record holds from version 2 on: 2^53 - 1, the
+/// largest integer every reader of the contract represents exactly (a JSON number in
+/// JavaScript is a double). Version 1 has no such bound.
 pub const ESTIMATE_MAX: u64 = (1 << 53) - 1;
 
 impl ActionPlanFields {
@@ -889,7 +890,9 @@ impl ActionPlanFields {
             }
             previous = Some(key);
         }
-        if let Some(estimate) = self.estimate
+        // Version 1 put no bound on the estimate: what it wrote is still read, up to 64 bits.
+        if version != 1
+            && let Some(estimate) = self.estimate
             && (estimate.items > ESTIMATE_MAX || estimate.bytes > ESTIMATE_MAX)
         {
             return broken(
@@ -990,9 +993,9 @@ impl ActionPlanRecord {
     }
 }
 
-/// `urn:ads:record:action-plan:1`. Read only: the gate writes version 2. Its Schema is wider
-/// than this type (paths of `abspath:1`, estimate with no upper bound); what this type reads
-/// is what version 2 would also hold.
+/// `urn:ads:record:action-plan:1`. Read only: the gate writes version 2. It keeps reading
+/// what version 1 could hold: an estimate up to 64 bits, with no bound of version 2. Its
+/// Schema is still wider than this type in the paths (`abspath:1`) and above 64 bits.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "ActionPlanFields", into = "ActionPlanFields")]
 pub struct ActionPlanRecordV1(ActionPlanFields);

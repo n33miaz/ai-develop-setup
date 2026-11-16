@@ -737,6 +737,94 @@ fn wildcard_that_may_create_the_folder_of_another_target_is_denied() {
     assert_eq!(again.findings(), verdict.findings());
 }
 
+/// The same overlap in Windows paths, where the case of a name does not tell folders apart
+/// and both separators are read.
+#[test]
+fn wildcard_that_may_create_the_folder_of_another_target_is_denied_on_windows() {
+    let root = "C:\\work\\proj";
+    let judge = |destination: &str, targets: &[&str]| {
+        classify(
+            &plan(move_to(destination), root, targets),
+            &policy(WIN_HOME, ""),
+        )
+    };
+    let on = |verdict: &Verdict, subject: &str| {
+        denied_by(verdict, Rule::DestinationInsideTarget);
+        let found = verdict.findings().iter().any(|finding| {
+            finding.rule == Rule::DestinationInsideTarget && finding.subject == subject
+        });
+        assert!(found, "{subject}: {:?}", verdict.findings());
+    };
+
+    // The example of the review: `tmp\*` may create `out\a`, which `out\a\*` ranges over.
+    let verdict = judge(
+        "C:\\work\\proj\\out",
+        &["C:\\work\\proj\\tmp\\*", "C:\\work\\proj\\out\\a\\*"],
+    );
+    on(&verdict, "C:\\work\\proj\\out\\a");
+    // Another case of the destination, of the other target or of the wildcard, forward
+    // slashes, a literal or deeper target: the same folder, the same answer.
+    for (destination, wildcard, other, entry) in [
+        (
+            "c:\\WORK\\Proj\\OUT",
+            "C:\\work\\proj\\tmp\\*",
+            "C:\\work\\proj\\out\\a\\*",
+            "C:\\WORK\\Proj\\OUT\\a",
+        ),
+        (
+            "C:\\work\\proj\\out",
+            "C:\\work\\proj\\tmp\\*",
+            "C:\\Work\\Proj\\Out\\A\\x.txt",
+            "C:\\work\\proj\\out\\A",
+        ),
+        (
+            "C:\\work\\proj\\out",
+            "C:\\work\\proj\\tmp\\A?",
+            "C:\\work\\proj\\out\\ab\\c\\d.txt",
+            "C:\\work\\proj\\out\\ab",
+        ),
+        (
+            "C:/work/proj/out",
+            "C:/work/proj/tmp/*",
+            "c:/work/proj/out/a",
+            "C:\\work\\proj\\out\\a",
+        ),
+    ] {
+        on(&judge(destination, &[wildcard, other]), entry);
+    }
+    // The folder the wildcard itself ranges over, and a literal entry that holds a target.
+    on(
+        &judge("C:\\work\\proj\\out", &["C:\\work\\proj\\OUT\\a\\*"]),
+        "C:\\work\\proj\\out\\a",
+    );
+    on(
+        &judge(
+            "C:\\work\\proj\\out",
+            &["C:\\work\\proj\\tmp\\A", "C:\\work\\proj\\out\\a\\b\\c.txt"],
+        ),
+        "C:\\work\\proj\\out\\A",
+    );
+
+    // A wildcard that cannot name that child, or a destination that holds no folder of a
+    // target (another drive included), is the plain move.
+    for (wildcard, other) in [
+        (
+            "C:\\work\\proj\\tmp\\*.log",
+            "C:\\work\\proj\\out\\a\\*.txt",
+        ),
+        ("C:\\work\\proj\\tmp\\b*", "C:\\work\\proj\\out\\a\\*.txt"),
+        ("C:\\work\\proj\\tmp\\*", "C:\\work\\proj\\src\\a\\*"),
+    ] {
+        let verdict = judge("C:\\work\\proj\\out", &[wildcard, other]);
+        assert_eq!(
+            verdict.decision(),
+            Decision::Allowed,
+            "{wildcard} and {other}: {:?}",
+            verdict.findings()
+        );
+    }
+}
+
 // ---- Requires approval ------------------------------------------------------------------------
 
 #[test]
