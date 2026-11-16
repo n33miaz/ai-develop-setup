@@ -1,4 +1,4 @@
-//! What an independent review found, each with the test that keeps it closed: swaps after the
+//! Concurrency and failures, each case with the test that keeps it closed: swaps after the
 //! last check, a destination that appears at the last instant, entries that were not approved,
 //! repositories deeper in a target, a stop at every step, a permit used twice. Always inside
 //! the folder of the test (see `common`).

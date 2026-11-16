@@ -1,4 +1,4 @@
-//! The second independent review, each finding with the test that keeps it closed: the fence
+//! Containment, each case with the test that keeps it closed: the fence
 //! is opened name by name, a file that grew is not what was approved, a move that happened is
 //! told as one, a manifest that exists is told as one, a tree is removed for good only where
 //! it is contained, and a restore puts nothing on a reserved folder. Always inside the folder

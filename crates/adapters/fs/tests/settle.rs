@@ -1,4 +1,4 @@
-//! The third independent review, each finding with the test that keeps it closed: an entry
+//! What is settled on the open object, each case with the test that keeps it closed: an entry
 //! claimed to be removed cannot leave the fence before it goes, a move to the holding folder
 //! that is not verified promises no place, the end of an execution reports the removal of
 //! its holding folder as it went, and a folder that was created is told as created. Always
