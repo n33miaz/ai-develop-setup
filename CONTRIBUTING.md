@@ -85,7 +85,7 @@ Co-authored-by: Nome do agente <noreply@exemplo.org>
 - O e-mail do autor é o endereço noreply do GitHub (`ID+usuario@users.noreply.github.com`).
 - Cada commit é uma entrega completa (contrato, código e teste juntos). Correção de revisão entra como commit novo; nada de `amend` em commit já enviado nem de force-push.
 
-Todas essas regras e seus valores ficam em `defaults/devflow.toml` e são aplicadas pelo mesmo script no hook local e no CI (`.github/scripts/check-commits.sh`). O script valida o arquivo de parâmetros antes de olhar qualquer mensagem: valor de tipo errado ou fora do domínio termina com código 2 (erro de configuração), sem analisar commit nenhum; mensagem fora do padrão termina com código 1.
+Todas essas regras e seus valores ficam em `defaults/devflow.toml` e são aplicadas pelo mesmo script no hook local e no CI (`.github/scripts/check-commits.sh`). O script valida o arquivo de parâmetros antes de olhar qualquer mensagem: valor de tipo errado ou fora do domínio termina com código 2 (erro de configuração), sem analisar commit nenhum; mensagem fora do padrão termina com código 1. O hook roda essa mesma validação antes de tudo, então configuração inválida barra o commit com código 2 mesmo com `commits.enabled = false`.
 
 ### DCO e instrução permanente aos agentes
 

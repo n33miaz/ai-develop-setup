@@ -253,6 +253,41 @@ msg h9 "feat(core): add thing\n"
 sed -e 's/^commits.subject_max = .*/commits.subject_max = "invalid"/' "$root/defaults/devflow.toml" > "$tmp/bad.toml"
 if hook_run h9 claude "$tmp/bad.toml"; then hook_bad "hook deveria recusar configuração inválida"; else hook_ok "hook: recusa commit com configuração inválida"; fi
 
+# ---- Hook com a checagem desligada: a configuração é validada mesmo assim, e a mensagem não é lida nem alterada
+hook_off() { # <código esperado> <descrição> <nome> <toml>: código de saída exato e mensagem intacta
+  local rc=0
+  cp "$tmp/$3.txt" "$tmp/$3.before.txt"
+  hook_run "$3" claude "$4" || rc=$?
+  if [ "$rc" -eq "$1" ] && cmp -s "$tmp/$3.txt" "$tmp/$3.before.txt"; then
+    hook_ok "hook: sai com $1 e não toca na mensagem: $2"
+  else
+    echo "        esperava saída $1 e veio $rc" >> "$tmp/out.txt"
+    hook_bad "hook: $2"
+  fi
+}
+msg h10 "Feat: Bad subject
+"
+sed -e 's/^commits.enabled = .*/commits.enabled = false/' -e 's/^commits.subject_max = .*/commits.subject_max = "invalid"/' "$root/defaults/devflow.toml" > "$tmp/bad-off.toml"
+hook_off 2 "configuração inválida com commits.enabled=false" h10 "$tmp/bad-off.toml"
+sed -e 's/^commits.enabled = .*/commits.enabled = "false"/' "$root/defaults/devflow.toml" > "$tmp/bad-off.toml"
+hook_off 2 "commits.enabled entre aspas não desliga a checagem" h10 "$tmp/bad-off.toml"
+hook_off 0 "configuração válida com commits.enabled=false" h10 "$tmp/off.toml"
+
+# ---- Modo --check-config: só a configuração, sem mensagem
+check_config() { # <código esperado> <descrição> <toml>
+  local rc=0
+  ADS_DEVFLOW_TOML="$3" bash "$checker" --check-config > "$tmp/out.txt" 2>&1 || rc=$?
+  if [ "$rc" -eq "$1" ]; then
+    passed=$((passed + 1)); echo "ok    --check-config sai com $1: $2"
+  else
+    failed=$((failed + 1)); echo "FALHA --check-config esperava saída $1 e veio $rc: $2"; sed 's/^/        /' "$tmp/out.txt"
+  fi
+}
+check_config 0 "configuração padrão" "$root/defaults/devflow.toml"
+check_config 0 "configuração válida com a checagem desligada" "$tmp/off.toml"
+check_config 2 "configuração inválida" "$tmp/bad.toml"
+check_config 2 "configuração ausente" "$tmp/nao-existe.toml"
+
 echo
 echo "Resultado: $passed passaram, $failed falharam."
 [ "$failed" -eq 0 ]

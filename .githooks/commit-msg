@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Hook commit-msg. Ative uma vez por clone: git config core.hooksPath .githooks
 #
+# Antes de tudo, valida o arquivo de parâmetros com o próprio checador (`--check-config`): configuração inválida
+# sai com 2, mesmo com `commits.enabled = false`. Com a configuração válida e a checagem desligada, sai com 0 sem
+# ler nem alterar a mensagem. Com a checagem ligada:
+#
 # 1. Acrescenta `Co-authored-by` a partir da variável de ambiente ADS_AI_AUTHOR:
 #      claude | codex  -> usa `coauthor.<valor>` de defaults/devflow.toml
 #      vazio           -> nenhum coautor neste commit
@@ -22,6 +26,8 @@ if [ ! -r "$cfg" ]; then
   echo "commit-msg: arquivo de parâmetros não encontrado: $cfg" >&2
   exit 1
 fi
+# O erro de configuração vence o desligamento, como no checador e no CI.
+bash "$checker" --check-config || exit $?
 [ "$(cfg_str commits.enabled true)" = "false" ] && exit 0
 
 ident="$(git var GIT_AUTHOR_IDENT 2>/dev/null | sed -E 's/ [0-9]+ [+-][0-9]{4}$//')"
