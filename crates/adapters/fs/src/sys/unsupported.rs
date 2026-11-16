@@ -82,6 +82,10 @@ impl Node {
     pub fn claim(&self, _name: &str, _expected: Identity) -> Result<Claim<'_>, Error> {
         match self.never {}
     }
+
+    pub fn claim_to_remove(&self, _name: &str, _expected: Identity) -> Result<Claim<'_>, Error> {
+        match self.never {}
+    }
 }
 
 impl Claim<'_> {

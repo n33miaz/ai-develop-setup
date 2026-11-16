@@ -481,12 +481,31 @@ impl Node {
         writable.sync_all()
     }
 
-    /// Takes hold of the entry `name` of this folder for one mutation: opens it with the
-    /// right to move and delete it, and compares what was opened with `expected`.
+    /// Takes hold of the entry `name` of this folder for one move: opens it with the right
+    /// to move and delete it, and compares what was opened with `expected`. Others keep the
+    /// right to rename it (see [`Self::claim_to_remove`] for the claim that takes it away).
     pub fn claim(&self, name: &str, expected: Identity) -> Result<Claim<'_>, Error> {
+        self.claim_shared(name, expected, SHARED)
+    }
+
+    /// Takes hold of the entry `name` of this folder to remove it: like [`Self::claim`], but
+    /// without granting others the right to delete. From the instant it is open, and for as
+    /// long as the claim lives, the system refuses to rename, move or delete the entry
+    /// (by any of its names), so the removal happens where it was claimed. Refused when
+    /// someone already has the entry open with the right to delete.
+    pub fn claim_to_remove(&self, name: &str, expected: Identity) -> Result<Claim<'_>, Error> {
+        self.claim_shared(name, expected, HELD)
+    }
+
+    fn claim_shared(
+        &self,
+        name: &str,
+        expected: Identity,
+        share: FILE_SHARE_MODE,
+    ) -> Result<Claim<'_>, Error> {
         plain(name)?;
         let access = FILE_ACCESS_RIGHTS(LOOK.0 | DELETE.0);
-        let file = open_at(&self.file, name, access, SHARED, FILE_OPEN, ITSELF)?;
+        let file = open_at(&self.file, name, access, share, FILE_OPEN, ITSELF)?;
         let meta = meta_of(&file)?;
         if meta.id != expected {
             return Err(Error::Changed);
