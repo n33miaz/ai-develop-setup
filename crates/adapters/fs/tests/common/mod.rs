@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use ads_adapter_fs::Executor;
+use ads_adapter_fs::{Executor, Journal, JournalError};
 use ads_core::gate::{
     Action, ActionPlan, Actor, ActorKind, Command, DataClass, Estimate, Event, EventMeta,
     ExecutionPermit, GatePolicy, HostFacts, Id, OperationRequest, PlanRequest, ShortText,
@@ -213,6 +213,43 @@ pub fn is_link(metadata: &fs::Metadata) -> bool {
     #[cfg(not(windows))]
     {
         metadata.file_type().is_symlink()
+    }
+}
+
+/// A journal that keeps the events in memory and refuses a second `action.started` of an
+/// action. It forgets everything when it is dropped: good for a test, never for production,
+/// which is why it lives here and not in the crate.
+#[derive(Debug, Default)]
+pub struct MemoryJournal {
+    events: Vec<Event>,
+    started: Vec<Id>,
+}
+
+impl MemoryJournal {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn events(&self) -> &[Event] {
+        &self.events
+    }
+}
+
+impl Journal for MemoryJournal {
+    fn consume(&mut self, started: &Event) -> Result<(), JournalError> {
+        let Event::ActionStarted(envelope) = started else {
+            return Err(JournalError(format!(
+                "{} is not action.started",
+                started.kind()
+            )));
+        };
+        let action_id = &envelope.data().action_id;
+        if self.started.contains(action_id) {
+            return Err(JournalError(format!("{action_id} already started")));
+        }
+        self.started.push(action_id.clone());
+        self.events.push(started.clone());
+        Ok(())
     }
 }
 

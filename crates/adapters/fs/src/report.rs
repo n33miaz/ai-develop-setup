@@ -1,8 +1,9 @@
-//! What the executor did, or would do, target by target.
+//! What the executor did, or would do: the folders and the manifest it lays down first, and
+//! then target by target.
 
 use std::fmt;
 
-use ads_core::gate::ExecutionPermit;
+use ads_core::gate::{Command, ExecutionPermit};
 
 use crate::reason::{Reason, Stop};
 use crate::survey::Facts;
@@ -25,6 +26,7 @@ pub enum Effect {
 pub enum Status {
     /// Not touched: a rehearsal, or the batch stopped before this step.
     Pending,
+    /// Made, and the folders involved are confirmed on disk.
     Done,
     /// Listed in the manifest, not in quarantine: there was nothing to move.
     Absent,
@@ -35,6 +37,9 @@ pub enum Status {
         detail: String,
         removed: u64,
     },
+    /// The change was made, but the system did not confirm it is on disk: after a power
+    /// loss it may or may not be there.
+    Unconfirmed { detail: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,9 +51,41 @@ pub struct Step {
     pub status: Status,
 }
 
-/// One step per target, in the order of execution.
+/// What the executor lays down to hold a batch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scaffold {
+    Folder,
+    Manifest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Laid {
+    /// Not touched.
+    Pending,
+    /// The folder was already there: nothing was changed.
+    AlreadyThere,
+    /// Created, and confirmed on disk.
+    Made,
+    /// Not created.
+    Failed { reason: Reason, detail: String },
+    /// Created, but the system did not confirm it is on disk.
+    Unconfirmed { detail: String },
+}
+
+/// One change of infrastructure: a folder or the manifest of a batch. These are not targets,
+/// but they are changes on disk, and stay there when an execution stops.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Staged {
+    pub path: String,
+    pub what: Scaffold,
+    pub status: Laid,
+}
+
+/// The infrastructure in the order it is laid, then one step per target, in the order of
+/// execution.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Report {
+    pub staging: Vec<Staged>,
     pub steps: Vec<Step>,
 }
 
@@ -60,21 +97,62 @@ impl Report {
     pub fn not_done(&self) -> impl Iterator<Item = &Step> {
         self.steps.iter().filter(|step| step.status != Status::Done)
     }
+
+    /// Nothing on disk was changed: no folder or manifest was created and no target was
+    /// moved or removed, not even in part.
+    pub fn untouched(&self) -> bool {
+        let laid = self
+            .staging
+            .iter()
+            .any(|staged| matches!(staged.status, Laid::Made | Laid::Unconfirmed { .. }));
+        let stepped = self.steps.iter().any(|step| match &step.status {
+            Status::Pending | Status::Absent => false,
+            Status::Failed { removed, .. } => *removed > 0,
+            Status::Done | Status::Unconfirmed { .. } => true,
+        });
+        !laid && !stepped
+    }
 }
 
-/// The plan ran to the end. The permit comes back to close the action (`Command::Executed`).
+/// How far an execution went before it stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stage {
+    /// During the checks: nothing on disk was changed.
+    Checks,
+    /// While laying the folders and the manifest of the batch: no target was touched, but
+    /// what the report lists as made is on disk.
+    Staging,
+    /// At a target: the report says which, and what was done before it.
+    Steps,
+}
+
+/// The plan ran to the end. The permit is spent: it is not handed back, it only closes the
+/// action (`Command::Executed`).
 #[derive(Debug)]
 pub struct Completed {
-    pub permit: ExecutionPermit,
+    pub(crate) permit: ExecutionPermit,
     pub report: Report,
 }
 
+impl Completed {
+    /// The command that closes the action in the gate. Consumes the permit of the execution.
+    pub fn close(self) -> (Command, Report) {
+        (
+            Command::Executed {
+                permit: self.permit,
+            },
+            self.report,
+        )
+    }
+}
+
 /// The plan did not run, or stopped in the middle. `reason.error_code()` goes into
-/// `action.failed`; the report says exactly what was and was not done.
+/// `action.failed`; `stage` and the report say exactly what was and was not changed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Failure {
     pub reason: Reason,
     pub detail: String,
+    pub stage: Stage,
     pub report: Report,
 }
 
@@ -83,6 +161,7 @@ impl Failure {
         Box::new(Self {
             reason: stop.reason,
             detail: stop.detail,
+            stage: Stage::Checks,
             report: Report::default(),
         })
     }

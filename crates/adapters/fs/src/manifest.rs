@@ -57,7 +57,7 @@ impl From<Kind> for ItemKind {
         match kind {
             Kind::Dir => Self::Dir,
             Kind::File => Self::File,
-            Kind::Link { .. } => Self::Link,
+            Kind::Link => Self::Link,
         }
     }
 }
