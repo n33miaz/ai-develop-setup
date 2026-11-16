@@ -201,6 +201,66 @@ describe('fake core client: event replay', () => {
     expect(seen).toEqual([1])
   })
 
+  it('stops a replay when the callback drops the connection', async () => {
+    const client = await connected()
+    for (const cols of [81, 82, 83]) client.emit(resized('a', cols))
+    const seen: number[] = []
+
+    client.subscribe('session/a', 0, (event) => {
+      seen.push(event.seq)
+      client.disconnect()
+    })
+
+    expect(client.getState()).toBe('disconnected')
+    expect(seen).toEqual([1])
+  })
+
+  it('delivers nothing to a subscriber that another callback just removed', async () => {
+    const client = await connected()
+    const seen: number[] = []
+    const stopOthers: (() => void)[] = []
+    client.subscribe('session/a', 0, () => {
+      for (const stop of stopOthers) stop()
+    })
+    stopOthers.push(client.subscribe('session/a', 0, (event) => seen.push(event.seq)))
+
+    client.emit(resized('a'))
+
+    expect(client.getState()).toBe('connected')
+    expect(seen).toEqual([])
+  })
+
+  it('delivers to no other subscriber once one of them drops the connection', async () => {
+    const client = await connected()
+    const seen: number[] = []
+    client.subscribe('session/a', 0, () => {
+      client.disconnect()
+    })
+    client.subscribe('session/a', 0, (event) => seen.push(event.seq))
+
+    client.emit(resized('a'))
+
+    expect(client.getState()).toBe('disconnected')
+    expect(seen).toEqual([])
+  })
+
+  it('does not revive a subscription when its callback reconnects', async () => {
+    const client = await connected()
+    for (const cols of [81, 82, 83]) client.emit(resized('a', cols))
+    const seen: number[] = []
+
+    client.subscribe('session/a', 0, (event) => {
+      seen.push(event.seq)
+      client.disconnect()
+      void client.connect()
+    })
+    await client.connect()
+    client.emit(resized('a', 84))
+
+    expect(client.getState()).toBe('connected')
+    expect(seen).toEqual([1])
+  })
+
   it('keeps a recorded event out of reach of the draft and of other subscribers', async () => {
     const client = await connected()
     const draft = resized('a', 80)
