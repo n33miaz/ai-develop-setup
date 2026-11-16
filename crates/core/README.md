@@ -13,7 +13,8 @@ Nenhuma ação sobre o sistema de arquivos é executada sem passar por aqui. O p
 | `policy.rs` | Parâmetros do portão e as pastas protegidas. Os padrões ficam só em [`defaults/action-gate.toml`](../../defaults/action-gate.toml). |
 | `classify.rs` | As regras e os seus códigos: `plano + política -> veredito` (permitido, exige aprovação, negado), a reescrita de apagar como mover para a quarentena e o registro do plano julgado. |
 | `machine.rs` | Máquina de estados da ação, a licença de execução e a reconstrução do estado a partir dos eventos (`replay`). Cada transição devolve o evento do contrato. |
-| `event.rs` | Todos os tipos de contrato do portão num módulo só: os eventos `action.*` e `approval.*`, os registros `record.action-plan` e `record.approval` (este só para leitura), os tipos comuns que eles usam e a serialização canônica do plano. Escritos à mão e conferidos contra os dourados de `contracts/golden/`; saem quando o `ads-contracts` tiver os tipos gerados dos Schemas (outra entrega). |
+| `event.rs` | Valores de domínio, vínculo entre stream e entidade e serialização canônica do plano; a leitura e a escrita usam os contratos gerados. |
+| `wire.rs` | Conversões explícitas, campo a campo, entre os contratos de `ads-contracts` e os valores do portão, com as conferências que o Schema não exprime. |
 
 ### Normalização
 

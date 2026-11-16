@@ -14,8 +14,8 @@ use ads_core::gate::{
     ActionPlanRecordV1, ActionPlanned, ActionStarted, ApprovalDenied, ApprovalDeniedV1,
     ApprovalExpired, ApprovalExpiredV1, ApprovalGranted, ApprovalGrantedV1, ApprovalRecord,
     ApprovalRequested, ApprovalRequestedV1, Command, Decision, ESTIMATE_MAX, Envelope, ErrorCode,
-    Estimate, Event, EventMeta, Id, OperationRequest as Op, PathText, PlanRequest, RuleCode,
-    ShortText, TargetRequest, Timestamp, Verdict, Via, classify,
+    Estimate, Event, EventData, EventMeta, Id, OperationRequest as Op, PathText, PlanRequest,
+    RuleCode, ShortText, TargetRequest, Timestamp, Verdict, Via, classify,
 };
 use common::{POSIX_HOME, WIN_HOME, WIN_ROOT, at, canonical_of, policy, request, sha256_of, win};
 use serde::Serialize;
@@ -915,4 +915,43 @@ fn record_rules_the_schema_cannot_express_are_enforced() {
     assert!(refused("01-base.json", &|record| {
         record["version"] = 1.into();
     }));
+}
+
+#[test]
+fn generated_plan_with_another_digest_is_refused_by_the_domain() {
+    for version in [1, 2] {
+        let mut json = golden_record("01-base.json");
+        json["version"] = version.into();
+        json["plan_hash"] = format!("sha256:{}", "0".repeat(64)).into();
+        if version == 2 {
+            let wire: ads_contracts::RecordActionPlanV2 =
+                serde_json::from_value(json.clone()).unwrap();
+            assert!(ActionPlanRecord::try_from(wire).is_err());
+            assert!(serde_json::from_value::<ActionPlanRecord>(json).is_err());
+        } else {
+            let wire: ads_contracts::RecordActionPlanV1 =
+                serde_json::from_value(json.clone()).unwrap();
+            assert!(ActionPlanRecordV1::try_from(wire).is_err());
+            assert!(serde_json::from_value::<ActionPlanRecordV1>(json).is_err());
+        }
+    }
+}
+
+#[test]
+fn generated_plan_with_unsorted_targets_is_refused_by_the_domain() {
+    let mut json = golden_record("01-base.json");
+    json["targets"].as_array_mut().unwrap().reverse();
+    json["plan_hash"] = sha256_of(&canonical_of(&json)).into();
+    let wire: ads_contracts::RecordActionPlanV2 = serde_json::from_value(json.clone()).unwrap();
+    assert!(ActionPlanRecord::try_from(wire).is_err());
+    assert!(serde_json::from_value::<ActionPlanRecord>(json).is_err());
+}
+
+#[test]
+fn generated_event_with_another_stream_entity_is_refused_by_the_domain() {
+    let (_, mut json) = golden_files("event.action.planned.v1", "valid").remove(0);
+    json["stream"] = "action/another-action".into();
+    let wire: ads_contracts::EventActionPlannedV1 = serde_json::from_value(json.clone()).unwrap();
+    assert!(ActionPlanned::from_wire(wire).is_err());
+    assert!(Event::from_json(json).is_err());
 }

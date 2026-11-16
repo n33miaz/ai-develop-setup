@@ -694,3 +694,26 @@ fn denied_action_is_rebuilt_as_final() {
         assert!(unexpected(replay(&[event.clone(), later.clone()])));
     }
 }
+
+#[test]
+fn generated_grant_for_another_action_cannot_rebuild_state() {
+    let verdict = approval_needed(&[BUILD]);
+    let (_, mut log) = decided_run("act-01", &verdict, Move::Grant);
+    let mut json = log[2].to_json();
+    json["data"]["action_id"] = "act-02".into();
+    let wire: ads_contracts::EventApprovalGrantedV2 = serde_json::from_value(json.clone()).unwrap();
+    assert_eq!(wire.data.action_id.as_str(), "act-02");
+    log[2] = Event::from_json(json).unwrap();
+    assert_eq!(replay(&log), Err(ReplayError::ActionMismatch));
+}
+
+#[test]
+fn generated_legacy_grant_cannot_enter_replay() {
+    let verdict = approval_needed(&[BUILD]);
+    let (_, log) = decided_run("act-01", &verdict, Move::Grant);
+    let mut json = log[2].to_json();
+    json["type"] = "urn:ads:event:approval.granted:1".into();
+    json["data"].as_object_mut().unwrap().remove("action_id");
+    let _: ads_contracts::EventApprovalGrantedV1 = serde_json::from_value(json.clone()).unwrap();
+    assert!(Event::from_json(json).is_err());
+}
