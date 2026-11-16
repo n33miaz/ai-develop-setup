@@ -123,7 +123,8 @@ fn walk(
                 ));
             }
             for name in list(fence, &entry.node, rel)? {
-                if name == ".git" {
+                // In any case: a file system that ignores case reads `.GIT` as `.git`.
+                if name.eq_ignore_ascii_case(".git") {
                     if depth == 0 {
                         facts.repo_root = true;
                     } else {

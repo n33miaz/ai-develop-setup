@@ -3,7 +3,7 @@
 
 use std::fmt;
 
-use ads_core::gate::{Command, ExecutionPermit};
+use ads_core::gate::{Action, Command, Event, EventMeta, ExecutionPermit, Refused};
 
 use crate::reason::{Reason, Stop};
 use crate::survey::Facts;
@@ -40,6 +40,9 @@ pub enum Status {
     /// The change was made, but the system did not confirm it is on disk: after a power
     /// loss it may or may not be there.
     Unconfirmed { detail: String },
+    /// A move took another entry than the approved one: it took the name at the last
+    /// instant. It is at the destination, whole, and can be moved back.
+    Misplaced { detail: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,7 +111,7 @@ impl Report {
         let stepped = self.steps.iter().any(|step| match &step.status {
             Status::Pending | Status::Absent => false,
             Status::Failed { removed, .. } => *removed > 0,
-            Status::Done | Status::Unconfirmed { .. } => true,
+            Status::Done | Status::Unconfirmed { .. } | Status::Misplaced { .. } => true,
         });
         !laid && !stepped
     }
@@ -126,8 +129,8 @@ pub enum Stage {
     Steps,
 }
 
-/// The plan ran to the end. The permit is spent: it is not handed back, it only closes the
-/// action (`Command::Executed`).
+/// The plan ran to the end. The permit is spent and never comes back: it is used here, once,
+/// to close the action.
 #[derive(Debug)]
 pub struct Completed {
     pub(crate) permit: ExecutionPermit,
@@ -135,14 +138,18 @@ pub struct Completed {
 }
 
 impl Completed {
-    /// The command that closes the action in the gate. Consumes the permit of the execution.
-    pub fn close(self) -> (Command, Report) {
-        (
-            Command::Executed {
-                permit: self.permit,
-            },
-            self.report,
-        )
+    /// Closes `action` in the gate (`Command::Executed`), yielding `action.executed`. The
+    /// permit goes into the gate and nowhere else: accepted or refused, it is gone.
+    pub fn close(
+        self,
+        action: Action,
+        meta: EventMeta,
+    ) -> Result<(Action, Event, Report), Box<Refused>> {
+        let command = Command::Executed {
+            permit: self.permit,
+        };
+        let (action, event) = action.apply(command, meta)?;
+        Ok((action, event, self.report))
     }
 }
 
