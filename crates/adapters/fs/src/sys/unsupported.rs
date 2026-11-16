@@ -63,7 +63,7 @@ impl Node {
         match self.never {}
     }
 
-    pub fn make_private_dir(&self, _name: &str) -> Result<(), Error> {
+    pub fn make_private_dir(&self, _name: &str) -> Result<Option<Identity>, Error> {
         match self.never {}
     }
 

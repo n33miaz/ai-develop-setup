@@ -202,11 +202,15 @@ fn holding_of<'a>(report: &'a ads_adapter_fs::Report, sandbox: &Sandbox) -> &'a 
         .status
 }
 
-/// The holding folder of the execution is removed at the end. When the system removed it and
-/// does not confirm its folder on disk, the execution does not end as a success: every step
-/// is done, and the report says the removal went and was not confirmed.
+/// The holding folder of the execution is removed at the end (where the creation gave its
+/// identity: Windows). When the system removed it and does not confirm its folder on disk,
+/// the execution does not end as a success: every step is done, and the report says the
+/// removal went and was not confirmed.
 #[test]
 fn a_holding_folder_removed_and_not_confirmed_is_a_failure() {
+    if !cfg!(windows) {
+        return;
+    }
     let sandbox = Sandbox::new("clear-sync");
     sandbox.file("work/tree/a.txt", "a");
     let flow = through_gate(
@@ -242,11 +246,13 @@ fn a_holding_folder_removed_and_not_confirmed_is_a_failure() {
 }
 
 /// While the holding folder is removed, it and the folder it is in stay where they are: on
-/// Windows the system refuses to move either out of the fence. On Linux the folder that left
-/// is not found again under its name, and is not removed; the execution still ends, its
-/// steps done, with the folder reported as made.
+/// Windows the system refuses to move either out of the fence. On Linux it is never removed
+/// (see the next test).
 #[test]
 fn a_holding_folder_cannot_be_taken_out_of_the_fence_while_it_is_removed() {
+    if !cfg!(windows) {
+        return;
+    }
     let sandbox = Sandbox::new("clear-hold");
     sandbox.file("work/tree/a.txt", "a");
     let outside_before = tree(&sandbox.outside);
@@ -278,17 +284,53 @@ fn a_holding_folder_cannot_be_taken_out_of_the_fence_while_it_is_removed() {
     });
     let done = run(&mut executor, flow).unwrap();
     assert_eq!(done.report.steps[0].status, Status::Done);
-    let attempts = attempts.borrow().clone();
-    if cfg!(windows) {
-        assert_eq!(attempts, [false, false]);
-        assert_eq!(holding_of(&done.report, &sandbox), &Laid::Cleared);
-        assert_eq!(tree(&sandbox.outside), outside_before);
-    } else {
-        assert_eq!(attempts, [true]);
-        assert_eq!(holding_of(&done.report, &sandbox), &Laid::Made);
-        assert!(sandbox.outside.join("taken-0").is_dir());
-    }
+    assert_eq!(*attempts.borrow(), [false, false]);
+    assert_eq!(holding_of(&done.report, &sandbox), &Laid::Cleared);
+    assert_eq!(tree(&sandbox.outside), outside_before);
     assert!(sandbox.sentinel_is_intact());
+}
+
+/// Right after the holding folder is made, another process moves it away and puts a folder
+/// of its own under the name. The execution uses that folder (it is inside the fence, and
+/// everything moved into it is compared with the inventory), but at the end it removes only
+/// the folder it made, known by the identity the creation itself gave: the substitute stays,
+/// reported as made. On Linux the creation gives no identity, and nothing is removed at the
+/// end at all.
+#[test]
+fn a_holding_folder_swapped_right_after_it_was_made_is_not_removed() {
+    let sandbox = Sandbox::new("clear-swap");
+    sandbox.file("work/tree/a.txt", "a");
+    let flow = through_gate(
+        &sandbox.policy(QUARANTINE_OFF),
+        delete_of(&sandbox, "act-1", &["work/tree"]),
+    );
+    let first = sandbox.outside.join("made-first");
+    let swapped = Rc::new(RefCell::new(false));
+    let mut executor = hooked(sandbox.executor(QUARANTINE_OFF), {
+        let (swapped, first) = (swapped.clone(), first.clone());
+        move |moment, mutation| {
+            if let (Moment::Midway(Midway::Created), Mutation::CreateDir(path)) = (moment, mutation)
+                && path.ends_with("act-1")
+            {
+                fs::rename(path, &first)?;
+                fs::create_dir(path)?;
+                *swapped.borrow_mut() = true;
+            }
+            Ok(())
+        }
+    });
+    let done = run(&mut executor, flow).unwrap();
+    assert!(*swapped.borrow());
+    assert_eq!(done.report.steps[0].status, Status::Done);
+    // The substitute is still there, empty, and the report says the folder was made.
+    let holding = sandbox.path(&format!("{}/act-1", sandbox.private_dir()));
+    assert!(holding.is_dir());
+    assert!(tree(&holding).is_empty());
+    assert_eq!(holding_of(&done.report, &sandbox), &Laid::Made);
+    // The folder that was made, moved away by the other process, is untouched.
+    assert!(first.is_dir());
+    assert!(sandbox.sentinel_is_intact());
+    assert!(!sandbox.path("work/tree").exists());
 }
 
 // ---- what was created is told as created, and its folder is confirmed --------------------------

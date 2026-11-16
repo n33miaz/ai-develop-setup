@@ -414,8 +414,15 @@ impl Node {
 
     /// Like [`Self::make_dir`], for a folder only this executor is meant to use. The access
     /// list is the one the folder inherits: nothing here narrows it.
-    pub fn make_private_dir(&self, name: &str) -> Result<(), Error> {
-        self.make_dir(name)
+    ///
+    /// `Ok` carries the identity of the folder made, read on the handle the creation itself
+    /// returned, before it is closed: that object and no other. `None` when the system did
+    /// not say; the folder is made all the same.
+    pub fn make_private_dir(&self, name: &str) -> Result<Option<Identity>, Error> {
+        plain(name)?;
+        let options = NTCREATEFILE_CREATE_OPTIONS(ITSELF.0 | FILE_DIRECTORY_FILE.0);
+        let file = open_at(&self.file, name, BROWSE, SHARED, FILE_CREATE, options)?;
+        Ok(meta_of(&file).ok().map(|meta| meta.id))
     }
 
     /// Creates the new, empty file `name`, which must not exist, open for writing. Writing

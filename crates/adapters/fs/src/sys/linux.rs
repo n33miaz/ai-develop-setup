@@ -143,9 +143,13 @@ impl Node {
 
     /// Like [`Self::make_dir`], for a folder only this executor is meant to use: no other
     /// user gets in. A process of the same user still does.
-    pub fn make_private_dir(&self, name: &str) -> Result<(), Error> {
+    ///
+    /// Always `None` for the identity: `mkdirat` gives no handle of what it made, and the
+    /// name, looked at afterwards, may already be another folder.
+    pub fn make_private_dir(&self, name: &str) -> Result<Option<Identity>, Error> {
         plain(name)?;
-        Ok(mkdirat(&self.fd, name, Mode::from_raw_mode(0o700))?)
+        mkdirat(&self.fd, name, Mode::from_raw_mode(0o700))?;
+        Ok(None)
     }
 
     /// Creates the new, empty file `name`, which must not exist, open for writing. Writing
