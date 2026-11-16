@@ -56,7 +56,8 @@ pub struct Step {
     pub effect: Effect,
     pub facts: Facts,
     /// Where a tree is held while it is removed for good: it is moved there first, whole,
-    /// and removed there. `None` for every other step.
+    /// and removed there. `None` for every other step. Only a place the step tried: what is
+    /// there is promised by `Held` alone, never by `Unverified`.
     pub held: Option<String>,
     pub status: Status,
 }

@@ -123,9 +123,9 @@ O executor para na primeira falha: não desfaz e não continua. `Failure.stage` 
 | `Done` | feito, com as pastas envolvidas confirmadas |
 | `Absent` | listado no manifesto, não estava na quarentena |
 | `Failed` | parou antes de mudar o alvo: ele está onde estava, inteiro |
-| `Held` | um apagar definitivo parou depois de mover o alvo para a pasta de espera (`held` do passo): o que sobrou dele está lá; `removed` e `confirmed` contam o que saiu |
+| `Held` | um apagar definitivo parou depois de mover o alvo para a pasta de espera (`held` do passo) e conferir que ele chegou lá: o que sobrou dele está lá; `removed` e `confirmed` contam o que saiu |
 | `Unconfirmed` | a alteração foi feita e o sistema não confirmou que está no disco |
-| `Unverified` | o sistema fez o movimento e a conferência depois dele falhou: o alvo saiu do lugar; onde está não é prometido |
+| `Unverified` | o sistema fez o movimento e a conferência depois dele falhou: o alvo saiu do lugar; onde está não é prometido. Vale também para o movimento à pasta de espera: `held` é então só o lugar tentado |
 
 | Etapa | O que mudou no disco |
 |---|---|
@@ -139,7 +139,7 @@ O que uma nova execução encontra depois de uma interrupção:
 - **Quarentena que parou antes de o manifesto estar gravado e sincronizado**: nenhum alvo saiu do lugar. A pasta da leva fica, sem itens, com ou sem um manifesto incompleto; uma restauração dela é recusada (`E_FS_MANIFEST_INVALID` ou `E_FS_NOTHING_TO_RESTORE`) e ela sai pela purga.
 - **Quarentena que parou depois**: cada alvo está inteiro em exatamente um lugar, o de origem ou `items`. A restauração da leva devolve o que foi e marca o resto como ausente; pode ser repetida até terminar.
 - **Restauração interrompida**: retomada por outra restauração da mesma leva.
-- **Apagar definitivo interrompido**: o que sobrou da árvore está em `<private_dir>/<action_id>/<n>`, e o relatório diz o caminho. Não volta sozinho para o lugar de origem. Uma ação nova de apagar com esse caminho como alvo termina o serviço; a pasta privada em si, ou uma pasta que a contém, nunca é alvo.
+- **Apagar definitivo interrompido**: com o passo `Held`, o que sobrou da árvore está em `<private_dir>/<action_id>/<n>`, e o relatório diz o caminho. Com o passo `Unverified`, a árvore foi mandada para esse caminho e a chegada não foi conferida: é o primeiro lugar a olhar, não um lugar prometido. Não volta sozinho para o lugar de origem. Uma ação nova de apagar com esse caminho como alvo termina o serviço; a pasta privada em si, ou uma pasta que a contém, nunca é alvo.
 
 Os testes param a execução em cada chamada da sonda e conferem esse estado. Queda de energia de verdade não é simulada: o que se garante é a ordem das sincronizações.
 
@@ -247,4 +247,4 @@ O executor dos testes usa `definitive_delete = "isolated"`, para os testes de ap
 | `tests/execute.rs` | quarentena, restauração, apagar, falha no meio, ordem com o log |
 | `tests/review.rs` | a primeira revisão independente: troca depois da última conferência, destino que aparece no último instante, entrada não aprovada, repositório aninhado, parada em cada passo, licença usada duas vezes |
 | `tests/contain.rs` | a segunda: cerca aberta nome a nome, arquivo que cresceu, movimento não verificado, manifesto parado depois de criado, árvore apagada na pasta de espera com cada pasta sincronizada, pasta em esvaziamento que não sai do lugar, padrão por sistema, restauração sobre pasta reservada |
-| `tests/settle.rs` | a terceira: entrada reivindicada para remoção que não sai da cerca |
+| `tests/settle.rs` | a terceira: entrada reivindicada para remoção que não sai da cerca, movimento à pasta de espera não verificado |

@@ -527,9 +527,12 @@ impl Disk<'_> {
         self.guard(rel).map_err(nothing)?;
         self.announce(&Mutation::RemoveTree(self.fence.path_of(rel)))
             .map_err(nothing)?;
+        // A move that was not verified is not a place: the step says the target left, not
+        // where it is. A move verified and not confirmed on disk is held where it arrived.
         self.rename(rel, seen, place, Reason::DestinationTaken)
             .map_err(|stop| match stop.reason {
-                Reason::MoveUnverified | Reason::Unconfirmed => (stop, Reached::Holding),
+                Reason::MoveUnverified => (stop, Reached::Target),
+                Reason::Unconfirmed => (stop, Reached::Holding),
                 _ => (stop, Reached::Nothing),
             })?;
         self.empty_holding(seen, place, tally)
