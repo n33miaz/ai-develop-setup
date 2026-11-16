@@ -4,7 +4,7 @@ use chacha20poly1305::{
     aead::{Aead, KeyInit, Payload},
 };
 use std::fmt;
-use zeroize::Zeroize;
+use zeroize::Zeroizing;
 
 const DATA_DOMAIN: &[u8] = b"urn:ads:cipher:column:1";
 const CHECK_DOMAIN: &[u8] = b"urn:ads:cipher:key-check:1";
@@ -24,16 +24,13 @@ impl fmt::Display for CipherError {
 }
 impl std::error::Error for CipherError {}
 
-pub struct SecretKey([u8; 32]);
+pub struct SecretKey(Box<Zeroizing<[u8; 32]>>);
 impl SecretKey {
-    /// Transfers the key into owned, zeroized storage. The caller owns other copies.
-    pub fn new(bytes: [u8; 32]) -> Self {
-        Self(bytes)
-    }
-}
-impl Drop for SecretKey {
-    fn drop(&mut self) {
-        self.0.zeroize();
+    /// Copies from caller storage; the caller must erase its own copy.
+    pub fn new(bytes: &[u8; 32]) -> Self {
+        let mut key = Box::new(Zeroizing::new([0; 32]));
+        key.copy_from_slice(bytes);
+        Self(key)
     }
 }
 
@@ -118,7 +115,7 @@ fn seal(
     let (key_id, key) = keys.current()?;
     let nonce = nonce()?;
     let encoded = encode(domain, &key_id, aad);
-    let cipher = XChaCha20Poly1305::new((&key.0).into());
+    let cipher = XChaCha20Poly1305::new((&**key.0).into());
     let bytes = cipher
         .encrypt(
             (&nonce).into(),
@@ -139,10 +136,10 @@ fn unseal(
     domain: &[u8],
     aad: &AssociatedData<'_>,
     ciphertext: &Ciphertext,
-) -> Result<Vec<u8>, CipherError> {
+) -> Result<Zeroizing<Vec<u8>>, CipherError> {
     let key = keys.by_id(&ciphertext.key_id)?;
     let encoded = encode(domain, &ciphertext.key_id, aad);
-    XChaCha20Poly1305::new((&key.0).into())
+    XChaCha20Poly1305::new((&**key.0).into())
         .decrypt(
             (&ciphertext.nonce).into(),
             Payload {
@@ -150,6 +147,7 @@ fn unseal(
                 aad: &encoded,
             },
         )
+        .map(Zeroizing::new)
         .map_err(|_| CipherError::Authentication)
 }
 pub fn encrypt(
@@ -163,7 +161,7 @@ pub fn decrypt(
     keys: &dyn KeyProvider,
     aad: &AssociatedData<'_>,
     ciphertext: &Ciphertext,
-) -> Result<Vec<u8>, CipherError> {
+) -> Result<Zeroizing<Vec<u8>>, CipherError> {
     unseal(keys, DATA_DOMAIN, aad, ciphertext)
 }
 pub fn key_check(keys: &dyn KeyProvider) -> Result<Ciphertext, CipherError> {
@@ -191,21 +189,33 @@ mod tests {
         fn new(byte: u8) -> Self {
             Self {
                 id: KeyId::new("test-key").unwrap(),
-                key: SecretKey::new([byte; 32]),
+                key: SecretKey::new(&[byte; 32]),
             }
         }
     }
     impl KeyProvider for MemoryKeys {
         fn current(&self) -> Result<(KeyId, SecretKey), CipherError> {
-            Ok((KeyId::new(self.id.as_str())?, SecretKey::new(self.key.0)))
+            Ok((KeyId::new(self.id.as_str())?, SecretKey::new(&self.key.0)))
         }
         fn by_id(&self, id: &KeyId) -> Result<SecretKey, CipherError> {
             if id == &self.id {
-                Ok(SecretKey::new(self.key.0))
+                Ok(SecretKey::new(&self.key.0))
             } else {
                 Err(CipherError::KeyUnavailable)
             }
         }
+    }
+
+    #[test]
+    fn repeated_plaintext_uses_distinct_nonce_and_ciphertext() {
+        let keys = MemoryKeys::new(42);
+        let aad = AssociatedData(&[]);
+        let first = encrypt(&keys, &aad, b"same plaintext").unwrap();
+        let second = encrypt(&keys, &aad, b"same plaintext").unwrap();
+        assert_ne!(first.nonce, second.nonce);
+        assert_ne!(first.bytes, second.bytes);
+        let _: Zeroizing<Vec<u8>> = decrypt(&keys, &aad, &first).unwrap();
+        let _: Box<Zeroizing<[u8; 32]>> = keys.key.0;
     }
 
     #[test]
@@ -227,7 +237,7 @@ mod tests {
         ];
         let aad = AssociatedData(&fields);
         let mut ct = encrypt(&keys, &aad, b"private sentinel").unwrap();
-        assert_eq!(decrypt(&keys, &aad, &ct).unwrap(), b"private sentinel");
+        assert_eq!(&**decrypt(&keys, &aad, &ct).unwrap(), b"private sentinel");
         assert_eq!(
             decrypt(&MemoryKeys::new(43), &aad, &ct),
             Err(CipherError::Authentication)
@@ -235,7 +245,7 @@ mod tests {
         ct.key_id = KeyId::new("replacement-id").unwrap();
         let renamed = MemoryKeys {
             id: KeyId::new("replacement-id").unwrap(),
-            key: SecretKey::new([42; 32]),
+            key: SecretKey::new(&[42; 32]),
         };
         assert_eq!(
             decrypt(&renamed, &aad, &ct),
@@ -341,7 +351,7 @@ mod tests {
     fn diagnostics_do_not_disclose_key_plaintext_or_aad() {
         let keys = MemoryKeys {
             id: KeyId::new("diagnostic-key").unwrap(),
-            key: SecretKey::new(*b"0123456789abcdef0123456789abcdef"),
+            key: SecretKey::new(b"0123456789abcdef0123456789abcdef"),
         };
         let aad = AssociatedData(&[Some(b"private-aad-sentinel")]);
         let ct = encrypt(&keys, &aad, b"private-plaintext-sentinel").unwrap();
