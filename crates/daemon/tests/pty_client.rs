@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use ads_daemon::pty_client::{ClientConfig, ClientError, Event, PtyClient};
 use ads_ptyhost::wire::{
-    Base64, ErrorCode, Notification, OpenParams, ResizeParams, SessionId, SessionParams,
-    WriteParams,
+    self, Base64, ErrorCode, Frame, Notification, OpenParams, ResizeParams, SessionId,
+    SessionParams, WriteParams,
 };
 use ads_ptyhost::{FakeBackend, HostConfig, PtyHost, server};
 
