@@ -18,11 +18,11 @@ Estado da mitigação, em cada risco:
 | [Troca no disco durante a execução](#troca-no-disco-durante-a-execução) | executor de arquivos | implementada e testada, com limites escritos |
 | [Licença de execução usada duas vezes](#licença-de-execução-usada-duas-vezes) | portão, executor e armazenamento | parcial: só dentro de um processo |
 | [Perda de sessões de terminal](#perda-de-sessões-de-terminal) | host de terminais | implementada e testada; lançador ausente |
-| [Outro usuário da máquina alcança as sessões](#outro-usuário-da-máquina-alcança-as-sessões) | host de terminais e daemon | implementada no host; conferência do lado do cliente em andamento |
+| [Outro usuário da máquina alcança as sessões](#outro-usuário-da-máquina-alcança-as-sessões) | host de terminais e daemon | implementada e testada no Windows; teste com duas contas ausente |
 | [Credencial de CLI de IA vaza para o processo filho](#credencial-de-cli-de-ia-vaza-para-o-processo-filho) | adaptadores de ferramenta e host | parcial |
-| [Página ou programa local comanda os terminais](#página-ou-programa-local-comanda-os-terminais) | daemon (API local) | decidida (proposta), não implementada |
-| [Dado sensível em claro no disco](#dado-sensível-em-claro-no-disco) | armazenamento | decidida, não implementada |
-| [Perda do estado local](#perda-do-estado-local) | armazenamento | ausente |
+| [Página ou programa local comanda os terminais](#página-ou-programa-local-comanda-os-terminais) | daemon (API local) | decidida (proposta); só o lado da interface implementado |
+| [Dado sensível em claro no disco](#dado-sensível-em-claro-no-disco) | armazenamento | parcial: cifra implementada e testada, ainda não ligada ao banco |
+| [Perda do estado local](#perda-do-estado-local) | armazenamento | parcial: abertura recusa arquivo corrompido sem alterá-lo; backup ausente |
 | [Atualização ruim instalada](#atualização-ruim-instalada) | lançador | decidida, não implementada |
 | [Elevação de privilégio](#elevação-de-privilégio) | auxiliar de elevação | decidida, não implementada |
 | [Exposição pelo transporte remoto](#exposição-pelo-transporte-remoto) | relé e sessão cifrada | decidida, não implementada |
@@ -85,9 +85,9 @@ Estado da mitigação, em cada risco:
 - **Impacto.** Quebra do isolamento entre usuários (P3).
 - **Dono.** Host de terminais e daemon.
 - **Teto.** Não se aplica.
-- **Mitigação existente (implementada e testada).** Named pipe com lista de acesso de uma entrada só, a do usuário, e recusa de subir se o nome já existe; socket Unix `0600` ([como roda](../crates/ptyhost/README.md#como-roda)). Teste `pipe_grants_access_to_the_current_user_only` em `crates/ptyhost/src/channel.rs`.
+- **Mitigação existente (implementada e testada).** Named pipe com lista de acesso de uma entrada só, a do usuário, e recusa de subir se o nome já existe; socket Unix `0600` ([como roda](../crates/ptyhost/README.md#como-roda)). No Windows o cliente só entrega a conexão depois de confirmar que o pipe é servido pelo usuário atual, antes de enviar qualquer byte ([daemon](../crates/daemon/README.md)). Testes `pipe_grants_access_to_the_current_user_only` em `crates/ptyhost/src/channel.rs` e `crates/daemon/tests/channel_owner.rs`.
 - **Plano B.** Não há.
-- **O que falta.** O cliente do daemon ainda não confere o dono do pipe a que se conecta (issue #56). O teste com dois usuários que o P3 pede não existe.
+- **O que falta.** O teste com duas contas que o P3 pede não existe: a recusa de um pipe de outro usuário é testada com identificadores sintéticos e sondas ([limites conhecidos](../crates/ptyhost/README.md#limites-conhecidos)). Fora do Windows o cliente não confere quem serve o socket. Host e cliente em níveis de elevação diferentes não se conectam.
 
 ### Credencial de CLI de IA vaza para o processo filho
 
@@ -107,7 +107,7 @@ Estado da mitigação, em cada risco:
 - **Teto.** Prazo do `auth.hello` (padrão proposto 5 s).
 - **Mitigação existente (decidida como proposta, não implementada).** [ADR 0020](adr/0020-local-api-authentication.md): porta efêmera em `127.0.0.1`, conferência de `Host` e `Origin`, token por execução entregue pelo fragmento e conferido em tempo constante, recusa de origem remota. O Schema `urn:ads:command:auth.hello:1` existe.
 - **Plano B.** Condição de reversão da ADR 0020.
-- **O que falta.** A ADR aguarda ratificação. O daemon ainda não escuta WebSocket nenhum; a interface ainda usa um cliente de exemplo.
+- **O que falta.** A ADR aguarda ratificação. O daemon ainda não escuta WebSocket nenhum, então nada do lado do servidor (porta, `Host`, `Origin`, token, prazo) existe. O lado da interface já lê o token do fragmento, guarda só na aba e manda `auth.hello` primeiro ([README da raiz](../README.md#interface-e-conexão-local)).
 
 ## Estado local
 
@@ -117,19 +117,19 @@ Estado da mitigação, em cada risco:
 - **Impacto.** Quem lê o disco lê o trabalho do usuário.
 - **Dono.** Armazenamento ([`crates/storage`](../crates/storage/README.md)) e cofre ([`crates/adapters/vault`](../crates/adapters/vault/README.md)).
 - **Teto.** Não se aplica.
-- **Mitigação existente (decidida, não implementada).** [ADR 0005](adr/0005-column-level-encryption.md): cifra autenticada por coluna, chave no cofre do sistema. Hoje nada é gravado: o anel de replay fica só em memória e o cliente do daemon não persiste saída nem tem telemetria ([daemon](../crates/daemon/README.md)).
+- **Mitigação existente.** [ADR 0005](adr/0005-column-level-encryption.md): cifra autenticada por coluna, chave no cofre do sistema. A cifra (XChaCha20-Poly1305, com dados associados autenticados) está implementada e testada em `crates/storage/src/cipher.rs`, inclusive recusa de chave e de dados associados trocados e diagnóstico sem chave nem texto ([ADR 0021](adr/0021-storage-atomic-file-and-cipher.md), proposta). Hoje nada sensível é gravado: o anel de replay fica só em memória e o cliente do daemon não persiste saída nem tem telemetria ([daemon](../crates/daemon/README.md)).
 - **Plano B.** Banco inteiro cifrado (condição de reversão da ADR 0005).
-- **O que falta.** O armazenamento é esqueleto em `develop`; a abertura do banco e a cifra estão em andamento (issue #47). O teste da ADR 0005 (reabrir, recusar chave errada, frase sentinela ausente do arquivo) ainda não existe.
+- **O que falta.** A cifra ainda não está ligada ao banco, que só tem a tabela `meta`; a chave ainda não vem do cofre, que é esqueleto. O teste da ADR 0005 com o banco (gravar, reabrir, recusar chave errada, frase sentinela ausente do arquivo) ainda não existe.
 
 ### Perda do estado local
 
 - **Descrição.** Banco local corrompido ou apagado.
 - **Impacto.** Perda de auditoria, métricas e estado das tarefas.
 - **Dono.** Armazenamento.
-- **Teto.** Não definido.
-- **Mitigação existente.** Ausente. A [ADR 0004](adr/0004-local-sqlite-no-cloud-database.md) cita backup local com restauração testada como condição de reversão, sem mecanismo.
-- **Plano B.** Não definido.
-- **O que falta.** Backup e restauração testada (P5), auditoria só-anexo encadeada.
+- **Mitigação existente.** A abertura confere o arquivo antes de tocá-lo e recusa arquivo estranho, mais novo, truncado ou corrompido sem alterá-lo; `synchronous = FULL`; tudo o que participa de uma invariante fica num arquivo só ([ADR 0021](adr/0021-storage-atomic-file-and-cipher.md), proposta). Testes em `crates/storage/tests/open.rs`.
+- **Teto.** `inspection_max_bytes` e `integrity_check_on_open` em [`defaults/storage.toml`](../defaults/storage.toml).
+- **Plano B.** Não definido. A [ADR 0004](adr/0004-local-sqlite-no-cloud-database.md) cita backup local com restauração testada como condição de reversão, sem mecanismo.
+- **O que falta.** Backup e restauração testada (P5), auditoria só-anexo encadeada, trava de instância e pasta por usuário (a ADR 0021 as deixa para a composição).
 
 ## Atualização e privilégio
 

@@ -4,7 +4,7 @@ Codinome de uma plataforma local para delegar trabalho de desenvolvimento a agen
 
 ## Estado
 
-Em construção, sem versão publicada. Já existem os contratos e os tipos gerados deles, o portão de ações destrutivas, o executor de arquivos, o host de terminais com o cliente dele no daemon e o esqueleto da interface; o estado de cada módulo está em [docs/modules.md](docs/modules.md) e os riscos conhecidos em [docs/risks.md](docs/risks.md).
+Em construção, sem versão publicada. Já existem os contratos e os tipos gerados deles, o portão de ações destrutivas, o executor de arquivos, o host de terminais com o cliente dele no daemon, a abertura do banco local com a cifra por coluna e a interface com o cliente da API local (o núcleo ainda não serve essa API); o estado de cada módulo está em [docs/modules.md](docs/modules.md) e os riscos conhecidos em [docs/risks.md](docs/risks.md).
 
 - Regras para quem altera o repo (pessoas e agentes): [AGENTS.md](AGENTS.md)
 - Como contribuir e o fluxo de branches: [CONTRIBUTING.md](CONTRIBUTING.md)
