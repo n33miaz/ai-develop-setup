@@ -404,17 +404,17 @@ impl Node {
         Ok(())
     }
 
-    /// Makes the folder `name`, which must not exist, and opens it.
-    pub fn make_dir(&self, name: &str) -> Result<Self, Error> {
+    /// Makes the folder `name`, which must not exist. `Ok` is "made", and nothing else.
+    pub fn make_dir(&self, name: &str) -> Result<(), Error> {
         plain(name)?;
         let options = NTCREATEFILE_CREATE_OPTIONS(ITSELF.0 | FILE_DIRECTORY_FILE.0);
-        let file = open_at(&self.file, name, BROWSE, SHARED, FILE_CREATE, options)?;
-        Ok(Self { file })
+        open_at(&self.file, name, BROWSE, SHARED, FILE_CREATE, options)?;
+        Ok(())
     }
 
     /// Like [`Self::make_dir`], for a folder only this executor is meant to use. The access
     /// list is the one the folder inherits: nothing here narrows it.
-    pub fn make_private_dir(&self, name: &str) -> Result<Self, Error> {
+    pub fn make_private_dir(&self, name: &str) -> Result<(), Error> {
         self.make_dir(name)
     }
 

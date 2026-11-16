@@ -179,7 +179,8 @@ fn another_spelling_of_a_name_is_an_alias_not_the_entry() {
 fn creation_is_exclusive_and_relative_to_the_open_folder() {
     let sandbox = Sandbox::new("sys-create");
     let work = fence(&sandbox).child("work").unwrap();
-    let made = work.make_dir("new").unwrap();
+    work.make_dir("new").unwrap();
+    let made = work.child("new").unwrap();
     assert_eq!(kind(&made), Kind::Dir);
     assert!(matches!(work.make_dir("new"), Err(Error::Exists)));
     {

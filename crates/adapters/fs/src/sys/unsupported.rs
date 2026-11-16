@@ -59,11 +59,11 @@ impl Node {
         match self.never {}
     }
 
-    pub fn make_dir(&self, _name: &str) -> Result<Self, Error> {
+    pub fn make_dir(&self, _name: &str) -> Result<(), Error> {
         match self.never {}
     }
 
-    pub fn make_private_dir(&self, _name: &str) -> Result<Self, Error> {
+    pub fn make_private_dir(&self, _name: &str) -> Result<(), Error> {
         match self.never {}
     }
 
