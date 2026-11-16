@@ -3,9 +3,9 @@
 # GPL e AGPL nunca; MPL-2.0 so por excecao nomeada abaixo, com a decisao em docs/adr/0018-*.md.
 
 [graph]
-# Plataformas avaliadas: o produto roda no Windows. Acrescente "x86_64-unknown-linux-gnu" quando existir
-# o fixture em Linux (traz as bibliotecas gtk do Tauri, com avisos proprios).
-targets = ["x86_64-pc-windows-msvc"]
+# Plataformas avaliadas: o produto roda no Windows; o Linux entra porque o executor de arquivos
+# (`ads-adapter-fs`) tem dependencia so desse alvo (`rustix`) e roda la no CI.
+targets = ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"]
 
 [advisories]
 # Cada ignorado leva o motivo e a condicao para sair da lista. Hoje nenhum.
