@@ -258,15 +258,21 @@ impl Disk<'_> {
     }
 
     /// Takes hold of the approved object under the last name of `rel`, in its open folder:
-    /// the same object, and for a file the same size it had when it was approved.
+    /// the same object, and for a file the same size it had when it was approved. A claim
+    /// `to_remove` keeps the entry under its name until it is gone, where the system can.
     fn claim<'n>(
         &self,
         parent: &'n Node,
         name: &str,
         seen: &Seen,
         rel: &[String],
+        to_remove: bool,
     ) -> Result<sys::Claim<'n>, Stop> {
-        let claim = match parent.claim(name, seen.id) {
+        let claimed = match to_remove {
+            true => parent.claim_to_remove(name, seen.id),
+            false => parent.claim(name, seen.id),
+        };
+        let claim = match claimed {
             Ok(claim) => claim,
             Err(sys::Error::Missing | sys::Error::Changed) => {
                 return Err(self.not_approved(rel, "is not the entry that was approved"));
@@ -314,7 +320,7 @@ impl Disk<'_> {
         if dest.entry.is_some() {
             return Err(self.taken(to, taken));
         }
-        let claim = self.claim(&source.parent, &source.name, seen, from)?;
+        let claim = self.claim(&source.parent, &source.name, seen, from, false)?;
         self.opened(&mutation)?;
         match claim.move_to(&dest.parent, &dest.name) {
             Ok(()) => {}
@@ -386,9 +392,25 @@ impl Disk<'_> {
     ) -> Result<(), Stop> {
         let mutation = Mutation::Remove(self.fence.path_of(rel));
         self.announce(&mutation)?;
-        let claim = self.claim(parent, name, seen, rel)?;
+        // Claimed to be removed: where the system can, nobody can rename it from here on. It
+        // is then looked for again under its name in the open folder, so that what is
+        // removed is the entry of that folder, not one that left it before the claim held.
+        let claim = self.claim(parent, name, seen, rel, true)?;
         self.opened(&mutation)?;
         self.still_there(chain, rel)?;
+        match parent.holds(name, seen.id) {
+            Ok(true) => {}
+            Ok(false) => {
+                return Err(Stop::new(
+                    Reason::Displaced,
+                    format!(
+                        "{} is no longer under its name in its folder",
+                        self.fence.text_of(rel)
+                    ),
+                ));
+            }
+            Err(error) => return Err(Stop::io("looking at", self.fence.text_of(rel), error)),
+        }
         claim.remove().map_err(|error| match error {
             sys::Error::Io(error) if error.kind() == io::ErrorKind::DirectoryNotEmpty => {
                 self.not_approved(rel, "is no longer empty")

@@ -193,6 +193,16 @@ impl Node {
     /// Takes hold of the entry `name` of this folder for one mutation, after comparing it
     /// with `expected`.
     pub fn claim(&self, name: &str, expected: Identity) -> Result<Claim<'_>, Error> {
+        self.claim_named(name, expected)
+    }
+
+    /// Like [`Self::claim`]: nothing here keeps the entry under its name (see [`HOLDS`]).
+    /// The removal acts on the name, and whoever renames the entry in between makes it fail.
+    pub fn claim_to_remove(&self, name: &str, expected: Identity) -> Result<Claim<'_>, Error> {
+        self.claim_named(name, expected)
+    }
+
+    fn claim_named(&self, name: &str, expected: Identity) -> Result<Claim<'_>, Error> {
         plain(name)?;
         let found = meta_of(&statx(&self.fd, name, AtFlags::SYMLINK_NOFOLLOW, WANTED)?);
         if found.id != expected {
