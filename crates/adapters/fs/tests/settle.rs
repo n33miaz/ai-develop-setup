@@ -11,9 +11,9 @@ use std::fs;
 use std::io;
 use std::rc::Rc;
 
-use ads_adapter_fs::{Laid, Midway, Mutation, Reason, Stage, Status};
+use ads_adapter_fs::{Laid, MANIFEST_NAME, Midway, Mutation, Reason, Scaffold, Stage, Status};
 
-use common::{Moment, Sandbox, delete_of, hooked, run, through_gate, tree};
+use common::{Moment, Sandbox, batch_of, delete_of, hooked, run, through_gate, tree};
 
 const QUARANTINE_OFF: &str = "quarantine_enabled = false";
 
@@ -287,4 +287,111 @@ fn a_holding_folder_cannot_be_taken_out_of_the_fence_while_it_is_removed() {
         assert!(sandbox.outside.join("taken-0").is_dir());
     }
     assert!(sandbox.sentinel_is_intact());
+}
+
+// ---- what was created is told as created, and its folder is confirmed --------------------------
+
+/// The folder a path ends in, with `/`, as the last two names.
+fn last_two(path: &std::path::Path) -> String {
+    let names: Vec<String> = path
+        .components()
+        .map(|part| part.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    names[names.len() - 2..].join("/")
+}
+
+/// A folder of the batch is made and the execution stops right after (the folder could not be
+/// opened, the resources ran out). It exists: the report says "created, not confirmed", never
+/// "not created", and the folder it is in is confirmed on disk on the way out.
+#[test]
+fn a_folder_that_stops_after_it_was_made_is_told_as_made_and_confirmed() {
+    let sandbox = Sandbox::new("made-midway");
+    sandbox.file("work/build/out.txt", "text");
+    let flow = through_gate(
+        &sandbox.policy(""),
+        delete_of(&sandbox, "act-1", &["work/build"]),
+    );
+    let (batch, _) = batch_of(&sandbox, &flow, "act-1");
+    let after = Rc::new(RefCell::new(Vec::new()));
+    let mut executor = hooked(sandbox.executor(""), {
+        let after = after.clone();
+        let mut stopped: Option<std::path::PathBuf> = None;
+        move |moment, mutation| match (moment, mutation) {
+            (Moment::Midway(Midway::Created), Mutation::CreateDir(path))
+                if path.ends_with("act-1") =>
+            {
+                stopped = Some(path.clone());
+                Err(io::Error::other("out of resources"))
+            }
+            (Moment::Before, Mutation::Sync(folder)) if stopped.is_some() => {
+                after.borrow_mut().push(last_two(folder));
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    });
+    let failure = run(&mut executor, flow).unwrap_err();
+    assert_eq!(failure.reason, Reason::Unconfirmed, "{failure}");
+    assert_eq!(failure.stage, Stage::Staging);
+    let made = failure
+        .report
+        .staging
+        .iter()
+        .find(|staged| staged.path.ends_with("act-1"))
+        .unwrap();
+    assert_eq!(made.what, Scaffold::Folder);
+    match &made.status {
+        Laid::Unconfirmed { detail } => {
+            assert!(detail.contains("its folder was confirmed"), "{detail}");
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(sandbox.path(&batch).is_dir());
+    // The folder that holds the new one, and only it, was confirmed after the stop.
+    let holder = last_two(sandbox.path(&batch).parent().unwrap());
+    assert_eq!(*after.borrow(), [holder]);
+    assert!(!failure.report.untouched());
+    assert_eq!(failure.report.steps[0].status, Status::Pending);
+}
+
+/// The manifest is created and its writing fails, at either point: the folder of the batch,
+/// where the manifest now is, is still confirmed on disk before the execution stops.
+#[test]
+fn a_manifest_that_fails_after_it_was_created_has_its_folder_confirmed() {
+    for at in [Midway::Created, Midway::Written] {
+        let sandbox = Sandbox::new("manifest-folder");
+        sandbox.file("work/build/out.txt", "text");
+        let flow = through_gate(
+            &sandbox.policy(""),
+            delete_of(&sandbox, "act-1", &["work/build"]),
+        );
+        let (batch, _) = batch_of(&sandbox, &flow, "act-1");
+        let after = Rc::new(RefCell::new(Vec::new()));
+        let mut executor = hooked(sandbox.executor(""), {
+            let after = after.clone();
+            let mut stopped = false;
+            move |moment, mutation| match (moment, mutation) {
+                (Moment::Midway(point), Mutation::WriteFile(_)) if point == at => {
+                    stopped = true;
+                    Err(io::Error::other("no space left on the device"))
+                }
+                (Moment::Before, Mutation::Sync(folder)) if stopped => {
+                    after.borrow_mut().push(last_two(folder));
+                    Ok(())
+                }
+                _ => Ok(()),
+            }
+        });
+        let failure = run(&mut executor, flow).unwrap_err();
+        assert_eq!(failure.reason, Reason::Unconfirmed, "{at:?}: {failure}");
+        let manifest = failure.report.staging.last().unwrap();
+        assert_eq!(manifest.what, Scaffold::Manifest);
+        assert!(
+            matches!(manifest.status, Laid::Unconfirmed { .. }),
+            "{at:?}: {:?}",
+            manifest.status
+        );
+        assert!(sandbox.path(&format!("{batch}/{MANIFEST_NAME}")).is_file());
+        assert_eq!(*after.borrow(), [last_two(&sandbox.path(&batch))], "{at:?}");
+    }
 }

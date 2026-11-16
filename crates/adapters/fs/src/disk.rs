@@ -37,7 +37,8 @@ pub enum Mutation {
 /// A point inside a mutation that is more than one system call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Midway {
-    /// The new file exists, empty: its content is not written yet.
+    /// The new entry exists: a folder, not confirmed on disk yet, or a file, empty, its
+    /// content not written yet.
     Created,
     /// The content was written: the file is not confirmed on disk yet.
     Written,
@@ -58,7 +59,8 @@ pub trait Probe {
         Ok(())
     }
 
-    /// Inside a `WriteFile` or a `Rename`, after a system call that already changed the disk.
+    /// Inside a `CreateDir`, a `WriteFile` or a `Rename`, after a system call that already
+    /// changed the disk.
     fn midway(&mut self, _mutation: &Mutation, _at: Midway) -> io::Result<()> {
         Ok(())
     }
@@ -195,11 +197,30 @@ impl Disk<'_> {
             false => spot.parent.make_dir(&spot.name),
         };
         match made {
-            Ok(_) => {}
+            Ok(()) => {}
             Err(sys::Error::Exists) => return Err(self.taken(rel, Reason::DestinationTaken)),
             Err(error) => return Err(Stop::io("creating", self.fence.text_of(rel), error)),
         }
-        self.sync(&spot.parent, parent_of(rel))
+        // From here the folder exists, whatever comes next.
+        match self.midway(&mutation, Midway::Created) {
+            Ok(()) => self.sync(&spot.parent, parent_of(rel)),
+            Err(error) => Err(self.created_but(&spot.parent, rel, "it stopped there", error)),
+        }
+    }
+
+    /// The entry `rel` was created and what came next failed with `error`. Its folder is
+    /// still confirmed on disk, and how that went is part of what is reported: the entry
+    /// exists, and is told as created and not to be trusted.
+    fn created_but(&mut self, parent: &Node, rel: &[String], what: &str, error: io::Error) -> Stop {
+        let text = self.fence.text_of(rel);
+        let folder = match self.sync(parent, parent_of(rel)) {
+            Ok(()) => "its folder was confirmed on disk".to_owned(),
+            Err(stop) => format!("its folder was not confirmed either: {}", stop.detail),
+        };
+        Stop::new(
+            Reason::Unconfirmed,
+            format!("{text} was created, but {what}: {error}; {folder}"),
+        )
     }
 
     /// Makes the folder `rel` when it is missing, and says whether it did; anything there
@@ -237,20 +258,21 @@ impl Disk<'_> {
             Err(sys::Error::Exists) => return Err(self.taken(rel, Reason::DestinationTaken)),
             Err(error) => return Err(Stop::io("creating", self.fence.text_of(rel), error)),
         };
-        let text = self.fence.text_of(rel);
-        let created = |what: &str, error: io::Error| {
-            Stop::new(
-                Reason::Unconfirmed,
-                format!("{text} was created, but {what}: {error}"),
-            )
-        };
-        self.midway(&mutation, Midway::Created)
+        // From here the file exists, whatever comes next: every way out confirms its folder.
+        let written = self
+            .midway(&mutation, Midway::Created)
             .and_then(|()| file.write_all(bytes))
-            .map_err(|error| created("its content was not written to the end", error))?;
-        self.midway(&mutation, Midway::Written)
-            .and_then(|()| file.sync_all())
-            .map_err(|error| created("it is not confirmed on disk", error))?;
-        self.sync(&spot.parent, parent_of(rel))
+            .map_err(|error| ("its content was not written to the end", error))
+            .and_then(|()| {
+                self.midway(&mutation, Midway::Written)
+                    .and_then(|()| file.sync_all())
+                    .map_err(|error| ("it is not confirmed on disk", error))
+            });
+        drop(file);
+        match written {
+            Ok(()) => self.sync(&spot.parent, parent_of(rel)),
+            Err((what, error)) => Err(self.created_but(&spot.parent, rel, what, error)),
+        }
     }
 
     fn not_approved(&self, rel: &[String], what: &str) -> Stop {

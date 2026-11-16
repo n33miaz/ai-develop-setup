@@ -134,19 +134,18 @@ impl Node {
         Ok(names)
     }
 
-    /// Makes the folder `name`, which must not exist, and opens it.
-    pub fn make_dir(&self, name: &str) -> Result<Self, Error> {
+    /// Makes the folder `name`, which must not exist. `Ok` is "made", and nothing else: the
+    /// folder is not opened here, so no later failure can be mistaken for "not made".
+    pub fn make_dir(&self, name: &str) -> Result<(), Error> {
         plain(name)?;
-        mkdirat(&self.fd, name, Mode::from_raw_mode(0o777))?;
-        self.child(name)
+        Ok(mkdirat(&self.fd, name, Mode::from_raw_mode(0o777))?)
     }
 
     /// Like [`Self::make_dir`], for a folder only this executor is meant to use: no other
     /// user gets in. A process of the same user still does.
-    pub fn make_private_dir(&self, name: &str) -> Result<Self, Error> {
+    pub fn make_private_dir(&self, name: &str) -> Result<(), Error> {
         plain(name)?;
-        mkdirat(&self.fd, name, Mode::from_raw_mode(0o700))?;
-        self.child(name)
+        Ok(mkdirat(&self.fd, name, Mode::from_raw_mode(0o700))?)
     }
 
     /// Creates the new, empty file `name`, which must not exist, open for writing. Writing
