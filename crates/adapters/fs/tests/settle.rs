@@ -11,7 +11,7 @@ use std::fs;
 use std::io;
 use std::rc::Rc;
 
-use ads_adapter_fs::{Mutation, Reason, Status};
+use ads_adapter_fs::{Midway, Mutation, Reason, Status};
 
 use common::{Moment, Sandbox, delete_of, hooked, run, through_gate, tree};
 
@@ -147,4 +147,43 @@ fn open_to_delete(path: &std::path::Path) -> io::Result<fs::File> {
 #[cfg(not(windows))]
 fn open_to_delete(_path: &std::path::Path) -> io::Result<fs::File> {
     Err(io::Error::other("Windows only"))
+}
+
+// ---- a move to the holding folder that is not verified promises no place -----------------------
+
+/// The system moved the tree to its holding folder and the check right after the move failed
+/// (on Linux, another process took it away from under the name). The step says the target
+/// left its place and does not say it is held there: `Unverified`, never `Held`.
+#[test]
+fn a_tree_not_verified_in_its_holding_folder_is_not_reported_as_held() {
+    let sandbox = Sandbox::new("unverified-hold");
+    sandbox.file("work/tree/a.txt", "a");
+    let flow = through_gate(
+        &sandbox.policy(QUARANTINE_OFF),
+        delete_of(&sandbox, "act-1", &["work/tree"]),
+    );
+    let mut executor = hooked(sandbox.executor(QUARANTINE_OFF), |moment, mutation| match (
+        moment, mutation,
+    ) {
+        (Moment::Midway(Midway::Moved), Mutation::Rename { .. }) => {
+            Err(io::Error::other("the check after the move failed"))
+        }
+        _ => Ok(()),
+    });
+    let failure = run(&mut executor, flow).unwrap_err();
+    assert_eq!(failure.reason, Reason::MoveUnverified, "{failure}");
+    let step = &failure.report.steps[0];
+    assert!(
+        matches!(step.status, Status::Unverified { .. }),
+        "{:?}",
+        step.status
+    );
+    assert!(!failure.report.untouched());
+    // The place it was sent to is still named, as a place tried, and the detail says so.
+    let tried = step.held.as_ref().unwrap();
+    match &step.status {
+        Status::Unverified { detail } => assert!(detail.contains(tried.as_str()), "{detail}"),
+        other => panic!("{other:?}"),
+    }
+    assert!(!sandbox.path("work/tree").exists());
 }
