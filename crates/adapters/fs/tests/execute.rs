@@ -648,8 +648,15 @@ fn with_the_quarantine_off_a_tree_is_deleted_entry_by_entry() {
         ["keep", "keep/c.txt"],
         "only the target went away"
     );
-    // The folder the tree was held in while it went is gone too.
-    assert!(tree(&sandbox.path(sandbox.private_dir())).is_empty());
+    // The folder the tree was held in while it went is gone too, where its creation said
+    // which folder it made (Windows). Elsewhere it is left, empty.
+    let held: Vec<String> = tree(&sandbox.path(sandbox.private_dir()))
+        .into_keys()
+        .collect();
+    match cfg!(windows) {
+        true => assert!(held.is_empty(), "{held:?}"),
+        false => assert_eq!(held, ["act-1"]),
+    }
 }
 
 #[test]
