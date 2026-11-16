@@ -9,6 +9,7 @@ Vale para todos:
 - Trecho escrito dentro de um Schema (sem `$ref`) vira um tipo por lugar. O mesmo padrão repetido em dois Schemas são dois tipos distintos; converte-se por `as_str()` e `new`.
 - Campo `type` é `r#type` no Rust.
 - Os gerados não derivam `PartialOrd`/`Ord`: a ordem de `Risk` e de `Decision` é regra do portão, não do Schema.
+- Versões: o portão escreve `approval.requested:2`, `approval.granted:2`, `approval.denied:2`, `approval.expired:2` e `record.action-plan:2` (com `common.abspath:2`), e as tabelas apontam para os gerados dessas versões. Os tipos escritos à mão com sufixo `V1` são só de leitura e têm linha própria.
 
 ## `crates/core/src/gate/event.rs`
 
@@ -21,17 +22,17 @@ Vale para todos:
 | `Timestamp` | `CommonTimestampV1` | o gerado não tem `is_before`: a comparação de instantes fica no núcleo, como função sobre `as_str()` |
 | `PlanHash` | `CommonSha256V1` | o gerado não calcula o hash (`PlanHash::of`); o cálculo fica no núcleo e constrói por `CommonSha256V1::new` |
 | `RuleCode` | `CommonActionRuleV1` | nenhuma |
-| `PathText` | `CommonAbspathV1` | o gerado confere o que o Schema confere; a normalização do núcleo (`AbsPath`) continua sendo quem produz o texto |
+| `PathText` | `CommonAbspathV2` | o gerado confere o que o Schema confere; a normalização do núcleo (`AbsPath`) continua sendo quem produz o texto. Na leitura do registro `:1` o gerado é `CommonAbspathV1`, mais largo que `PathText` (aceita nome de dispositivo e nome curto do Windows): a recusa deles continua no núcleo |
 | `Verb` | `EventActionPlannedV1DataVerb`, `EventActionDeniedV1DataVerb` | um tipo por evento |
 | `ErrorCode` | `EventActionFailedV1DataErrorCode` | nenhuma |
-| `ShortText` | `EventApprovalRequestedV2DataSummary`, `EventApprovalRequestedV1DataSummary`, `EventApprovalDeniedV1DataReason`, `RecordApprovalV1Summary`, `RecordApprovalV1Reason` | um tipo por lugar |
-| `PatternText` | `RecordActionPlanV1TargetsItemPattern` | nenhuma |
-| `SubjectText` | `RecordActionPlanV1VerdictReasonsItemSubject` | nenhuma |
+| `ShortText` | `EventApprovalRequestedV2DataSummary`, `EventApprovalDeniedV2DataReason`, `RecordApprovalV1Summary`, `RecordApprovalV1Reason`; nos tipos só de leitura, `EventApprovalRequestedV1DataSummary` e `EventApprovalDeniedV1DataReason` | um tipo por lugar |
+| `PatternText` | `RecordActionPlanV2TargetsItemPattern` | nenhuma |
+| `SubjectText` | `RecordActionPlanV2VerdictReasonsItemSubject` | nenhuma |
 | `Risk` | `CommonRiskV1` | sem `Ord` |
 | `DataClass` | `CommonDataClassV1` | nenhuma |
 | `ActorKind`, `Actor` | `CommonActorV1Kind`, `CommonActorV1` | nenhuma |
-| `Decision` | `RecordActionPlanV1VerdictDecision` | sem `Ord` e sem `risk()`: a correspondência com o risco fica no núcleo (o Schema a confere no registro do plano) |
-| `Via` | `EventApprovalGrantedV1DataVia`, `RecordApprovalV1Via` | um tipo por lugar |
+| `Decision` | `RecordActionPlanV2VerdictDecision` | sem `Ord` e sem `risk()`: a correspondência com o risco fica no núcleo (o Schema a confere no registro do plano) |
+| `Via` | `EventApprovalGrantedV2DataVia`, `RecordApprovalV1Via`; no tipo só de leitura, `EventApprovalGrantedV1DataVia` | um tipo por lugar |
 
 ### Eventos
 
@@ -43,11 +44,14 @@ Vale para todos:
 | `Envelope<ActionExecuted>` | `EventActionExecutedV1` | ver abaixo |
 | `Envelope<ActionFailed>` | `EventActionFailedV1` | ver abaixo |
 | `Envelope<ApprovalRequested>` | `EventApprovalRequestedV2` | ver abaixo |
-| `Envelope<ApprovalRequestedV1>` | `EventApprovalRequestedV1` | ver abaixo |
-| `Envelope<ApprovalGranted>` | `EventApprovalGrantedV1` | ver abaixo |
-| `Envelope<ApprovalDenied>` | `EventApprovalDeniedV1` | ver abaixo |
-| `Envelope<ApprovalExpired>` | `EventApprovalExpiredV1` | ver abaixo |
-| `ActionPlanned`, `ActionDenied`, … (o `data` de cada evento) | `EventActionPlannedV1Data`, `EventActionDeniedV1Data`, … (`Event<Nome>V<n>Data`) | mesmos campos, com os tipos da tabela acima |
+| `Envelope<ApprovalGranted>` | `EventApprovalGrantedV2` | ver abaixo |
+| `Envelope<ApprovalDenied>` | `EventApprovalDeniedV2` | ver abaixo |
+| `Envelope<ApprovalExpired>` | `EventApprovalExpiredV2` | ver abaixo |
+| `Envelope<ApprovalRequestedV1>` | `EventApprovalRequestedV1` | só leitura; ver abaixo |
+| `Envelope<ApprovalGrantedV1>` | `EventApprovalGrantedV1` | só leitura; ver abaixo |
+| `Envelope<ApprovalDeniedV1>` | `EventApprovalDeniedV1` | só leitura; ver abaixo |
+| `Envelope<ApprovalExpiredV1>` | `EventApprovalExpiredV1` | só leitura; ver abaixo |
+| `ActionPlanned`, `ActionDenied`, … (o `data` de cada evento) | `EventActionPlannedV1Data`, `EventActionDeniedV1Data`, `EventApprovalGrantedV2Data`, … (`Event<Nome>V<n>Data`, com o `<n>` da linha do evento) | mesmos campos, com os tipos da tabela acima. Nas quatro aprovações `:2`, `action_id` é `CommonIdV1`, obrigatório; os tipos `…V1` não têm o campo |
 | `RuleList` | `EventActionDeniedV1DataRules` | `as_slice()` igual; `into_vec()` a mais |
 
 Diferenças do envelope:
@@ -56,6 +60,7 @@ Diferenças do envelope:
 - `r#type` é um tipo sem dados (`EventActionPlannedV1Type`, com `VALUE` igual à URN): não há como montar o evento com o `type` errado.
 - `stream` é um texto validado por evento (`EventActionPlannedV1Stream`), que confere a forma e a família (`action/…`). Ele **não** confere que o `<id>` é o da entidade do `data`: essa regra não está no Schema e continua no núcleo, que monta o `stream`.
 - `seq` continua `NonZeroU64`.
+- As quatro aprovações `:1` (`ApprovalRequestedV1`, `ApprovalGrantedV1`, `ApprovalDeniedV1`, `ApprovalExpiredV1`) existem só como tipo de leitura: o portão não as escreve, não refaz estado a partir delas, e `Event::from_json` as recusa, porque não dizem de qual ação são. A troca pelos gerados `:1` não muda isso: o despacho pelo `type` continua aceitando só as `:2`.
 
 Continuam escritos à mão, por serem comportamento e não Schema: `EventMeta`, o traço `EventData` (URN, família e entidade de cada evento), o enum `Event` com `from_json`/`to_json` (o despacho pelo `type`), o vínculo entre `stream` e entidade.
 
@@ -63,13 +68,14 @@ Continuam escritos à mão, por serem comportamento e não Schema: `EventMeta`, 
 
 | Escrito à mão | Gerado | Diferença |
 |---|---|---|
-| `ActionPlanFields` | `RecordActionPlanV1Fields` | `version` é um tipo sem dados (`RecordActionPlanV1Version`), não `u64`; `targets` é `RecordActionPlanV1Targets` (1 a 10000, sem repetição), não `Vec`; `verdict` é o tipo conferido `RecordActionPlanV1Verdict` |
-| `ActionPlanRecord` | `RecordActionPlanV1` | `Deref` para os campos no lugar de `fields()`. Confere tudo o que o Schema diz (quarentena, destino, veredito com risco e motivos). **Não** confere a ordem canônica dos alvos nem o `plan_hash`: `canonical()` e essas duas conferências continuam no núcleo, num tipo que envolve o gerado |
-| `PlanOperation` | `RecordActionPlanV1Operation` | variantes `Delete`, `DeleteRecursive`, `Move`, `Overwrite`, `CleanUntracked`; `as_str()` igual |
-| `PlanTarget` | `RecordActionPlanV1TargetsItem` | mesmos campos; o texto do alvo (`text()`) continua no núcleo |
-| `PlanEstimate` | `RecordActionPlanV1Estimate` | nenhuma |
-| `PlanReason` | `RecordActionPlanV1VerdictReasonsItem` | nenhuma |
-| `PlanVerdict` | `RecordActionPlanV1Verdict` (`RecordActionPlanV1VerdictFields`) | passa a ser conferido: risco e motivos têm de bater com a decisão; `reasons` é `RecordActionPlanV1VerdictReasons` (até 1000) |
+| `ActionPlanFields` | `RecordActionPlanV2Fields` | à mão, um tipo só serve às duas versões e `version` é `u64`; nos gerados há um por versão e `version` é um tipo sem dados (`RecordActionPlanV2Version`). `targets` é `RecordActionPlanV2Targets` (1 a 10000, sem repetição), não `Vec`; `verdict` é o tipo conferido `RecordActionPlanV2Verdict`; `work_root`, `destination` e o `path` de cada alvo são `CommonAbspathV2` |
+| `ActionPlanRecord` | `RecordActionPlanV2` | `Deref` para os campos no lugar de `fields()`. Confere tudo o que o Schema diz (quarentena, destino, veredito com risco e motivos, teto da estimativa). **Não** confere a ordem canônica dos alvos nem o `plan_hash`: `canonical()` e essas duas conferências continuam no núcleo, num tipo que envolve o gerado. `ActionPlanRecord::VERSION` (2) passa a ser o valor fixo de `RecordActionPlanV2Version` |
+| `ActionPlanRecordV1` | `RecordActionPlanV1` (`RecordActionPlanV1Fields`) | só leitura: o portão escreve a `:2`. Mesma forma da `:2`, com `CommonAbspathV1` nos caminhos e `RecordActionPlanV1Estimate` (`items` e `bytes` em `u64`, sem teto). O gerado aceita os caminhos que só a `abspath:1` aceita; `PathText` os recusa, e essa recusa continua no núcleo, junto com a ordem dos alvos e o `plan_hash` |
+| `PlanOperation` | `RecordActionPlanV2Operation` | variantes `Delete`, `DeleteRecursive`, `Move`, `Overwrite`, `CleanUntracked`; `as_str()` igual |
+| `PlanTarget` | `RecordActionPlanV2TargetsItem` | mesmos campos; o texto do alvo (`text()`) continua no núcleo |
+| `PlanEstimate` | `RecordActionPlanV2Estimate` | `items` e `bytes` são tipos conferidos (`RecordActionPlanV2EstimateItems`, `RecordActionPlanV2EstimateBytes`, de 0 a 2^53 − 1), não `u64`: o teto `ESTIMATE_MAX` do núcleo passa a ser o do tipo gerado |
+| `PlanReason` | `RecordActionPlanV2VerdictReasonsItem` | nenhuma |
+| `PlanVerdict` | `RecordActionPlanV2Verdict` (`RecordActionPlanV2VerdictFields`) | passa a ser conferido: risco e motivos têm de bater com a decisão; `reasons` é `RecordActionPlanV2VerdictReasons` (até 1000) |
 | `ApprovalStatus` | `RecordApprovalV1Status` | nenhuma |
 | `ApprovalFields` | `RecordApprovalV1Fields` | `version` é um tipo sem dados |
 | `ApprovalRecord` | `RecordApprovalV1` | `Deref` no lugar de `fields()` |
