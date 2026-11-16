@@ -2,12 +2,14 @@
 # compilacao como padrao; uma camada do usuario pode sobrepor qualquer chave, e a que faltar cai no valor daqui).
 # Formato: uma chave por linha, `chave = valor`, sem tabelas.
 #
-# O que NAO e parametro, porque vale sempre: a cerca, a recusa de link no caminho, a reconferencia antes de
-# cada alteracao e a recusa de sobrescrever.
+# O que NAO e parametro, porque vale sempre: a cerca, a abertura nome a nome sem seguir link, a conferencia da
+# identidade de cada entrada contra o que foi aprovado, a recusa de sobrescrever, a recusa de repositorio
+# aninhado e de ponto de montagem, e a sincronizacao antes de um passo contar como feito.
 
 # Profundidade maxima, em pastas, de uma arvore que o executor mede, move ou apaga. Arvore mais funda e
 # recusada antes de qualquer alteracao.
 max_depth = 128
 
-# Maior manifesto de quarentena que o executor le, em bytes. Manifesto maior e recusado.
+# Maior manifesto de quarentena, em bytes. Vale nos dois sentidos: uma leva cujo manifesto passaria disso e
+# recusada antes de qualquer alteracao, e na restauracao a leitura para neste tamanho.
 max_manifest_bytes = 16777216

@@ -8,7 +8,7 @@ const DEFAULTS_TOML: &str = include_str!("../../../../defaults/fs-executor.toml"
 pub struct Limits {
     /// How many folders deep a tree may go before the executor refuses it.
     pub max_depth: u32,
-    /// The largest manifest the executor reads, in bytes.
+    /// The largest manifest the executor writes or reads back, in bytes.
     pub max_manifest_bytes: u64,
 }
 
