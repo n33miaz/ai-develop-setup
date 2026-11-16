@@ -81,6 +81,7 @@ version = "0.0.0"
 name = "ads-ptyhost"
 version = "0.0.0"
 dependencies = [
+ "ads-contracts",
  "portable-pty",
  "serde",
  "serde_json",

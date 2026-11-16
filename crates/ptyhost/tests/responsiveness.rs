@@ -84,7 +84,7 @@ fn spec() -> SpawnSpec {
 fn open(session: &str) -> Call {
     Call::Open(OpenParams {
         session_id: id(session),
-        program: "fake-shell".to_owned(),
+        program: "fake-shell".to_owned().try_into().unwrap(),
         args: Vec::new(),
         cwd: None,
         env: BTreeMap::new(),
@@ -203,7 +203,7 @@ async fn slow_resize_write_and_close_hold_back_only_the_client_that_asked() {
             Op::Write,
             Call::Write(WriteParams {
                 session_id: id("busy"),
-                data: Base64(b"typed".to_vec()),
+                data: Base64(b"typed".to_vec()).into(),
             }),
         ),
         (Op::Kill, close("busy")),

@@ -21,7 +21,7 @@ fn spec() -> SpawnSpec {
 /// Opens a session under a name no other session of this test binary has.
 fn open(host: &PtyHost, spec: &SpawnSpec) -> SessionId {
     static NEXT: AtomicU64 = AtomicU64::new(1);
-    let id = SessionId::new(&format!("s{:03}", NEXT.fetch_add(1, Ordering::Relaxed))).unwrap();
+    let id = SessionId::new(format!("s{:03}", NEXT.fetch_add(1, Ordering::Relaxed))).unwrap();
     host.open(&id, spec).unwrap();
     id
 }

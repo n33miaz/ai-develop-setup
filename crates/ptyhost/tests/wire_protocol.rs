@@ -7,7 +7,7 @@ use std::num::NonZeroU64;
 use std::sync::Arc;
 
 use ads_ptyhost::wire::{
-    self, Base64, Call, CloseReason, Closed, ErrorBody, ErrorCode, HelloParams, HelloResult,
+    self, Base64, Call, CloseReason, Closed, Empty, ErrorBody, ErrorCode, HelloParams, HelloResult,
     NoParams, Notification, OpenParams, ResizeParams, ResultBody, SessionEntry, SessionExited,
     SessionId, SessionParams, SubscriptionClosed, WriteParams,
 };
@@ -33,8 +33,8 @@ fn seq(number: u64) -> NonZeroU64 {
 fn open(session: &str) -> Call {
     Call::Open(OpenParams {
         session_id: id(session),
-        program: "fake-shell".to_owned(),
-        args: vec!["--flag".to_owned()],
+        program: "fake-shell".to_owned().try_into().unwrap(),
+        args: vec!["--flag".to_owned().try_into().unwrap()],
         cwd: None,
         env: BTreeMap::from([("LANG".to_owned(), "C".to_owned())]),
         cols: 120.try_into().unwrap(),
@@ -100,7 +100,7 @@ async fn hello_comes_first_and_negotiates_the_version() {
     assert_eq!(
         client.call(hello).await,
         Ok(ResultBody::Hello(HelloResult {
-            contract: "pty-host/1".to_owned()
+            contract: Default::default()
         }))
     );
     assert!(sessions(&mut client).await.is_empty());
@@ -114,7 +114,7 @@ async fn session_is_opened_under_the_name_the_client_chose() {
 
     assert_eq!(
         client.call(open("sess-a")).await,
-        Ok(ResultBody::Empty(NoParams {}))
+        Ok(ResultBody::Empty(Empty {}))
     );
     assert_eq!(
         code(client.call(open("sess-a")).await),
@@ -139,9 +139,9 @@ async fn session_is_opened_under_the_name_the_client_chose() {
     assert_eq!((bounds.oldest_seq, bounds.next_seq), (seq(1), seq(1)));
     let write = Call::Write(WriteParams {
         session_id: id("sess-a"),
-        data: Base64(b"dir\r".to_vec()),
+        data: Base64(b"dir\r".to_vec()).into(),
     });
-    assert_eq!(client.call(write).await, Ok(ResultBody::Empty(NoParams {})));
+    assert_eq!(client.call(write).await, Ok(ResultBody::Empty(Empty {})));
     let mut transcript = Transcript::default();
     output(&mut client, &mut transcript, "sess-a").await;
     assert_eq!(transcript.bytes, b"dir\r");
@@ -152,10 +152,7 @@ async fn session_is_opened_under_the_name_the_client_chose() {
         cols: 80.try_into().unwrap(),
         rows: 24.try_into().unwrap(),
     });
-    assert_eq!(
-        client.call(resize).await,
-        Ok(ResultBody::Empty(NoParams {}))
-    );
+    assert_eq!(client.call(resize).await, Ok(ResultBody::Empty(Empty {})));
     assert_eq!(terminal.size(), TerminalSize { rows: 24, cols: 80 });
 
     client.call(open("sess-b")).await.unwrap();

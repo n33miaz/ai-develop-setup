@@ -6,7 +6,7 @@ Processo estável que segura as sessões de terminal e o anel de replay.
 
 | Arquivo | O que faz |
 |---|---|
-| `src/wire.rs` | Contrato `pty-host/1`: codec do quadro e tipos das mensagens, escritos à mão e conferidos contra os arquivos dourados de `contracts/golden/`. Só este arquivo conhece o layout de bytes e os nomes dos campos JSON. |
+| `src/wire.rs` | Contrato `pty-host/1`: codec do quadro e tipos das mensagens. As formas JSON são os tipos gerados de `ads-contracts`, reexportados com os nomes do host; ficam escritos aqui o quadro binário, a escolha do erro JSON-RPC de um pedido malformado e as conversões onde o host guarda o valor de outra forma (ver [`swap-map.md`](../contracts/swap-map.md)). Conferido contra os arquivos dourados de `contracts/golden/` e contra os bytes fixados em `tests/wire_bytes.rs`. Só este arquivo conhece o layout de bytes e os nomes dos campos JSON. |
 | `src/channel.rs` | Canal local: named pipe no Windows, socket Unix nos demais, aberto só para o usuário atual. |
 | `src/server.rs` | Servidor do contrato: uma tarefa por cliente, sessões compartilhadas por todos e independentes de qualquer conexão. |
 | `src/types.rs` | Tipos internos da sessão (`Seq`, `OutputChunk`, `SpawnSpec`, erros). O nome da sessão (`SessionId`) vem de `wire.rs`: é opaco e escolhido pelo cliente. |

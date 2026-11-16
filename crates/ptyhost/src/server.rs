@@ -15,9 +15,9 @@ use crate::host::PtyHost;
 use crate::session::Subscription;
 use crate::types::{PtyError, ReplayFrom, Seq, SpawnSpec, SubscriptionEnd, TerminalSize};
 use crate::wire::{
-    self, Call, CloseReason, Closed, ErrorBody, ErrorCode, ErrorData, Frame, HelloResult, NoParams,
-    Notification, OpenParams, ReplayBounds, Request, Response, ResultBody, SessionEntry,
-    SessionExited, SessionId, SessionList, SubscriptionClosed,
+    self, Base64, Call, CloseReason, Closed, Empty, ErrorBody, ErrorCode, ErrorData, Frame,
+    HelloResult, Notification, OpenParams, ReplayBounds, Request, Response, ResultBody,
+    SessionEntry, SessionExited, SessionId, SessionList, SubscriptionClosed,
 };
 
 /// Accepts clients until the channel fails. Sessions outlive every client.
@@ -77,7 +77,7 @@ struct Client<S> {
 type Outcome = Result<ResultBody, ErrorBody>;
 
 fn empty() -> Outcome {
-    Ok(ResultBody::Empty(NoParams {}))
+    Ok(ResultBody::Empty(Empty {}))
 }
 
 fn refuse(code: ErrorCode, message: &str) -> ErrorBody {
@@ -86,6 +86,14 @@ fn refuse(code: ErrorCode, message: &str) -> ErrorBody {
 
 fn wire_seq(seq: Seq) -> NonZeroU64 {
     NonZeroU64::new(seq.0).unwrap_or(NonZeroU64::MIN)
+}
+
+fn no_data() -> ErrorData {
+    ErrorData {
+        oldest_seq: None,
+        next_seq: None,
+        limit: None,
+    }
 }
 
 fn error_body(err: &PtyError) -> ErrorBody {
@@ -99,21 +107,21 @@ fn error_body(err: &PtyError) -> ErrorBody {
             ErrorCode::TooManySessions,
             Some(ErrorData {
                 limit: NonZeroU64::new(*limit as u64),
-                ..ErrorData::default()
+                ..no_data()
             }),
         ),
         PtyError::ReplayEvicted { oldest, .. } => (
             ErrorCode::ReplayEvicted,
             Some(ErrorData {
                 oldest_seq: Some(wire_seq(*oldest)),
-                ..ErrorData::default()
+                ..no_data()
             }),
         ),
         PtyError::ReplayAhead { next, .. } => (
             ErrorCode::ReplayAhead,
             Some(ErrorData {
                 next_seq: Some(wire_seq(*next)),
-                ..ErrorData::default()
+                ..no_data()
             }),
         ),
         PtyError::SessionEnded => (ErrorCode::SessionEnded, None),
@@ -123,9 +131,9 @@ fn error_body(err: &PtyError) -> ErrorBody {
 
 fn spawn_spec(params: OpenParams) -> SpawnSpec {
     SpawnSpec {
-        program: params.program,
-        args: params.args,
-        cwd: params.cwd.map(PathBuf::from),
+        program: params.program.into(),
+        args: params.args.into_iter().map(String::from).collect(),
+        cwd: params.cwd.map(|cwd| PathBuf::from(String::from(cwd))),
         env: params.env.into_iter().collect(),
         size: TerminalSize {
             rows: params.rows.get(),
@@ -200,7 +208,7 @@ where
         }
         match call {
             Call::Hello(params) => {
-                if params.contract != wire::CONTRACT {
+                if !params.is_supported() {
                     return Err(refuse(
                         ErrorCode::UnsupportedContract,
                         &format!("this host speaks {} only", wire::CONTRACT),
@@ -208,7 +216,7 @@ where
                 }
                 self.greeted = true;
                 Ok(ResultBody::Hello(HelloResult {
-                    contract: wire::CONTRACT.to_owned(),
+                    contract: Default::default(),
                 }))
             }
             Call::Open(params) => {
@@ -219,8 +227,11 @@ where
                 empty()
             }
             Call::Write(params) => {
+                // The text already passed the Schema; this is the step that makes it bytes.
+                let data = Base64::try_from(&params.data)
+                    .map_err(|why| refuse(ErrorCode::InvalidParams, why))?;
                 let host = Arc::clone(&self.host);
-                blocking(move || host.write(&params.session_id, &params.data.0)).await?;
+                blocking(move || host.write(&params.session_id, &data.0)).await?;
                 empty()
             }
             Call::Resize(params) => {
@@ -370,7 +381,7 @@ mod tests {
         };
 
         for round in 0..50 {
-            let id = SessionId::new(&format!("s{round}")).expect("a valid name");
+            let id = SessionId::new(format!("s{round}")).expect("a valid name");
             host.open(&id, &spec).expect("the fake terminal opens");
             let subscription = host
                 .subscribe(&id, ReplayFrom::Oldest)
