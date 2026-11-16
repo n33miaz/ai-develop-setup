@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use ads_adapter_claude::{ClaudeConfig, ConfigError, DiskProbe, LaunchError, Probe, open_params};
 use ads_contracts::CommandSessionOpenV1Params;
-use ads_core::child_env::NameCase;
+use ads_core::child_env::{EnvList, EnvPolicyError, NameCase};
 use ads_core::gate::PathError;
 
 const PROGRAM: &str = r"C:\Tools\claude\claude.exe";
@@ -125,28 +125,73 @@ fn the_child_environment_is_exactly_the_allowed_names_the_parent_has() {
 }
 
 #[test]
-fn credentials_put_in_the_allow_list_still_do_not_reach_the_child() {
-    let allow: Vec<String> = POISON.iter().map(|n| format!("'{n}'")).collect();
-    let text = format!(
-        "{}\n[env]\nallow = ['PATH', {}]\ndeny = []\n",
-        user_toml(PROGRAM),
-        allow.join(", ")
-    );
-    for case in [NameCase::Insensitive, NameCase::Sensitive] {
-        let config = ClaudeConfig::from_toml_str(&text, case).unwrap();
-        let params = open_params(
-            &config,
-            &request("claude", "scratch"),
-            poisoned_parent(),
-            &FakeProbe::all(),
-        )
-        .unwrap();
-        assert!(!params.env.values().any(|v| v == "s3cr3t"), "{case:?}");
-        for name in params.env.keys() {
-            assert!(
-                !POISON.iter().any(|p| p.eq_ignore_ascii_case(name)),
-                "{name}"
+fn credentials_in_the_user_allow_list_or_set_refuse_the_configuration() {
+    let names = POISON
+        .iter()
+        .chain(&["GITHUB_PAT", "gh_token_file", "Claude_Config_Dir"]);
+    for name in names {
+        let tables = [
+            ("allow = ['PATH', '%']", EnvList::Allow, 1),
+            ("set = { '%' = 'x' }", EnvList::Set, 0),
+        ];
+        for (table, list, index) in tables {
+            let text = format!(
+                "{}\n[env]\ndeny = []\n{}\n",
+                user_toml(PROGRAM),
+                table.replace('%', name)
             );
+            for case in [NameCase::Insensitive, NameCase::Sensitive] {
+                assert_eq!(
+                    ClaudeConfig::from_toml_str(&text, case),
+                    Err(ConfigError::Env(EnvPolicyError::DeniedName { list, index })),
+                    "{name} {case:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn configuration_errors_never_quote_the_rejected_text() {
+    let m = "ZQXMARKER";
+    let cases = [
+        format!("{m} = 1\n"),
+        format!("[tools.claude]\nprogram = '{m}.exe'\n"),
+        format!(
+            r"[tools.claude]
+program = 'C:\{m}\..\x.exe'"
+        ),
+        format!("[tools.claude]\nprogram = 1 # {m}\n"),
+        format!(
+            r#"[tools.claude]
+args = ["{m}\u0000"]"#
+        ),
+        format!(
+            r#"[tools.claude]
+args = ["{m}\u001b[0m"]"#
+        ),
+        format!("[tools.claude]\nmode = '{m}'\n"),
+        format!("[tools.claude]\n{m} = 1\n"),
+        format!(
+            r"[workdirs]
+'bad {m}' = 'C:\x'"
+        ),
+        format!(
+            r"[workdirs]
+ok = '{m}\x'"
+        ),
+        format!("[env]\nallow = ['{m}_TOKEN']\n"),
+        format!(
+            r#"[env]
+set = {{ TERM = "{m}\u0000" }}"#
+        ),
+        format!("[env]\ndeny = ['*{m}*X*']\n"),
+        format!("program = '{m}\n"),
+    ];
+    for text in cases {
+        let error = ClaudeConfig::from_toml_str(&text, NameCase::Insensitive).unwrap_err();
+        for shown in [error.to_string(), format!("{error:?}")] {
+            assert!(!shown.contains(m), "{text:?} -> {shown}");
         }
     }
 }
@@ -250,7 +295,7 @@ fn a_relative_folder_in_the_configuration_is_refused() {
     assert_eq!(
         ClaudeConfig::from_toml_str(&text, NameCase::Insensitive),
         Err(ConfigError::Workdir {
-            alias: "scratch".into(),
+            index: 0,
             error: PathError::Relative
         })
     );
@@ -278,7 +323,7 @@ fn headless_mode_and_unknown_keys_are_refused() {
     let headless = format!("{}mode = 'headless'\n", user_toml(PROGRAM));
     assert!(matches!(
         ClaudeConfig::from_toml_str(&headless, NameCase::Insensitive),
-        Err(ConfigError::Toml(_))
+        Err(ConfigError::Toml { .. })
     ));
     let unknown = format!("{}environment = []\n", user_toml(PROGRAM));
     assert!(ClaudeConfig::from_toml_str(&unknown, NameCase::Insensitive).is_err());

@@ -27,20 +27,53 @@ allow = [
   "TMP",
 ]
 
-# Nomes que nunca passam, mesmo que estejam em `allow`. `NOME` exato, `PREFIXO*` ou `*SUFIXO`; sem
-# diferenca de maiusculas. Esta lista so cresce: a camada do usuario ACRESCENTA padroes, nunca tira.
+# Nomes que nunca passam. `NOME` exato, `PREFIXO*`, `*SUFIXO` ou `*TRECHO*`; sem diferenca de
+# maiusculas. Nome em `allow` ou em `env.set` que case com um destes e recusado na carga. Esta lista so
+# cresce: a camada do usuario ACRESCENTA padroes, nunca tira.
+# Cobre o nome de credenciais (chave, token, segredo, senha), o nome de variaveis que APONTAM para elas
+# (`*_TOKEN_FILE`, `*_KEY_FILE`, `*_CREDENTIALS`) e a configuracao de login das ferramentas e provedores
+# (`CLAUDE_CONFIG_DIR`, `GOOGLE_APPLICATION_CREDENTIALS`). Um padrao de nome nao reconhece um segredo
+# guardado sob um nome qualquer: o que passa e so o que esta em `allow`, revisavel neste lugar.
 deny = [
-  "*_API_KEY",
-  "*_TOKEN",
-  "*_SECRET",
-  "*_PASSWORD",
+  # Credenciais pelo nome, em qualquer posicao.
+  "*TOKEN*",
+  "*SECRET*",
+  "*PASSWORD*",
+  "*PASSWD*",
+  "*CREDENTIAL*",
+  "*API_KEY*",
+  "*APIKEY*",
+  "*PRIVATE_KEY*",
   "*_KEY",
-  "GH_TOKEN",
-  "GITHUB_TOKEN",
+  "*_KEY_FILE",
+  "*_KEYS",
+  "*_PAT",
+  "*_PAT_*",
+  "*_AUTH*",
+  "*_PASS*",
+  "*_SESSION*",
+  "*_COOKIE*",
+  # Ferramentas e provedores: login, configuracao de login e chaves.
   "ANTHROPIC_*",
+  "CLAUDE_*",
   "OPENAI_*",
+  "CODEX_*",
+  "GEMINI_*",
+  "GOOGLE_*",
+  "GCLOUD_*",
+  "CLOUDSDK_*",
+  "VERTEX_*",
   "AWS_*",
   "AZURE_*",
+  "GH_*",
+  "GITHUB_*",
+  "COPILOT_*",
+  "MISTRAL_*",
+  "COHERE_*",
+  "GROQ_*",
+  "OPENROUTER_*",
+  "HF_*",
+  "HUGGING_FACE_*",
 ]
 
 # Valores que o proprio produto define (nao vem do pai). A camada do usuario SUBSTITUI a tabela.

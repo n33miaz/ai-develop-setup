@@ -1,6 +1,7 @@
 //! Environment of a child process started for a tool: only allow-listed names reach it, and
-//! names that look like credentials never do, even when someone allow-lists them. Pure: the
-//! caller passes the parent environment and the parameters as data.
+//! names known to carry or point to credentials never do. A name in `allow` or `set` that
+//! matches a deny pattern is refused when the policy is built. Pure: the caller passes the
+//! parent environment and the parameters as data.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -45,24 +46,73 @@ pub struct EnvLayer {
     pub set: Option<BTreeMap<String, String>>,
 }
 
+/// Which list of `[env]` an error is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EnvList {
+    Allow,
+    Deny,
+    /// Entries in name order.
+    Set,
+}
+
+impl EnvList {
+    fn key(self) -> &'static str {
+        match self {
+            Self::Allow => "env.allow",
+            Self::Deny => "env.deny",
+            Self::Set => "env.set",
+        }
+    }
+}
+
+/// Why a policy was refused. Carries a position, never the rejected name or value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EnvPolicyError {
     MissingKey(&'static str),
     /// Empty, or with `=`, `*` or a control character.
-    BadName(String),
-    /// Not `NAME`, `PREFIX*` or `*SUFFIX`.
-    BadPattern(String),
-    /// A value the product sets itself matches a deny pattern.
-    SetDenied(String),
+    BadName {
+        list: EnvList,
+        index: usize,
+    },
+    /// Not `NAME`, `PREFIX*`, `*SUFFIX` or `*INFIX*`. `index` counts the shipped patterns first.
+    BadPattern {
+        index: usize,
+    },
+    /// A name in `allow` or `set` matches a deny pattern.
+    DeniedName {
+        list: EnvList,
+        index: usize,
+    },
+    /// The same name twice in one list, under the policy's case rule.
+    DuplicateName {
+        list: EnvList,
+        index: usize,
+    },
+    /// A value in `set` with NUL or another control character.
+    BadValue {
+        index: usize,
+    },
 }
 
 impl fmt::Display for EnvPolicyError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MissingKey(key) => write!(f, "missing key `env.{key}`"),
-            Self::BadName(name) => write!(f, "invalid variable name `{name}`"),
-            Self::BadPattern(pattern) => write!(f, "invalid deny pattern `{pattern}`"),
-            Self::SetDenied(name) => write!(f, "`env.set` names a denied variable `{name}`"),
+            Self::BadName { list, index } => {
+                write!(f, "invalid variable name at `{}` entry {index}", list.key())
+            }
+            Self::BadPattern { index } => write!(f, "invalid pattern at `env.deny` entry {index}"),
+            Self::DeniedName { list, index } => {
+                write!(f, "denied variable name at `{}` entry {index}", list.key())
+            }
+            Self::DuplicateName { list, index } => {
+                write!(
+                    f,
+                    "repeated variable name at `{}` entry {index}",
+                    list.key()
+                )
+            }
+            Self::BadValue { index } => write!(f, "invalid value at `env.set` entry {index}"),
         }
     }
 }
@@ -74,27 +124,23 @@ enum Pattern {
     Exact(String),
     Prefix(String),
     Suffix(String),
+    Infix(String),
 }
 
 impl Pattern {
     /// Stored in ASCII upper case; matched against the upper-cased name.
-    fn parse(raw: &str) -> Result<Self, EnvPolicyError> {
-        let bad = || EnvPolicyError::BadPattern(raw.to_owned());
+    fn parse(raw: &str) -> Option<Self> {
         let upper = raw.to_ascii_uppercase();
         let pattern = match (upper.strip_prefix('*'), upper.strip_suffix('*')) {
-            (Some(_), Some(_)) => return Err(bad()),
+            (Some(_), Some(_)) => Self::Infix(upper.get(1..upper.len().checked_sub(1)?)?.into()),
             (Some(suffix), None) => Self::Suffix(suffix.to_owned()),
             (None, Some(prefix)) => Self::Prefix(prefix.to_owned()),
             (None, None) => Self::Exact(upper.clone()),
         };
         let core = match &pattern {
-            Self::Exact(text) | Self::Prefix(text) | Self::Suffix(text) => text,
+            Self::Exact(text) | Self::Prefix(text) | Self::Suffix(text) | Self::Infix(text) => text,
         };
-        if valid_name(core) {
-            Ok(pattern)
-        } else {
-            Err(bad())
-        }
+        valid_name(core).then_some(pattern)
     }
 
     fn matches(&self, upper_name: &str) -> bool {
@@ -102,6 +148,7 @@ impl Pattern {
             Self::Exact(text) => upper_name == text,
             Self::Prefix(text) => upper_name.starts_with(text.as_str()),
             Self::Suffix(text) => upper_name.ends_with(text.as_str()),
+            Self::Infix(text) => upper_name.contains(text.as_str()),
         }
     }
 }
@@ -143,23 +190,47 @@ impl EnvPolicy {
         let deny = base_deny
             .iter()
             .chain(over.deny.iter().flatten())
-            .map(|raw| Pattern::parse(raw))
+            .enumerate()
+            .map(|(index, raw)| Pattern::parse(raw).ok_or(EnvPolicyError::BadPattern { index }))
             .collect::<Result<Vec<_>, _>>()?;
-        for name in allow.iter().chain(set.keys()) {
-            if !valid_name(name) {
-                return Err(EnvPolicyError::BadName(name.clone()));
-            }
-        }
         let policy = Self {
             allow,
             deny,
             set,
             case,
         };
-        if let Some(name) = policy.set.keys().find(|name| policy.is_denied(name)) {
-            return Err(EnvPolicyError::SetDenied(name.clone()));
+        policy.check_names(EnvList::Allow, policy.allow.iter())?;
+        policy.check_names(EnvList::Set, policy.set.keys())?;
+        if let Some(index) = policy
+            .set
+            .values()
+            .position(|value| value.chars().any(char::is_control))
+        {
+            return Err(EnvPolicyError::BadValue { index });
         }
         Ok(policy)
+    }
+
+    /// Every name valid, not denied and not repeated, in list order.
+    fn check_names<'a>(
+        &self,
+        list: EnvList,
+        names: impl Iterator<Item = &'a String>,
+    ) -> Result<(), EnvPolicyError> {
+        let mut seen: Vec<&str> = Vec::new();
+        for (index, name) in names.enumerate() {
+            if !valid_name(name) {
+                return Err(EnvPolicyError::BadName { list, index });
+            }
+            if self.is_denied(name) {
+                return Err(EnvPolicyError::DeniedName { list, index });
+            }
+            if seen.iter().any(|have| self.case.same(have, name)) {
+                return Err(EnvPolicyError::DuplicateName { list, index });
+            }
+            seen.push(name);
+        }
+        Ok(())
     }
 
     /// Whether `name` matches a deny pattern, ignoring case.
@@ -168,8 +239,9 @@ impl EnvPolicy {
         self.deny.iter().any(|pattern| pattern.matches(&upper))
     }
 
-    /// The child's whole environment: each allowed, non-denied name the parent has, written as
-    /// the allow list spells it, then the values the product sets. Nothing else.
+    /// The child's whole environment: each allowed name the parent has, written as the allow
+    /// list spells it, then the values the product sets. Nothing else. A parent value with NUL
+    /// is skipped: no process environment can hold it.
     pub fn child_env<I, K, V>(&self, parent: I) -> BTreeMap<String, String>
     where
         I: IntoIterator<Item = (K, V)>,
@@ -179,22 +251,27 @@ impl EnvPolicy {
         let parent: Vec<(String, String)> = parent
             .into_iter()
             .map(|(name, value)| (name.into(), value.into()))
+            .filter(|(_, value)| !value.contains('\0'))
             .collect();
         let mut child: BTreeMap<String, String> = BTreeMap::new();
         for wanted in &self.allow {
-            if self.is_denied(wanted) || child.keys().any(|have| self.case.same(have, wanted)) {
+            // Checked again here so the filter never depends on how the policy was built.
+            if self.is_denied(wanted) {
                 continue;
             }
             // Two spellings of one name in the parent: the exact one, else the smallest.
             let found = parent
                 .iter()
-                .filter(|(name, _)| self.case.same(name, wanted) && !self.is_denied(name))
+                .filter(|(name, _)| self.case.same(name, wanted))
                 .min_by_key(|(name, _)| (name != wanted, name.clone()));
             if let Some((_, value)) = found {
                 child.insert(wanted.clone(), value.clone());
             }
         }
         for (name, value) in &self.set {
+            if self.is_denied(name) {
+                continue;
+            }
             child.retain(|have, _| !self.case.same(have, name));
             child.insert(name.clone(), value.clone());
         }
@@ -221,19 +298,23 @@ mod tests {
     #[test]
     fn patterns_parse_and_refuse_bad_shapes() {
         assert_eq!(
-            Pattern::parse("*_token").unwrap(),
-            Pattern::Suffix("_TOKEN".into())
+            Pattern::parse("*_token"),
+            Some(Pattern::Suffix("_TOKEN".into()))
         );
         assert_eq!(
-            Pattern::parse("aws_*").unwrap(),
-            Pattern::Prefix("AWS_".into())
+            Pattern::parse("aws_*"),
+            Some(Pattern::Prefix("AWS_".into()))
         );
         assert_eq!(
-            Pattern::parse("GH_TOKEN").unwrap(),
-            Pattern::Exact("GH_TOKEN".into())
+            Pattern::parse("GH_TOKEN"),
+            Some(Pattern::Exact("GH_TOKEN".into()))
         );
-        for bad in ["*", "**", "*A*", "A*B", "", "A=B*"] {
-            assert!(Pattern::parse(bad).is_err(), "{bad}");
+        assert_eq!(
+            Pattern::parse("*_auth*"),
+            Some(Pattern::Infix("_AUTH".into()))
+        );
+        for bad in ["*", "**", "***", "*A*B*", "A*B", "", "A=B*", "*A\0*"] {
+            assert_eq!(Pattern::parse(bad), None, "{bad:?}");
         }
     }
 
@@ -247,19 +328,27 @@ mod tests {
     }
 
     #[test]
-    fn a_set_value_that_is_denied_is_refused() {
-        let base = layer(&[], &["*_TOKEN"], &[("MY_TOKEN", "x")]);
-        assert_eq!(
-            EnvPolicy::from_layers(&base, None, NameCase::Sensitive),
-            Err(EnvPolicyError::SetDenied("MY_TOKEN".into()))
-        );
+    fn the_filter_drops_denied_names_even_in_a_policy_built_without_checks() {
+        // Built by hand, skipping `from_layers`: the filter alone must still hold.
+        let policy = EnvPolicy {
+            allow: vec!["GH_TOKEN".into(), "PATH".into()],
+            deny: vec![Pattern::parse("*TOKEN*").unwrap()],
+            set: BTreeMap::from([("MY_TOKEN".into(), "x".into())]),
+            case: NameCase::Sensitive,
+        };
+        let child = policy.child_env([("GH_TOKEN", "s"), ("PATH", "p")]);
+        assert_eq!(child, BTreeMap::from([("PATH".into(), "p".into())]));
     }
 
     #[test]
-    fn bad_allow_names_are_refused() {
-        for bad in ["", "A=B", "A*"] {
-            let base = layer(&[bad], &[], &[]);
-            assert!(EnvPolicy::from_layers(&base, None, NameCase::Sensitive).is_err());
-        }
+    fn a_parent_value_with_nul_is_skipped() {
+        let policy = EnvPolicy::from_layers(
+            &layer(&["PATH", "TEMP"], &[], &[]),
+            None,
+            NameCase::Sensitive,
+        )
+        .unwrap();
+        let child = policy.child_env([("PATH", "a\0b"), ("TEMP", "t")]);
+        assert_eq!(child, BTreeMap::from([("TEMP".into(), "t".into())]));
     }
 }

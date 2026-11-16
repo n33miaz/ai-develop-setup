@@ -41,35 +41,47 @@ pub enum Mode {
     Interactive,
 }
 
+/// Why the parameters were refused. Carries a key, a position or a reason code, never the
+/// rejected text nor the raw parser message, which could quote it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigError {
-    Toml(String),
+    /// Not TOML, or a key or type the file does not allow. `line` is 1-based when known.
+    Toml {
+        line: Option<usize>,
+    },
     MissingKey(&'static str),
     Env(EnvPolicyError),
-    /// The program path is not absolute and literal, or too long.
+    /// The program path is not absolute and literal.
     Program(PathError),
     ProgramTooLong,
+    /// Too long, or with NUL or another control character.
     Argument(usize),
-    Alias(String),
+    /// Entries of `[workdirs]` count the shipped ones first, each layer in name order.
+    Alias(usize),
     Workdir {
-        alias: String,
+        index: usize,
         error: PathError,
     },
-    WorkdirTooLong(String),
+    WorkdirTooLong(usize),
 }
 
 impl fmt::Display for ConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Toml(error) => write!(f, "invalid harness parameters: {error}"),
+            Self::Toml { line: Some(line) } => {
+                write!(f, "invalid harness parameters at line {line}")
+            }
+            Self::Toml { line: None } => f.write_str("invalid harness parameters"),
             Self::MissingKey(key) => write!(f, "missing key `{key}`"),
             Self::Env(error) => error.fmt(f),
             Self::Program(error) => write!(f, "program path refused: {error}"),
             Self::ProgramTooLong => f.write_str("program path too long"),
-            Self::Argument(index) => write!(f, "argument {index} too long"),
-            Self::Alias(alias) => write!(f, "invalid folder alias `{alias}`"),
-            Self::Workdir { alias, error } => write!(f, "folder of `{alias}` refused: {error}"),
-            Self::WorkdirTooLong(alias) => write!(f, "folder of `{alias}` too long"),
+            Self::Argument(index) => write!(f, "invalid argument {index}"),
+            Self::Alias(index) => write!(f, "invalid folder alias at entry {index}"),
+            Self::Workdir { index, error } => {
+                write!(f, "folder at entry {index} refused: {error}")
+            }
+            Self::WorkdirTooLong(index) => write!(f, "folder at entry {index} too long"),
         }
     }
 }
@@ -129,23 +141,26 @@ impl ClaudeConfig {
         let args = args
             .into_iter()
             .enumerate()
-            .map(|(index, arg)| ArgItem::new(arg).map_err(|_| ConfigError::Argument(index)))
+            .map(|(index, arg)| {
+                if arg.chars().any(char::is_control) {
+                    return Err(ConfigError::Argument(index));
+                }
+                ArgItem::new(arg).map_err(|_| ConfigError::Argument(index))
+            })
             .collect::<Result<Vec<_>, _>>()?;
 
         let mut workdirs = BTreeMap::new();
-        for (alias, path) in base
+        for (index, (alias, path)) in base
             .workdirs
             .into_iter()
             .flatten()
             .chain(over.workdirs.into_iter().flatten())
+            .enumerate()
         {
-            let id =
-                CommonIdV1::new(alias.clone()).map_err(|_| ConfigError::Alias(alias.clone()))?;
-            let path = AbsPath::parse(&path).map_err(|error| ConfigError::Workdir {
-                alias: alias.clone(),
-                error,
-            })?;
-            let cwd = Cwd::new(path.to_string()).map_err(|_| ConfigError::WorkdirTooLong(alias))?;
+            let id = CommonIdV1::new(alias).map_err(|_| ConfigError::Alias(index))?;
+            let path =
+                AbsPath::parse(&path).map_err(|error| ConfigError::Workdir { index, error })?;
+            let cwd = Cwd::new(path.to_string()).map_err(|_| ConfigError::WorkdirTooLong(index))?;
             workdirs.insert(String::from(id), cwd);
         }
 
@@ -182,7 +197,15 @@ impl ClaudeConfig {
 }
 
 fn parse(text: &str) -> Result<FileLayer, ConfigError> {
-    toml::from_str(text).map_err(|error| ConfigError::Toml(error.to_string()))
+    toml::from_str(text).map_err(|error: toml::de::Error| ConfigError::Toml {
+        line: error.span().map(|span| {
+            text.as_bytes()[..span.start.min(text.len())]
+                .iter()
+                .filter(|b| **b == b'\n')
+                .count()
+                + 1
+        }),
+    })
 }
 
 fn tool_layer(file: &FileLayer) -> Result<Option<ToolLayer>, ConfigError> {
@@ -193,5 +216,5 @@ fn tool_layer(file: &FileLayer) -> Result<Option<ToolLayer>, ConfigError> {
         .clone()
         .try_into()
         .map(Some)
-        .map_err(|error: toml::de::Error| ConfigError::Toml(error.to_string()))
+        .map_err(|_: toml::de::Error| ConfigError::Toml { line: None })
 }
