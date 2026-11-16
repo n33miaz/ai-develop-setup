@@ -1,5 +1,7 @@
 //! Local SQLite storage, column encryption and chained audit.
 
+pub mod cipher;
+
 pub mod config;
 pub mod error;
 mod migrate;
