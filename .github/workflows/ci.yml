@@ -275,6 +275,10 @@ jobs:
           tool: cargo-deny@0.20.2
       - name: cargo-deny
         run: cargo deny --locked check
+      # O deny.toml avalia o alvo Windows. O executor de arquivos tem dependência só do Linux (rustix):
+      # mesmas regras, alvo Linux, sem a casca Tauri (a árvore gtk dela pede decisão própria).
+      - name: cargo-deny (alvo Linux, sem a casca)
+        run: cargo deny --locked --target x86_64-unknown-linux-gnu --exclude ads-shell check
 
   shell-check:
     name: shell-check
