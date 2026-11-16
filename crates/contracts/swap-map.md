@@ -15,7 +15,7 @@ Vale para todos:
 
 ## `crates/core/src/gate/event.rs`
 
-A leitura e a escrita de todo `Envelope<D>` passam pelo evento gerado indicado nas tabelas. `EventData::Wire` fixa o tipo por evento; `wire.rs` converte os campos explicitamente nos dois sentidos. Não há envelope de wire escrito à mão. O despacho de `Event::from_json` continua recusando as quatro aprovações `:1`; os envelopes tipados dessas versões continuam disponíveis para ler documentos antigos sem reconstruir ações.
+A leitura e a escrita de todo `Envelope<D>` passam pelo evento gerado indicado nas tabelas. `EventData::Wire` fixa o tipo por evento; `crates/core/src/gate/conversion.rs` converte os campos explicitamente nos dois sentidos. Não há envelope de wire escrito à mão. O despacho de `Event::from_json` continua recusando as quatro aprovações `:1`; os envelopes tipados dessas versões continuam disponíveis para ler documentos antigos sem reconstruir ações.
 
 `ActionPlanRecord`, `ActionPlanRecordV1` e `ApprovalRecord` leem e escrevem pelos registros gerados correspondentes. A conversão dos planos chama `ActionPlanFields::checked`: hash canônico, ordem estrita e identidade dos alvos e normalização dos caminhos continuam no núcleo, inclusive para os caminhos mais largos da `:1`. O teto da estimativa continua aplicado só à `:2` na construção de domínio, além da validação do tipo gerado na leitura.
 

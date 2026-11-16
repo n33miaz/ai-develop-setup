@@ -14,7 +14,7 @@ Nenhuma ação sobre o sistema de arquivos é executada sem passar por aqui. O p
 | `classify.rs` | As regras e os seus códigos: `plano + política -> veredito` (permitido, exige aprovação, negado), a reescrita de apagar como mover para a quarentena e o registro do plano julgado. |
 | `machine.rs` | Máquina de estados da ação, a licença de execução e a reconstrução do estado a partir dos eventos (`replay`). Cada transição devolve o evento do contrato. |
 | `event.rs` | Valores de domínio, vínculo entre stream e entidade e serialização canônica do plano; a leitura e a escrita usam os contratos gerados. |
-| `wire.rs` | Conversões explícitas, campo a campo, entre os contratos de `ads-contracts` e os valores do portão, com as conferências que o Schema não exprime. |
+| `conversion.rs` | Conversões explícitas, campo a campo, entre os contratos de `ads-contracts` e os valores do portão, com as conferências que o Schema não exprime. |
 
 ### Normalização
 

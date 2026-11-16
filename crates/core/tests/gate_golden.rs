@@ -955,3 +955,212 @@ fn generated_event_with_another_stream_entity_is_refused_by_the_domain() {
     assert!(ActionPlanned::from_wire(wire).is_err());
     assert!(Event::from_json(json).is_err());
 }
+
+/// The text the types write for every valid golden file is that file, byte for byte: the
+/// comparisons above go through `Value`, which sorts the keys, so only this one sees the order
+/// of the fields.
+fn bytes_match<T: Serialize + DeserializeOwned>(folder: &str) {
+    let dir = golden_root().join(folder).join("valid");
+    let mut paths: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+        .collect();
+    paths.sort();
+    assert!(
+        paths.len() >= 2,
+        "{folder}: expected at least 2 valid files"
+    );
+    for path in paths {
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let text = std::fs::read_to_string(&path)
+            .unwrap()
+            .replace("\r\n", "\n");
+        let typed: T = serde_json::from_str(&text).unwrap();
+        let written = serde_json::to_string_pretty(&typed).unwrap();
+        assert_eq!(
+            written,
+            text.trim_end_matches('\n'),
+            "{folder}/valid/{name}"
+        );
+    }
+}
+
+#[test]
+fn written_text_is_the_golden_file_byte_for_byte() {
+    let mut checked = BTreeSet::new();
+    let mut check = |folder: &'static str, matches: fn(&str)| {
+        matches(folder);
+        checked.insert(folder);
+    };
+    check("common.abspath.v1", bytes_match::<PathText>);
+    check("common.abspath.v2", bytes_match::<PathText>);
+    check("common.action-rule.v1", bytes_match::<RuleCode>);
+    check(
+        "event.action.planned.v1",
+        bytes_match::<Envelope<ActionPlanned>>,
+    );
+    check(
+        "event.action.denied.v1",
+        bytes_match::<Envelope<ActionDenied>>,
+    );
+    check(
+        "event.action.started.v1",
+        bytes_match::<Envelope<ActionStarted>>,
+    );
+    check(
+        "event.action.executed.v1",
+        bytes_match::<Envelope<ActionExecuted>>,
+    );
+    check(
+        "event.action.failed.v1",
+        bytes_match::<Envelope<ActionFailed>>,
+    );
+    check(
+        "event.approval.requested.v1",
+        bytes_match::<Envelope<ApprovalRequestedV1>>,
+    );
+    check(
+        "event.approval.requested.v2",
+        bytes_match::<Envelope<ApprovalRequested>>,
+    );
+    check(
+        "event.approval.granted.v1",
+        bytes_match::<Envelope<ApprovalGrantedV1>>,
+    );
+    check(
+        "event.approval.granted.v2",
+        bytes_match::<Envelope<ApprovalGranted>>,
+    );
+    check(
+        "event.approval.denied.v1",
+        bytes_match::<Envelope<ApprovalDeniedV1>>,
+    );
+    check(
+        "event.approval.denied.v2",
+        bytes_match::<Envelope<ApprovalDenied>>,
+    );
+    check(
+        "event.approval.expired.v1",
+        bytes_match::<Envelope<ApprovalExpiredV1>>,
+    );
+    check(
+        "event.approval.expired.v2",
+        bytes_match::<Envelope<ApprovalExpired>>,
+    );
+    check("record.action-plan.v1", bytes_match::<ActionPlanRecordV1>);
+    check("record.action-plan.v2", bytes_match::<ActionPlanRecord>);
+    check("record.approval.v1", bytes_match::<ApprovalRecord>);
+    assert_eq!(checked, GATE_FOLDERS.iter().copied().collect());
+}
+
+fn golden_record_v1(name: &str) -> Value {
+    golden_files("record.action-plan.v1", "valid")
+        .into_iter()
+        .find(|(file, _)| file == name)
+        .unwrap_or_else(|| panic!("record.action-plan.v1/valid/{name} is gone"))
+        .1
+}
+
+/// `abspath:1` lets Windows device names and short names through, and the domain does not look
+/// at `work_root` or `destination` again after reading them: only the reading refuses these.
+#[test]
+fn generated_v1_plan_with_a_device_or_short_name_is_refused_by_the_domain() {
+    let read = |field: &str, path: &str| {
+        let mut json = golden_record_v1("02-quarantined.json");
+        json[field] = path.into();
+        json["plan_hash"] = sha256_of(&canonical_of(&json)).into();
+        let wire: ads_contracts::RecordActionPlanV1 = serde_json::from_value(json.clone())
+            .unwrap_or_else(|err| panic!("{field} = {path}: {err}"));
+        let typed = ActionPlanRecordV1::try_from(wire);
+        let serde = serde_json::from_value::<ActionPlanRecordV1>(json);
+        assert_eq!(typed.is_ok(), serde.is_ok(), "{field} = {path}");
+        typed
+    };
+    // The same records with a normalized path are accepted: the refusal is about the path.
+    assert!(read("work_root", "C:\\work\\other").is_ok());
+    assert!(read("destination", "C:\\work\\other").is_ok());
+    for field in ["work_root", "destination"] {
+        for path in ["C:\\work\\NUL", "C:\\PROGRA~1"] {
+            let err = read(field, path).unwrap_err();
+            assert_eq!(err.what, "normalized absolute path", "{field} = {path}");
+        }
+    }
+}
+
+/// Two targets that differ only in `repo_root` are distinct items for `uniqueItems`, yet the
+/// same target for the gate.
+#[test]
+fn generated_plan_with_a_target_repeated_under_another_repo_root_is_refused_by_the_domain() {
+    let mut json = golden_record("01-base.json");
+    json["targets"][1] = serde_json::json!({
+        "path": "/work/proj/a",
+        "pattern": null,
+        "repo_root": true,
+    });
+    json["plan_hash"] = sha256_of(&canonical_of(&json)).into();
+    let wire: ads_contracts::RecordActionPlanV2 = serde_json::from_value(json.clone()).unwrap();
+    let err = ActionPlanRecord::try_from(wire).unwrap_err();
+    assert_eq!(err.what, "target in canonical order, not repeated");
+    assert!(serde_json::from_value::<ActionPlanRecord>(json).is_err());
+}
+
+/// Writing a record turns each path back into the generated type and cannot fail there: so
+/// the generated `abspath:2` accepts exactly the paths of the domain, and `abspath:1` at least
+/// those.
+#[test]
+fn generated_abspath_accepts_the_paths_of_the_domain_on_the_common_corpus() {
+    let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../contracts/corpus/abspath.json");
+    let corpus: Value = serde_json::from_str(&std::fs::read_to_string(file).unwrap()).unwrap();
+    let mut paths: Vec<String> = corpus["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|case| case["path"].as_str().unwrap().to_owned())
+        .collect();
+    for length in [4095, 4096, 4097] {
+        paths.push(format!("/{}", "a".repeat(length - 1)));
+        paths.push(format!("C:\\{}", "a".repeat(length - 3)));
+    }
+    let mut wrong = Vec::new();
+    for path in &paths {
+        let domain = PathText::new(path.as_str()).is_ok();
+        if ads_contracts::CommonAbspathV2::new(path.as_str()).is_ok() != domain {
+            wrong.push(format!("abspath:2 {path:?}: domain {domain}"));
+        }
+        if domain && ads_contracts::CommonAbspathV1::new(path.as_str()).is_err() {
+            wrong.push(format!("abspath:1 {path:?}: domain {domain}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// A refused value is kept in the error only up to the bound of the contract errors.
+#[test]
+fn errors_of_the_gate_keep_a_bounded_detail() {
+    let bounded = |err: ads_contracts::ContractError| {
+        let length = err.detail.chars().count();
+        assert!(
+            length <= ads_contracts::ContractError::DETAIL_MAX + 1,
+            "{}: {length} characters",
+            err.what
+        );
+    };
+    bounded(PathText::new(format!("/{}/", "a".repeat(4000))).unwrap_err());
+
+    let (_, event) = golden_files("event.action.planned.v1", "valid").remove(0);
+    let mut unknown = event.clone();
+    unknown["data"]["b".repeat(1000)] = true.into();
+    bounded(Event::from_json(unknown).unwrap_err());
+    let mut kind = event;
+    kind["type"] = format!("urn:ads:event:{}:1", "c".repeat(1000)).into();
+    bounded(Event::from_json(kind).unwrap_err());
+
+    let long = format!("/work/proj/{}", "d".repeat(1000));
+    let mut json = golden_record("01-base.json");
+    json["targets"][0]["path"] = long.clone().into();
+    json["targets"][1] = serde_json::json!({ "path": long, "pattern": null, "repo_root": true });
+    json["plan_hash"] = sha256_of(&canonical_of(&json)).into();
+    let wire: ads_contracts::RecordActionPlanV2 = serde_json::from_value(json).unwrap();
+    bounded(ActionPlanRecord::try_from(wire).unwrap_err());
+}

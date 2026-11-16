@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 
 use super::path::{AbsPath, TargetPath};
 
-#[path = "wire.rs"]
+#[path = "conversion.rs"]
 mod conversion;
 
 use ads_contracts as wire;
@@ -29,7 +29,7 @@ macro_rules! text_type {
                 if check(&text) {
                     Ok(Self(text))
                 } else {
-                    Err(ContractError { what: $what, detail: text })
+                    Err(ContractError::new($what, text))
                 }
             }
 
@@ -397,11 +397,11 @@ pub struct ApprovalExpiredV1 {
 /// The one event a transition of the action state machine produces.
 /// Reading a document cannot create an action or an execution permit.
 ///
-/// ```compile_fail
+/// ```compile_fail,E0277
 /// let _: ads_core::gate::Action = serde_json::from_str("{}").unwrap();
 /// ```
 ///
-/// ```compile_fail
+/// ```compile_fail,E0277
 /// let _: ads_core::gate::ExecutionPermit = serde_json::from_str("{}").unwrap();
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -444,10 +444,7 @@ impl Event {
     /// version 1 of the four approval events included: they do not name their action.
     pub fn from_json(json: serde_json::Value) -> Result<Self, ContractError> {
         fn read<D: EventData>(json: serde_json::Value) -> Result<Envelope<D>, ContractError> {
-            serde_json::from_value(json).map_err(|err| ContractError {
-                what: "event",
-                detail: err.to_string(),
-            })
+            serde_json::from_value(json).map_err(|err| ContractError::new("event", err.to_string()))
         }
         let kind = json["type"].as_str().unwrap_or_default().to_owned();
         match kind.as_str() {
@@ -460,10 +457,7 @@ impl Event {
             ActionStarted::TYPE => read(json).map(Self::ActionStarted),
             ActionExecuted::TYPE => read(json).map(Self::ActionExecuted),
             ActionFailed::TYPE => read(json).map(Self::ActionFailed),
-            _ => Err(ContractError {
-                what: "event type of the gate",
-                detail: kind,
-            }),
+            _ => Err(ContractError::new("event type of the gate", kind)),
         }
     }
 
@@ -552,12 +546,7 @@ impl ActionPlanFields {
     /// The rules between the fields that the Schema cannot express, for the record of
     /// `version`.
     fn checked(self, version: u64) -> Result<Self, ContractError> {
-        let broken = |what: &'static str, value: String| {
-            Err(ContractError {
-                what,
-                detail: value,
-            })
-        };
+        let broken = |what: &'static str, value: String| Err(ContractError::new(what, value));
         if self.version != version {
             return broken("action plan version", self.version.to_string());
         }
@@ -796,10 +785,10 @@ impl TryFrom<ApprovalFields> for ApprovalRecord {
             fields.decided_at.is_none() && fields.decided_by.is_none() && fields.via.is_none()
         };
         if fields.version != 1 || !coherent {
-            return Err(ContractError {
-                what: "approval with the decision its status asks for",
-                detail: format!("version {}, {:?}", fields.version, fields.status),
-            });
+            return Err(ContractError::new(
+                "approval with the decision its status asks for",
+                format!("version {}, {:?}", fields.version, fields.status),
+            ));
         }
         Ok(Self(fields))
     }
@@ -814,6 +803,19 @@ impl ApprovalRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The doc tests above only fail to compile; this stops compiling, with any toolchain, the
+    // day an action or an execution permit can be read from a document.
+    trait AmbiguousIfDeserialize<Marker> {
+        fn check() {}
+    }
+    impl<T: ?Sized> AmbiguousIfDeserialize<()> for T {}
+    struct Deserializable;
+    impl<T: DeserializeOwned> AmbiguousIfDeserialize<Deserializable> for T {}
+    const _: fn() = || {
+        <crate::gate::Action as AmbiguousIfDeserialize<_>>::check();
+        <crate::gate::ExecutionPermit as AmbiguousIfDeserialize<_>>::check();
+    };
 
     #[test]
     fn text_types_follow_the_contract_patterns() {
