@@ -630,9 +630,21 @@ fn entry_a_move_creates_in_its_destination_is_judged_too() {
     let asked = plan(
         move_to(POSIX_ROOT),
         POSIX_ROOT,
-        &["/home/user-a/work/proj/tmp/*"],
+        &["/home/user-a/work/proj/tmp/.a*"],
     );
     assert_eq!(classify(&asked, &off).decision(), Decision::Allowed);
+    // With quarantine off, `tmp/*` into the parent of `tmp` is still held back: the wildcard
+    // may name `tmp` itself, the very folder it ranges over.
+    let asked = plan(
+        move_to(POSIX_ROOT),
+        POSIX_ROOT,
+        &["/home/user-a/work/proj/tmp/*"],
+    );
+    entry(
+        &classify(&asked, &off),
+        Rule::DestinationInsideTarget,
+        "/home/user-a/work/proj/tmp",
+    );
 
     // An entry beside all of that is the plain move it always was.
     let verdict = posix(
@@ -641,6 +653,88 @@ fn entry_a_move_creates_in_its_destination_is_judged_too() {
     );
     assert_eq!(verdict.decision(), Decision::Allowed);
     assert!(verdict.findings().is_empty());
+}
+
+/// A wildcard target names no entry, so the literal check "the entry lands on a target" did
+/// not run for it: one wildcard could create, in the destination, the very folder another
+/// target of the same move ranges over. Any child of the destination the wildcard may name
+/// is checked against the folder of every target; when it may name it, the plan is denied.
+#[test]
+fn wildcard_that_may_create_the_folder_of_another_target_is_denied() {
+    let on = |verdict: &Verdict, subject: &str| {
+        denied_by(verdict, Rule::DestinationInsideTarget);
+        let found = verdict.findings().iter().any(|finding| {
+            finding.rule == Rule::DestinationInsideTarget && finding.subject == subject
+        });
+        assert!(found, "{subject}: {:?}", verdict.findings());
+    };
+    let judge = |destination: &str, targets: &[&str]| {
+        classify(
+            &plan(move_to(destination), "/work/proj", targets),
+            &policy(POSIX_HOME, ""),
+        )
+    };
+
+    // The example of the review: `tmp/*` may create `out/a`, which `out/a/*` ranges over.
+    let verdict = judge(
+        "/work/proj/out",
+        &["/work/proj/tmp/*", "/work/proj/out/a/*"],
+    );
+    on(&verdict, "/work/proj/out/a");
+    // The other target may be a literal one, deeper, or spelled in another case, and the
+    // wildcard may be any that can name the child of the destination on the way to it.
+    for (wildcard, other) in [
+        ("/work/proj/tmp/*", "/work/proj/out/a"),
+        ("/work/proj/tmp/*", "/work/proj/out/a/b/c.txt"),
+        ("/work/proj/tmp/?", "/work/proj/out/a/*"),
+        ("/work/proj/tmp/A*", "/work/proj/out/a/*"),
+    ] {
+        on(
+            &judge("/work/proj/out", &[wildcard, other]),
+            "/work/proj/out/a",
+        );
+    }
+    on(
+        &judge(
+            "/work/proj/out",
+            &["/work/proj/tmp/a*", "/work/proj/out/A/x"],
+        ),
+        "/work/proj/out/A",
+    );
+    // The folder the wildcard itself ranges over counts: `out/a/*` into `out` may hold an
+    // `a`, which would land on `out/a`.
+    on(
+        &judge("/work/proj/out", &["/work/proj/out/a/*"]),
+        "/work/proj/out/a",
+    );
+    // A literal target is checked both ways: its entry on a target, inside one or holding one.
+    on(
+        &judge(
+            "/work/proj/out",
+            &["/work/proj/tmp/a", "/work/proj/out/a/b/c.txt"],
+        ),
+        "/work/proj/out/a",
+    );
+
+    // A wildcard that cannot name that child is the plain move, and so is one whose
+    // destination holds no folder of a target.
+    for (wildcard, other) in [
+        ("/work/proj/tmp/*.log", "/work/proj/out/a/*.txt"),
+        ("/work/proj/tmp/b*", "/work/proj/out/a/*.txt"),
+        ("/work/proj/tmp/??", "/work/proj/out/a/*.txt"),
+        ("/work/proj/tmp/*", "/work/proj/src/a/*"),
+    ] {
+        let verdict = judge("/work/proj/out", &[wildcard, other]);
+        assert_eq!(
+            verdict.decision(),
+            Decision::Allowed,
+            "{wildcard} and {other}: {:?}",
+            verdict.findings()
+        );
+    }
+    // Judged again, a denied plan stays denied for the same reason.
+    let again = classify(verdict.plan(), &policy(POSIX_HOME, ""));
+    assert_eq!(again.findings(), verdict.findings());
 }
 
 // ---- Requires approval ------------------------------------------------------------------------

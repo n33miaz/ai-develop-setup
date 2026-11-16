@@ -11,11 +11,11 @@ use std::path::Path;
 
 use ads_core::gate::{
     Action, ActionDenied, ActionExecuted, ActionFailed, ActionPlan, ActionPlanRecord,
-    ActionPlanned, ActionStarted, ApprovalDenied, ApprovalDeniedV1, ApprovalExpired,
-    ApprovalExpiredV1, ApprovalGranted, ApprovalGrantedV1, ApprovalRecord, ApprovalRequested,
-    ApprovalRequestedV1, Command, Decision, Envelope, ErrorCode, Estimate, Event, EventMeta, Id,
-    OperationRequest as Op, PathText, PlanRequest, RuleCode, ShortText, TargetRequest, Timestamp,
-    Verdict, Via, classify,
+    ActionPlanRecordV1, ActionPlanned, ActionStarted, ApprovalDenied, ApprovalDeniedV1,
+    ApprovalExpired, ApprovalExpiredV1, ApprovalGranted, ApprovalGrantedV1, ApprovalRecord,
+    ApprovalRequested, ApprovalRequestedV1, Command, Decision, ESTIMATE_MAX, Envelope, ErrorCode,
+    Estimate, Event, EventMeta, Id, OperationRequest as Op, PathText, PlanRequest, RuleCode,
+    ShortText, TargetRequest, Timestamp, Verdict, Via, classify,
 };
 use common::{POSIX_HOME, WIN_HOME, WIN_ROOT, at, canonical_of, policy, request, sha256_of, win};
 use serde::Serialize;
@@ -45,6 +45,7 @@ const GATE_FOLDERS: &[&str] = &[
     "event.approval.requested.v1",
     "event.approval.requested.v2",
     "record.action-plan.v1",
+    "record.action-plan.v2",
     "record.approval.v1",
 ];
 
@@ -172,7 +173,8 @@ fn types_match_the_golden_files_of_every_version() {
         "event.approval.expired.v2",
         types_match::<Envelope<ApprovalExpired>>,
     );
-    check("record.action-plan.v1", types_match::<ActionPlanRecord>);
+    check("record.action-plan.v1", types_match::<ActionPlanRecordV1>);
+    check("record.action-plan.v2", types_match::<ActionPlanRecord>);
     check("record.approval.v1", types_match::<ApprovalRecord>);
     assert_eq!(checked, GATE_FOLDERS.iter().copied().collect());
 }
@@ -491,7 +493,8 @@ fn generated_action_results_are_the_golden_events() {
 
 // ---- record.action-plan ----------------------------------------------------------------------
 
-const RECORD: &str = "record.action-plan.v1";
+/// The version of the record the gate writes.
+const RECORD: &str = "record.action-plan.v2";
 
 fn golden_record(name: &str) -> Value {
     golden_files(RECORD, "valid")
@@ -606,21 +609,23 @@ fn every_golden_action_plan_is_rebuilt_by_the_core() {
     let cases = [
         ("01-base.json", POSIX_HOME, false, "action.planned"),
         (
-            "06-quarantined-measured.json",
+            "02-requires-approval.json",
             WIN_HOME,
             true,
             "action.planned",
         ),
+        ("03-denied.json", POSIX_HOME, false, "action.denied"),
+        ("04-move.json", POSIX_HOME, true, "action.planned"),
+        ("05-quarantined.json", WIN_HOME, true, "action.planned"),
         (
-            "03-requires-approval.json",
-            WIN_HOME,
+            "06-estimate-at-the-limit.json",
+            POSIX_HOME,
             true,
             "action.planned",
         ),
-        ("04-denied.json", POSIX_HOME, false, "action.denied"),
-        ("05-move.json", POSIX_HOME, true, "action.planned"),
+        ("07-estimate-zero.json", POSIX_HOME, true, "action.planned"),
     ];
-    assert_eq!(cases.len() + 1, golden_files(RECORD, "valid").len());
+    assert_eq!(cases.len(), golden_files(RECORD, "valid").len());
     for (name, home, quarantine, kind) in cases {
         let golden = golden_record(name);
         let (record, event) = rebuilt(&golden, home, quarantine);
@@ -629,15 +634,33 @@ fn every_golden_action_plan_is_rebuilt_by_the_core() {
         assert_eq!(event["type"], format!("urn:ads:event:{kind}:1"), "{name}");
     }
 
-    // The one valid record this gate no longer writes: a delete nobody measured, rewritten as
-    // a move to quarantine and allowed. The contract still holds it and the type still reads
-    // it, but the rewrite is a measured move, so the core now asks for approval: same plan,
-    // same hash, another verdict.
-    let golden = golden_record("02-quarantined.json");
-    assert!(serde_json::from_value::<ActionPlanRecord>(golden.clone()).is_ok());
+    // Version 1 of the record is only read. Every valid file of it but one is, apart from the
+    // version, a record the gate writes today.
+    let old = golden_files("record.action-plan.v1", "valid");
+    assert_eq!(old.len(), 6);
+    for (name, golden) in &old {
+        let read: ActionPlanRecordV1 = serde_json::from_value(golden.clone()).unwrap();
+        assert_eq!(read.fields().version, 1, "{name}");
+        assert_eq!(read.canonical(), canonical_of(golden), "{name}");
+        // A record of one version does not read as the other.
+        assert!(serde_json::from_value::<ActionPlanRecord>(golden.clone()).is_err());
+        let mut bumped = golden.clone();
+        bumped["version"] = 2.into();
+        assert!(serde_json::from_value::<ActionPlanRecordV1>(bumped.clone()).is_err());
+        assert!(serde_json::from_value::<ActionPlanRecord>(bumped).is_ok());
+    }
+    // The one this gate no longer writes: a delete nobody measured, rewritten as a move to
+    // quarantine and allowed. The rewrite is a measured move, so the core now asks for
+    // approval: same plan, same hash, another verdict.
+    let golden = old
+        .into_iter()
+        .find(|(name, _)| name == "02-quarantined.json")
+        .unwrap()
+        .1;
     assert_eq!(golden["estimate"], Value::Null);
     assert_eq!(golden["verdict"]["decision"], "allowed");
     let (record, _) = rebuilt(&golden, WIN_HOME, true);
+    assert_eq!(record["version"], 2);
     assert_eq!(record["plan_hash"], golden["plan_hash"]);
     assert_eq!(record["destination"], golden["destination"]);
     assert_eq!(record["verdict"]["decision"], "requires_approval");
@@ -645,6 +668,88 @@ fn every_golden_action_plan_is_rebuilt_by_the_core() {
         record["verdict"]["reasons"],
         serde_json::json!([{ "rule": "estimate_unknown", "subject": "C:\\work\\proj" }])
     );
+}
+
+/// The Schema of version 1 put no upper bound on the estimate and the reader here took 64
+/// bits: a record with 2^64 items passed one and not the other. Version 2 bounds both at
+/// 2^53 - 1, the range every reader holds. The same values go through the Schema in
+/// `contracts/tools/corpus.test.mjs`.
+#[test]
+fn estimate_of_the_record_has_the_same_range_for_every_reader() {
+    assert_eq!(ESTIMATE_MAX, 9_007_199_254_740_991);
+    let base = golden_record("06-estimate-at-the-limit.json");
+    assert_eq!(base["estimate"]["items"], ESTIMATE_MAX);
+    assert_eq!(base["estimate"]["bytes"], ESTIMATE_MAX);
+    // The record with another estimate and the hash of that text, as JSON text: some of the
+    // values below fit no integer type.
+    let with_estimate = |items: &str, bytes: &str| {
+        let mut record = base.clone();
+        record["estimate"] =
+            serde_json::from_str(&format!("{{\"items\":{items},\"bytes\":{bytes}}}")).unwrap();
+        let canonical = canonical_of(&record).replace(
+            &format!(
+                "estimate:{}:{}",
+                record["estimate"]["items"], record["estimate"]["bytes"]
+            ),
+            &format!("estimate:{items}:{bytes}"),
+        );
+        record["plan_hash"] = sha256_of(&canonical).into();
+        serde_json::from_value::<ActionPlanRecord>(record)
+    };
+    let max = ESTIMATE_MAX.to_string();
+    for (items, bytes) in [
+        ("0", "0"),
+        (max.as_str(), "0"),
+        ("0", max.as_str()),
+        (max.as_str(), max.as_str()),
+        ("9007199254740990", "1"),
+    ] {
+        assert!(with_estimate(items, bytes).is_ok(), "{items}:{bytes}");
+    }
+    for (items, bytes) in [
+        ("9007199254740992", "0"),
+        ("0", "9007199254740992"),
+        ("9223372036854775808", "0"),
+        ("18446744073709551615", "0"),
+        ("18446744073709551616", "0"),
+        ("-1", "0"),
+        ("0.5", "0"),
+    ] {
+        assert!(with_estimate(items, bytes).is_err(), "{items}:{bytes}");
+    }
+
+    // A plan measured above the range has no record, so it starts no action and no event.
+    for estimate in [
+        Estimate {
+            items: ESTIMATE_MAX + 1,
+            bytes: 0,
+        },
+        Estimate {
+            items: 0,
+            bytes: u64::MAX,
+        },
+    ] {
+        let mut asked = request(Op::Overwrite, WIN_ROOT, &[BUILD]);
+        asked.estimate = Some(estimate);
+        let verdict = classify(
+            &ActionPlan::normalize(&asked).unwrap(),
+            &policy(WIN_HOME, ""),
+        );
+        assert!(verdict.record(act("act-01")).is_err());
+        assert!(Action::plan(act("act-01"), &verdict, earlier()).is_err());
+    }
+    let mut asked = request(Op::Overwrite, WIN_ROOT, &[BUILD]);
+    asked.estimate = Some(Estimate {
+        items: ESTIMATE_MAX,
+        bytes: ESTIMATE_MAX,
+    });
+    let verdict = classify(
+        &ActionPlan::normalize(&asked).unwrap(),
+        &policy(WIN_HOME, ""),
+    );
+    let record = verdict.record(act("act-01")).unwrap().to_json();
+    assert_eq!(record["version"], 2);
+    assert_eq!(record["estimate"]["items"], ESTIMATE_MAX);
 }
 
 // ---- common.abspath: the Schema and the core over one corpus ----------------------------------
@@ -742,7 +847,7 @@ fn record_rules_the_schema_cannot_express_are_enforced() {
     assert!(refused("01-base.json", &|record| {
         record["work_root"] = "/work".into();
     }));
-    assert!(refused("02-quarantined.json", &|record| {
+    assert!(refused("05-quarantined.json", &|record| {
         record["destination"] = "C:\\work\\proj\\.ads\\quarantine\\0000000000000000".into();
     }));
     // Targets out of the canonical order, or repeated, even with the hash of that text.
@@ -764,6 +869,6 @@ fn record_rules_the_schema_cannot_express_are_enforced() {
         rehashed(record);
     }));
     assert!(refused("01-base.json", &|record| {
-        record["version"] = 2.into();
+        record["version"] = 1.into();
     }));
 }

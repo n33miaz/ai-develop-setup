@@ -209,7 +209,7 @@ impl Verdict {
             })
         });
         ActionPlanRecord::try_from(ActionPlanFields {
-            version: 1,
+            version: ActionPlanRecord::VERSION,
             action_id,
             plan_hash: self.plan.hash(),
             operation: self.requested.name(),
@@ -387,10 +387,11 @@ fn judge(plan: &ActionPlan, policy: &GatePolicy) -> Vec<Finding> {
                     if let Some(protection) = policy.protection(&entry) {
                         find(Rule::DestinationProtected(protection), &entry);
                     }
-                    let onto_a_target = plan
-                        .targets()
-                        .iter()
-                        .any(|other| entry.is_loosely_within(other.path().scope()));
+                    // On a target, inside one, or holding one: the tree of any target.
+                    let onto_a_target = plan.targets().iter().any(|other| {
+                        let other = other.path().scope();
+                        entry.is_loosely_within(other) || other.is_loosely_within(&entry)
+                    });
                     if onto_a_target {
                         find(Rule::DestinationInsideTarget, &entry);
                     }
@@ -399,17 +400,24 @@ fn judge(plan: &ActionPlan, policy: &GatePolicy) -> Vec<Finding> {
                     }
                 }
                 // The names are not known: any child of the destination the wildcard may name.
+                // Such a child that is, or holds, a reserved folder or the folder of any target
+                // of the plan (this one included) denies; when in doubt, it may name it.
                 Some(pattern) => {
-                    for path in &reserved {
+                    let named = |path: &AbsPath| {
                         let below = path.depth() > destination.depth()
                             && path.is_loosely_within(destination);
-                        if !below {
-                            continue;
-                        }
-                        let name = &path.components()[destination.depth()];
-                        if may_name(pattern, name) {
-                            let entry = destination.join(std::slice::from_ref(name));
+                        let name = below.then(|| &path.components()[destination.depth()])?;
+                        may_name(pattern, name)
+                            .then(|| destination.join(std::slice::from_ref(name)))
+                    };
+                    for path in &reserved {
+                        if let Some(entry) = named(path) {
                             find(Rule::DestinationEntryReserved, &entry);
+                        }
+                    }
+                    for other in plan.targets() {
+                        if let Some(entry) = named(other.path().scope()) {
+                            find(Rule::DestinationInsideTarget, &entry);
                         }
                     }
                 }

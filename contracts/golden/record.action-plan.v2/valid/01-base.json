@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "action_id": "act-01",
+  "plan_hash": "sha256:c7b870d89ef435eb431fcdf8e99f82f2b10c9b05a25eb86eb2ed603fa366eb94",
+  "operation": "fs.delete_recursive",
+  "work_root": "/work/proj",
+  "destination": null,
+  "targets": [
+    {
+      "path": "/work/proj/a",
+      "pattern": null,
+      "repo_root": false
+    },
+    {
+      "path": "/work/proj/b",
+      "pattern": null,
+      "repo_root": false
+    }
+  ],
+  "estimate": {
+    "items": 3,
+    "bytes": 4096
+  },
+  "verdict": {
+    "decision": "allowed",
+    "risk": "low",
+    "reasons": []
+  },
+  "quarantined": false
+}

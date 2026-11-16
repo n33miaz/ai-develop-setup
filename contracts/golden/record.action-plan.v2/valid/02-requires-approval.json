@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "action_id": "act-03",
+  "plan_hash": "sha256:5486cc58827bffeb2204a994db3d77fe6c8f2c863eb73de6e2a60802784293cb",
+  "operation": "fs.clean_untracked",
+  "work_root": "C:\\work\\proj",
+  "destination": null,
+  "targets": [
+    {
+      "path": "C:\\work\\proj\\cache",
+      "pattern": "*.tmp",
+      "repo_root": false
+    },
+    {
+      "path": "C:\\work\\proj\\out",
+      "pattern": null,
+      "repo_root": false
+    }
+  ],
+  "estimate": null,
+  "verdict": {
+    "decision": "requires_approval",
+    "risk": "medium",
+    "reasons": [
+      {
+        "rule": "estimate_unknown",
+        "subject": "C:\\work\\proj"
+      }
+    ]
+  },
+  "quarantined": false
+}

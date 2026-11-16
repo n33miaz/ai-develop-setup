@@ -76,7 +76,7 @@ Cada regra tem um código estável (`urn:ads:common:action-rule:1`), que vai no 
 
 Operação medida é apagar recursivo, limpar não rastreados e mover para dentro da pasta de quarentena. O mover entra na lista porque é nisso que um apagar vira ao ser reescrito, e o plano reescrito não diz se o apagar era recursivo: ele é tratado como o recursivo. Por isso o apagar simples, quando é reescrito para a quarentena, também é medido (com a quarentena desligada, não é).
 
-O destino de "mover" é a pasta que recebe os alvos. O que o mover cria ou substitui é `destino/nome do alvo`, e essa entrada passa pelas regras de negar junto com a pasta receptora. Alvo com curinga não diz o nome: vale qualquer filho direto do destino que o curinga possa nomear (`*` e `?`, sem diferença de caixa); por isso mover `pasta/*` para a raiz de trabalho é negado com a quarentena ligada (o curinga pode nomear a pasta da quarentena) e mover `pasta/*.log` não.
+O destino de "mover" é a pasta que recebe os alvos. O que o mover cria ou substitui é `destino/nome do alvo`, e essa entrada passa pelas regras de negar junto com a pasta receptora. Alvo com curinga não diz o nome: vale qualquer filho direto do destino que o curinga possa nomear (`*` e `?`, sem diferença de caixa), e esse filho é conferido contra as pastas reservadas e contra a pasta de **todos** os alvos do plano, a do próprio curinga inclusive. Por isso mover `tmp/*` e `out/a/*` para `out` é negado (o primeiro curinga pode criar `out/a`, sobre a qual o segundo age); mover `pasta/*` para a pasta que contém `pasta` é negado (o curinga pode nomear `pasta`); mover `pasta/*` para a raiz de trabalho com a quarentena ligada é negado (o curinga pode nomear a pasta da quarentena); e mover `pasta/*.log` não é. Na dúvida, o curinga pode nomear. Para alvo literal, a entrada é conferida nos dois sentidos: em cima de um alvo, dentro de um, ou contendo um.
 
 **O veredito é fechado depois de julgar a reescrita.** Quando o apagar vira mover para a quarentena, o plano reescrito, com o destino gerado, passa por todas as regras de um "mover" pedido, antes de o veredito sair; o veredito guarda os achados dos dois (cada um uma vez) e fica com o nível mais restritivo. Se o destino gerado for negado, o plano inteiro é negado e não é reescrito. Daí a propriedade que um teste cobra: reclassificar `veredito.plan()` dá o mesmo nível e não acha nada que o veredito já não traga.
 
@@ -84,7 +84,13 @@ O registro do plano cita toda regra que disparou, com o caminho, uma entrada por
 
 Quarentena por padrão: apagar e apagar recursivo saem do veredito reescritos como "mover para `<raiz de trabalho>/<quarantine_dir>/<16 primeiros hexadecimais do hash do plano pedido>`". É o plano reescrito que recebe o `plan_hash`, a aprovação e a execução.
 
-A política recusa na carga um `quarantine_dir` que não caiba: fora da raiz de trabalho (caminho absoluto, `..`), com nome que o Windows trata como dispositivo, ou que cairia numa pasta protegida. Como a raiz de trabalho só é conhecida no plano, a conferência da carga é sobre o texto: é recusado o subcaminho cujo começo coincide com o fim de uma pasta de sistema ou de perfis POSIX (`posix_system_dirs = ['/srv/vault']` com `quarantine_dir = 'vault/q'`) ou cujo primeiro nome é uma pasta de sistema ou de perfis do Windows. Vale também com a quarentena desligada. As regras julgam de novo o destino gerado, com a raiz de trabalho de cada plano.
+A política recusa na carga só o que dá para dizer sem a raiz de trabalho, no estilo da própria política (o da pasta do usuário):
+
+- a forma do `quarantine_dir`: relativo, sem `..`, sem componente vazio ou `.` (com a quarentena ligada ou desligada);
+- em política Windows, nome que lá não é pasta (`nul`, `com1`), ligada ou desligada;
+- em política POSIX, com a quarentena ligada, o subcaminho que alguma raiz de trabalho diferente de `/` poria dentro de uma pasta listada: a pasta de sistema ou de perfis termina onde o subcaminho começa e tem algo antes (`posix_system_dirs = ['/srv/vault']` com `quarantine_dir = 'vault/q'`, para a raiz `/srv`).
+
+Nome só compartilhado com pasta protegida do outro estilo ou do primeiro nível (`etc/q`, `home/q`, `Windows/q` numa raiz qualquer) é pasta comum e carrega. Se o destino gerado é protegido, quem diz é o julgamento da reescrita, com o estilo e a raiz de trabalho de cada plano.
 
 ### `plan_hash`
 
@@ -92,7 +98,7 @@ SHA-256 da [serialização canônica dos contratos](../../contracts/README.md#se
 
 ### Registro do plano
 
-Todo veredito vira um `urn:ads:record:action-plan:1` (`Verdict::record`, devolvido por `Action::plan`): a operação pedida, os alvos na ordem canônica, a raiz de trabalho, a estimativa, o veredito com os códigos, `quarantined` e `destination` (a pasta de quarentena quando o apagar foi reescrito; o destino pedido em "mover"). O registro só existe se cumprir o contrato inteiro, inclusive a ordem dos alvos e o `plan_hash` recalculado dos seus próprios campos; isso vale tanto para o que o núcleo monta quanto para o que ele lê. Plano que não cabe nos limites do contrato (caminho com mais de 4096 caracteres, curinga com mais de 255, mais de 10000 alvos ou de 1000 regras disparadas) não tem registro e, por isso, não vira ação nem evento.
+Todo veredito vira um `urn:ads:record:action-plan:2` (`Verdict::record`, devolvido por `Action::plan`; a `:1` é só lida, por `ActionPlanRecordV1`): a operação pedida, os alvos na ordem canônica, a raiz de trabalho, a estimativa, o veredito com os códigos, `quarantined` e `destination` (a pasta de quarentena quando o apagar foi reescrito; o destino pedido em "mover"). O registro só existe se cumprir o contrato inteiro, inclusive a ordem dos alvos e o `plan_hash` recalculado dos seus próprios campos; isso vale tanto para o que o núcleo monta quanto para o que ele lê. Plano que não cabe nos limites do contrato (caminho com mais de 4096 caracteres, curinga com mais de 255, mais de 10000 alvos ou de 1000 regras disparadas, estimativa de itens ou de bytes acima de 2^53 − 1) não tem registro e, por isso, não vira ação nem evento.
 
 ### Máquina de estados
 

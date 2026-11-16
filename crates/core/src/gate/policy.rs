@@ -63,7 +63,8 @@ pub enum PolicyError {
         error: PathError,
     },
     /// A folder name, the quarantine sub-path or the user home in a shape that is not accepted.
-    /// For `quarantine_dir`, also a sub-path that would put the quarantine in a protected folder.
+    /// For `quarantine_dir`, also a sub-path that, in the style of the policy, would put the
+    /// quarantine of some work root in a protected folder.
     Invalid {
         key: &'static str,
         value: String,
@@ -255,35 +256,40 @@ impl GatePolicy {
         Ok(policy)
     }
 
-    /// Whether the quarantine folder can sit in a work root without landing in a protected
-    /// folder. The work root is not known here, so what is checked is the sub-path against the
-    /// protected lists: a folder of a protected list that ends where the sub-path begins would
-    /// put the quarantine of some work root inside it. Checked even with quarantine turned off.
-    /// The rules judge the generated destination again, with the work root of each plan.
+    /// What can be told about the quarantine sub-path with no work root at hand, in the style
+    /// of this policy (the one of the user home) and nothing wider:
+    ///
+    /// - on Windows, a name that is not a folder there (`nul` is a device), quarantine on or
+    ///   off;
+    /// - on POSIX, with quarantine on, a sub-path that some work root other than `/` would
+    ///   put inside a listed folder: the listed folder ends where the sub-path begins and
+    ///   has something before it (`/srv/vault` and `vault/q`, for the work root `/srv`).
+    ///
+    /// A name shared with a protected folder of the other style, or of the first level only
+    /// (`etc/q` in `/work/proj`), is a common folder. Whether the generated destination is
+    /// protected is judged with each plan, in its own style and work root ([`classify`]).
+    ///
+    /// [`classify`]: super::classify::classify
     fn quarantine_fits(&self) -> bool {
         let dir = &self.quarantine_dir;
-        // Every name must be one Windows accepts as it is written (`nul` is a device there).
-        let literal = AbsPath::parse(&format!("C:\\{}", dir.join("\\")))
-            .is_ok_and(|path| path.depth() == dir.len());
-        let first_level = self
-            .windows_system_dirs
-            .iter()
-            .chain(&self.windows_user_parents)
-            .any(|name| same_name_loosely(name, &dir[0]));
-        let ends_where_it_begins = self
-            .posix_system_dirs
-            .iter()
-            .chain(&self.posix_user_parents)
-            .any(|protected| {
-                let names = protected.components();
-                (1..=dir.len().min(names.len())).any(|shared| {
-                    names[names.len() - shared..]
-                        .iter()
-                        .zip(&dir[..shared])
-                        .all(|(theirs, mine)| same_name_loosely(theirs, mine))
-                })
-            });
-        literal && !first_level && !ends_where_it_begins
+        match self.user_home.style() {
+            PathStyle::Windows => AbsPath::parse(&format!("C:\\{}", dir.join("\\")))
+                .is_ok_and(|path| path.depth() == dir.len()),
+            PathStyle::Posix if !self.quarantine_enabled => true,
+            PathStyle::Posix => !self
+                .posix_system_dirs
+                .iter()
+                .chain(&self.posix_user_parents)
+                .any(|protected| {
+                    let names = protected.components();
+                    (1..names.len().min(dir.len() + 1)).any(|shared| {
+                        names[names.len() - shared..]
+                            .iter()
+                            .zip(&dir[..shared])
+                            .all(|(theirs, mine)| same_name_loosely(theirs, mine))
+                    })
+                }),
+        }
     }
 
     pub fn user_home(&self) -> &AbsPath {
@@ -460,10 +466,8 @@ mod tests {
                 "{overrides}"
             );
         };
-        // A shipped system folder, a shipped folder of profiles, a custom one of each.
-        for dir in ["etc", "usr/q", "private/q", "home/q", "Users"] {
-            refused(&POSIX, &format!("quarantine_dir = '{dir}'"), dir);
-        }
+        // A listed folder below the first level that ends where the sub-path begins: some
+        // work root other than `/` would put the quarantine inside it.
         refused(
             &POSIX,
             "posix_system_dirs = ['/work/proj/trash']\nquarantine_dir = 'trash'",
@@ -471,35 +475,70 @@ mod tests {
         );
         refused(
             &POSIX,
+            "posix_system_dirs = ['/srv/vault/keep']\nquarantine_dir = 'Vault/KEEP/q'",
+            "Vault/KEEP/q",
+        );
+        refused(
+            &POSIX,
             "posix_user_parents = ['/srv/people']\nquarantine_dir = 'PEOPLE/q'",
             "PEOPLE/q",
         );
-        // The first level of a drive.
-        for dir in ["Windows", "program.files", "ProgramData/q", "users/q"] {
-            let listed = dir != "program.files";
-            let overrides = format!("quarantine_dir = '{dir}'");
-            assert_eq!(
-                GatePolicy::from_toml_str(&overrides, &WINDOWS).is_err(),
-                listed,
-                "{dir}"
-            );
-        }
-        // Device names of Windows, in any component.
+        // Names that are not a folder on Windows, in any component, quarantine on or off.
         for dir in ["nul", "q/con", "aux.d/q", "COM1"] {
             refused(&WINDOWS, &format!("quarantine_dir = '{dir}'"), dir);
+            let off = format!("quarantine_enabled = false\nquarantine_dir = '{dir}'");
+            refused(&WINDOWS, &off, dir);
         }
 
-        // Only a protected folder that ends where the sub-path begins is in the way.
+        // Safe: a name shared with a protected folder of the first level only (the work root
+        // would have to be `/`, which no plan gets past), or beside the protected one.
         for overrides in [
             "quarantine_dir = 'trash'",
+            "quarantine_dir = 'etc'",
+            "quarantine_dir = 'etc/q'",
+            "quarantine_dir = 'home/q'",
+            "quarantine_dir = 'Users'",
             "quarantine_dir = 'q/etc'",
             "quarantine_dir = 'etc.d/q'",
+            "quarantine_dir = 'nul'",
             "posix_system_dirs = ['/srv/vault/keep']\nquarantine_dir = 'vault/q'",
+            "posix_system_dirs = ['/srv/vault']\nquarantine_dir = 'keep/vault'",
+            // With quarantine off the sub-path is only checked for its shape.
+            "quarantine_enabled = false\nposix_system_dirs = ['/work/proj/trash']\nquarantine_dir = 'trash'",
         ] {
             assert!(
                 GatePolicy::from_toml_str(overrides, &POSIX).is_ok(),
                 "{overrides}"
             );
+        }
+        // Safe: on a Windows policy the POSIX lists say nothing, and the Windows lists name
+        // folders of the first level of a drive only.
+        for overrides in [
+            "quarantine_dir = 'etc/q'",
+            "quarantine_dir = 'home/q'",
+            "quarantine_dir = 'Windows/q'",
+            "quarantine_dir = 'users/q'",
+            "posix_system_dirs = ['/work/proj/trash']\nquarantine_dir = 'trash'",
+            "quarantine_enabled = false\nquarantine_dir = 'etc/q'",
+        ] {
+            assert!(
+                GatePolicy::from_toml_str(overrides, &WINDOWS).is_ok(),
+                "{overrides}"
+            );
+        }
+        // The shape is checked either way.
+        for bad in ["../q", "/abs", "", "a//b", "a/./b", "C:/q"] {
+            for enabled in [true, false] {
+                let overrides = format!("quarantine_enabled = {enabled}\nquarantine_dir = '{bad}'");
+                assert!(
+                    GatePolicy::from_toml_str(&overrides, &POSIX).is_err(),
+                    "{bad}"
+                );
+                assert!(
+                    GatePolicy::from_toml_str(&overrides, &WINDOWS).is_err(),
+                    "{bad}"
+                );
+            }
         }
     }
 

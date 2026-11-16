@@ -445,11 +445,10 @@ fn generated_quarantine_destination_goes_through_the_destination_rules() {
     }
 }
 
-/// The example of the review, and the load-time side of it: a quarantine configured inside a
-/// configured system folder loaded as a valid policy. (With that configuration the work root
-/// is an ancestor of a system folder, so the plan was already denied for that; what was
-/// missing is refusing the configuration.) Custom quarantine folders and custom protected
-/// folders, both styles.
+/// The load-time side of the example of the review: a quarantine configured inside a
+/// configured system folder loaded as a valid policy. What the load refuses is what can be
+/// told with no work root, in the style of the policy; a name merely shared with a protected
+/// folder of the other style, or of another root, is a common folder and loads.
 #[test]
 fn quarantine_configured_in_a_protected_folder_is_refused_at_load() {
     use ads_core::gate::{GatePolicy, HostFacts, PolicyError};
@@ -489,59 +488,153 @@ fn quarantine_configured_in_a_protected_folder_is_refused_at_load() {
         "posix_user_parents = ['/srv/people']\nquarantine_dir = 'people/q'",
         "people/q",
     );
-    refused(POSIX_HOME, "quarantine_dir = 'etc/q'", "etc/q");
-    refused(POSIX_HOME, "quarantine_dir = 'home'", "home");
-    // On Windows the protected names sit at the first level of any drive.
-    refused(WIN_HOME, "quarantine_dir = 'Windows/q'", "Windows/q");
-    refused(WIN_HOME, "quarantine_dir = 'users/q'", "users/q");
+    // A name Windows takes for a device is not a folder there, quarantine on or off.
+    refused(WIN_HOME, "quarantine_dir = 'nul'", "nul");
+    refused(WIN_HOME, "quarantine_dir = 'q/COM1.d'", "q/COM1.d");
     refused(
         WIN_HOME,
-        "windows_system_dirs = ['Vault']\nquarantine_dir = 'VAULT'",
-        "VAULT",
-    );
-    // A name Windows takes for a device is not a folder.
-    refused(WIN_HOME, "quarantine_dir = 'nul'", "nul");
-    refused(POSIX_HOME, "quarantine_dir = 'q/COM1.d'", "q/COM1.d");
-    // Checked with quarantine turned off too: the key is wrong either way.
-    refused(
-        POSIX_HOME,
-        "quarantine_enabled = false\nquarantine_dir = 'etc/q'",
-        "etc/q",
+        "quarantine_enabled = false\nquarantine_dir = 'nul'",
+        "nul",
     );
     // Outside the work root: the sub-path is relative and has no way up.
     for outside in ["../q", "q/../../x", "/abs/q", "C:/q", "q/./x", "q//x", ""] {
         let overrides = format!("quarantine_dir = '{outside}'");
         assert!(load(POSIX_HOME, &overrides).is_err(), "{outside}");
+        assert!(load(WIN_HOME, &overrides).is_err(), "{outside}");
     }
 
-    // A custom folder beside the protected ones is accepted, and it is where the rewrite goes.
-    for (overrides, dir) in [
-        ("quarantine_dir = 'trash'", "trash"),
+    // Safe configurations that share a name with a protected folder: of the other style, of
+    // the first level only (another root than the work root), beside it, or with quarantine
+    // turned off. Each loads, and the rewrite it gives is allowed and lands in the work root.
+    let cases: [(&str, &str, &str, &str); 12] = [
         (
+            POSIX_HOME,
+            "/work/proj",
+            "quarantine_dir = 'trash'",
+            "trash",
+        ),
+        (
+            POSIX_HOME,
+            "/work/proj",
+            "quarantine_dir = 'etc/q'",
+            "etc/q",
+        ),
+        (
+            POSIX_HOME,
+            "/work/proj",
+            "quarantine_dir = 'home/q'",
+            "home/q",
+        ),
+        (
+            POSIX_HOME,
+            "/work/proj",
+            "quarantine_dir = 'Windows/q'",
+            "Windows/q",
+        ),
+        (POSIX_HOME, "/work/proj", "quarantine_dir = 'nul'", "nul"),
+        (
+            POSIX_HOME,
+            "/work/proj",
+            "quarantine_dir = 'tmp/etc.d/q'",
+            "tmp/etc.d/q",
+        ),
+        (
+            POSIX_HOME,
+            "/work/proj",
             "posix_system_dirs = ['/srv/vault']\nquarantine_dir = 'q/vault'",
             "q/vault",
         ),
-        ("quarantine_dir = 'tmp/etc.d/q'", "tmp/etc.d/q"),
-    ] {
-        let policy = load(POSIX_HOME, overrides).unwrap();
-        let asked = request(Op::DeleteRecursive, "/work/proj", &["/work/proj/build"]);
+        (
+            WIN_HOME,
+            "C:\\work\\proj",
+            "quarantine_dir = 'etc/q'",
+            "etc\\q",
+        ),
+        (
+            WIN_HOME,
+            "C:\\work\\proj",
+            "quarantine_dir = 'home/q'",
+            "home\\q",
+        ),
+        (
+            WIN_HOME,
+            "C:\\work\\proj",
+            "quarantine_dir = 'Windows/q'",
+            "Windows\\q",
+        ),
+        (
+            WIN_HOME,
+            "C:\\work\\proj",
+            "quarantine_dir = 'users/q'",
+            "users\\q",
+        ),
+        (
+            WIN_HOME,
+            "D:\\work\\proj",
+            "posix_system_dirs = ['/work/proj/trash']\nquarantine_dir = 'trash'",
+            "trash",
+        ),
+    ];
+    for (home, root, overrides, dir) in cases {
+        let separator = if home == WIN_HOME { "\\" } else { "/" };
+        let policy = load(home, overrides).unwrap_or_else(|err| panic!("{overrides}: {err}"));
+        let target = format!("{root}{separator}build");
+        let asked = request(Op::DeleteRecursive, root, &[&target]);
         let verdict = classify(&ActionPlan::normalize(&asked).unwrap(), &policy);
         assert_eq!(verdict.decision(), Decision::Allowed, "{overrides}");
-        assert!(verdict.is_quarantined());
+        assert!(verdict.is_quarantined(), "{overrides}");
         let destination = verdict.plan().destination().unwrap().to_string();
         assert!(
-            destination.starts_with(&format!("/work/proj/{dir}/")),
+            destination.starts_with(&format!("{root}{separator}{dir}{separator}")),
             "{destination}"
         );
-        // The quarantine of every work root is protected as a target, wherever it sits.
-        let itself = format!("/work/proj/{dir}");
-        let asked = request(Op::DeleteRecursive, "/work/proj", &[&itself]);
+        // The quarantine of the work root is protected as a target, wherever it sits.
+        let itself = format!("{root}{separator}{dir}");
+        let asked = request(Op::DeleteRecursive, root, &[&itself]);
         let verdict = classify(&ActionPlan::normalize(&asked).unwrap(), &policy);
         assert!(verdict.has(Rule::QuarantineItself), "{overrides}");
+
+        // The same with quarantine off: it loads, and the delete is the delete.
+        let off = format!("quarantine_enabled = false\n{overrides}");
+        let policy = load(home, &off).unwrap_or_else(|err| panic!("{off}: {err}"));
+        let asked = request(Op::DeleteRecursive, root, &[&target]);
+        let verdict = classify(&ActionPlan::normalize(&asked).unwrap(), &policy);
+        assert_eq!(verdict.decision(), Decision::Allowed, "{off}");
+        assert!(!verdict.is_quarantined(), "{off}");
     }
 }
 
-/// The variant the review asked for: two entries of `allowed_roots`, one inside the other.
+/// The literal example of the review, whatever the load says about the quarantine: the work
+/// root is an ancestor of a configured system folder, so the plan is denied for the root
+/// itself. Shown with configurations that load: the default quarantine, the quarantine of
+/// the example turned off, and that system folder beside a quarantine of another name.
+#[test]
+fn work_root_that_holds_a_system_folder_denies_the_plan_by_itself() {
+    use ads_core::gate::Protection;
+    for overrides in [
+        "posix_system_dirs = ['/work/proj/trash']",
+        "posix_system_dirs = ['/work/proj/trash']\nquarantine_dir = 'trash'\nquarantine_enabled = false",
+        "posix_system_dirs = ['/work/proj/trash']\nquarantine_dir = 'bin'",
+        "posix_system_dirs = ['/work/proj/trash/deep']\nquarantine_dir = 'trash'",
+    ] {
+        let policy = policy(POSIX_HOME, overrides);
+        for operation in [Op::Delete, Op::DeleteRecursive] {
+            let asked = request(operation, "/work/proj", &["/work/proj/build"]);
+            let verdict = classify(&ActionPlan::normalize(&asked).unwrap(), &policy);
+            assert_eq!(verdict.decision(), Decision::Denied, "{overrides}");
+            assert!(
+                verdict.has(Rule::WorkRootProtected(Protection::SystemDir)),
+                "{overrides}"
+            );
+            assert!(!verdict.is_quarantined(), "{overrides}");
+            let (action, _, _) = Action::plan(id("act-01"), &verdict, meta(T0, 1)).unwrap();
+            assert_eq!(action.state(), &State::Denied);
+            assert!(action.authorize(verdict.plan(), meta(T1, 2)).is_err());
+        }
+    }
+}
+
+// The variant the review asked for: two entries of `allowed_roots`, one inside the other.
 #[test]
 fn allowed_root_nested_in_another_allowed_root_is_not_a_target() {
     let policy = policy(
