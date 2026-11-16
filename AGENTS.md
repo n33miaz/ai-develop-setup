@@ -2,12 +2,12 @@
 
 Repositório público: todo commit é permanente e visível. Este arquivo é o contrato de qualquer pessoa ou agente de IA que altere o repo. Mudança que viole uma regra abaixo volta antes de ser aceita.
 
-Estado: em construção. Ainda não há código de produto; este arquivo vale desde o primeiro commit e as camadas descritas abaixo entram com o código.
+Estado: em construção, sem versão publicada. O que cada módulo já tem e o que ainda é esqueleto está em [docs/modules.md](docs/modules.md); os riscos conhecidos e o que falta para cada um, em [docs/risks.md](docs/risks.md).
 
 ## Produto e nome
 - `ai-develop-setup` é um codinome. Identificadores de contrato usam a URN `urn:ads:<tipo>:<nome>:<versão>`, sem domínio e sem nome comercial, para o nome comercial poder mudar depois sem quebrar contratos.
 - Nenhum produto, pacote, binário, identificador, namespace de esquema ou domínio contém nome de fornecedor de IA nem sugere parceria. Nomes de fornecedores aparecem só como referência a ferramentas, em docs e adaptadores.
-- Nada pessoal nem de empregador: sem nomes de pessoas, e-mails, nomes de empresas ou de projetos privados, nem caminhos da máquina de alguém. O job `terms` do CI falha se achar algum termo de uma lista mantida fora do repo (segredo `FORBIDDEN_TERMS`); ele registra só a contagem, nunca os termos, e falha fechado se a lista não estiver disponível.
+- Nada pessoal nem de empregador: sem nomes de pessoas, e-mails, nomes de empresas ou de projetos privados, nem caminhos da máquina de alguém. O job `terms` do CI falha se achar algum termo de uma lista mantida fora do repo (segredo `FORBIDDEN_TERMS`); ele registra só a contagem, nunca os termos, e falha fechado se a lista não estiver disponível. Ele só roda com a variável de repositório `TERMS_CHECK = on`; enquanto ela não está ligada, a conferência roda localmente, antes do push.
 - Códigos internos do planejamento privado (identificadores de decisão, de tarefa ou de etapa) não aparecem em commit, branch, PR, issue, código, comentário, nome de teste nem doc público.
 - Títulos, descrições, comentários, branches e commits descrevem o assunto e o resultado da entrega, sem o histórico do processo interno de trabalho, sem códigos internos de organização e sem marcas de ferramentas nem rodapé de autoria por ferramenta. O único rastro de ferramenta permitido é o trailer de coautoria regido por `defaults/devflow.toml`. O checador de commits recusa no assunto e no nome da branch os termos e códigos listados em `defaults/devflow.toml` (`commits.process_terms`, `commits.internal_code_patterns`); detalhes em CONTRIBUTING.md, "Texto público".
 
@@ -17,8 +17,8 @@ Estado: em construção. Ainda não há código de produto; este arquivo vale de
 - `adapters/`: um por ferramenta, provedor, transporte ou cofre. Depende de `core/` e `contracts/`. Só adapta.
 - `ptyhost/`: processo estável das sessões de terminal e do replay. O núcleo reinicia sem derrubá-lo.
 - `daemon/`: composição que liga núcleo, adaptadores, HTTP e WebSocket. `shell/`: casca Tauri. `ui/`: React 19, Vite e TypeScript.
-- `defaults/`: parâmetros e regras em TOML. `tools/`: fixtures, harness e scripts. `docs/`: ADRs, mapa de módulos, riscos, guardas.
-- `docs/modules.md` mapeia cada módulo em uma frase; sem entrada, sem merge. Os nomes das pastas são propostas até um ADR em `docs/adr/` fixá-los. Esses arquivos nascem com o primeiro código.
+- `defaults/`: parâmetros e regras em TOML. `tools/`: scripts do repositório. `docs/`: ADRs, mapa de módulos, riscos, arquivos de instruções por ferramenta, guardas.
+- `docs/modules.md` mapeia cada módulo em uma frase, com o estado; sem entrada, sem merge (`python tools/check_deps.py check` reprova). Os nomes das pastas são propostas até um ADR em `docs/adr/` fixá-los.
 
 ## Princípios como regras verificáveis
 - P1 Coesão: o trabalho de um módulo cabe numa frase sem "e também". Adaptador só adapta, cofre só guarda, monitor só mede.
