@@ -170,8 +170,8 @@ jobs:
           UI_PATHS: '^(ui/|contracts/generated/|contracts/schemas/)'
           # Contratos: os Schemas e as ferramentas, os tipos Rust gerados deles e o que muda a forma como o rustfmt os escreve.
           CONTRACTS_PATHS: '^(contracts/|crates/contracts/|rust-toolchain\.toml$|rustfmt\.toml$)'
-          # PTY: o crate, os parâmetros dele, este workflow e tudo que muda o resultado da compilação.
-          PTY_PATHS: '^(crates/ptyhost/|defaults/ptyhost\.toml$|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
+          # PTY: host, cliente do daemon, contratos, parâmetros, workflow e entradas da compilação.
+          PTY_PATHS: '^(crates/ptyhost/|crates/daemon/|crates/contracts/|defaults/ptyhost\.toml$|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
           # Executor de arquivos: o crate, o portão que ele julga de novo, os parâmetros dos dois, este workflow e
           # tudo que muda o resultado da compilação.
           FS_PATHS: '^(crates/adapters/fs/|crates/core/|defaults/action-gate\.toml$|defaults/fs-executor\.toml$|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
@@ -339,7 +339,7 @@ jobs:
         run: npm run build
 
   # ConPTY real e Job Object só existem no Windows: os testes do ptyhost (com os 20 ciclos de abrir e fechar
-  # sessão) e o lint do código exclusivo do Windows rodam aqui, e só quando o código do PTY muda (ADR 0013).
+  # sessão), o cliente do daemon e o lint do código exclusivo do Windows rodam aqui (ADR 0013).
   pty-windows:
     name: pty-windows
     needs: changes
@@ -361,10 +361,14 @@ jobs:
           rustup toolchain install
           rustc --version
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - name: Lint do ptyhost no Windows (avisos como erro)
-        run: cargo clippy --locked -p ads-ptyhost --all-targets -- -D warnings
+      - name: Lint do ptyhost e do cliente no Windows (avisos como erro)
+        run: cargo clippy --locked -p ads-ptyhost -p ads-daemon --all-targets -j 2 -- -D warnings
       - name: Testes do ptyhost (inclui os 20 ciclos de ConPTY)
-        run: cargo test --locked -p ads-ptyhost -- --nocapture
+        run: cargo test --locked -p ads-ptyhost -j 2 -- --nocapture
+      - name: Compilar o binário usado pelo cliente do daemon
+        run: cargo build --locked -p ads-ptyhost -j 2
+      - name: Testes do cliente do daemon (inclui o binário real)
+        run: cargo test --locked -p ads-daemon -j 2 -- --nocapture
 
   # Junção, ponto de reanálise e a remoção de link de pasta só existem no Windows: os testes do executor de
   # arquivos rodam aqui também (no Linux eles já rodam no job `rust`), e só quando o código dele muda (ADR 0013).
