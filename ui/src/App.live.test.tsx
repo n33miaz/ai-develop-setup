@@ -1,7 +1,8 @@
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { StrictMode } from 'react'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { createFakeCoreClient } from './api'
+import { isLocalCommand } from './api/wire'
 import { App } from './App'
 import { createTranslator, I18nContext } from './i18n'
 import { sampleSessionEvents } from './sample/data'
@@ -41,5 +42,66 @@ describe('live interface', () => {
     expect(screen.getByText('No sessions.')).toBeInTheDocument()
     unmount()
     expect(client.getState()).toBe('disconnected')
+  })
+})
+
+describe('opening sessions', () => {
+  it('opens a schema-valid session and observes creation before the response', async () => {
+    const client = createFakeCoreClient()
+    const send = vi.spyOn(client, 'send').mockImplementation((command) => {
+      expect(isLocalCommand(command)).toBe(true)
+      if (command.method === 'session.open') {
+        const id = command.params.session_id as string
+        client.emit({
+          type: 'urn:ads:event:session.created:1',
+          stream: `session/${id}`,
+          data: { session_id: id, harness: 'claude', display_name: 'New session' },
+        })
+      }
+      return Promise.resolve({
+        jsonrpc: '2.0',
+        id: command.id,
+        result: { accepted: true, replayed: false },
+      })
+    })
+    render(
+      <I18nContext value={createTranslator('en')}>
+        <App client={client} live harnesses={['claude']} />
+      </I18nContext>,
+    )
+    const button = screen.getByRole('button', { name: 'Open claude' })
+    await waitFor(() => expect(button).toBeEnabled())
+    fireEvent.click(button)
+    await waitFor(() =>
+      expect(
+        screen.getByRole('region', { name: 'Terminal of session New session' }),
+      ).toBeInTheDocument(),
+    )
+    expect(send.mock.calls[0]?.[0]).toMatchObject({
+      method: 'session.open',
+      params: { harness: 'claude', workdir_alias: 'default' },
+    })
+    expect(document.activeElement?.tagName).toBe('TEXTAREA')
+  })
+  it('shows a translated warning for a server rejection', async () => {
+    const client = createFakeCoreClient()
+    vi.spyOn(client, 'send').mockImplementation((command) =>
+      Promise.resolve({
+        jsonrpc: '2.0',
+        id: command.id,
+        error: { code: -1, message: 'private server details' },
+      }),
+    )
+    const t = createTranslator('pt-BR')
+    render(
+      <I18nContext value={t}>
+        <App client={client} live harnesses={['claude']} />
+      </I18nContext>,
+    )
+    const button = screen.getByRole('button', { name: 'Abrir claude' })
+    await waitFor(() => expect(button).toBeEnabled())
+    fireEvent.click(button)
+    expect(await screen.findByRole('alert')).toHaveTextContent(t('session.commandFailed'))
+    expect(screen.queryByText('private server details')).not.toBeInTheDocument()
   })
 })

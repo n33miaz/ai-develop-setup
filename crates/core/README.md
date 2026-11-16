@@ -2,6 +2,10 @@
 
 Política do produto (tarefas, aprovações, escopo, roteamento e orçamento), sem rede, banco nem PTY.
 
+## Ambiente do processo filho (`src/child_env.rs`)
+
+Política pura do ambiente que um processo de ferramenta recebe: só passam os nomes da lista permitida que o processo pai tem, escritos como a lista os escreve, mais os valores que o produto define (`TERM`, `COLORTERM`). Nome em `allow` ou em `set` que casa com um padrão negado (`NOME`, `PREFIXO*`, `*SUFIXO`, `*TRECHO*`, sem diferença de maiúsculas) recusa a política na carga; o filtro confere de novo e o descarta. Nomes repetidos (pela regra de caixa), nomes com `=`, `*` ou controle e valores de `set` com NUL ou controle também recusam. Os erros dizem a lista e a posição, nunca o texto recusado. Padrões de nome não reconhecem um segredo sob um nome qualquer: a garantia é que nada de nome reconhecidamente sensível passa e que o que passa está todo em `allow`. Os padrões ficam em [`defaults/harnesses.toml`](../../defaults/harnesses.toml) (`[env]`): a camada do usuário substitui `allow` e `set` e só acrescenta a `deny`. A comparação com `allow` ignora maiúsculas no Windows (`NameCase::Insensitive`); com dois nomes do pai que só diferem na caixa, vale o escrito igual à lista, senão o menor. O núcleo não lê o ambiente: quem chama o passa como dado.
+
 ## Portão de ações destrutivas (`src/gate/`)
 
 Nenhuma ação sobre o sistema de arquivos é executada sem passar por aqui. O portão não toca o disco: recebe o plano como dado e responde se, e como o quê, ele pode rodar. Os tipos só se encaixam de um jeito: o pedido só vira plano pela normalização, o veredito só sai de `classify`, a ação só nasce de um veredito (a de um veredito negado já nasce no estado final) e a licença de execução só sai de uma ação cujo hash do plano e cuja aprovação conferem. O que o portão escreve (eventos e o registro do plano) segue os contratos de [`contracts/`](../../contracts/README.md#portão-de-ações), e o estado de uma ação se reconstrói só desses eventos.

@@ -1,6 +1,6 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { createRef } from 'react'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { eventByteSource, staticByteSource, type ByteSource } from './byteSource'
 import { createFakeCoreClient, encodeBase64 } from '../../api'
 import { Terminal, type TerminalHandle } from './Terminal'
@@ -101,5 +101,58 @@ describe('Terminal', () => {
     await waitFor(() => {
       expect(ref.current?.readScreen()).toBe('two')
     })
+  })
+})
+
+describe('terminal input and replay', () => {
+  it('keeps the terminal read only without an input callback', () => {
+    const { container } = render(<Terminal source={staticByteSource('')} label="t" />)
+    expect(container.querySelector('textarea')).toHaveAttribute('readonly')
+  })
+  it('sends pasted unicode and keyboard control bytes', () => {
+    const input = vi.fn<(bytes: Uint8Array) => void>()
+    const { container } = render(
+      <Terminal source={staticByteSource('')} label="t" onInput={input} />,
+    )
+    const textarea = container.querySelector('textarea')
+    if (!textarea) throw new Error('missing terminal input')
+    expect(textarea).not.toHaveAttribute('readonly')
+    fireEvent.paste(textarea, { clipboardData: { getData: () => 'olá😀' } })
+    fireEvent.keyDown(textarea, { key: 'c', keyCode: 67, ctrlKey: true })
+    expect(input.mock.calls.map(([bytes]) => [...bytes])).toEqual([
+      [...new TextEncoder().encode('olá😀')],
+      [3],
+    ])
+  })
+  it('drops historical query replies and permits live queries and typing afterwards', async () => {
+    let push: (bytes: Uint8Array, replay?: boolean) => void = () => undefined
+    const source: ByteSource = {
+      subscribe(callback) {
+        push = callback
+        return () => undefined
+      },
+    }
+    const input = vi.fn<(bytes: Uint8Array) => void>()
+    const ref = createRef<TerminalHandle>()
+    const { container } = render(<Terminal ref={ref} source={source} label="t" onInput={input} />)
+    act(() => {
+      push(new TextEncoder().encode('history\x1b[6n\x1b[c'), true)
+    })
+    await waitFor(() => {
+      expect(ref.current?.readScreen()).toBe('history')
+    })
+    expect(input).not.toHaveBeenCalled()
+    act(() => {
+      push(new TextEncoder().encode('live\x1b[6n'), false)
+    })
+    await waitFor(() => {
+      expect(input).toHaveBeenCalledOnce()
+    })
+    const textarea = container.querySelector('textarea')
+    if (!textarea) throw new Error('missing terminal input')
+    fireEvent.paste(textarea, {
+      clipboardData: { getData: () => 'hello' },
+    })
+    expect(new TextDecoder().decode(input.mock.calls.at(-1)?.[0])).toBe('hello')
   })
 })

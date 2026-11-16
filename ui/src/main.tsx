@@ -22,10 +22,33 @@ const sessionStreams =
         .filter(Boolean)
     : []
 
+const harnesses = [
+  ...new Set(
+    String(import.meta.env.VITE_CORE_HARNESSES ?? '')
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean),
+  ),
+]
+
+const workdir = String(import.meta.env.VITE_CORE_WORKDIR ?? 'default')
+
+const configuredDebounce = Number(import.meta.env.VITE_CORE_RESIZE_DEBOUNCE_MS ?? 150)
+
+const resizeDebounceMs =
+  Number.isFinite(configuredDebounce) && configuredDebounce >= 0 ? configuredDebounce : 150
+
 createRoot(root).render(
   <StrictMode>
     <I18nContext value={createTranslator(locale)}>
-      <App client={client} live={live} sessionStreams={sessionStreams} />
+      <App
+        client={client}
+        live={live}
+        sessionStreams={sessionStreams}
+        harnesses={harnesses}
+        workdir={workdir}
+        resizeDebounceMs={resizeDebounceMs}
+      />
     </I18nContext>
   </StrictMode>,
 )

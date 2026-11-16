@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { createFakeCoreClient, encodeBase64 } from '../../api'
 import { eventByteSource } from './byteSource'
 
@@ -40,4 +40,28 @@ describe('event byte source', () => {
       eventByteSource(createFakeCoreClient(), 'session/session-a').subscribe(() => undefined),
     ).not.toThrow()
   })
+})
+
+it('classifies ordered events relative to the subscription instant', async () => {
+  vi.useFakeTimers()
+  try {
+    vi.setSystemTime(1000)
+    const client = createFakeCoreClient()
+    await client.connect()
+    const output = {
+      type: 'urn:ads:event:session.output:1',
+      stream: 'session/s-a',
+      data: { session_id: 's-a', payload: 'YQ==', length: 1, offset: 0 },
+    }
+    client.emit(output)
+    vi.setSystemTime(2000)
+    const historical: (boolean | undefined)[] = []
+    eventByteSource(client, output.stream).subscribe((_bytes, replay) => historical.push(replay))
+    client.emit(output)
+    vi.setSystemTime(2001)
+    client.emit(output)
+    expect(historical).toEqual([true, true, false])
+  } finally {
+    vi.useRealTimers()
+  }
 })

@@ -21,11 +21,11 @@ limitados em memória; `pty_client` transporta o contrato público do host;
 | `ads-shell` | `crates/shell` | Casca Tauri (janela, bandeja e painel) como cliente fino do núcleo. | Esqueleto: janela vazia que carrega a interface e ícone de bandeja. |
 | `ads-e2e` | `crates/e2e` | Sessão cifrada de ponta a ponta do transporte remoto, para o PC e a PWA. | Esqueleto. |
 | `ads-adapter-claude` | `crates/adapters/claude` | Adapta a ferramenta de linha de comando Claude ao contrato do núcleo. | Esqueleto. |
-| `ads-adapter-codex` | `crates/adapters/codex` | Adapta a ferramenta de linha de comando Codex ao contrato do núcleo. | Esqueleto. |
+| `ads-adapter-codex` | `crates/adapters/codex` | Monta os parâmetros de abertura de terminal para a ferramenta Codex. | Implementado: configuração em camadas, ambiente filtrado pelo núcleo e validação de abertura com testes. |
 | `ads-adapter-antigravity` | `crates/adapters/antigravity` | Adapta a ferramenta de linha de comando Antigravity ao contrato do núcleo. | Esqueleto. |
 | `ads-adapter-api` | `crates/adapters/api` | Adapta as chamadas diretas às APIs de provedores ao contrato do núcleo. | Esqueleto. |
 | `ads-adapter-vault` | `crates/adapters/vault` | Adapta o cofre de segredos do sistema operacional ao contrato do núcleo. | Esqueleto. |
 | `ads-adapter-collectors` | `crates/adapters/collectors` | Coleta, só em leitura, os dados de uso das ferramentas. | Esqueleto. |
 | `ads-adapter-relay` | `crates/adapters/relay` | Adapta o transporte do relé remoto ao contrato do núcleo. | Esqueleto; só os Schemas do relé existem. |
 | `ads-adapter-fs` | `crates/adapters/fs` | Executa no sistema de arquivos, dentro de uma cerca, as ações que o portão do núcleo licenciou. | Implementado e testado, ainda não chamado por nenhum módulo ([README](../crates/adapters/fs/README.md)). |
-| `ads-ui` | `ui` | Interface web, cliente fino do núcleo: mostra o estado que os eventos recebidos descrevem. | Tela com barra lateral e terminal e o cliente da API local, usado quando recebe a URL com o token; sem ela, mostra dados de exemplo ([README da raiz](../README.md#interface-e-conexão-local); sem README próprio). Entrada e redimensionamento do terminal ainda não. |
+| `ads-ui` | `ui` | Interface web, cliente fino do núcleo: mostra o estado que os eventos recebidos descrevem. | Tela com barra lateral e terminal e o cliente da API local, usado quando recebe a URL com o token; sem ela, mostra dados de exemplo ([README da raiz](../README.md#interface-e-conexão-local); sem README próprio). Entrada, redimensionamento com debounce e abertura por ferramenta configurada implementados na interface. |

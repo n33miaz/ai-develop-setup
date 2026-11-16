@@ -1,5 +1,6 @@
 //! Policy: tasks, approvals, scope, routing and budget.
 
+pub mod child_env;
 pub mod gate;
 
 /// Package name as declared in the manifest.

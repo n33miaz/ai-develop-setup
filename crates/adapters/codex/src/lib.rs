@@ -1,4 +1,14 @@
-//! Adapter for the Codex command-line tool.
+//! Adapter for the Codex command-line tool: builds the terminal host's open parameters from the
+//! user's configuration, never from the request.
+
+pub mod config;
+pub mod launch;
+
+pub use config::{CodexConfig, ConfigError, Mode};
+pub use launch::{DiskProbe, LaunchError, Probe, open_params, process_env};
+
+/// The tool identifier a session request uses to pick this adapter.
+pub const HARNESS_ID: &str = "codex";
 
 /// Package name as declared in the manifest.
 pub const fn crate_name() -> &'static str {
