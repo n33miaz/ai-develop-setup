@@ -1,6 +1,6 @@
 # Contratos
 
-Fonte única de toda mensagem e todo registro do produto: JSON Schema 2020-12, um arquivo por contrato, com exemplos dourados que o CI confere. Módulos só conversam por estes contratos (P2). Os tipos de TypeScript saem daqui por geração; nenhum tipo de mensagem é escrito à mão.
+Fonte única de toda mensagem e todo registro do produto: JSON Schema 2020-12, um arquivo por contrato, com exemplos dourados que o CI confere. Módulos só conversam por estes contratos (P2). Os tipos de TypeScript e de Rust saem daqui por geração; nenhum tipo de mensagem é escrito à mão.
 
 ## Pastas
 
@@ -10,7 +10,8 @@ Fonte única de toda mensagem e todo registro do produto: JSON Schema 2020-12, u
 | `golden/<tipo>.<nome>.v<versão>/valid/` | Exemplos que têm de passar (pelo menos 2) |
 | `golden/<tipo>.<nome>.v<versão>/invalid/` | Exemplos que têm de falhar (pelo menos 3), mais `index.json` |
 | `generated/ts/` | Tipos TypeScript gerados, versionados; o CI reprova se estiverem desatualizados. A interface os importa por `ui/src/api/contracts.ts` |
-| `tools/` | Validador, gerador, regras entre campos (`rules.mjs`) e os testes deles |
+| `../crates/contracts/src/generated/` | Tipos Rust gerados (crate `ads-contracts`), versionados; o CI reprova se estiverem desatualizados. Como cada parte do Schema vira tipo está no [README do crate](../crates/contracts/README.md) |
+| `tools/` | Validador, geradores (`gen-ts.mjs`, `gen-rust.mjs`), regras entre campos (`rules.mjs`) e os testes deles |
 
 ## Comandos
 
@@ -19,9 +20,12 @@ cd contracts
 npm ci
 npm run validate   # Schemas válidos, referências resolvidas, URNs únicas, dourados no lugar
 npm run gen:ts     # regera generated/ts
-npm run gen:check  # reprova se generated/ts não for o que o gerador produz agora
-npm test           # testes do próprio validador e do gerador
+npm run gen:rust   # regera ../crates/contracts/src/generated
+npm run gen:check  # reprova se os tipos gerados (TypeScript e Rust) não forem o que os geradores produzem agora
+npm test           # testes do próprio validador e dos geradores
 ```
+
+O gerador de Rust passa a saída pelo `rustfmt` da versão fixada em `rust-toolchain.toml`, então `gen:rust`, `gen:check` e `npm test` precisam do Rust instalado. Ele para com erro diante de palavra-chave ou expressão regular que não sabe traduzir, em vez de gerar um tipo mais frouxo que o Schema, e nunca apaga arquivo: módulo que sobrou de um Schema removido é acusado e sai pelo nome. Cada dourado é conferido também contra os tipos Rust (`cargo test -p ads-contracts`): o válido tem de ir e voltar igual, o inválido tem de ser recusado.
 
 Os testes montam árvores de contratos de mentira em `.test-tmp/` (fora do git), uma subpasta nova por execução, e não apagam nada: a limpeza dessa pasta é manual.
 
@@ -57,7 +61,7 @@ A versão é a versão **maior** do contrato. Nome: minúsculas, dígitos, `_` e
 3. Evento novo: estenda o envelope com `allOf` e fixe `type` (a própria URN), `stream` e `data` (veja qualquer `event.*`).
 4. Crie `golden/<tipo>.<nome>.v1/valid/` com pelo menos 2 arquivos e `invalid/` com pelo menos 3. Cada inválido muda **um campo só** de um válido e ganha uma entrada em `invalid/index.json`: `rule` (a regra violada, em português), `keyword` e `instancePath` do erro esperado e, se quiser, `params`.
 5. Acrescente uma linha na tabela abaixo e uma entrada no CHANGELOG.
-6. `npm run gen:ts`, depois `npm run validate` e `npm test`. Inclua `generated/ts` no mesmo commit.
+6. `npm run gen:ts` e `npm run gen:rust`, depois `npm run validate`, `npm test` e `cargo test -p ads-contracts`. Inclua `generated/ts` e `crates/contracts/src/generated` no mesmo commit.
 
 Dados dos dourados são sempre sintéticos: sem nomes reais, e-mails, caminhos de máquina nem valores que lembrem credencial.
 

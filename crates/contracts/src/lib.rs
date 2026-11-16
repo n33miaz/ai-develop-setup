@@ -1,16 +1,10 @@
-//! Message and event types generated from the schemas; no logic.
+//! Message and event types generated from the schemas, valid by construction.
+//!
+//! `generated/` comes from `contracts/schemas` (`npm run gen:rust` in `contracts/`) and is never
+//! edited by hand; `support` is the small hand-written part the generated types lean on.
 
-/// Package name as declared in the manifest.
-pub const fn crate_name() -> &'static str {
-    env!("CARGO_PKG_NAME")
-}
+pub mod generated;
+pub mod support;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn crate_name_matches_manifest() {
-        assert_eq!(crate_name(), "ads-contracts");
-    }
-}
+pub use generated::*;
+pub use support::ContractError;

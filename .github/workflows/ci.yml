@@ -168,7 +168,8 @@ jobs:
           SHELL_PATHS: '^(crates/shell/|crates/contracts/|crates/e2e/|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
           # Interface: ela mesma e o que ela lê dos contratos (tipos gerados e os Schemas do teste de contrato).
           UI_PATHS: '^(ui/|contracts/generated/|contracts/schemas/)'
-          CONTRACTS_PATHS: '^contracts/'
+          # Contratos: os Schemas e as ferramentas, os tipos Rust gerados deles e o que muda a forma como o rustfmt os escreve.
+          CONTRACTS_PATHS: '^(contracts/|crates/contracts/|rust-toolchain\.toml$|rustfmt\.toml$)'
           # PTY: o crate, os parâmetros dele, este workflow e tudo que muda o resultado da compilação.
           PTY_PATHS: '^(crates/ptyhost/|defaults/ptyhost\.toml$|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
           # Executor de arquivos: o crate, o portão que ele julga de novo, os parâmetros dos dois, este workflow e
@@ -227,11 +228,17 @@ jobs:
           cache-dependency-path: contracts/package-lock.json
       - name: Instalar as dependências fixadas
         run: npm ci --ignore-scripts
-      - name: Testes do validador e do gerador
+      # O gerador dos tipos Rust formata a saída com o rustfmt da versão fixada em rust-toolchain.toml.
+      - name: Instalar o rustfmt da versão fixada
+        working-directory: .
+        run: |
+          rustup toolchain install
+          rustfmt --version
+      - name: Testes do validador e dos geradores
         run: npm test
       - name: Schemas, URNs e arquivos dourados
         run: npm run validate
-      - name: Tipos gerados em dia
+      - name: Tipos gerados em dia (TypeScript e Rust)
         run: npm run gen:check
 
   rust:
