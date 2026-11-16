@@ -1,0 +1,101 @@
+# Parametros das ferramentas de linha de comando que o produto abre num terminal (P8). Lido pelos
+# adaptadores de ferramenta (`ads-adapter-claude`; embutido na compilacao como padrao). O arquivo do
+# usuario, com o caminho real de cada programa e as pastas, fica FORA do repositorio e sobrepoe este.
+#
+# O que NAO e parametro, porque vale sempre: quem pede a sessao escolhe so a ferramenta (pelo nome), o
+# apelido da pasta e o tamanho; nunca programa, argumento, variavel de ambiente nem pasta. O filho nao
+# herda nada do processo pai alem do que [env] deixa passar.
+
+# Ambiente do processo filho. A comparacao com `allow` ignora maiusculas no Windows; com `deny`, sempre.
+[env]
+
+# Variaveis copiadas do processo pai, se existirem. A camada do usuario SUBSTITUI a lista.
+# Padrao: o minimo para um programa do Windows achar o sistema, o PATH, a pasta do usuario e a
+# temporaria. Nada de credencial: o login de cada ferramenta fica com ela, fora do produto.
+allow = [
+  "SystemRoot",
+  "windir",
+  "ComSpec",
+  "PATH",
+  "PATHEXT",
+  "USERPROFILE",
+  "APPDATA",
+  "LOCALAPPDATA",
+  "HOMEDRIVE",
+  "HOMEPATH",
+  "TEMP",
+  "TMP",
+]
+
+# Nomes que nunca passam. `NOME` exato, `PREFIXO*`, `*SUFIXO` ou `*TRECHO*`; sem diferenca de
+# maiusculas. Nome em `allow` ou em `env.set` que case com um destes e recusado na carga. Esta lista so
+# cresce: a camada do usuario ACRESCENTA padroes, nunca tira.
+# Cobre o nome de credenciais (chave, token, segredo, senha), o nome de variaveis que APONTAM para elas
+# (`*_TOKEN_FILE`, `*_KEY_FILE`, `*_CREDENTIALS`) e a configuracao de login das ferramentas e provedores
+# (`CLAUDE_CONFIG_DIR`, `GOOGLE_APPLICATION_CREDENTIALS`). Um padrao de nome nao reconhece um segredo
+# guardado sob um nome qualquer: o que passa e so o que esta em `allow`, revisavel neste lugar.
+deny = [
+  # Credenciais pelo nome, em qualquer posicao.
+  "*TOKEN*",
+  "*SECRET*",
+  "*PASSWORD*",
+  "*PASSWD*",
+  "*CREDENTIAL*",
+  "*API_KEY*",
+  "*APIKEY*",
+  "*PRIVATE_KEY*",
+  "*_KEY",
+  "*_KEY_FILE",
+  "*_KEYS",
+  "*_PAT",
+  "*_PAT_*",
+  "*_AUTH*",
+  "*_PASS*",
+  "*_SESSION*",
+  "*_COOKIE*",
+  # Ferramentas e provedores: login, configuracao de login e chaves.
+  "ANTHROPIC_*",
+  "CLAUDE_*",
+  "OPENAI_*",
+  "CODEX_*",
+  "GEMINI_*",
+  "GOOGLE_*",
+  "GCLOUD_*",
+  "CLOUDSDK_*",
+  "VERTEX_*",
+  "AWS_*",
+  "AZURE_*",
+  "GH_*",
+  "GITHUB_*",
+  "COPILOT_*",
+  "MISTRAL_*",
+  "COHERE_*",
+  "GROQ_*",
+  "OPENROUTER_*",
+  "HF_*",
+  "HUGGING_FACE_*",
+]
+
+# Valores que o proprio produto define (nao vem do pai). A camada do usuario SUBSTITUI a tabela.
+# Nenhum pode casar com `deny`.
+[env.set]
+TERM = "xterm-256color"
+COLORTERM = "truecolor"
+
+# Pastas de trabalho por apelido: `apelido = "caminho absoluto"`. Quem pede a sessao manda so o
+# apelido; apelido que nao esta aqui e recusado. A camada do usuario ACRESCENTA ou troca apelidos.
+# Apelido: letras, digitos e . _ : -, ate 64 caracteres. Padrao vazio: nenhuma pasta.
+[workdirs]
+
+# Uma tabela por ferramenta. Cada adaptador le so a sua.
+[tools.claude]
+
+# Caminho ABSOLUTO do programa, que precisa existir quando a sessao abre. Vazio (padrao): ferramenta
+# desligada. Caminho relativo, com variavel (`%VAR%`, `$VAR`), `~` ou `..` e recusado.
+program = ""
+
+# Argumentos fixos passados ao programa, sempre os mesmos. Padrao vazio.
+args = []
+
+# Modo de uso. So `interactive` (terminal operado pela pessoa) e aceito por enquanto.
+mode = "interactive"
