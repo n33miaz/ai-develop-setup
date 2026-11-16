@@ -5,6 +5,7 @@ use std::fmt;
 use std::num::NonZeroU64;
 
 use ads_ptyhost::HostConfig;
+use ads_ptyhost::channel::{self, ConnectError};
 use ads_ptyhost::wire::{
     self, Call, Frame, HelloParams, HostMessage, Notification, Request, ResultBody,
 };
@@ -23,6 +24,8 @@ pub enum ClientError {
         data: Option<ErrorData>,
     },
     Transport,
+    /// The channel is not served by the current user; nothing was sent to it.
+    NotOwnedByUser,
     Protocol,
     Disconnected,
     Capacity,
@@ -36,6 +39,7 @@ impl fmt::Display for ClientError {
             Self::Host { code, .. } => write!(f, "pty host refused request ({})", code.number()),
             other => f.write_str(match other {
                 Self::Transport => "pty channel failed",
+                Self::NotOwnedByUser => "pty channel is not served by the current user",
                 Self::Protocol => "invalid pty host message",
                 Self::Disconnected => "pty client disconnected",
                 Self::Capacity => "pty client capacity exceeded",
@@ -98,15 +102,14 @@ impl Drop for PtyClient {
 
 impl PtyClient {
     pub async fn connect(host: &HostConfig, config: ClientConfig) -> Result<Self, ClientError> {
-        let endpoint = ads_ptyhost::channel::endpoint(host).map_err(|_| ClientError::Transport)?;
-        #[cfg(windows)]
-        let stream = tokio::net::windows::named_pipe::ClientOptions::new()
-            .open(endpoint)
-            .map_err(|_| ClientError::Transport)?;
-        #[cfg(unix)]
-        let stream = tokio::net::UnixStream::connect(endpoint)
+        let endpoint = channel::endpoint(host).map_err(|_| ClientError::Transport)?;
+        // On Windows the channel checks who serves the pipe before handing the stream over.
+        let stream = channel::connect(&endpoint)
             .await
-            .map_err(|_| ClientError::Transport)?;
+            .map_err(|error| match error {
+                ConnectError::NotOwnedByUser => ClientError::NotOwnedByUser,
+                ConnectError::Unavailable(_) => ClientError::Transport,
+            })?;
         Self::over(stream, config).await
     }
 

@@ -7,13 +7,13 @@ Processo estável que segura as sessões de terminal e o anel de replay.
 | Arquivo | O que faz |
 |---|---|
 | `src/wire.rs` | Contrato `pty-host/1`: codec do quadro e tipos das mensagens. As formas JSON são os tipos gerados de `ads-contracts`, reexportados com os nomes do host; ficam escritos aqui o quadro binário, a escolha do erro JSON-RPC de um pedido malformado e as conversões onde o host guarda o valor de outra forma (ver [`swap-map.md`](../contracts/swap-map.md)). Conferido contra os arquivos dourados de `contracts/golden/` e contra os bytes fixados em `tests/wire_bytes.rs`. Só este arquivo conhece o layout de bytes e os nomes dos campos JSON. |
-| `src/channel.rs` | Canal local: named pipe no Windows, socket Unix nos demais, aberto só para o usuário atual. |
+| `src/channel.rs` | Canal local: named pipe no Windows, socket Unix nos demais, aberto só para o usuário atual. Também o lado do cliente (`connect`), que no Windows só entrega a conexão depois de confirmar que o pipe é servido pelo usuário atual. |
 | `src/server.rs` | Servidor do contrato: uma tarefa por cliente, sessões compartilhadas por todos e independentes de qualquer conexão. |
 | `src/types.rs` | Tipos internos da sessão (`Seq`, `OutputChunk`, `SpawnSpec`, erros). O nome da sessão (`SessionId`) vem de `wire.rs`: é opaco e escolhido pelo cliente. |
 | `src/backend.rs` | Traço `PtyBackend`: a costura entre a sessão e quem fornece o terminal. |
 | `src/portable.rs` | Backend real, sobre `portable-pty` (ConPTY no Windows). Só este arquivo cita a biblioteca. |
 | `src/fake.rs` | Backend falso, determinístico e sem processo real, para os testes. |
-| `src/win.rs` | Chamadas do Windows: o Job Object que encerra a árvore de processos, o named pipe restrito ao usuário e as sondas de processo, de handle e de lista de acesso. Todo `unsafe` do crate fica aqui. |
+| `src/win.rs` | Chamadas do Windows: o Job Object que encerra a árvore de processos, o named pipe restrito ao usuário, a conferência de quem serve um pipe e as sondas de processo, de handle e de lista de acesso. Todo `unsafe` do crate fica aqui. |
 | `src/replay.rs` | Anel de replay: pedaços de saída numerados por `seq`, limitado em bytes. |
 | `src/session.rs`, `src/host.rs` | Sessão (bombeia a saída para o anel e para os assinantes) e o conjunto de sessões abertas. |
 
@@ -26,6 +26,7 @@ Os parâmetros e seus padrões estão em [`defaults/ptyhost.toml`](../../default
 O canal é do usuário e de mais ninguém:
 
 - Windows: named pipe `\\.\pipe\<channel_name>.<SID do usuário>`. A lista de acesso do pipe tem uma entrada só, a do usuário que roda o processo; clientes remotos são recusados; e o processo não sobe se já existir um pipe com esse nome (ninguém se põe no lugar dele).
+- Do lado do cliente (Windows): qualquer usuário da máquina pode criar um pipe com esse nome antes de o host subir. Por isso `channel::connect` abre o pipe e, antes de entregar a conexão (portanto antes de qualquer byte, inclusive o `host.hello`), confere duas coisas: o processo que serve o pipe (`GetNamedPipeServerProcessId`) roda como o usuário atual, lido do token dele; e o dono do objeto do pipe, posto por quem criou o nome, é o usuário atual ou o dono padrão do token dele (o grupo de administradores, num processo elevado com essa política). As duas precisam passar, e falha em qualquer chamada é recusa: o número de processo pode ser reaproveitado depois que o servidor sai, e o dono do objeto não diz quem segura o lado servidor agora. Abrir o processo ou o token de outro usuário é negado a uma conta comum, o que também vira recusa.
 - Demais sistemas: socket `$XDG_RUNTIME_DIR/<channel_name>.sock` com modo `0600`. Um arquivo de socket deixado por uma execução que caiu é substituído; qualquer outra coisa no caminho impede a subida.
 
 ## Regras do contrato
@@ -60,3 +61,6 @@ O contrato está em [`contracts/README.md`](../../contracts/README.md). O que es
 - Um cliente conectado que para de ler não segura memória além da fila dele (`subscriber_queue_chunks`), mas a conexão fica aberta até ele sair.
 - Não há teto para o número de conexões nem de assinaturas vivas ao mesmo tempo, nem prazo para um pedido que espera pelo terminal: um terminal que nunca responde segura a conexão que pediu e uma thread de trabalho até a sessão ser encerrada.
 - Fora do Windows, sem `XDG_RUNTIME_DIR` o processo só sobe com `channel_path` preenchido.
+- Fora do Windows, o cliente não confere quem serve o socket: a proteção é a pasta `XDG_RUNTIME_DIR`, só do usuário. Com `channel_path` apontando para outro lugar, quem escolhe o caminho responde por ele.
+- A recusa de um pipe servido por outro usuário não tem teste com duas contas. Os testes conferem a decisão com identificadores sintéticos, o pipe do próprio host passando, e a recusa por uma sonda injetada e por um arquivo comum no lugar do pipe (abre, mas ninguém o serve), sempre sem nenhum byte enviado. Um administrador da máquina passa por qualquer uma dessas conferências e está fora do que elas protegem.
+- Um host iniciado elevado (de um terminal de administrador) pode dar o pipe ao grupo de administradores; um cliente não elevado do mesmo usuário recusa esse pipe, porque o dono padrão dele é o próprio usuário. Host e cliente precisam rodar no mesmo nível.

@@ -40,6 +40,68 @@ fn default_endpoint(name: &str) -> io::Result<String> {
     }
 }
 
+/// The stream of a client connected to the channel.
+#[cfg(windows)]
+pub type ClientStream = tokio::net::windows::named_pipe::NamedPipeClient;
+#[cfg(unix)]
+pub type ClientStream = tokio::net::UnixStream;
+
+/// Why a client could not use the channel.
+#[derive(Debug)]
+pub enum ConnectError {
+    /// Nothing answers at the endpoint, or it could not be opened.
+    Unavailable(io::Error),
+    /// Something answers, but it is not served by the current user; nothing was sent to it.
+    NotOwnedByUser,
+}
+
+impl std::fmt::Display for ConnectError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Unavailable(_) => "the channel is not available",
+            Self::NotOwnedByUser => "the channel is not served by the current user",
+        })
+    }
+}
+
+impl std::error::Error for ConnectError {}
+
+/// Connects to the channel at `endpoint` as a client. On Windows the stream is handed over only
+/// after confirming that the current user serves the pipe (`win::check_pipe_server`): anyone can
+/// create a pipe with this name before the host starts.
+/// Must be called inside a Tokio runtime with I/O enabled.
+#[cfg(windows)]
+pub async fn connect(endpoint: &str) -> Result<ClientStream, ConnectError> {
+    connect_checked(endpoint, crate::win::check_pipe_server)
+}
+
+/// Connects to the channel at `endpoint` as a client.
+/// Must be called inside a Tokio runtime with I/O enabled.
+#[cfg(unix)]
+pub async fn connect(endpoint: &str) -> Result<ClientStream, ConnectError> {
+    tokio::net::UnixStream::connect(endpoint)
+        .await
+        .map_err(ConnectError::Unavailable)
+}
+
+/// `connect` with the check of who serves the pipe given by the caller, so tests can refuse a
+/// pipe. Passing a check that always succeeds removes the protection: use `connect`.
+#[cfg(windows)]
+#[doc(hidden)]
+pub fn connect_checked(
+    endpoint: &str,
+    check: impl FnOnce(std::os::windows::io::RawHandle) -> io::Result<()>,
+) -> Result<ClientStream, ConnectError> {
+    use std::os::windows::io::AsRawHandle;
+
+    let stream = tokio::net::windows::named_pipe::ClientOptions::new()
+        .open(endpoint)
+        .map_err(ConnectError::Unavailable)?;
+    // Dropping the stream on refusal closes the pipe before a single byte goes through it.
+    check(stream.as_raw_handle()).map_err(|_| ConnectError::NotOwnedByUser)?;
+    Ok(stream)
+}
+
 #[cfg(windows)]
 pub struct Listener {
     endpoint: String,
@@ -183,6 +245,79 @@ mod tests {
         check(&accepted);
         check(&listener.next);
         drop(client);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn client_accepts_the_pipe_of_its_own_host() {
+        use std::os::windows::io::AsRawHandle;
+
+        let listener = Listener::bind(&test_endpoint("own")).unwrap();
+        let client = connect(listener.endpoint()).await.unwrap();
+        let local = crate::win::local_user().unwrap();
+        let server = crate::win::pipe_server(client.as_raw_handle()).unwrap();
+        assert_eq!(server.process_user, local.user);
+        assert!(
+            server.object_owner == local.user || server.object_owner == local.default_owner,
+            "{server:?} {local:?}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn refused_check_closes_the_pipe_before_any_byte() {
+        use tokio::io::AsyncReadExt;
+
+        let endpoint = test_endpoint("refused");
+        let sid = crate::win::current_user_sid().unwrap();
+        let mut server = crate::win::create_user_pipe(&endpoint, &sid, true).unwrap();
+        let mut checked = false;
+        let result = connect_checked(&endpoint, |_| {
+            checked = true;
+            Err(io::Error::from(io::ErrorKind::PermissionDenied))
+        });
+        assert!(checked);
+        assert!(
+            matches!(result, Err(ConnectError::NotOwnedByUser)),
+            "{result:?}"
+        );
+
+        // The client end is already closed: the server sees the pipe end with no data.
+        let mut byte = [0_u8; 1];
+        let read = async {
+            server.connect().await?;
+            server.read(&mut byte).await
+        };
+        let read = tokio::time::timeout(std::time::Duration::from_secs(5), read)
+            .await
+            .expect("the refused client left the pipe open");
+        assert!(matches!(read, Ok(0) | Err(_)), "{read:?}");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn something_at_the_endpoint_that_is_not_a_pipe_is_refused_untouched() {
+        // The closest the test gets to a stranger's server without a second account: the
+        // endpoint opens, but nobody can be shown to serve it.
+        let path =
+            std::env::temp_dir().join(format!("ads-ptyhost-not-a-pipe-{}", std::process::id()));
+        std::fs::write(&path, b"").unwrap();
+        let result = connect(path.to_str().unwrap()).await;
+        let refused = matches!(result, Err(ConnectError::NotOwnedByUser));
+        drop(result);
+        // The runtime closes the handle once it has seen the end of its pending read.
+        let mut written = std::fs::read(&path);
+        for _ in 0..100 {
+            if written.is_ok() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            written = std::fs::read(&path);
+        }
+        let written = written.unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert!(refused);
+        assert!(written.is_empty());
     }
 
     #[cfg(windows)]
