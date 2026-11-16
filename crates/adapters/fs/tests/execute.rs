@@ -1014,7 +1014,7 @@ fn a_link_swapped_into_the_destination_is_caught_before_the_move() {
 #[cfg(not(windows))]
 #[test]
 fn a_quarantine_inside_a_protected_folder_is_refused() {
-    use ads_core::gate::{ActionPlan, Decision, PlanRequest, TargetRequest, classify};
+    use ads_core::gate::{GatePolicy, HostFacts, PolicyError};
 
     let sandbox = Sandbox::new("protecteddest");
     sandbox.file("work/build/out.txt", "text");
@@ -1023,25 +1023,16 @@ fn a_quarantine_inside_a_protected_folder_is_refused() {
         sandbox.text("work/trash")
     );
     let before = tree(&sandbox.root);
-    let plan = ActionPlan::normalize(&PlanRequest {
-        operation: OperationRequest::DeleteRecursive,
-        targets: vec![TargetRequest {
-            path: sandbox.text("work/build"),
-            repo_root: false,
-        }],
-        work_root: sandbox.work_root(),
-        estimate: estimate(50, 4096),
-    })
-    .unwrap();
-    // A gate that judges the rewritten destination denies by itself; one that does not hands
-    // out a permit, and then the executor has to refuse it.
-    if classify(&plan, &sandbox.policy(&overrides)).decision() != Decision::Denied {
-        let flow = through_gate(
-            &sandbox.policy(&overrides),
-            delete(&sandbox, "act-1", &["work/build"]),
-        );
-        let (outcome, _) = execute(&mut sandbox.executor(&overrides), flow);
-        assert_eq!(outcome.unwrap_err().reason, Reason::PolicyDenies);
-    }
+    // The policy itself refuses this configuration when it is loaded: with no policy there is
+    // no gate and no executor, so it never gets as far as a plan.
+    let home = sandbox.text("fake-home");
+    let loaded = GatePolicy::from_toml_str(&overrides, &HostFacts { user_home: &home });
+    assert_eq!(
+        loaded,
+        Err(PolicyError::Invalid {
+            key: "quarantine_dir",
+            value: "trash".to_owned()
+        })
+    );
     assert_eq!(tree(&sandbox.root), before);
 }
