@@ -29,6 +29,12 @@ fn sys_moves_by_handle() -> bool {
     cfg!(windows)
 }
 
+/// Where the creation of a folder gives the identity of what it made (Windows), the holding
+/// folder of an execution is removed at its end. Elsewhere it is left, and reported as made.
+fn clears_holding() -> bool {
+    cfg!(windows)
+}
+
 fn append(path: &Path, text: &str) -> io::Result<()> {
     fs::OpenOptions::new()
         .append(true)
@@ -469,30 +475,37 @@ fn a_tree_is_removed_in_its_holding_folder_and_every_folder_is_confirmed() {
     let done = run(&mut executor, flow).unwrap();
     assert_eq!(done.report.steps[0].status, Status::Done);
     assert_eq!(*moves.borrow(), [pair("work/tree", "act-1/0")]);
-    assert_eq!(
-        pairs(&log),
-        [
-            pair("remove", "0/a.txt"),
-            pair("remove", "sub/b.txt"),
-            pair("remove", "sub/c.txt"),
-            pair("sync", "0/sub"),
-            pair("remove", "0/sub"),
-            pair("sync", "act-1/0"),
-            pair("remove", "act-1/0"),
-            pair("sync", "tmp/act-1"),
-            // The holding folder itself, made for this execution, goes at the end.
-            pair("remove", "tmp/act-1"),
-            pair("sync", ".ads/tmp"),
-        ]
-    );
+    let mut expected = vec![
+        pair("remove", "0/a.txt"),
+        pair("remove", "sub/b.txt"),
+        pair("remove", "sub/c.txt"),
+        pair("sync", "0/sub"),
+        pair("remove", "0/sub"),
+        pair("sync", "act-1/0"),
+        pair("remove", "act-1/0"),
+        pair("sync", "tmp/act-1"),
+    ];
+    if clears_holding() {
+        // The holding folder itself, made for this execution, goes at the end.
+        expected.extend([pair("remove", "tmp/act-1"), pair("sync", ".ads/tmp")]);
+    }
+    assert_eq!(pairs(&log), expected);
     let cleared = done
         .report
         .staging
         .iter()
         .find(|staged| Path::new(&staged.path) == holding)
         .unwrap();
-    assert_eq!(cleared.status, Laid::Cleared);
-    assert!(tree(&sandbox.path(private)).is_empty());
+    if clears_holding() {
+        assert_eq!(cleared.status, Laid::Cleared);
+        assert!(tree(&sandbox.path(private)).is_empty());
+    } else {
+        assert_eq!(cleared.status, Laid::Made);
+        assert_eq!(
+            tree(&sandbox.path(private)).keys().collect::<Vec<_>>(),
+            ["act-1"]
+        );
+    }
     assert_eq!(sandbox.work_tree().keys().collect::<Vec<_>>(), ["keep.txt"]);
 }
 
@@ -774,7 +787,12 @@ fn what_a_stopped_delete_left_is_removed_by_another_action() {
     // What the first action left is a target like any other.
     let flow = through_gate(&policy, delete_of(&sandbox, "act-4", &[&holding]));
     run(&mut sandbox.executor(QUARANTINE_OFF), flow).unwrap();
-    assert!(tree(&sandbox.path(private)).is_empty());
+    let left: Vec<String> = tree(&sandbox.path(private)).into_keys().collect();
+    match clears_holding() {
+        true => assert!(left.is_empty(), "{left:?}"),
+        // The empty holding folder of the action that finished the job.
+        false => assert_eq!(left, ["act-4"]),
+    }
 }
 
 // ---- a restore puts nothing on a reserved folder -----------------------------------------------

@@ -27,7 +27,8 @@ definitive_delete = "contained"
 
 # Pasta privada do executor, abaixo da raiz de trabalho (nomes separados por `/`). Cada execucao que apaga
 # uma arvore cria nela, de forma exclusiva, a pasta `<action_id>` (no Linux, so para o usuario do executor)
-# e a remove ao terminar. O que sobrar de uma exclusao interrompida fica nessa pasta.
+# e, no Windows, a remove ao terminar (no Linux ela fica, vazia: a criacao nao diz qual objeto foi criado).
+# O que sobrar de uma exclusao interrompida fica nessa pasta.
 private_dir = ".ads/tmp"
 
 # Maior manifesto de quarentena, em bytes. Vale nos dois sentidos: uma leva cujo manifesto passaria disso e
