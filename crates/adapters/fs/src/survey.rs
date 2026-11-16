@@ -53,6 +53,9 @@ pub(crate) fn total<'a>(facts: impl IntoIterator<Item = &'a Facts>) -> Result<(u
 pub(crate) struct Seen {
     pub id: Identity,
     pub kind: Kind,
+    /// The bytes of a regular file when it was counted; zero for the rest. The approval was
+    /// given for these bytes: a file that has another size is not what was approved.
+    pub size: u64,
     pub children: BTreeMap<String, Seen>,
 }
 
@@ -142,6 +145,10 @@ fn walk(
     Ok(Seen {
         id: entry.meta.id,
         kind: entry.kind,
+        size: match entry.kind {
+            Kind::File => entry.meta.size,
+            Kind::Dir | Kind::Link => 0,
+        },
         children,
     })
 }
@@ -155,6 +162,13 @@ pub(crate) fn same_object(
 ) -> Result<(), Stop> {
     if entry.meta.id != seen.id || entry.kind != seen.kind {
         return Err(changed(fence, rel, "is not the entry that was approved"));
+    }
+    if seen.kind == Kind::File && entry.meta.size != seen.size {
+        let what = format!(
+            "had {} bytes when it was approved and has {} now",
+            seen.size, entry.meta.size
+        );
+        return Err(changed(fence, rel, &what));
     }
     Ok(())
 }

@@ -14,10 +14,27 @@ use std::path::Path;
 use common::Sandbox;
 use sys::{Error, Kind, Node};
 
-fn fence(sandbox: &Sandbox) -> Node {
-    let resolved = fs::canonicalize(&sandbox.fence).unwrap();
+/// Opens `path` the way the fence is opened: from the root of its volume, name by name.
+fn open(path: &Path) -> Node {
+    let resolved = fs::canonicalize(path).unwrap();
     assert!(resolved.starts_with(fs::canonicalize(env!("CARGO_TARGET_TMPDIR")).unwrap()));
-    Node::root(&resolved).unwrap()
+    let mut parts = resolved.components();
+    let mut anchor = std::path::PathBuf::new();
+    for part in parts.by_ref() {
+        anchor.push(part);
+        if matches!(part, std::path::Component::RootDir) {
+            break;
+        }
+    }
+    let mut node = Node::anchor(&anchor).unwrap();
+    for part in parts {
+        node = node.child(part.as_os_str().to_str().unwrap()).unwrap();
+    }
+    node
+}
+
+fn fence(sandbox: &Sandbox) -> Node {
+    open(&sandbox.fence)
 }
 
 fn folder_link(link: &Path, target: &Path) -> bool {
@@ -95,7 +112,7 @@ fn a_link_is_opened_as_a_link_and_never_followed() {
     let link = work.child("link").unwrap();
     assert_eq!(kind(&link), Kind::Link);
     // What is open is the link: it is not the folder outside, and holds nothing of it.
-    let outside = Node::root(&fs::canonicalize(&sandbox.outside).unwrap()).unwrap();
+    let outside = open(&sandbox.outside);
     assert_ne!(link.meta().unwrap().id, outside.meta().unwrap().id);
     assert!(link.child(common::SENTINEL).is_err());
     assert!(link.names().is_err() || link.names().unwrap().is_empty());
@@ -165,12 +182,16 @@ fn creation_is_exclusive_and_relative_to_the_open_folder() {
     let made = work.make_dir("new").unwrap();
     assert_eq!(kind(&made), Kind::Dir);
     assert!(matches!(work.make_dir("new"), Err(Error::Exists)));
-    made.write_new("file.txt", b"text").unwrap();
-    assert!(matches!(
-        made.write_new("file.txt", b"other"),
-        Err(Error::Exists)
-    ));
-    assert!(work.write_new("new", b"other").is_err());
+    {
+        use std::io::Write;
+        let mut file = made.create_file("file.txt").unwrap();
+        // It exists from this instant, empty.
+        assert_eq!(fs::read(sandbox.path("work/new/file.txt")).unwrap(), b"");
+        file.write_all(b"text").unwrap();
+        file.sync_all().unwrap();
+    }
+    assert!(matches!(made.create_file("file.txt"), Err(Error::Exists)));
+    assert!(work.create_file("new").is_err());
     assert_eq!(
         fs::read_to_string(sandbox.path("work/new/file.txt")).unwrap(),
         "text"
@@ -283,4 +304,52 @@ fn removal_takes_one_entry_and_a_link_goes_as_a_link() {
     assert_eq!(work.names().unwrap(), ["full"]);
     assert!(sandbox.sentinel_is_intact());
     assert_eq!(common::tree(&sandbox.outside).len(), 1);
+}
+
+// ---- holding a folder in place ------------------------------------------------------------------
+
+/// What the containment of a definitive delete stands on. An open folder is not kept where
+/// it is by being open: only a handle that denies the right to delete does that, and only
+/// Windows has one.
+#[test]
+fn a_folder_that_is_held_cannot_be_moved_away() {
+    let sandbox = Sandbox::new("sys-hold");
+    sandbox.file("work/a/sub/file.txt", "x");
+    let away = sandbox.outside.join("taken");
+    let work = fence(&sandbox).child("work").unwrap();
+    let a = work.child("a").unwrap();
+    let id = a.meta().unwrap().id;
+    assert_eq!(sys::HOLDS, cfg!(windows));
+
+    // Just open, with nothing open below it: another process takes it out of the fence.
+    fs::rename(sandbox.path("work/a"), &away).unwrap();
+    assert!(!work.holds("a", id).unwrap());
+    fs::rename(&away, sandbox.path("work/a")).unwrap();
+    assert!(work.holds("a", id).unwrap());
+
+    let held = a.hold().unwrap();
+    assert_eq!(held.meta().unwrap().id, id);
+    let moved = fs::rename(sandbox.path("work/a"), &away).is_ok();
+    if sys::HOLDS {
+        // Held: not by a path, not by its own handle, and not by moving a folder above it.
+        assert!(!moved, "a held folder was moved");
+        assert!(work.claim("a", id).is_err());
+        assert!(fs::rename(sandbox.path("work"), sandbox.outside.join("work")).is_err());
+        // What is in it still comes and goes.
+        let sub = held.child("sub").unwrap();
+        let file = sub.child("file.txt").unwrap().meta().unwrap().id;
+        sub.claim("file.txt", file).unwrap().remove().unwrap();
+        assert!(work.holds("a", id).unwrap());
+        // Let go, it can be moved again.
+        drop(sub);
+        drop(held);
+        fs::rename(sandbox.path("work/a"), &away).unwrap();
+    } else {
+        // Here nothing holds it: the handle follows the folder out of the fence.
+        assert!(moved);
+        assert!(!work.holds("a", id).unwrap());
+        assert_eq!(held.meta().unwrap().id, id);
+        assert_eq!(held.names().unwrap(), ["sub"]);
+    }
+    assert!(sandbox.sentinel_is_intact());
 }

@@ -5,7 +5,7 @@
 //! folder cannot be swapped, the entry under the name is compared right before the call.
 
 use std::fs::File;
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::os::fd::OwnedFd;
 use std::path::Path;
 
@@ -21,6 +21,10 @@ impl From<rustix::io::Errno> for Error {
         Self::from(io::Error::from(errno))
     }
 }
+
+/// A descriptor names an object, not a place: a folder that is open can still be renamed,
+/// moved out of the fence or removed by another process. Nothing here holds it in place.
+pub const HOLDS: bool = false;
 
 /// An open entry: a folder, a file or a link itself (`O_PATH`, `O_NOFOLLOW`).
 #[derive(Debug)]
@@ -57,8 +61,9 @@ fn meta_of(stat: &rustix::fs::Statx) -> Meta {
 }
 
 impl Node {
-    /// Opens the fence by its path. The only path this crate gives to the system.
-    pub fn root(path: &Path) -> io::Result<Self> {
+    /// Opens the root of the file system by its path (`/`): where the walk to the fence
+    /// starts. The only path this crate gives to the system.
+    pub fn anchor(path: &Path) -> io::Result<Self> {
         let fd = open(path, ENTRY | OFlags::DIRECTORY, Mode::empty())?;
         Ok(Self { fd })
     }
@@ -72,6 +77,28 @@ impl Node {
     pub fn meta(&self) -> io::Result<Meta> {
         let flags = AtFlags::EMPTY_PATH | AtFlags::SYMLINK_NOFOLLOW;
         Ok(meta_of(&statx(&self.fd, "", flags, WANTED)?))
+    }
+
+    /// There is no holding a folder in place here (see [`HOLDS`]): this is one more handle.
+    pub fn hold(&self) -> io::Result<Self> {
+        self.again()
+    }
+
+    /// Whether the entry under `name` of this folder is the object `expected`, right now.
+    pub fn holds(&self, name: &str, expected: Identity) -> Result<bool, Error> {
+        plain(name)?;
+        match statx(&self.fd, name, AtFlags::SYMLINK_NOFOLLOW, WANTED) {
+            Ok(stat) => Ok(meta_of(&stat).id == expected),
+            Err(rustix::io::Errno::NOENT) => Ok(false),
+            Err(errno) => Err(errno.into()),
+        }
+    }
+
+    /// Whether a move that the system accepted took `expected` to `name` of this folder.
+    /// The move acted on a name, so what arrived is looked at again, by name: this says what
+    /// is under the name at this instant and nothing more.
+    pub fn arrived(&self, name: &str, expected: Identity) -> Result<bool, Error> {
+        self.holds(name, expected)
     }
 
     /// Opens the entry `name` of this folder, itself: a link is opened, not followed.
@@ -114,16 +141,22 @@ impl Node {
         self.child(name)
     }
 
-    /// Writes the new file `name`, which must not exist, and has it on disk before returning.
-    pub fn write_new(&self, name: &str, bytes: &[u8]) -> Result<(), Error> {
+    /// Like [`Self::make_dir`], for a folder only this executor is meant to use: no other
+    /// user gets in. A process of the same user still does.
+    pub fn make_private_dir(&self, name: &str) -> Result<Self, Error> {
+        plain(name)?;
+        mkdirat(&self.fd, name, Mode::from_raw_mode(0o700))?;
+        self.child(name)
+    }
+
+    /// Creates the new, empty file `name`, which must not exist, open for writing. Writing
+    /// it and having it on disk are the caller's next two steps.
+    pub fn create_file(&self, name: &str) -> Result<File, Error> {
         plain(name)?;
         let flags =
             OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC;
         let fd = openat(&self.fd, name, flags, Mode::from_raw_mode(0o666))?;
-        let mut file = File::from(fd);
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        Ok(())
+        Ok(File::from(fd))
     }
 
     /// Reads the regular file `name`, at most `limit` bytes. What is checked is the file that
@@ -168,8 +201,7 @@ impl Node {
         Ok(Claim {
             parent: self,
             name: name.to_owned(),
-            dir: found.kind == Some(Kind::Dir),
-            id: expected,
+            meta: found,
         })
     }
 }
@@ -179,14 +211,18 @@ impl Node {
 pub struct Claim<'a> {
     parent: &'a Node,
     name: String,
-    dir: bool,
-    id: Identity,
+    meta: Meta,
 }
 
 impl Claim<'_> {
+    /// What the entry is, read when it was claimed.
+    pub fn meta(&self) -> &Meta {
+        &self.meta
+    }
+
     /// Removes the entry: a file, a link itself or an empty folder.
     pub fn remove(self) -> Result<(), Error> {
-        let flags = if self.dir {
+        let flags = if self.meta.kind == Some(Kind::Dir) {
             AtFlags::REMOVEDIR
         } else {
             AtFlags::empty()
@@ -196,19 +232,15 @@ impl Claim<'_> {
 
     /// Moves the entry to `name` in the open folder `to`. An existing destination is refused
     /// by the system itself (`RENAME_NOREPLACE`); a file system without it refuses the move.
+    /// `Ok` means the system made the move; what arrived is for [`Node::arrived`] to say.
     pub fn move_to(self, to: &Node, name: &str) -> Result<(), Error> {
         plain(name)?;
-        renameat_with(
+        Ok(renameat_with(
             &self.parent.fd,
             &self.name,
             &to.fd,
             name,
             RenameFlags::NOREPLACE,
-        )?;
-        let arrived = meta_of(&statx(&to.fd, name, AtFlags::SYMLINK_NOFOLLOW, WANTED)?);
-        if arrived.id != self.id {
-            return Err(Error::Changed);
-        }
-        Ok(())
+        )?)
     }
 }

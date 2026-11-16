@@ -66,8 +66,13 @@ pub enum Reason {
     NothingToRestore,
     /// The entry is not the object that was approved, or its tree holds something else.
     Changed,
-    /// What a move took to the destination is not the entry that was approved.
-    MovedUnapproved,
+    /// The system made a move, but the check after it did not confirm what arrived.
+    MoveUnverified,
+    /// A definitive delete where the system cannot hold a folder in place while its entries
+    /// are removed, or with definitive deletes turned off.
+    DeleteUncontained,
+    /// A folder that was being emptied is no longer where the executor put it.
+    Displaced,
     /// The change was made, but the system did not confirm it is on disk.
     Unconfirmed,
     /// The tree is deeper than the limit.
@@ -77,7 +82,7 @@ pub enum Reason {
 }
 
 impl Reason {
-    pub const ALL: [Reason; 33] = [
+    pub const ALL: [Reason; 35] = [
         Self::StartedMismatch,
         Self::JournalRefused,
         Self::PermitReused,
@@ -107,7 +112,9 @@ impl Reason {
         Self::RestorePlaceTaken,
         Self::NothingToRestore,
         Self::Changed,
-        Self::MovedUnapproved,
+        Self::MoveUnverified,
+        Self::DeleteUncontained,
+        Self::Displaced,
         Self::Unconfirmed,
         Self::TooDeep,
         Self::Io,
@@ -144,7 +151,9 @@ impl Reason {
             Self::RestorePlaceTaken => "E_FS_RESTORE_PLACE_TAKEN",
             Self::NothingToRestore => "E_FS_NOTHING_TO_RESTORE",
             Self::Changed => "E_FS_CHANGED",
-            Self::MovedUnapproved => "E_FS_MOVED_UNAPPROVED",
+            Self::MoveUnverified => "E_FS_MOVE_UNVERIFIED",
+            Self::DeleteUncontained => "E_FS_DELETE_UNCONTAINED",
+            Self::Displaced => "E_FS_DISPLACED",
             Self::Unconfirmed => "E_FS_UNCONFIRMED",
             Self::TooDeep => "E_FS_TOO_DEEP",
             Self::Io => "E_FS_IO",

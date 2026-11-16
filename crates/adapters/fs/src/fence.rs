@@ -102,6 +102,9 @@ pub enum FenceError {
     NotLocal,
     /// This system lacks the calls the executor needs; nothing runs on it.
     UnsupportedSystem,
+    /// A name on the way from the root of the volume to the fence is a link, or is not the
+    /// name its folder lists: the path changed after it was resolved, or was never plain.
+    NotPlain(String),
 }
 
 impl std::fmt::Display for FenceError {
@@ -112,6 +115,7 @@ impl std::fmt::Display for FenceError {
             Self::FilesystemRoot => f.write_str("the fence is the root of a file system"),
             Self::NotLocal => f.write_str("the fence is not a local path"),
             Self::UnsupportedSystem => f.write_str("this system is not supported"),
+            Self::NotPlain(name) => write!(f, "the way to the fence is not plain at {name}"),
         }
     }
 }
@@ -142,6 +146,36 @@ impl Frame {
             text.push_str(name);
         }
         text
+    }
+
+    /// Opens the fence: from the root of its volume, name by name, each one relative to the
+    /// folder opened before it and never through a link. What is open at the end is what
+    /// the text of the fence names, by construction: no path is resolved a second time.
+    fn open(&self) -> Result<Node, FenceError> {
+        let unresolved = |error: &dyn std::fmt::Display| FenceError::Unresolved(error.to_string());
+        let anchor = if cfg!(windows) {
+            format!("\\\\?\\{}\\", self.parts.anchor)
+        } else {
+            "/".to_owned()
+        };
+        let mut node = Node::anchor(Path::new(&anchor)).map_err(|error| match error.kind() {
+            std::io::ErrorKind::Unsupported => FenceError::UnsupportedSystem,
+            _ => unresolved(&error),
+        })?;
+        for name in &self.parts.names {
+            // Above the fence a folder may be on any mount: only links are refused.
+            node = match node.child(name) {
+                Ok(child) => child,
+                Err(sys::Error::Alias) => return Err(FenceError::NotPlain(name.clone())),
+                Err(error) => return Err(unresolved(&format!("{name}: {error}"))),
+            };
+            match node.meta().map_err(|error| unresolved(&error))?.kind {
+                Some(Kind::Dir) => {}
+                Some(Kind::Link) => return Err(FenceError::NotPlain(name.clone())),
+                _ => return Err(FenceError::NotADirectory),
+            }
+        }
+        Ok(node)
     }
 
     /// The names of `path` below the fence; empty when it is the fence itself. By text, and
@@ -178,6 +212,15 @@ pub(crate) struct Spot {
     pub entry: Option<Entry>,
 }
 
+/// A folder held where it is ([`Fence::hold_dir`]), with every folder above it up to the fence.
+#[derive(Debug)]
+pub(crate) struct Held {
+    pub node: Node,
+    /// Kept open, not used: dropping them lets the folders above go.
+    #[allow(dead_code)]
+    above: Vec<Node>,
+}
+
 /// The base folder, open. Paths are named by their names below it (`rel`).
 #[derive(Debug)]
 pub struct Fence {
@@ -187,16 +230,15 @@ pub struct Fence {
 }
 
 impl Fence {
-    /// Resolves `base` once, links included, and opens it: this is the only path taken on
-    /// trust, and the only one ever given to the operating system.
-    pub fn new(base: &Path) -> Result<Self, FenceError> {
-        let unresolved = |error: std::io::Error| match error.kind() {
-            std::io::ErrorKind::Unsupported => FenceError::UnsupportedSystem,
-            _ => FenceError::Unresolved(error.to_string()),
-        };
-        let resolved = fs::canonicalize(base).map_err(unresolved)?;
-        let frame = Frame::from_resolved(resolved)?;
-        let root = Node::root(&frame.root).map_err(unresolved)?;
+    /// Resolves `base` and opens the fence. The resolution only says which names to walk:
+    /// the fence is then opened from the root of its volume, name by name, without
+    /// following a link. If the path changed in between, the walk refuses or opens exactly
+    /// what the published text names. `resolved` is called between the two, for tests.
+    pub(crate) fn build(base: &Path, resolved: impl FnOnce()) -> Result<Self, FenceError> {
+        let unresolved = |error: std::io::Error| FenceError::Unresolved(error.to_string());
+        let frame = Frame::from_resolved(fs::canonicalize(base).map_err(unresolved)?)?;
+        resolved();
+        let root = frame.open()?;
         let home = root.meta().map_err(unresolved)?;
         if home.kind != Some(Kind::Dir) {
             return Err(FenceError::NotADirectory);
@@ -310,6 +352,63 @@ impl Fence {
             }
         }
         Ok(node)
+    }
+
+    /// Like [`Self::open_dir`], holding in place the folder and every folder above it up to
+    /// the fence, where the system can do that: while what comes back lives, none of them
+    /// can be renamed, moved or removed by anyone. Where it cannot, this is `open_dir`.
+    pub(crate) fn hold_dir(&self, rel: &[String]) -> Result<Held, Stop> {
+        if !sys::HOLDS {
+            return Ok(Held {
+                node: self.open_dir(rel)?,
+                above: Vec::new(),
+            });
+        }
+        let holding = |upto: &[String], error: std::io::Error| {
+            Stop::io("holding in place", self.text_of(upto), error)
+        };
+        let mut node = self.root.hold().map_err(|error| holding(&[], error))?;
+        let mut above = Vec::new();
+        for depth in 1..=rel.len() {
+            let upto = &rel[..depth];
+            let name = &rel[depth - 1];
+            let Some(entry) = self.step(&node, upto)? else {
+                return Err(Stop::new(
+                    Reason::Missing,
+                    format!("{} does not exist", self.text_of(upto)),
+                ));
+            };
+            match entry.kind {
+                Kind::Dir => {}
+                Kind::Link => {
+                    return Err(Stop::new(
+                        Reason::LinkInPath,
+                        format!("{} is a link", self.text_of(upto)),
+                    ));
+                }
+                Kind::File => {
+                    return Err(Stop::new(
+                        Reason::NotADirectory,
+                        format!("{} is not a folder", self.text_of(upto)),
+                    ));
+                }
+            }
+            let held = entry.node.hold().map_err(|error| holding(upto, error))?;
+            // Opened and then held: in between it may have been taken away. The folder it is
+            // in is held, so from now on the name says where it is.
+            match node.holds(name, entry.meta.id) {
+                Ok(true) => {}
+                Ok(false) => {
+                    return Err(Stop::new(
+                        Reason::Changed,
+                        format!("{} was taken away while it was opened", self.text_of(upto)),
+                    ));
+                }
+                Err(error) => return Err(Stop::io("looking at", self.text_of(upto), error)),
+            }
+            above.push(std::mem::replace(&mut node, held));
+        }
+        Ok(Held { node, above })
     }
 
     /// Opens the folder of `rel` and looks at its last name there, following nothing. A link

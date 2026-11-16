@@ -7,7 +7,7 @@ use ads_core::gate::{
 };
 
 use crate::fence::{Fence, Kind};
-use crate::limits::Limits;
+use crate::limits::{DefinitiveDelete, Limits};
 use crate::manifest::{
     ITEMS_DIR, MANIFEST_NAME, MANIFEST_VERSION, Manifest, ManifestItem, folder_name,
 };
@@ -35,9 +35,9 @@ pub(crate) enum Act {
         floor: usize,
         taken: Reason,
     },
-    Remove {
-        recursive: bool,
-    },
+    /// Remove for good. A tree goes through `place` (below the holding folder of the job):
+    /// it is moved there first and removed there. One entry is removed where it is.
+    Remove { place: Option<Vec<String>> },
 }
 
 /// A plan that passed every check, ready to run.
@@ -50,6 +50,10 @@ pub(crate) struct Job {
     pub stages: Vec<Stage>,
     /// The manifest of the batch; `started_at` is filled when the execution starts.
     pub manifest: Option<Manifest>,
+    /// The holding folder of the job, made for it alone: where trees are removed for good.
+    pub private: Option<Vec<String>>,
+    /// How many names deep the work root is.
+    pub work: usize,
     pub report: Report,
     /// The mutation of each step; `None` for a step with nothing to do.
     pub ops: Vec<Option<Op>>,
@@ -61,6 +65,8 @@ pub(crate) enum Lay {
     Ensure,
     /// A folder that must not exist and is made exclusively.
     Reserve,
+    /// The same, for this executor alone as far as the system has a way to say so.
+    ReservePrivate,
     /// The manifest of the job, written as a new file.
     Manifest,
 }
@@ -77,6 +83,8 @@ impl Job {
             floor,
             stages: Vec::new(),
             manifest: None,
+            private: None,
+            work: 0,
             report: Report {
                 staging: Vec::new(),
                 steps,
@@ -89,7 +97,7 @@ impl Job {
         self.report.staging.push(Staged {
             path: fence.text_of(&rel),
             what: match lay {
-                Lay::Ensure | Lay::Reserve => Scaffold::Folder,
+                Lay::Ensure | Lay::Reserve | Lay::ReservePrivate => Scaffold::Folder,
                 Lay::Manifest => Scaffold::Manifest,
             },
             status: Laid::Pending,
@@ -261,8 +269,10 @@ pub(crate) fn prepare(
     // is judged here: by text against the policy and the work root, and on disk by every
     // mutation (see `disk`).
     for op in job.ops.iter().flatten() {
-        let Act::MoveTo { to, .. } = &op.act else {
-            continue;
+        let to = match &op.act {
+            Act::MoveTo { to, .. } => to,
+            Act::Remove { place: Some(place) } => place,
+            Act::Remove { place: None } => continue,
         };
         let text = fence.text_of(to);
         let landing =
@@ -321,9 +331,9 @@ fn build_job(
             let floor = if policy.quarantine_enabled() {
                 fence.relative(quarantine)?
             } else {
-                work
+                work.clone()
             };
-            delete_job(floor, targets, recursive)
+            delete_job(fence, limits, permit, &work, floor, targets, recursive)
         }
         Operation::Move { destination } => {
             let into_quarantine =
@@ -342,7 +352,7 @@ fn build_job(
                 if !policy.quarantine_enabled() {
                     return Err(Stop::new(Reason::Unsupported, "the quarantine is off"));
                 }
-                restore_job(fence, limits, permit, work, targets, quarantine)
+                restore_job(fence, policy, limits, permit, work, targets, quarantine)
             } else {
                 Err(Stop::new(
                     Reason::Unsupported,
@@ -429,17 +439,77 @@ fn refuse_nested_repositories(targets: &[Target]) -> Result<(), Stop> {
     }
 }
 
-fn delete_job(floor: Vec<String>, targets: &[Target], recursive: bool) -> Result<Job, Stop> {
+fn delete_job(
+    fence: &Fence,
+    limits: &Limits,
+    permit: &ExecutionPermit,
+    work: &[String],
+    floor: Vec<String>,
+    targets: &[Target],
+    recursive: bool,
+) -> Result<Job, Stop> {
     refuse_nested_repositories(targets)?;
+    // A removal acts on a name inside an open folder. Unless the system can hold that folder
+    // where it is, another process can take it out of the fence between the last check and
+    // the call: the strictest answer is not to remove for good there.
+    match limits.definitive_delete {
+        DefinitiveDelete::Refuse => {
+            return Err(Stop::new(
+                Reason::DeleteUncontained,
+                "definitive deletes are turned off (`definitive_delete = \"refuse\"`)",
+            ));
+        }
+        DefinitiveDelete::Contained if !sys::HOLDS => {
+            return Err(Stop::new(
+                Reason::DeleteUncontained,
+                "this system cannot hold a folder in place while its entries are removed; \
+                 only the quarantine runs here (see `definitive_delete`)",
+            ));
+        }
+        DefinitiveDelete::Contained | DefinitiveDelete::Isolated => {}
+    }
+
+    // A tree is not emptied where it is: it goes, whole, to a folder made for this
+    // execution, and is removed there.
+    let tree = |target: &Target| {
+        recursive && target.seen.kind == Kind::Dir && !target.seen.children.is_empty()
+    };
+    let private = join(work, &limits.private_dir);
+    let holding = match targets.iter().any(tree) {
+        true => Some(child(&private, &folder_name(permit.action_id())?)),
+        false => None,
+    };
+    for target in targets {
+        // The private folder is not a target, nor is the holding folder of this execution;
+        // what another execution left in the private folder is.
+        let overlaps = starts_with(&private, &target.rel)
+            || holding.as_ref().is_some_and(|holding| {
+                starts_with(&target.rel, holding) || starts_with(holding, &target.rel)
+            });
+        if overlaps {
+            return Err(Stop::new(
+                Reason::Unsupported,
+                format!(
+                    "{} overlaps the private folder of the executor",
+                    target.text
+                ),
+            ));
+        }
+    }
+
     let mut steps = Vec::new();
     let mut ops = Vec::new();
-    for target in targets {
+    for (at, target) in targets.iter().enumerate() {
         if !recursive && !target.seen.children.is_empty() {
             return Err(Stop::new(
                 Reason::NotEmpty,
                 format!("{} is not empty", target.text),
             ));
         }
+        let place = match (&holding, tree(target)) {
+            (Some(holding), true) => Some(child(holding, &at.to_string())),
+            _ => None,
+        };
         steps.push(Step {
             target: target.text.clone(),
             effect: if recursive {
@@ -448,15 +518,72 @@ fn delete_job(floor: Vec<String>, targets: &[Target], recursive: bool) -> Result
                 Effect::Delete
             },
             facts: target.facts,
+            held: place.as_ref().map(|place| fence.text_of(place)),
             status: Status::Pending,
         });
         ops.push(Some(Op {
             rel: target.rel.clone(),
             seen: target.seen.clone(),
-            act: Act::Remove { recursive },
+            act: Act::Remove { place },
         }));
     }
-    Ok(Job::new(floor, steps, ops))
+    let mut job = Job::new(floor, steps, ops);
+    if let Some(holding) = holding {
+        let ensure = missing_folders(fence, &private, work.len(), private.len())?;
+        if ensure.is_empty() && fence.locate(&holding)?.entry.is_some() {
+            return Err(Stop::new(
+                Reason::DestinationTaken,
+                format!("{} already exists", fence.text_of(&holding)),
+            ));
+        }
+        for rel in ensure {
+            job.lay(fence, rel, Lay::Ensure);
+        }
+        job.lay(fence, holding.clone(), Lay::ReservePrivate);
+        job.private = Some(holding);
+        job.work = work.len();
+    }
+    Ok(job)
+}
+
+/// Where a restore puts one item is judged by the gate, with its own rules for the entry a
+/// move creates: not a protected folder, not on a target, and not a reserved folder (the work
+/// root, an allowed root, the quarantine) nor a folder that holds one. The verdict of the
+/// permit judged the work root as the destination; the manifest says the real ones.
+fn judge_restore_place(
+    policy: &GatePolicy,
+    work_root: &AbsPath,
+    stored: &str,
+    folder: &str,
+    place: &str,
+) -> Result<(), Stop> {
+    let request = PlanRequest {
+        operation: OperationRequest::Move {
+            destination: folder.to_owned(),
+        },
+        targets: vec![TargetRequest {
+            path: stored.to_owned(),
+            repo_root: false,
+        }],
+        work_root: work_root.to_string(),
+        estimate: Some(Estimate { items: 1, bytes: 0 }),
+    };
+    let plan = ActionPlan::normalize(&request)
+        .map_err(|error| Stop::new(Reason::PolicyDenies, format!("{place}: {error}")))?;
+    let verdict = classify(&plan, policy);
+    if verdict.decision() == Decision::Denied {
+        let codes: Vec<String> = verdict
+            .findings()
+            .iter()
+            .filter(|finding| finding.rule.decision() == Decision::Denied)
+            .map(|finding| finding.rule.code().to_string())
+            .collect();
+        return Err(Stop::new(
+            Reason::PolicyDenies,
+            format!("restoring to {place}: {}", codes.join(", ")),
+        ));
+    }
+    Ok(())
 }
 
 fn quarantine_job(
@@ -517,6 +644,7 @@ fn quarantine_job(
                 stored: fence.text_of(&stored),
             },
             facts: target.facts,
+            held: None,
             status: Status::Pending,
         });
         ops.push(Some(Op {
@@ -559,6 +687,7 @@ fn quarantine_job(
 /// manifest that is still in quarantine goes back to where it came from.
 fn restore_job(
     fence: &Fence,
+    policy: &GatePolicy,
     limits: &Limits,
     permit: &ExecutionPermit,
     work: Vec<String>,
@@ -612,8 +741,9 @@ fn restore_job(
     }
 
     let items = child(&batch.rel, ITEMS_DIR);
-    let mut steps = Vec::new();
-    let mut ops = Vec::new();
+    // By text first, for every item, before the disk is looked at for any of them: the
+    // place each one goes back to is the one its path says, and the gate lets a move
+    // create an entry there.
     for item in &manifest.items {
         let original = join(&work, &item.path);
         // The original path is rebuilt from the names; the text has to say the same.
@@ -623,6 +753,19 @@ fn restore_job(
         if written.as_deref() != Some(original.as_slice()) {
             return Err(invalid("an item whose path does not match its place"));
         }
+        judge_restore_place(
+            policy,
+            plan.work_root(),
+            &fence.text_of(&join(&items, &item.path)),
+            &fence.text_of(&original[..original.len() - 1]),
+            &fence.text_of(&original),
+        )?;
+    }
+
+    let mut steps = Vec::new();
+    let mut ops = Vec::new();
+    for item in &manifest.items {
+        let original = join(&work, &item.path);
         let stored = join(&items, &item.path);
         let step = |facts: Facts, status: Status| Step {
             target: fence.text_of(&original),
@@ -630,6 +773,7 @@ fn restore_job(
                 stored: fence.text_of(&stored),
             },
             facts,
+            held: None,
             status,
         };
         let found = match fence.existing(&stored) {

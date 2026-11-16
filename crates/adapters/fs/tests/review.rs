@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use ads_adapter_fs::{
-    Completed, Executor, Failure, ITEMS_DIR, Laid, Limits, MANIFEST_NAME, Manifest, Mutation,
+    Completed, Executor, Failure, ITEMS_DIR, Laid, MANIFEST_NAME, Manifest, Midway, Mutation,
     Probe, Reason, Scaffold, Stage, Status,
 };
 use ads_core::gate::OperationRequest;
@@ -86,6 +86,7 @@ fn work_tree(sandbox: &Sandbox) -> BTreeMap<String, String> {
 enum Moment {
     Before,
     Opened,
+    Midway(Midway),
 }
 
 /// A probe made of a closure.
@@ -98,6 +99,10 @@ impl<F: FnMut(Moment, &Mutation) -> io::Result<()>> Probe for Hook<F> {
 
     fn opened(&mut self, mutation: &Mutation) -> io::Result<()> {
         (self.0)(Moment::Opened, mutation)
+    }
+
+    fn midway(&mut self, mutation: &Mutation, at: Midway) -> io::Result<()> {
+        (self.0)(Moment::Midway(at), mutation)
     }
 }
 
@@ -170,9 +175,17 @@ fn swap_after_the_last_check(name: &str, overrides: &'static str, swapped_folder
     println!("{name}: swapped = {}", swapped.get());
     // Linux lets a folder with open handles be renamed: there the swap is real, and the
     // call has to land on the approved entry all the same.
+    // The one case that stops is the work root swapped under a delete: the holding
+    // folder is below it, and the way there is no longer plain.
     if cfg!(target_os = "linux") {
         assert!(swapped.get(), "{name}: the swap did not happen");
-        assert!(outcome.is_ok(), "{name}: {:?}", outcome.as_ref().err());
+        let stops = swapped_folder == "work" && !overrides.is_empty();
+        assert_eq!(
+            outcome.is_err(),
+            stops,
+            "{name}: {:?}",
+            outcome.as_ref().err()
+        );
     }
 
     // Never the sibling, whatever happened.
@@ -214,12 +227,28 @@ fn swap_after_the_last_check(name: &str, overrides: &'static str, swapped_folder
             }
         }
         Err(failure) => {
-            // The call failed: the approved entry is where it was, or (a move that was not
-            // confirmed) whole in its batch.
+            // The executor stopped: the approved entry is where it was, or whole where the
+            // report says it was taken to (its batch, or its holding folder, when the way
+            // there stopped being plain after the swap).
             println!("{name}: {failure}");
+            let step = &failure.report.steps[0];
             let kept = fs::read_to_string(&real).is_ok_and(|text| text == "inside");
-            let unconfirmed = matches!(failure.report.steps[0].status, Status::Unconfirmed { .. });
-            assert!(kept || unconfirmed, "{failure}");
+            let unconfirmed = matches!(step.status, Status::Unconfirmed { .. });
+            let held = matches!(step.status, Status::Held { removed: 0, .. })
+                && step.held.as_ref().is_some_and(|held| {
+                    let rel = held
+                        .strip_prefix(&sandbox.fence_text)
+                        .unwrap()
+                        .trim_start_matches(SEPARATOR)
+                        .replace(SEPARATOR, "/");
+                    let through = swapped_folder.is_empty() || rel.starts_with(swapped_folder);
+                    let held = match through {
+                        true => below_swapped(&rel),
+                        false => sandbox.path(&rel),
+                    };
+                    fs::read_to_string(held.join("file.txt")).is_ok_and(|text| text == "inside")
+                });
+            assert!(kept || unconfirmed || held, "{failure}");
         }
     }
 }
@@ -364,8 +393,9 @@ fn another_file_under_the_approved_name_is_not_touched() {
         assert_eq!(failure.reason, Reason::Changed, "{overrides}: {failure}");
         assert!(matches!(
             failure.report.steps[0].status,
-            Status::Failed { removed: 0, .. }
+            Status::Failed { .. }
         ));
+        assert!(failure.report.steps.iter().all(|step| step.held.is_none()));
         assert_eq!(
             fs::read_to_string(sandbox.path("work/a/report.txt")).unwrap(),
             "another"
@@ -411,7 +441,7 @@ fn entries_added_after_the_survey_are_not_deleted_nor_moved() {
         assert_eq!(failure.reason, Reason::Changed, "{overrides}: {failure}");
         assert!(matches!(
             failure.report.steps[0].status,
-            Status::Failed { removed: 0, .. }
+            Status::Failed { .. }
         ));
         // Everything is where it was: the approved entries and the new ones.
         let left = tree(&sandbox.path("work/tree"));
@@ -436,25 +466,31 @@ fn an_entry_added_while_a_tree_is_being_deleted_survives() {
     let done = Rc::new(Cell::new(false));
     let mut executor = hook(sandbox.executor(QUARANTINE_OFF), {
         let done = done.clone();
-        let late = sandbox.path("work/tree/z/late.txt");
         move |moment, mutation| {
-            if moment == Moment::Opened
-                && matches!(mutation, Mutation::Remove(_))
+            // The first removal is `<holding>/a/one.txt`: the tree is being emptied there.
+            if let (Moment::Opened, Mutation::Remove(first)) = (moment, mutation)
                 && !done.replace(true)
             {
-                fs::write(&late, "late")?;
+                let tree = first.parent().unwrap().parent().unwrap();
+                fs::write(tree.join("z").join("late.txt"), "late")?;
             }
             Ok(())
         }
     });
     let failure = execute(&mut executor, flow).unwrap_err();
+    assert!(done.get());
     assert_eq!(failure.reason, Reason::Changed, "{failure}");
+    assert!(matches!(
+        failure.report.steps[0].status,
+        Status::Held { removed: 2, .. }
+    ));
+    let held = PathBuf::from(failure.report.steps[0].held.as_ref().unwrap());
     assert_eq!(
-        fs::read_to_string(sandbox.path("work/tree/z/late.txt")).unwrap(),
+        fs::read_to_string(held.join("z").join("late.txt")).unwrap(),
         "late"
     );
     assert_eq!(
-        fs::read_to_string(sandbox.path("work/tree/z/two.txt")).unwrap(),
+        fs::read_to_string(held.join("z").join("two.txt")).unwrap(),
         "2"
     );
 }
@@ -518,12 +554,12 @@ fn a_manifest_that_would_not_be_read_back_refuses_before_any_change() {
         sandbox.file(name, "x");
     }
     let targets: Vec<&str> = names.iter().map(String::as_str).collect();
-    let small = Limits::from_toml_str("max_manifest_bytes = 1024").unwrap();
+    let small = common::limits("max_manifest_bytes = 1024");
     let before = tree(&sandbox.root);
     let before_work = work_tree(&sandbox);
 
     let flow = through_gate(&sandbox.policy(""), delete(&sandbox, "act-1", &targets));
-    let mut executor = sandbox.executor("").with_limits(small);
+    let mut executor = sandbox.executor("").with_limits(small.clone());
     assert_eq!(
         executor.rehearse(&flow.permit).unwrap_err().reason,
         Reason::ManifestTooLarge
