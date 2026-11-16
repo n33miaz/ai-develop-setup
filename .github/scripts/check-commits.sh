@@ -5,6 +5,9 @@
 #       Modo CI: valida cada commit (sem merges) do intervalo base..head, lendo mensagem e autor do git.
 #   check-commits.sh --message <arquivo> --author <e-mail> [--strip-comments]
 #       Modo mensagem: valida um arquivo de mensagem. É o que `.githooks/commit-msg` chama.
+#   check-commits.sh --check-config
+#       Só valida o arquivo de parâmetros, sem ler mensagem nenhuma: 0 = válido; 2 = inválido. O hook chama este modo
+#       antes de qualquer outra coisa, para o erro de configuração vencer também o desligamento da checagem.
 #
 # As regras e seus valores ficam em defaults/devflow.toml (P8); o arquivo pode ser trocado por ADS_DEVFLOW_TOML.
 # Formato exigido: assunto de uma linha (Conventional Commits, inglês, minúsculo), linha em branco e trailers.
@@ -135,6 +138,7 @@ validate_config() {
   fi
 }
 validate_config
+[ "${1:-}" = "--check-config" ] && exit 0
 
 errors=0
 report() { # <rótulo> <texto>
@@ -326,7 +330,7 @@ else
   base="${1:-}"
   head="${2:-}"
   if [ -z "$base" ] || [ -z "$head" ]; then
-    echo "uso: $0 <base> <head> | --message <arquivo> --author <e-mail> [--strip-comments]" >&2
+    echo "uso: $0 <base> <head> | --message <arquivo> --author <e-mail> [--strip-comments] | --check-config" >&2
     exit 2
   fi
   [ "$(cfg_str commits.enabled true)" = "false" ] && { echo "Checagem de commits desligada (commits.enabled = false)."; exit 0; }
