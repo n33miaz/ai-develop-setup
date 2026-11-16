@@ -65,7 +65,7 @@ consumirem. A cifra usa XChaCha20-Poly1305 com nonce do sistema de 24 bytes, AAD
 com campos ordenados prefixados por tamanho e domínio versionado. O provedor de
 chaves é injetado; chave não implementa Debug, Display ou Clone. O armazenamento
 próprio da chave é `Box<Zeroizing<[u8; 32]>>`: movimentos transferem o ponteiro,
-sem copiar o array por valor. O construtor copia de uma referência; o chamador
+sem copiar o array por valor. O construtor recebe `&[u8; 32]` e copia para a alocação; o chamador
 continua responsável por apagar a origem. O texto decifrado retorna em
 `Zeroizing<Vec<u8>>`. Esses buffers são zerados no descarte normal; isso não
 promete apagar cópias externas, registradores, swap, dumps ou memória após abort.
