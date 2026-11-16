@@ -1,4 +1,5 @@
 export const ptBR = {
+  'notice.live': 'Conexão ao núcleo local. As sessões exibem os eventos recebidos.',
   'app.title': 'ai-develop-setup',
   'skip.toTerminal': 'Pular para o terminal',
   'notice.wip': 'Em construção. Esta tela mostra dados de exemplo locais; nada aqui vem do núcleo.',
@@ -42,6 +43,7 @@ export const ptBR = {
 export type MessageKey = keyof typeof ptBR
 
 export const en: Record<MessageKey, string> = {
+  'notice.live': 'Local core connection. Sessions display received events.',
   'app.title': 'ai-develop-setup',
   'skip.toTerminal': 'Skip to the terminal',
   'notice.wip':
