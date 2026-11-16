@@ -23,4 +23,4 @@ Uma decisão por arquivo. Número nunca é reutilizado; decisão substituída ga
 | [0017](0017-date-and-commit-versioning-during-express.md) | 0017. Date-and-commit versioning during the express period |
 | [0018](0018-mpl-2-0-exception-for-the-tauri-dependency-tree.md) | 0018. MPL-2.0 exception for the Tauri dependency tree |
 | [0019](0019-descriptive-issue-and-pr-titles.md) | 0019. Descriptive issue and pull request titles |
-| [0020](0020-storage-atomic-file-and-cipher.md) | 0020. Atomic storage file and authenticated column encryption |
+| [0021](0021-storage-atomic-file-and-cipher.md) | 0021. Atomic storage file and authenticated column encryption |
