@@ -11,9 +11,11 @@ use std::fs;
 use std::io;
 use std::rc::Rc;
 
-use ads_adapter_fs::{Laid, MANIFEST_NAME, Midway, Mutation, Reason, Scaffold, Stage, Status};
+use ads_adapter_fs::{
+    Executor, FenceError, Laid, MANIFEST_NAME, Midway, Mutation, Reason, Scaffold, Stage, Status,
+};
 
-use common::{Moment, Sandbox, batch_of, delete_of, hooked, run, through_gate, tree};
+use common::{Moment, SEPARATOR, Sandbox, batch_of, delete_of, hooked, run, through_gate, tree};
 
 const QUARANTINE_OFF: &str = "quarantine_enabled = false";
 
@@ -394,4 +396,63 @@ fn a_manifest_that_fails_after_it_was_created_has_its_folder_confirmed() {
         assert!(sandbox.path(&format!("{batch}/{MANIFEST_NAME}")).is_file());
         assert_eq!(*after.borrow(), [last_two(&sandbox.path(&batch))], "{at:?}");
     }
+}
+
+// ---- the text of the fence names what the walk opened ------------------------------------------
+
+/// While the fence is opened name by name, a folder already opened on the way is moved aside
+/// and a new one, with the same names inside, takes its place. On Windows the folder is held
+/// from the instant it is open and the move is refused. On Linux nothing refuses it, and the
+/// second walk from the root of the volume finds another folder under the name. Either way
+/// the fence that is built is the folder its text names, or there is no fence.
+#[test]
+fn a_folder_moved_while_the_fence_is_walked_does_not_give_the_fence_another_name() {
+    let sandbox = Sandbox::new("build-walk");
+    let base = sandbox.root.join("base");
+    let aside = sandbox.root.join("base-first");
+    fs::create_dir_all(base.join("fence").join("work")).unwrap();
+    fs::write(base.join("fence").join("work").join("file.txt"), "first").unwrap();
+    let moved = Rc::new(RefCell::new(None));
+    let built = Executor::new_walked(&base.join("fence"), sandbox.policy(""), || {}, {
+        let (base, aside, moved) = (base.clone(), aside.clone(), moved.clone());
+        move |name| {
+            if name != "base" || moved.borrow().is_some() {
+                return;
+            }
+            let outcome = fs::rename(&base, &aside);
+            if outcome.is_ok() {
+                fs::create_dir_all(base.join("fence").join("work")).unwrap();
+                fs::write(
+                    base.join("fence").join("work").join("file.txt"),
+                    "second one",
+                )
+                .unwrap();
+            }
+            *moved.borrow_mut() = Some(outcome.is_ok());
+        }
+    });
+    let moved = (*moved.borrow()).expect("the walk went through `base`");
+    if cfg!(windows) {
+        assert!(!moved, "a folder on the way was moved while it was held");
+    }
+    let executor = match built {
+        Ok(executor) => executor,
+        Err(FenceError::NotPlain(name)) => {
+            assert!(moved);
+            assert_eq!(name, "base");
+            return;
+        }
+        Err(other) => panic!("{other:?}"),
+    };
+    // Built: what is open under the text is what the text names on disk now.
+    let text = executor.fence_text();
+    let path = |rel: &str| {
+        let native = rel.replace('/', &SEPARATOR.to_string());
+        ads_core::gate::AbsPath::parse(&format!("{text}{SEPARATOR}{native}")).unwrap()
+    };
+    let facts = executor
+        .measure(&path("work"), &path("work/file.txt"))
+        .unwrap();
+    let on_disk = fs::read(base.join("fence").join("work").join("file.txt")).unwrap();
+    assert_eq!(facts.bytes, on_disk.len() as u64);
 }

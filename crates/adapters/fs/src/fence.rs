@@ -148,34 +148,90 @@ impl Frame {
         text
     }
 
-    /// Opens the fence: from the root of its volume, name by name, each one relative to the
-    /// folder opened before it and never through a link. What is open at the end is what
-    /// the text of the fence names, by construction: no path is resolved a second time.
-    fn open(&self) -> Result<Node, FenceError> {
-        let unresolved = |error: &dyn std::fmt::Display| FenceError::Unresolved(error.to_string());
+    fn anchor(&self) -> Result<Node, FenceError> {
         let anchor = if cfg!(windows) {
             format!("\\\\?\\{}\\", self.parts.anchor)
         } else {
             "/".to_owned()
         };
-        let mut node = Node::anchor(Path::new(&anchor)).map_err(|error| match error.kind() {
+        Node::anchor(Path::new(&anchor)).map_err(|error| match error.kind() {
             std::io::ErrorKind::Unsupported => FenceError::UnsupportedSystem,
-            _ => unresolved(&error),
-        })?;
+            _ => FenceError::Unresolved(error.to_string()),
+        })
+    }
+
+    /// Opens the fence: from the root of its volume, name by name, each one relative to the
+    /// folder opened before it and never through a link. `walked` is told each name once it
+    /// is open (for tests of that instant).
+    ///
+    /// The text names what is open only if no folder on the way moves during the walk. Where
+    /// the system can (Windows), each folder is held in place as soon as it is open, and
+    /// found again under its name in the folder above, which is held: until the walk ends
+    /// none of them can be renamed or moved. Everywhere, the names are then walked a second
+    /// time from the root of the volume and each one has to be the object of the first walk.
+    /// Where nothing holds (Linux) this sees a folder that moved during the walk and was not
+    /// put back before the second one, and nothing else.
+    fn open(&self, walked: &mut dyn FnMut(&str)) -> Result<Node, FenceError> {
+        let unresolved = |error: &dyn std::fmt::Display| FenceError::Unresolved(error.to_string());
+        let mut node = self.anchor()?;
+        if sys::HOLDS {
+            node = node.hold().map_err(|error| unresolved(&error))?;
+        }
+        let mut held = Vec::new();
+        let mut ids = Vec::new();
         for name in &self.parts.names {
             // Above the fence a folder may be on any mount: only links are refused.
-            node = match node.child(name) {
+            let child = match node.child(name) {
                 Ok(child) => child,
                 Err(sys::Error::Alias) => return Err(FenceError::NotPlain(name.clone())),
                 Err(error) => return Err(unresolved(&format!("{name}: {error}"))),
             };
-            match node.meta().map_err(|error| unresolved(&error))?.kind {
+            let meta = child.meta().map_err(|error| unresolved(&error))?;
+            match meta.kind {
                 Some(Kind::Dir) => {}
                 Some(Kind::Link) => return Err(FenceError::NotPlain(name.clone())),
                 _ => return Err(FenceError::NotADirectory),
             }
+            let child = match sys::HOLDS {
+                true => {
+                    let fixed = child
+                        .hold()
+                        .map_err(|error| unresolved(&format!("{name}: {error}")))?;
+                    match node.holds(name, meta.id) {
+                        Ok(true) => fixed,
+                        Ok(false) => return Err(FenceError::NotPlain(name.clone())),
+                        Err(error) => return Err(unresolved(&format!("{name}: {error}"))),
+                    }
+                }
+                false => child,
+            };
+            ids.push(meta.id);
+            held.push(std::mem::replace(&mut node, child));
+            walked(name);
         }
+        self.walk_again(&ids)?;
+        // The holds go with `held`: afterwards the fence is an open folder like any other.
+        drop(held);
         Ok(node)
+    }
+
+    /// Walks the names again from the root of the volume: each one has to be, right now,
+    /// the object the first walk opened under it.
+    fn walk_again(&self, ids: &[sys::Identity]) -> Result<(), FenceError> {
+        let mut node = self.anchor()?;
+        for (name, id) in self.parts.names.iter().zip(ids) {
+            node = match node.child(name) {
+                Ok(child) => child,
+                Err(_) => return Err(FenceError::NotPlain(name.clone())),
+            };
+            let now = node
+                .meta()
+                .map_err(|error| FenceError::Unresolved(error.to_string()))?;
+            if now.id != *id || now.kind != Some(Kind::Dir) {
+                return Err(FenceError::NotPlain(name.clone()));
+            }
+        }
+        Ok(())
     }
 
     /// The names of `path` below the fence; empty when it is the fence itself. By text, and
@@ -233,12 +289,17 @@ impl Fence {
     /// Resolves `base` and opens the fence. The resolution only says which names to walk:
     /// the fence is then opened from the root of its volume, name by name, without
     /// following a link. If the path changed in between, the walk refuses or opens exactly
-    /// what the published text names. `resolved` is called between the two, for tests.
-    pub(crate) fn build(base: &Path, resolved: impl FnOnce()) -> Result<Self, FenceError> {
+    /// what the published text names. `resolved` is called between the two, and `walked`
+    /// with each name the walk opened, for tests.
+    pub(crate) fn build(
+        base: &Path,
+        resolved: impl FnOnce(),
+        walked: &mut dyn FnMut(&str),
+    ) -> Result<Self, FenceError> {
         let unresolved = |error: std::io::Error| FenceError::Unresolved(error.to_string());
         let frame = Frame::from_resolved(fs::canonicalize(base).map_err(unresolved)?)?;
         resolved();
-        let root = frame.open()?;
+        let root = frame.open(walked)?;
         let home = root.meta().map_err(unresolved)?;
         if home.kind != Some(Kind::Dir) {
             return Err(FenceError::NotADirectory);
