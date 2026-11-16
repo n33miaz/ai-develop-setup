@@ -1,0 +1,14 @@
+{
+  "jsonrpc": "2.0",
+  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAF",
+  "method": "session.resize",
+  "params": {
+    "session_id": "sess-02",
+    "cols": 1,
+    "rows": 1000,
+    "_meta": {
+      "idempotency_key": "01ARZ3NDEKTSV4RRFFQ69G5FAG",
+      "origin": "local"
+    }
+  }
+}

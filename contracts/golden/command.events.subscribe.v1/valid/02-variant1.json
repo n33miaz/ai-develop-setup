@@ -1,0 +1,13 @@
+{
+  "jsonrpc": "2.0",
+  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAF",
+  "method": "events.subscribe",
+  "params": {
+    "stream": "session/sess-02",
+    "after_seq": 41,
+    "_meta": {
+      "idempotency_key": "01ARZ3NDEKTSV4RRFFQ69G5FAG",
+      "origin": "local"
+    }
+  }
+}

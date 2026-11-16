@@ -1,0 +1,33 @@
+{
+  "01-data-too-long.json": {
+    "rule": "No máximo 65536 bytes por comando.",
+    "keyword": "maxLength",
+    "instancePath": "/params/data"
+  },
+  "02-data-empty.json": {
+    "rule": "Escrever nada não é comando: pelo menos 1 byte.",
+    "keyword": "minLength",
+    "instancePath": "/params/data"
+  },
+  "03-data-not-base64.json": {
+    "rule": "data é base64 padrão com preenchimento.",
+    "keyword": "pattern",
+    "instancePath": "/params/data"
+  },
+  "04-missing-session.json": {
+    "rule": "A sessão é obrigatória.",
+    "keyword": "required",
+    "instancePath": "/params",
+    "params": {
+      "missingProperty": "session_id"
+    }
+  },
+  "05-extra-param.json": {
+    "rule": "params é fechado: campo desconhecido reprova.",
+    "keyword": "additionalProperties",
+    "instancePath": "/params",
+    "params": {
+      "additionalProperty": "encoding"
+    }
+  }
+}

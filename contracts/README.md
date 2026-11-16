@@ -271,6 +271,18 @@ Além dos cinco do JSON-RPC 2.0 (`-32700`, `-32600`, `-32601`, `-32602`, `-32603
 | `-32008` | Falha de leitura ou escrita no terminal |
 | `-32009` | Versão de contrato não suportada |
 
+## API local
+
+WebSocket em loopback entre a interface (navegador ou casca) e o núcleo. Como a conexão é autenticada está na [ADR 0020](../docs/adr/0020-local-api-authentication.md). Cada mensagem é um texto JSON.
+
+- Da interface ao núcleo: comandos `command.request:1`, cada método com Schema próprio que fixa `method` e fecha `params` (tabela [API local](#api-local-1)). O primeiro comando de toda conexão é `auth.hello`; antes dele o núcleo não aceita outro.
+- Do núcleo à interface: `urn:ads:contract:local-api.server-message:1`, que é a resposta `command.response:2` a um comando ou um evento `event.envelope:1` de um stream assinado por `events.subscribe`. A saída do terminal chega como evento `session.output:1`.
+- A interface escolhe a ferramenta pelo identificador do adaptador (`harness`) e a pasta pelo apelido (`workdir_alias`). `session.open` recusa `program`, `args`, `env` e `cwd`: o que roda, com que argumentos, em que ambiente e em que pasta sai só da configuração do usuário no núcleo.
+- Limites: colunas e linhas de 1 a 1000 (os mesmos do `pty-host/1`); `session.write` leva de 1 a 65536 bytes (87384 caracteres em base64), o que cabe com folga no quadro padrão do `pty-host/1` (`max_frame_bytes` de 1 MiB). Texto maior vai em vários comandos, na ordem.
+- O Schema aceita `origin: "remote"` no `_meta`, como o envelope de comando. Quem recusa comando remoto na API local é o núcleo (ADR 0020), não o Schema: o mesmo comando pode chegar, assinado, pelo transporte remoto.
+
+`server-message` é `anyOf`, não `oneOf`: as duas alternativas são objetos fechados e cada uma exige um campo que a outra recusa (`jsonrpc` na resposta; `type` no evento), então nenhum documento cabe nas duas e `anyOf` aceita exatamente o mesmo que `oneOf` aceitaria. O gerador de Rust só traduz `oneOf` com um campo de valor fixo que distinga as alternativas.
+
 ## Atualização
 
 O manifesto (`urn:ads:record:update-manifest:1`) é assinado no CI. A assinatura fica em arquivo à parte e cobre os bytes exatos do arquivo do manifesto, para não depender de forma canônica de JSON; o lançador a confere com a chave pública embutida antes de ler qualquer campo, e só então confere o digest de cada arquivo (ADR 0015).
@@ -307,6 +319,20 @@ O manifesto (`urn:ads:record:update-manifest:1`) é assinado no CI. A assinatura
 | `urn:ads:command:request:1` | Comando JSON-RPC 2.0 enviado ao núcleo. Comando é pedido, não fato; a chave de idempotência evita executar duas vezes, e a origem remota exige assinatura do aparelho, nonce, contador e validade. |
 | `urn:ads:command:response:1` | Resposta JSON-RPC 2.0 a um comando: ou result ou error, nunca os dois. O result é aberto. |
 | `urn:ads:command:response:2` | A mesma resposta com o result fechado: comando aceito e o sinal replayed, que marca a repetição de um comando idempotente. Convive com a `:1`. |
+
+### API local
+
+Os seis comandos estendem `urn:ads:command:request:1` com `allOf`, fixam `method` e fecham `params` (o `_meta` continua o do envelope).
+
+| Schema | O que descreve |
+|---|---|
+| `urn:ads:command:auth.hello:1` | Primeira mensagem de toda conexão da interface com a API local: o token aleatório da execução (32 bytes em base64url sem preenchimento). |
+| `urn:ads:command:session.open:1` | Abre uma sessão de terminal com uma ferramenta e uma pasta escolhidas só pelo nome (identificador do adaptador e apelido). Nunca leva programa, argumentos, ambiente nem pasta. |
+| `urn:ads:command:session.write:1` | Bytes para a entrada do terminal, em base64: de 1 a 65536 bytes por comando. |
+| `urn:ads:command:session.resize:1` | Novo tamanho do terminal, de 1 a 1000 colunas e linhas. |
+| `urn:ads:command:session.close:1` | Encerra a sessão de terminal e o processo dela. |
+| `urn:ads:command:events.subscribe:1` | Assina os eventos de um stream a partir de um seq (0: tudo o que o núcleo guarda). |
+| `urn:ads:contract:local-api.server-message:1` | O que o núcleo manda à interface pelo WebSocket: resposta `command.response:2` ou evento `event.envelope:1`. |
 
 ### Eventos de sessão
 

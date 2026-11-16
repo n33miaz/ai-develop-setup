@@ -1,0 +1,57 @@
+{
+  "01-program.json": {
+    "rule": "O programa nunca vem do comando: sai da configuração do núcleo.",
+    "keyword": "additionalProperties",
+    "instancePath": "/params",
+    "params": {
+      "additionalProperty": "program"
+    }
+  },
+  "02-args.json": {
+    "rule": "Os argumentos nunca vêm do comando.",
+    "keyword": "additionalProperties",
+    "instancePath": "/params",
+    "params": {
+      "additionalProperty": "args"
+    }
+  },
+  "03-env.json": {
+    "rule": "O ambiente nunca vem do comando.",
+    "keyword": "additionalProperties",
+    "instancePath": "/params",
+    "params": {
+      "additionalProperty": "env"
+    }
+  },
+  "04-cwd.json": {
+    "rule": "A pasta nunca vem do comando: só o apelido.",
+    "keyword": "additionalProperties",
+    "instancePath": "/params",
+    "params": {
+      "additionalProperty": "cwd"
+    }
+  },
+  "05-cols-zero.json": {
+    "rule": "Colunas de 1 a 1000, como no contrato pty-host/1.",
+    "keyword": "minimum",
+    "instancePath": "/params/cols"
+  },
+  "06-rows-too-many.json": {
+    "rule": "Linhas de 1 a 1000, como no contrato pty-host/1.",
+    "keyword": "maximum",
+    "instancePath": "/params/rows"
+  },
+  "07-alias-is-path.json": {
+    "rule": "O apelido é um identificador opaco, não um caminho.",
+    "keyword": "pattern",
+    "instancePath": "/params/workdir_alias"
+  },
+  "08-missing-harness.json": {
+    "rule": "A ferramenta é obrigatória.",
+    "keyword": "required",
+    "instancePath": "/params",
+    "params": {
+      "missingProperty": "harness"
+    }
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:command:session.close:1",
+  "title": "Fechar sessão",
+  "description": "Pede ao núcleo que encerre a sessão de terminal e o processo dela. O efeito volta como evento session.ended.",
+  "allOf": [
+    {
+      "$ref": "urn:ads:command:request:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "method",
+        "params"
+      ],
+      "properties": {
+        "method": {
+          "const": "session.close"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "_meta",
+            "session_id"
+          ],
+          "properties": {
+            "_meta": true,
+            "session_id": {
+              "$ref": "urn:ads:common:id:1"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "jsonrpc": "2.0",
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAD",
+      "method": "session.close",
+      "params": {
+        "session_id": "sess-01",
+        "_meta": {
+          "idempotency_key": "01ARZ3NDEKTSV4RRFFQ69G5FAE",
+          "origin": "local"
+        }
+      }
+    }
+  ]
+}

@@ -2,6 +2,14 @@
 
 Formato: uma seção por data. Contrato novo, campo opcional acrescentado, versão nova de uma URN e contrato aposentado entram aqui. As regras de versão estão no [README](README.md).
 
+## 2026-11-16
+
+Contratos da API local (interface ↔ núcleo), todos `:1`. Nenhum contrato existente foi alterado.
+
+- Comandos, cada um estendendo `command.request:1` com `method` fixo e `params` fechado: `auth.hello` (token da execução), `session.open` (sessão, ferramenta, apelido da pasta e tamanho; recusa `program`, `args`, `env` e `cwd`), `session.write` (1 a 65536 bytes em base64), `session.resize`, `session.close` e `events.subscribe` (stream e `after_seq`).
+- Contrato entre processos: `local-api.server-message` (resposta `command.response:2` ou evento `event.envelope:1`).
+- Gerador de Rust: extensão fechada de um objeto com propriedades (o `params` de cada comando) vira um `struct` fechado só com o que a extensão nomeia; `true` numa propriedade herda o Schema da base. Nenhum tipo gerado existente mudou.
+
 ## 2026-11-15
 
 Lacunas apontadas pelos consumidores (interface e portão de ações). Nenhum contrato `:1` teve regra apertada.

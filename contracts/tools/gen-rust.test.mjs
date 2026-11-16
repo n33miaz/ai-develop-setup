@@ -136,3 +136,34 @@ test("padrões: só passa o que significa o mesmo nos dois motores", () => {
     assert.throws(() => rustPattern(bad, "x"), /fora do subconjunto suportado/, bad);
   }
 });
+
+test("extensão fechada de um objeto com propriedades vira struct fechado só com o que ela nomeia", () => {
+  const { put, generate } = tree();
+  const base = {
+    type: "object",
+    additionalProperties: false,
+    required: ["method", "params"],
+    properties: {
+      method: { type: "string", pattern: "^[a-z.]+$" },
+      params: { type: "object", additionalProperties: true, required: ["_meta"], properties: { _meta: { $ref: "urn:ads:common:id:1" } } },
+    },
+  };
+  put("command.request.v1.schema.json", schema("urn:ads:command:request:1", base, { method: "a", params: { _meta: "abc" } }));
+  const ext = (params) => ({
+    allOf: [{ $ref: "urn:ads:command:request:1" }, { type: "object", required: ["method", "params"], properties: { method: { const: "x.go" }, params } }],
+  });
+  const closed = { type: "object", additionalProperties: false, required: ["_meta", "n"], properties: { _meta: true, n: { type: "integer", minimum: 1, maximum: 9 } } };
+  put("command.x.v1.schema.json", schema("urn:ads:command:x:1", ext(closed), null));
+  const x = generate().get("command_x_v1.rs");
+  assert.match(x, /#\[serde\(deny_unknown_fields\)\]\npub struct CommandXV1Params \{\n\s+#\[serde\(rename = "_meta"\)\]\n\s+pub meta: CommonIdV1,\n\s+pub n: CommandXV1ParamsN,\n\}/);
+
+  const bad = {
+    "true sem propriedade na base": [{ ...closed, properties: { ...closed.properties, other: true } }, /true herda da base/],
+    "obrigatório da base fora da extensão": [{ ...closed, required: ["n"], properties: { n: closed.properties.n } }, /"_meta" é obrigatório/],
+    "regra além da forma": [{ ...closed, minProperties: 1 }, /além da forma/],
+  };
+  for (const [label, [params, expected]] of Object.entries(bad)) {
+    put("command.x.v1.schema.json", schema("urn:ads:command:x:1", ext(params), null));
+    assert.throws(generate, expected, label);
+  }
+});

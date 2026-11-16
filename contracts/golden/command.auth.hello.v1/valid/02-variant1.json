@@ -1,0 +1,12 @@
+{
+  "jsonrpc": "2.0",
+  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAF",
+  "method": "auth.hello",
+  "params": {
+    "token": "b-_b-_b-_b-_b-_b-_b-_b-_b-_b-_b-_b-_b-_b-_b",
+    "_meta": {
+      "idempotency_key": "01ARZ3NDEKTSV4RRFFQ69G5FAG",
+      "origin": "local"
+    }
+  }
+}

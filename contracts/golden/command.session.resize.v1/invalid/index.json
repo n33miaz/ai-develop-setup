@@ -1,0 +1,25 @@
+{
+  "01-cols-too-many.json": {
+    "rule": "Colunas de 1 a 1000.",
+    "keyword": "maximum",
+    "instancePath": "/params/cols"
+  },
+  "02-rows-zero.json": {
+    "rule": "Linhas de 1 a 1000.",
+    "keyword": "minimum",
+    "instancePath": "/params/rows"
+  },
+  "03-cols-fraction.json": {
+    "rule": "Tamanho é inteiro.",
+    "keyword": "type",
+    "instancePath": "/params/cols"
+  },
+  "04-missing-rows.json": {
+    "rule": "Colunas e linhas vêm juntas.",
+    "keyword": "required",
+    "instancePath": "/params",
+    "params": {
+      "missingProperty": "rows"
+    }
+  }
+}

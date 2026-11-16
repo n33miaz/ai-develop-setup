@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:command:auth.hello:1",
+  "title": "Autenticação da API local",
+  "description": "Primeira mensagem de toda conexão da interface com a API local do núcleo: leva o token aleatório da execução, que o núcleo compara em tempo constante. Antes dela nenhum outro comando é aceito. O token nunca vai em query string, disco ou log.",
+  "allOf": [
+    {
+      "$ref": "urn:ads:command:request:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "method",
+        "params"
+      ],
+      "properties": {
+        "method": {
+          "const": "auth.hello"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "_meta",
+            "token"
+          ],
+          "properties": {
+            "_meta": true,
+            "token": {
+              "description": "Token da execução: 32 bytes aleatórios em base64url sem preenchimento (43 caracteres).",
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{43}$"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "jsonrpc": "2.0",
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAD",
+      "method": "auth.hello",
+      "params": {
+        "token": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "_meta": {
+          "idempotency_key": "01ARZ3NDEKTSV4RRFFQ69G5FAE",
+          "origin": "local"
+        }
+      }
+    }
+  ]
+}

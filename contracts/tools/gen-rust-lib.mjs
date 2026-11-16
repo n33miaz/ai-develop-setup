@@ -1072,7 +1072,40 @@ impl Serialize for ${name} {
       if (target.type !== "object") this.fail(at, "a extensão troca um objeto por outra coisa");
       return ext;
     }
+    if (base.type === "object" && base.properties && ext.type === "object" && ext.additionalProperties === false) {
+      return this.mergeClosedObject(base, ext, at);
+    }
     return null;
+  }
+
+  // Extensão fechada sobre um objeto com propriedades (todo comando fecha o params do envelope): vale só o que a
+  // extensão nomeia; `true` herda a propriedade da base. O resultado é o objeto que o allOf aceita, já fechado.
+  mergeClosedObject(base, ext, at) {
+    const shape = ["type", "additionalProperties", "required", "properties"];
+    const keys = (s) => Object.keys(s).filter((k) => !ANNOTATIONS.has(k));
+    if (keys(base).some((k) => !shape.includes(k))) this.fail(at, "a base do objeto fechado tem regras além da forma");
+    if (keys(ext).some((k) => !shape.includes(k))) this.fail(at, "a extensão fechada tem regras além da forma");
+    const required = [...new Set([...(base.required ?? []), ...(ext.required ?? [])])];
+    const properties = {};
+    for (const [prop, schema] of Object.entries(ext.properties ?? {})) {
+      const inBase = base.properties[prop];
+      if (schema === true) {
+        if (!inBase) this.fail(`${at}/properties/${prop}`, "true herda da base uma propriedade que ela não tem");
+        properties[prop] = inBase;
+      } else if (inBase) {
+        const merged = this.mergeProperty(inBase, schema, `${at}/properties/${prop}`);
+        if (!merged) this.fail(`${at}/properties/${prop}`, "propriedade da extensão sem fusão com a da base");
+        properties[prop] = merged;
+      } else if (base.additionalProperties === false) {
+        this.fail(`${at}/properties/${prop}`, `a extensão cria a propriedade "${prop}", que a base fechada recusa`);
+      } else {
+        properties[prop] = schema;
+      }
+    }
+    for (const r of required) {
+      if (!(r in properties)) this.fail(at, `"${r}" é obrigatório, mas a extensão fechada o recusa`);
+    }
+    return { type: "object", additionalProperties: false, required, properties };
   }
 
   render() {

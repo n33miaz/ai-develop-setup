@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:command:session.write:1",
+  "title": "Escrever na sessão",
+  "description": "Bytes digitados ou colados pela interface, em base64, para a entrada do terminal da sessão. De 1 a 65536 bytes por comando (87384 caracteres em base64): cabe com folga no quadro padrão do contrato pty-host/1; texto maior vai em vários comandos, na ordem.",
+  "allOf": [
+    {
+      "$ref": "urn:ads:command:request:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "method",
+        "params"
+      ],
+      "properties": {
+        "method": {
+          "const": "session.write"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "_meta",
+            "session_id",
+            "data"
+          ],
+          "properties": {
+            "_meta": true,
+            "session_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "data": {
+              "description": "Bytes em base64 padrão (RFC 4648) com preenchimento: de 1 a 65536 bytes.",
+              "type": "string",
+              "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
+              "minLength": 4,
+              "maxLength": 87384
+            }
+          }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "jsonrpc": "2.0",
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAD",
+      "method": "session.write",
+      "params": {
+        "session_id": "sess-01",
+        "data": "aGVsbG8=",
+        "_meta": {
+          "idempotency_key": "01ARZ3NDEKTSV4RRFFQ69G5FAE",
+          "origin": "local"
+        }
+      }
+    }
+  ]
+}

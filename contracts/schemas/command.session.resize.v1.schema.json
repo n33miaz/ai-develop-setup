@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:command:session.resize:1",
+  "title": "Redimensionar sessão",
+  "description": "Novo tamanho do terminal da sessão, em colunas e linhas, de 1 a 1000 como no contrato pty-host/1. O efeito volta como evento session.resized.",
+  "allOf": [
+    {
+      "$ref": "urn:ads:command:request:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "method",
+        "params"
+      ],
+      "properties": {
+        "method": {
+          "const": "session.resize"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "_meta",
+            "session_id",
+            "cols",
+            "rows"
+          ],
+          "properties": {
+            "_meta": true,
+            "session_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "cols": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000
+            },
+            "rows": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000
+            }
+          }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "jsonrpc": "2.0",
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAD",
+      "method": "session.resize",
+      "params": {
+        "session_id": "sess-01",
+        "cols": 100,
+        "rows": 30,
+        "_meta": {
+          "idempotency_key": "01ARZ3NDEKTSV4RRFFQ69G5FAE",
+          "origin": "local"
+        }
+      }
+    }
+  ]
+}

@@ -33,6 +33,7 @@ Os tipos ficam todos na raiz do crate (`ads_contracts::CommonIdV1`). O nome do t
 | `anyOf` | `enum` sem marca, uma variante por alternativa |
 | `oneOf` de objetos com um campo de valor fixo | `enum` com esse campo como marca |
 | `allOf` de um `$ref` com extensões (todo evento) | um `struct` só, com as propriedades do envelope apertadas pela extensão |
+| extensão fechada (`additionalProperties: false`) de um objeto da base com propriedades (o `params` de todo comando) | `struct` fechado só com o que a extensão nomeia; `true` numa propriedade herda o Schema da base |
 | `if`/`then`/`else`, `oneOf` de `required`, `not` e outras regras entre campos | tipo conferido: `X` guarda `XFields` e só nasce por `X::new(campos)` ou pela leitura, que avaliam as regras do Schema |
 
 Um valor de um tipo gerado é sempre válido pelo Schema: quem tem um `RecordApprovalV1` não precisa conferir de novo. O que o tipo **não** garante é o que o Schema também não exprime (o `stream` de um evento nomear a entidade do `data`, o `plan_hash` bater com o plano, a ordem dos alvos): isso continua sendo regra de contrato de quem produz o valor.
