@@ -49,5 +49,21 @@ Parâmetros (P8): a lista de origens permitidas e o prazo do `auth.hello` ficam 
 - A casca Tauri recebe a URL do núcleo por outro caminho (a definir junto com ela), sem passar por arquivo que outro usuário leia.
 - Este módulo entra na lista de módulos de segurança do `CONTRIBUTING.md`: mudanças nele exigem uma revisão a mais antes de juntar.
 
+## Limite conhecido
+
+A porta da interface também pertence à máquina, não ao usuário. Se outra conta
+ocupar essa porta antes, a página servida por ela recebe o fragmento e pode usar
+o token. `ui_base_url` em `defaults/daemon.toml` parametriza a URL impressa; por
+padrão a lista de origens deriva somente dessa URL. Isso reduz a lista permitida,
+mas não comprova quem serve a página.
+
+Em desenvolvimento, o servidor da interface deve usar porta fixa e `strictPort`.
+A URL só deve ser aberta depois de conferir que a porta é do próprio usuário;
+porta ocupada exige interromper a abertura e investigar. Não há proteção automática
+contra outra conta nessa etapa. O próximo passo é o daemon servir a interface na
+sua porta efêmera ou a casca Tauri entregar o token por um canal próprio do usuário.
+Esse limite não altera a decisão acima; o risco tem dono, teto e plano B em
+[risks.md](../risks.md#outro-usuário-ocupa-a-porta-da-interface).
+
 ## Condição de reversão
 Trocar o mecanismo se a casca Tauri, verificada no Windows, não conseguir mandar um `Origin` estável e exclusivo dela; se uma revisão de segurança mostrar caminho para ler o fragmento ou o token de fora da aba; ou se o núcleo passar a escutar fora do loopback (aí o transporte é o remoto, ADR 0008, com cifra e assinatura).

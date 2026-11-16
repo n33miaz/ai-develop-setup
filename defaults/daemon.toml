@@ -1,0 +1,18 @@
+# Origens exatas da interface; sem curingas. Trocar exige reconectar a interface.
+ui_base_url = "http://localhost:5173"
+# Vazia: deriva somente a origem da URL base. Lista explícita substitui a derivação.
+allowed_origins = []
+auth_timeout_ms = 5000
+# Limites por execução. Streams encerrados ocupam uma vaga até reiniciar o daemon.
+max_sessions = 32
+max_write_bytes = 65536
+events_per_stream = 256
+idempotency_keys = 1024
+# Filas e conexões limitam memória e clientes lentos.
+command_queue = 64
+max_connections = 32
+max_pending_auth = 4
+accept_retry_ms = 50
+max_message_bytes = 131072
+send_timeout_ms = 5000
+host_timeout_ms = 10000

@@ -3,6 +3,10 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::num::NonZeroU64;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use ads_ptyhost::HostConfig;
 use ads_ptyhost::channel::{self, ConnectError};
@@ -67,7 +71,7 @@ impl ClientConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum Event {
     Output {
         header: OutputHeader,
@@ -80,6 +84,22 @@ pub enum Event {
     },
 }
 
+impl fmt::Debug for Event {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Output { bytes, .. } => f
+                .debug_struct("Output")
+                .field("length", &bytes.len())
+                .finish_non_exhaustive(),
+            Self::Notification(_) => f.write_str("Notification([redacted])"),
+            Self::ResubscribeFailed { error, .. } => f
+                .debug_struct("ResubscribeFailed")
+                .field("error", error)
+                .finish_non_exhaustive(),
+        }
+    }
+}
+
 type Reply = oneshot::Sender<Result<ResultBody, ClientError>>;
 struct Command {
     call: Call,
@@ -89,10 +109,15 @@ struct Command {
 /// Dropping the client closes its connection, leaving the host's sessions alive.
 /// A dedicated reader preserves partial frames when a caller cancels an operation.
 pub struct PtyClient {
-    commands: mpsc::Sender<Command>,
+    handle: PtyCommands,
     events: mpsc::Receiver<Event>,
-    failure: watch::Receiver<Option<ClientError>>,
     worker: tokio::task::JoinHandle<()>,
+    backpressure: Arc<AtomicBool>,
+}
+#[derive(Clone)]
+pub(crate) struct PtyCommands {
+    commands: mpsc::Sender<Command>,
+    failure: watch::Receiver<Option<ClientError>>,
 }
 impl Drop for PtyClient {
     fn drop(&mut self) {
@@ -127,17 +152,23 @@ impl PtyClient {
         let (commands, rx) = mpsc::channel(config.queue_capacity);
         let (tx, events) = mpsc::channel(config.queue_capacity);
         let (failure_tx, failure) = watch::channel(None);
+        let backpressure = Arc::new(AtomicBool::new(false));
+        let mode = backpressure.clone();
         let worker = tokio::spawn(async move {
-            let result = run(stream, config, rx, tx).await;
+            let result = run(stream, config, rx, tx, mode).await;
             failure_tx.send_replace(Some(result.err().unwrap_or(ClientError::Disconnected)));
         });
         let client = Self {
-            commands,
+            handle: PtyCommands {
+                commands,
+                failure: failure.clone(),
+            },
             events,
-            failure,
             worker,
+            backpressure,
         };
         match client
+            .handle
             .call(Call::Hello(HelloParams {
                 contract: wire::CONTRACT.to_owned(),
             }))
@@ -148,6 +179,163 @@ impl PtyClient {
         }
     }
 
+    pub async fn open(&self, params: OpenParams) -> Result<(), ClientError> {
+        self.handle.open(params).await
+    }
+    pub async fn write(&self, params: WriteParams) -> Result<(), ClientError> {
+        self.handle.write(params).await
+    }
+    pub async fn resize(&self, params: ResizeParams) -> Result<(), ClientError> {
+        self.handle.resize(params).await
+    }
+    pub async fn close(&self, params: SessionParams) -> Result<Closed, ClientError> {
+        self.handle.close(params).await
+    }
+    pub async fn subscribe(
+        &self,
+        session_id: SessionId,
+        after_seq: Option<u64>,
+    ) -> Result<ReplayBounds, ClientError> {
+        self.handle.subscribe(session_id, after_seq).await
+    }
+    pub async fn list(&self) -> Result<SessionList, ClientError> {
+        self.handle.list().await
+    }
+    pub(crate) fn enable_backpressure(&self) {
+        self.backpressure.store(true, Ordering::Release);
+    }
+    pub(crate) fn commands(&self) -> PtyCommands {
+        self.handle.clone()
+    }
+    /// Queue overflow terminates this connection explicitly; reconnect using the last consumed seq.
+    pub async fn next(&mut self) -> Result<Event, ClientError> {
+        match self.events.recv().await {
+            Some(event) => Ok(event),
+            None => Err(self.handle.failure().await),
+        }
+    }
+}
+
+fn subscription(
+    session_id: SessionId,
+    after_seq: Option<u64>,
+) -> Result<SubscribeParams, ClientError> {
+    let from_seq = after_seq
+        .map(|n| {
+            n.checked_add(1)
+                .and_then(NonZeroU64::new)
+                .ok_or(ClientError::SequenceOverflow)
+        })
+        .transpose()?;
+    Ok(SubscribeParams {
+        session_id,
+        from_seq,
+    })
+}
+
+struct AbortTask(tokio::task::JoinHandle<()>);
+impl Drop for AbortTask {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+async fn run<S>(
+    stream: S,
+    config: ClientConfig,
+    mut commands: mpsc::Receiver<Command>,
+    events: mpsc::Sender<Event>,
+    backpressure: Arc<AtomicBool>,
+) -> Result<(), ClientError>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let (mut reader, mut writer) = tokio::io::split(stream);
+    let (frames_tx, mut frames) = mpsc::channel(1);
+    let errors = frames_tx.clone();
+    let (writes, mut outbound) = mpsc::channel::<Vec<u8>>(config.queue_capacity);
+    let _writer = AbortTask(tokio::spawn(async move {
+        while let Some(frame) = outbound.recv().await {
+            if writer.write_all(&frame).await.is_err() {
+                let _ = errors.send(Err(ClientError::Transport)).await;
+                break;
+            }
+        }
+    }));
+    let _reader = AbortTask(tokio::spawn(async move {
+        loop {
+            let frame = wire::read_frame(&mut reader, config.max_frame_bytes)
+                .await
+                .map_err(|_| ClientError::Protocol)
+                .and_then(|f| f.ok_or(ClientError::Disconnected));
+            let ended = frame.is_err();
+            if frames_tx.send(frame).await.is_err() || ended {
+                break;
+            }
+        }
+    }));
+    let mut pending = HashMap::<NonZeroU64, Reply>::new();
+    let mut recovery = HashMap::<NonZeroU64, SessionId>::new();
+    let mut next_id = Some(NonZeroU64::MIN);
+    loop {
+        let (call, reply, recovering) = tokio::select! {
+            command = commands.recv() => {
+                let Some(command) = command else { return Ok(()); };
+                if pending.len() + recovery.len() >= config.queue_capacity {
+                    let _ = command.reply.send(Err(ClientError::Capacity));
+                    continue;
+                }
+                (command.call, Some(command.reply), None)
+            }
+            frame = frames.recv() => {
+                let frame = frame.ok_or(ClientError::Disconnected)??;
+                let notification = match frame {
+                    Frame::Output { header, bytes } => {
+                        deliver(&events, &backpressure, Event::Output { header, bytes }).await?;
+                        continue;
+                    }
+                    Frame::Json(payload) => match HostMessage::parse(&payload).map_err(|_| ClientError::Protocol)? {
+                        HostMessage::Response(response) => {
+                            let id = response.id.ok_or(ClientError::Protocol)?;
+                            let outcome = response.outcome.map_err(|e| ClientError::Host { code: e.code, data: e.data });
+                            if let Some(reply) = pending.remove(&id) { let _ = reply.send(outcome); }
+                            else if let Some(session_id) = recovery.remove(&id) {
+                                match outcome {
+                                    Ok(ResultBody::ReplayBounds(_)) => (),
+                                    Ok(_) => return Err(ClientError::Protocol),
+                                    Err(error) => deliver(&events, &backpressure, Event::ResubscribeFailed { session_id, error }).await?,
+                                }
+                            } else { return Err(ClientError::Protocol); }
+                            continue;
+                        }
+                        HostMessage::Notification(notification) => notification,
+                    }
+                };
+                deliver(&events, &backpressure, Event::Notification(notification.clone())).await?;
+                match notification {
+                    Notification::SubscriptionClosed(closed) => {
+                        let session_id = closed.session_id;
+                        let call = Call::Subscribe(subscription(session_id.clone(), Some(closed.last_seq))?);
+                        (call, None, Some(session_id))
+                    }
+                    _ => continue,
+                }
+            }
+        };
+        let id = next_id.ok_or(ClientError::SequenceOverflow)?;
+        next_id = id.get().checked_add(1).and_then(NonZeroU64::new);
+        let frame = wire::encode_json(&Request { id, call }).map_err(|_| ClientError::Protocol)?;
+        writes.try_send(frame).map_err(|_| ClientError::Capacity)?;
+        if let Some(reply) = reply {
+            pending.insert(id, reply);
+        }
+        if let Some(session_id) = recovering {
+            recovery.insert(id, session_id);
+        }
+    }
+}
+
+impl PtyCommands {
     async fn failure(&self) -> ClientError {
         let mut failure = self.failure.clone();
         loop {
@@ -214,129 +402,19 @@ impl PtyClient {
             _ => Err(ClientError::Protocol),
         }
     }
-    /// Queue overflow terminates this connection explicitly; reconnect using the last consumed seq.
-    pub async fn next(&mut self) -> Result<Event, ClientError> {
-        match self.events.recv().await {
-            Some(event) => Ok(event),
-            None => Err(self.failure().await),
-        }
-    }
 }
 
-fn subscription(
-    session_id: SessionId,
-    after_seq: Option<u64>,
-) -> Result<SubscribeParams, ClientError> {
-    let from_seq = after_seq
-        .map(|n| {
-            n.checked_add(1)
-                .and_then(NonZeroU64::new)
-                .ok_or(ClientError::SequenceOverflow)
-        })
-        .transpose()?;
-    Ok(SubscribeParams {
-        session_id,
-        from_seq,
-    })
-}
-
-struct AbortTask(tokio::task::JoinHandle<()>);
-impl Drop for AbortTask {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
-
-async fn run<S>(
-    stream: S,
-    config: ClientConfig,
-    mut commands: mpsc::Receiver<Command>,
-    events: mpsc::Sender<Event>,
-) -> Result<(), ClientError>
-where
-    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-{
-    let (mut reader, mut writer) = tokio::io::split(stream);
-    let (frames_tx, mut frames) = mpsc::channel(1);
-    let errors = frames_tx.clone();
-    let (writes, mut outbound) = mpsc::channel::<Vec<u8>>(config.queue_capacity);
-    let _writer = AbortTask(tokio::spawn(async move {
-        while let Some(frame) = outbound.recv().await {
-            if writer.write_all(&frame).await.is_err() {
-                let _ = errors.send(Err(ClientError::Transport)).await;
-                break;
-            }
-        }
-    }));
-    let _reader = AbortTask(tokio::spawn(async move {
-        loop {
-            let frame = wire::read_frame(&mut reader, config.max_frame_bytes)
-                .await
-                .map_err(|_| ClientError::Protocol)
-                .and_then(|f| f.ok_or(ClientError::Disconnected));
-            let ended = frame.is_err();
-            if frames_tx.send(frame).await.is_err() || ended {
-                break;
-            }
-        }
-    }));
-    let mut pending = HashMap::<NonZeroU64, Reply>::new();
-    let mut recovery = HashMap::<NonZeroU64, SessionId>::new();
-    let mut next_id = Some(NonZeroU64::MIN);
-    loop {
-        let (call, reply, recovering) = tokio::select! {
-            command = commands.recv() => {
-                let Some(command) = command else { return Ok(()); };
-                if pending.len() + recovery.len() >= config.queue_capacity {
-                    let _ = command.reply.send(Err(ClientError::Capacity));
-                    continue;
-                }
-                (command.call, Some(command.reply), None)
-            }
-            frame = frames.recv() => {
-                let frame = frame.ok_or(ClientError::Disconnected)??;
-                let notification = match frame {
-                    Frame::Output { header, bytes } => {
-                        events.try_send(Event::Output { header, bytes }).map_err(|_| ClientError::Capacity)?;
-                        continue;
-                    }
-                    Frame::Json(payload) => match HostMessage::parse(&payload).map_err(|_| ClientError::Protocol)? {
-                        HostMessage::Response(response) => {
-                            let id = response.id.ok_or(ClientError::Protocol)?;
-                            let outcome = response.outcome.map_err(|e| ClientError::Host { code: e.code, data: e.data });
-                            if let Some(reply) = pending.remove(&id) { let _ = reply.send(outcome); }
-                            else if let Some(session_id) = recovery.remove(&id) {
-                                match outcome {
-                                    Ok(ResultBody::ReplayBounds(_)) => (),
-                                    Ok(_) => return Err(ClientError::Protocol),
-                                    Err(error) => events.try_send(Event::ResubscribeFailed { session_id, error }).map_err(|_| ClientError::Capacity)?,
-                                }
-                            } else { return Err(ClientError::Protocol); }
-                            continue;
-                        }
-                        HostMessage::Notification(notification) => notification,
-                    }
-                };
-                events.try_send(Event::Notification(notification.clone())).map_err(|_| ClientError::Capacity)?;
-                match notification {
-                    Notification::SubscriptionClosed(closed) => {
-                        let session_id = closed.session_id;
-                        let call = Call::Subscribe(subscription(session_id.clone(), Some(closed.last_seq))?);
-                        (call, None, Some(session_id))
-                    }
-                    _ => continue,
-                }
-            }
-        };
-        let id = next_id.ok_or(ClientError::SequenceOverflow)?;
-        next_id = id.get().checked_add(1).and_then(NonZeroU64::new);
-        let frame = wire::encode_json(&Request { id, call }).map_err(|_| ClientError::Protocol)?;
-        writes.try_send(frame).map_err(|_| ClientError::Capacity)?;
-        if let Some(reply) = reply {
-            pending.insert(id, reply);
-        }
-        if let Some(session_id) = recovering {
-            recovery.insert(id, session_id);
-        }
+async fn deliver(
+    events: &mpsc::Sender<Event>,
+    backpressure: &AtomicBool,
+    event: Event,
+) -> Result<(), ClientError> {
+    if backpressure.load(Ordering::Acquire) {
+        events
+            .send(event)
+            .await
+            .map_err(|_| ClientError::Disconnected)
+    } else {
+        events.try_send(event).map_err(|_| ClientError::Capacity)
     }
 }

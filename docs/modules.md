@@ -4,6 +4,11 @@ Uma frase por módulo (P1): se a frase precisa de "e também", o módulo está g
 
 A coluna "Estado" diz o que existe hoje na `develop`. "Esqueleto" é um crate que compila sem comportamento do produto.
 
+No daemon, `api` compõe os comandos autenticados da interface com o host;
+`auth` protege o upgrade e a credencial por execução; `events` conserva streams
+limitados em memória; `pty_client` transporta o contrato público do host;
+`main` inicia o serviço com sua configuração.
+
 | Módulo | Pasta | Responsabilidade | Estado |
 |---|---|---|---|
 | `ads-contract-schemas` | `contracts` | Fonte dos contratos: JSON Schemas versionados, arquivos dourados e os tipos gerados a partir deles. | Em uso: Schemas, dourados, validador e geradores ([README](../contracts/README.md)). |
@@ -11,7 +16,7 @@ A coluna "Estado" diz o que existe hoje na `develop`. "Esqueleto" é um crate qu
 | `ads-core` | `crates/core` | Política do produto: tarefas, aprovações, escopo, roteamento e orçamento. | Portão de ações destrutivas implementado e testado ([README](../crates/core/README.md)); tarefas, roteamento e orçamento ainda não. |
 | `ads-storage` | `crates/storage` | Estado local: SQLite, cifra por coluna e auditoria encadeada. | Abertura conferida do banco de auditoria e cifra autenticada implementadas e testadas ([README](../crates/storage/README.md), [ADR 0021](adr/0021-storage-atomic-file-and-cipher.md)); a cifra ainda não está ligada ao banco, e não há tabelas de eventos nem auditoria encadeada. |
 | `ads-ptyhost` | `crates/ptyhost` | Processo estável que segura as sessões de terminal e o anel de replay, servidos ao núcleo pelo contrato `pty-host/1`. | Implementado e testado, com os ciclos de ConPTY no CI ([README](../crates/ptyhost/README.md)). |
-| `ads-daemon` | `crates/daemon` | Composição que liga o núcleo, os adaptadores e a API local de HTTP e WebSocket. | Só o cliente do `ptyhost`, que confere o dono do canal ([README](../crates/daemon/README.md)); o executável ainda não serve a API local. |
+| `ads-daemon` | `crates/daemon` | Composição que liga o núcleo, os adaptadores e a API local de HTTP e WebSocket. | Cliente do `ptyhost`, que confere o dono do canal, e a API local autenticada por WebSocket ([README](../crates/daemon/README.md)); nenhuma ferramenta real está ligada ainda. |
 | `ads-launcher` | `crates/launcher` | Supervisor estável que inicia os outros processos e aplica as atualizações. | Esqueleto: o executável só imprime o nome. |
 | `ads-shell` | `crates/shell` | Casca Tauri (janela, bandeja e painel) como cliente fino do núcleo. | Esqueleto: janela vazia que carrega a interface e ícone de bandeja. |
 | `ads-e2e` | `crates/e2e` | Sessão cifrada de ponta a ponta do transporte remoto, para o PC e a PWA. | Esqueleto. |
@@ -23,4 +28,4 @@ A coluna "Estado" diz o que existe hoje na `develop`. "Esqueleto" é um crate qu
 | `ads-adapter-collectors` | `crates/adapters/collectors` | Coleta, só em leitura, os dados de uso das ferramentas. | Esqueleto. |
 | `ads-adapter-relay` | `crates/adapters/relay` | Adapta o transporte do relé remoto ao contrato do núcleo. | Esqueleto; só os Schemas do relé existem. |
 | `ads-adapter-fs` | `crates/adapters/fs` | Executa no sistema de arquivos, dentro de uma cerca, as ações que o portão do núcleo licenciou. | Implementado e testado, ainda não chamado por nenhum módulo ([README](../crates/adapters/fs/README.md)). |
-| `ads-ui` | `ui` | Interface web, cliente fino do núcleo: mostra o estado que os eventos recebidos descrevem. | Tela com barra lateral e terminal e o cliente da API local, usado quando recebe a URL com o token (o daemon ainda não serve essa API); sem ela, mostra dados de exemplo ([README da raiz](../README.md#interface-e-conexão-local); sem README próprio). Entrada, redimensionamento com debounce e abertura por ferramenta configurada implementados na interface. |
+| `ads-ui` | `ui` | Interface web, cliente fino do núcleo: mostra o estado que os eventos recebidos descrevem. | Tela com barra lateral e terminal e o cliente da API local, usado quando recebe a URL com o token; sem ela, mostra dados de exemplo ([README da raiz](../README.md#interface-e-conexão-local); sem README próprio). Entrada, redimensionamento com debounce e abertura por ferramenta configurada implementados na interface. |
