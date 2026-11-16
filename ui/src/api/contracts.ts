@@ -1,10 +1,10 @@
 // Ponto único de importação dos tipos das mensagens trocadas com o núcleo.
 // Todos vêm dos tipos gerados dos JSON Schemas (`contracts/generated/ts`); nenhum é escrito à mão.
 // O resto da UI importa daqui, nunca direto de `contracts/`. Só tipos: nada disto entra no bundle.
-import type { EventApprovalDeniedV1 } from '../../../contracts/generated/ts/event.approval.denied.v1'
-import type { EventApprovalExpiredV1 } from '../../../contracts/generated/ts/event.approval.expired.v1'
-import type { EventApprovalGrantedV1 } from '../../../contracts/generated/ts/event.approval.granted.v1'
-import type { EventApprovalRequestedV1 } from '../../../contracts/generated/ts/event.approval.requested.v1'
+import type { EventApprovalDeniedV2 } from '../../../contracts/generated/ts/event.approval.denied.v2'
+import type { EventApprovalExpiredV2 } from '../../../contracts/generated/ts/event.approval.expired.v2'
+import type { EventApprovalGrantedV2 } from '../../../contracts/generated/ts/event.approval.granted.v2'
+import type { EventApprovalRequestedV2 } from '../../../contracts/generated/ts/event.approval.requested.v2'
 import type { EventEnvelopeV1 } from '../../../contracts/generated/ts/event.envelope.v1'
 import type { EventHostAlertAckedV1 } from '../../../contracts/generated/ts/event.host.alert_acked.v1'
 import type { EventHostAlertRaisedV1 } from '../../../contracts/generated/ts/event.host.alert_raised.v1'
@@ -33,10 +33,10 @@ export type {
   CommonUlidV1,
 } from '../../../contracts/generated/ts/event.envelope.v1'
 export type {
-  EventApprovalDeniedV1,
-  EventApprovalExpiredV1,
-  EventApprovalGrantedV1,
-  EventApprovalRequestedV1,
+  EventApprovalDeniedV2,
+  EventApprovalExpiredV2,
+  EventApprovalGrantedV2,
+  EventApprovalRequestedV2,
   EventEnvelopeV1,
   EventHostAlertAckedV1,
   EventHostAlertRaisedV1,
@@ -71,8 +71,12 @@ export type TaskEvent =
   | EventTaskFailedV1
   | EventTaskStartedV1
 
+/**
+ * Só as `:2`, que dizem de qual ação são (`action_id`). O núcleo escreve só elas e recusa as `:1`
+ * na leitura.
+ */
 export type ApprovalEvent =
-  EventApprovalDeniedV1 | EventApprovalExpiredV1 | EventApprovalGrantedV1 | EventApprovalRequestedV1
+  EventApprovalDeniedV2 | EventApprovalExpiredV2 | EventApprovalGrantedV2 | EventApprovalRequestedV2
 
 export type UsageEvent = EventUsageReconciledV1 | EventUsageRecordedV1
 

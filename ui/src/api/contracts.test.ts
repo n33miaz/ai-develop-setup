@@ -7,6 +7,7 @@ import {
   newCommand,
   newIdempotencyKey,
   newUlid,
+  type ApprovalEvent,
   type EventDraft,
 } from '.'
 import { streamBindingError } from '../../../contracts/tools/rules.mjs'
@@ -202,10 +203,11 @@ describe('messages against the contract schemas', () => {
         data: { task_id: 'task-2', reason: 'owner' },
       }),
       client.emit({
-        type: 'urn:ads:event:approval.requested:1',
+        type: 'urn:ads:event:approval.requested:2',
         stream: 'approval/approval-1',
         data: {
           approval_id: 'approval-1',
+          action_id: 'action-1',
           plan_hash: hash,
           risk: 'medium',
           summary: 'sample',
@@ -214,15 +216,81 @@ describe('messages against the contract schemas', () => {
         },
       }),
       client.emit({
-        type: 'urn:ads:event:approval.granted:1',
+        type: 'urn:ads:event:approval.granted:2',
         stream: 'approval/approval-1',
-        data: { approval_id: 'approval-1', plan_hash: hash, via: 'local_ui' },
+        data: {
+          approval_id: 'approval-1',
+          action_id: 'action-1',
+          plan_hash: hash,
+          via: 'local_ui',
+        },
+      }),
+      client.emit({
+        type: 'urn:ads:event:approval.denied:2',
+        stream: 'approval/approval-2',
+        data: { approval_id: 'approval-2', action_id: 'action-2', plan_hash: hash, reason: null },
+      }),
+      client.emit({
+        type: 'urn:ads:event:approval.expired:2',
+        stream: 'approval/approval-3',
+        data: { approval_id: 'approval-3', action_id: 'action-3', plan_hash: hash },
       }),
     ]
 
     for (const event of events) {
       expect(violations(event.type, event), event.type).toEqual([])
       expect(streamBindingError(event), event.type).toBeNull()
+    }
+  })
+
+  it('names the action in every approval event, as version 2 requires', async () => {
+    const client = await connected()
+    const plan_hash = `sha256:${'d'.repeat(64)}`
+    // Tipados pela união da interface: sem `action_id`, ou com a URN da `:1`, não compilam.
+    const drafts: EventDraft<ApprovalEvent>[] = [
+      {
+        type: 'urn:ads:event:approval.requested:2',
+        stream: 'approval/approval-1',
+        data: {
+          approval_id: 'approval-1',
+          action_id: 'action-1',
+          plan_hash,
+          risk: 'high',
+          summary: 'sample',
+          expires_at: '2030-01-02T03:04:05Z',
+          needs_elevation: true,
+        },
+      },
+      {
+        type: 'urn:ads:event:approval.granted:2',
+        stream: 'approval/approval-1',
+        data: { approval_id: 'approval-1', action_id: 'action-1', plan_hash, via: 'local_ui' },
+      },
+      {
+        type: 'urn:ads:event:approval.denied:2',
+        stream: 'approval/approval-1',
+        data: { approval_id: 'approval-1', action_id: 'action-1', plan_hash, reason: 'sample' },
+      },
+      {
+        type: 'urn:ads:event:approval.expired:2',
+        stream: 'approval/approval-1',
+        data: { approval_id: 'approval-1', action_id: 'action-1', plan_hash },
+      },
+    ]
+
+    for (const draft of drafts) {
+      const event = client.emit(draft)
+      const { action_id, ...unnamed } = draft.data
+
+      expect(violations(event.type, event), event.type).toEqual([])
+      expect(action_id, event.type).toBe('action-1')
+      expect(violations(event.type, { ...event, data: unnamed }), event.type).toContain(
+        'required@/data',
+      )
+      expect(
+        violations(event.type, { ...event, data: { ...draft.data, action_id: null } }),
+        event.type,
+      ).toContain('type@/data/action_id')
     }
   })
 
