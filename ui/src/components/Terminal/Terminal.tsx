@@ -14,13 +14,36 @@ export interface TerminalHandle {
 interface TerminalProps {
   source: ByteSource
   label: string
+
+  onInput?: ((bytes: Uint8Array) => void) | undefined
+
+  onResize?: ((cols: number, rows: number) => void) | undefined
+
+  resizeDebounceMs?: number
+
   ref?: Ref<TerminalHandle>
 }
 
-/** Mostra no xterm.js os bytes que a fonte entrega. Só exibe: não tem conexão nem entrada ainda. */
-export function Terminal({ source, label, ref }: TerminalProps) {
+/** Mostra bytes da fonte e encaminha a entrada quando há um consumidor. */
+
+export function Terminal({
+  source,
+  label,
+  ref,
+  onInput,
+  onResize,
+  resizeDebounceMs = 150,
+}: TerminalProps) {
   const container = useRef<HTMLDivElement>(null)
   const term = useRef<XTerm | null>(null)
+
+  const callbacks = useRef({ onInput, onResize })
+
+  useEffect(() => {
+    callbacks.current = { onInput, onResize }
+
+    if (term.current) term.current.options.disableStdin = !onInput
+  }, [onInput, onResize])
 
   useImperativeHandle(ref, () => ({
     readScreen() {
@@ -38,7 +61,8 @@ export function Terminal({ source, label, ref }: TerminalProps) {
     const element = container.current
     if (!element) return
     const xterm = new XTerm({
-      disableStdin: true,
+      disableStdin: !callbacks.current.onInput,
+
       cursorBlink: false,
       cursorInactiveStyle: 'none',
       convertEol: false,
@@ -59,6 +83,26 @@ export function Terminal({ source, label, ref }: TerminalProps) {
         // contêiner ainda sem tamanho (oculto ou sem layout)
       }
     }
+
+    let resizeTimer: ReturnType<typeof setTimeout> | undefined
+
+    const resized = xterm.onResize(({ cols, rows }) => {
+      clearTimeout(resizeTimer)
+
+      resizeTimer = setTimeout(() => callbacks.current.onResize?.(cols, rows), resizeDebounceMs)
+    })
+
+    let historical = false
+
+    const input = xterm.onData((data) => {
+      if (!historical) callbacks.current.onInput?.(new TextEncoder().encode(data))
+    })
+
+    const binary = xterm.onBinary((data) => {
+      if (!historical)
+        callbacks.current.onInput?.(Uint8Array.from(data, (char) => char.charCodeAt(0)))
+    })
+
     refit()
     const resizeObserver =
       typeof ResizeObserver === 'function' ? new ResizeObserver(refit) : undefined
@@ -66,18 +110,61 @@ export function Terminal({ source, label, ref }: TerminalProps) {
     const stopWatchingTheme = watchTheme(() => {
       xterm.options.theme = readTerminalTheme(document.documentElement)
     })
-    const unsubscribe = source.subscribe((bytes) => {
-      xterm.write(bytes)
+
+    // Serializa a análise assíncrona: cada resposta pertence ao bloco em análise.
+
+    const queue: { bytes: Uint8Array; replay: boolean }[] = []
+
+    let writing = false
+
+    let disposed = false
+
+    const drain = () => {
+      if (writing || disposed) return
+
+      const chunk = queue.shift()
+
+      if (!chunk) return
+
+      writing = true
+
+      historical = chunk.replay
+
+      xterm.write(chunk.bytes, () => {
+        historical = false
+
+        writing = false
+
+        drain()
+      })
+    }
+
+    const unsubscribe = source.subscribe((bytes, replay = false) => {
+      queue.push({ bytes, replay })
+
+      drain()
     })
 
+    if (callbacks.current.onInput) xterm.focus()
+
     return () => {
+      disposed = true
+
+      clearTimeout(resizeTimer)
+
+      resized.dispose()
+
+      input.dispose()
+
+      binary.dispose()
+
       unsubscribe()
       stopWatchingTheme()
       resizeObserver?.disconnect()
       term.current = null
       xterm.dispose()
     }
-  }, [source])
+  }, [source, resizeDebounceMs])
 
   return (
     <div className={styles.terminal} role="region" aria-label={label}>

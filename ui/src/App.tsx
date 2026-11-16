@@ -1,5 +1,16 @@
-import { useEffect, useId, useMemo, useState } from 'react'
-import { decodeBase64, useConnectionState, type CoreClient } from './api'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+
+import {
+  decodeBase64,
+  newCommand,
+  newUlid,
+  useConnectionState,
+  type CoreClient,
+  type EventEnvelopeV1,
+} from './api'
+
+import { sessionInput } from './api/session'
+
 import styles from './App.module.css'
 import { ConnectionStatus } from './components/ConnectionStatus'
 import { Sidebar } from './components/Sidebar/Sidebar'
@@ -25,6 +36,13 @@ const TERMINAL_ID = 'terminal'
 interface AppProps {
   client: CoreClient
   live?: boolean
+
+  harnesses?: readonly string[]
+
+  workdir?: string
+
+  resizeDebounceMs?: number
+
   sessionStreams?: readonly string[]
   /** Os eventos que a tela reproduz; enquanto o núcleo não a alimenta, os de exemplo. */
   events?: (t: Translate) => SampleEvents
@@ -36,13 +54,59 @@ export function App({
   events = sampleEvents,
   live = false,
   sessionStreams = NO_STREAMS,
+
+  harnesses = NO_STREAMS,
+
+  workdir = 'default',
+
+  resizeDebounceMs = 150,
 }: AppProps) {
   const t = useT()
   const sidebarId = useId()
   const connection = useConnectionState(client)
   const { preference, cycle } = useTheme()
   const [menuOpen, setMenuOpen] = useState(false)
+
+  const [warning, setWarning] = useState(false)
+
+  const reportError = useCallback(() => {
+    setWarning(true)
+  }, [])
+
+  const openedSubscriptions = useRef<(() => void)[]>([])
+
+  const size = useRef({ cols: 80, rows: 24 })
+
+  const [opening, setOpening] = useState(false)
+
   const [liveEvents, setLiveEvents] = useState<SessionEvent[]>([])
+
+  const receiveSession = useCallback((event: EventEnvelopeV1) => {
+    if (
+      ![
+        'urn:ads:event:session.created:1',
+        'urn:ads:event:session.activity_changed:1',
+        'urn:ads:event:session.ended:1',
+      ].includes(event.type)
+    )
+      return
+
+    setLiveEvents((previous) =>
+      previous.some((item) => item.id === event.id)
+        ? previous
+        : [...previous, event as SessionEvent],
+    )
+  }, [])
+
+  useEffect(
+    () => () => {
+      for (const stop of openedSubscriptions.current) stop()
+
+      openedSubscriptions.current = []
+    },
+    [client, connection],
+  )
+
   useEffect(() => {
     if (!live) return
     void client.connect().catch(() => undefined)
@@ -52,27 +116,14 @@ export function App({
   }, [client, live])
   useEffect(() => {
     if (!live || connection !== 'connected') return
-    const unsubscribe = sessionStreams.map((stream) =>
-      client.subscribe(stream, 0, (event) => {
-        if (
-          ![
-            'urn:ads:event:session.created:1',
-            'urn:ads:event:session.activity_changed:1',
-            'urn:ads:event:session.ended:1',
-          ].includes(event.type)
-        )
-          return
-        setLiveEvents((previous) =>
-          previous.some((item) => item.id === event.id)
-            ? previous
-            : [...previous, event as SessionEvent],
-        )
-      }),
-    )
+
+    const unsubscribe = sessionStreams.map((stream) => client.subscribe(stream, 0, receiveSession))
+
     return () => {
       for (const stop of unsubscribe) stop()
     }
-  }, [client, live, connection, sessionStreams])
+  }, [client, live, connection, sessionStreams, receiveSession])
+
   const { tasks, sessions } = useMemo(() => {
     if (live) return { tasks: [], sessions: sessionsFrom(liveEvents) }
     const replayed = events(t)
@@ -98,6 +149,64 @@ export function App({
     [t, sessionId, sessionName, live, client, connection],
   )
 
+  const input = useMemo(
+    () =>
+      live && sessionId && connection === 'connected'
+        ? sessionInput(client, sessionId, reportError)
+        : undefined,
+
+    [live, sessionId, connection, client, reportError],
+  )
+
+  const resize = useCallback(
+    (cols: number, rows: number) => {
+      size.current = { cols: Math.min(1000, cols), rows: Math.min(1000, rows) }
+
+      if (!input || !sessionId) return
+
+      void client
+        .send(newCommand('session.resize', { session_id: sessionId, ...size.current }))
+
+        .then((response) => {
+          if (response.error) reportError()
+        }, reportError)
+    },
+    [client, input, sessionId, reportError],
+  )
+
+  const open = async (harness: string) => {
+    setOpening(true)
+
+    setWarning(false)
+
+    const id = `s-${newUlid()}`
+
+    // Assina antes da abertura: session.created pode preceder a resposta.
+
+    setChosenSessionId(id)
+
+    try {
+      const stop = client.subscribe(`session/${id}`, 0, receiveSession)
+
+      openedSubscriptions.current.push(stop)
+
+      const response = await client.send(
+        newCommand('session.open', {
+          session_id: id,
+          harness,
+          workdir_alias: workdir,
+          ...size.current,
+        }),
+      )
+
+      if (response.error) reportError()
+    } catch {
+      reportError()
+    } finally {
+      setOpening(false)
+    }
+  }
+
   return (
     <div className={styles.app}>
       <a className={styles.skip} href={`#${TERMINAL_ID}`}>
@@ -121,6 +230,25 @@ export function App({
           {t('theme.button', { mode: t(THEME_LABEL[preference]) })}
         </button>
       </header>
+
+      {live &&
+        harnesses.map((harness) => (
+          <button
+            key={harness}
+            type="button"
+            className={styles.button}
+
+            disabled={connection !== 'connected' || opening}
+            onClick={() => {
+              void open(harness)
+            }}
+          >
+            {t('session.open', { harness })}
+          </button>
+        ))}
+
+      {warning && <p role="alert">{t('session.commandFailed')}</p>}
+
       <p className={styles.notice}>{t(live ? 'notice.live' : 'notice.wip')}</p>
       <div className={styles.body}>
         <Sidebar
@@ -135,7 +263,13 @@ export function App({
           }}
         />
         <main id={TERMINAL_ID} className={styles.main} tabIndex={-1}>
-          <Terminal source={source} label={t('terminal.label', { name: sessionName })} />
+          <Terminal
+            source={source}
+            label={t('terminal.label', { name: sessionName })}
+            onInput={input}
+            onResize={resize}
+            resizeDebounceMs={resizeDebounceMs}
+          />
         </main>
       </div>
     </div>
