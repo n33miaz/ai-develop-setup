@@ -6,6 +6,11 @@ pub enum StorageError {
     Configuration,
     Io,
     Busy,
+    Constraint,
+    ReadOnly,
+    Permission,
+    CantOpen,
+    Full,
     Corrupt,
     ForeignApplication,
     SchemaTooNew,
@@ -28,9 +33,69 @@ impl From<rusqlite::Error> for StorageError {
             Error::SqliteFailure(e, _) => match e.code {
                 ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked => Self::Busy,
                 ErrorCode::DatabaseCorrupt | ErrorCode::NotADatabase => Self::Corrupt,
+                ErrorCode::ConstraintViolation => Self::Constraint,
+                ErrorCode::ReadOnly => Self::ReadOnly,
+                ErrorCode::PermissionDenied => Self::Permission,
+                ErrorCode::CannotOpen => Self::CantOpen,
+                ErrorCode::DiskFull => Self::Full,
                 _ => Self::Io,
             },
-            _ => Self::Corrupt,
+            Error::InvalidPath(_) | Error::NulError(_) => Self::CantOpen,
+            Error::QueryReturnedNoRows
+            | Error::InvalidColumnType(..)
+            | Error::IntegralValueOutOfRange(..) => Self::UnsupportedSchema,
+            _ => Self::Io,
         }
+    }
+}
+
+impl From<std::io::Error> for StorageError {
+    fn from(value: std::io::Error) -> Self {
+        match value.kind() {
+            std::io::ErrorKind::PermissionDenied => Self::Permission,
+            std::io::ErrorKind::NotFound | std::io::ErrorKind::InvalidInput => Self::CantOpen,
+            std::io::ErrorKind::StorageFull => Self::Full,
+            _ => Self::Io,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn sqlite_error_categories_are_distinct() {
+        for (code, expected) in [
+            (19, StorageError::Constraint),
+            (8, StorageError::ReadOnly),
+            (3, StorageError::Permission),
+            (14, StorageError::CantOpen),
+            (13, StorageError::Full),
+            (5, StorageError::Busy),
+            (11, StorageError::Corrupt),
+        ] {
+            assert_eq!(
+                StorageError::from(rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(code),
+                    None
+                )),
+                expected
+            );
+        }
+        for (kind, expected) in [
+            (
+                std::io::ErrorKind::PermissionDenied,
+                StorageError::Permission,
+            ),
+            (std::io::ErrorKind::NotFound, StorageError::CantOpen),
+            (std::io::ErrorKind::InvalidInput, StorageError::CantOpen),
+            (std::io::ErrorKind::StorageFull, StorageError::Full),
+        ] {
+            assert_eq!(StorageError::from(std::io::Error::from(kind)), expected);
+        }
+        assert_eq!(
+            StorageError::from(rusqlite::Error::QueryReturnedNoRows),
+            StorageError::UnsupportedSchema
+        );
     }
 }

@@ -211,7 +211,7 @@ jobs:
           echo "pty=$pty" >> "$GITHUB_OUTPUT"
           echo "fs=$fs" >> "$GITHUB_OUTPUT"
           echo "storage=$storage" >> "$GITHUB_OUTPUT"
-          echo "shell-check roda: $shell; ui roda: $ui; contracts roda: $contracts; pty-windows roda: $pty; fs-windows roda: $fs"
+          echo "shell-check roda: $shell; ui roda: $ui; contracts roda: $contracts; pty-windows roda: $pty; fs-windows roda: $fs; storage-windows roda: $storage"
 
   contracts:
     name: contracts
