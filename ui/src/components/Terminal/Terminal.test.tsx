@@ -1,7 +1,8 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import { createRef } from 'react'
 import { describe, expect, it } from 'vitest'
-import { staticByteSource, type ByteSource } from './byteSource'
+import { eventByteSource, staticByteSource, type ByteSource } from './byteSource'
+import { createFakeCoreClient, encodeBase64 } from '../../api'
 import { Terminal, type TerminalHandle } from './Terminal'
 
 function pushSource(): ByteSource & { push(text: string): void; readonly listeners: number } {
@@ -22,6 +23,32 @@ function pushSource(): ByteSource & { push(text: string): void; readonly listene
 }
 
 describe('Terminal', () => {
+  it('renders replay and live session output bytes', async () => {
+    const client = createFakeCoreClient()
+    await client.connect()
+    const output = (text: string, offset: number) => {
+      const bytes = new TextEncoder().encode(text)
+      client.emit({
+        type: 'urn:ads:event:session.output:1',
+        stream: 'session/session-a',
+        data: {
+          session_id: 'session-a',
+          offset,
+          length: bytes.length,
+          payload: encodeBase64(bytes),
+        },
+      })
+    }
+    output('olá\r\n', 0)
+    const ref = createRef<TerminalHandle>()
+    render(
+      <Terminal source={eventByteSource(client, 'session/session-a')} label="terminal" ref={ref} />,
+    )
+    output('live output', 6)
+    await waitFor(() => {
+      expect(ref.current?.readScreen()).toBe('olá\nlive output')
+    })
+  })
   it('writes the bytes delivered by the source, in order', async () => {
     const source = pushSource()
     const ref = createRef<TerminalHandle>()
