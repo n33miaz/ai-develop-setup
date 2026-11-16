@@ -128,7 +128,8 @@ Continuam escritos à mão por serem comportamento e não Schema: o codec do qua
 
 ### Diferenças de comportamento
 
-- O texto de `error.message` de um `params` recusado (`-32602`) mudou de redação, porque agora vem da leitura dos gerados. O contrato só fixa o tamanho desse texto. O erro dos gerados cita o valor recusado; a resposta do host corta essa parte e diz só o nome do tipo (`not a valid CommonIdV1`), para não devolver ao cliente o que ele mandou (teste `refused_params_are_not_echoed_in_the_answer`).
+- O texto de `error.message` de um `params` recusado (`-32602`) mudou de redação, porque agora vem da leitura dos gerados. O contrato só fixa o tamanho desse texto. O erro dos gerados cita o valor recusado; a resposta do host corta essa parte e diz só o nome do tipo (`not a valid CommonIdV1`), para não devolver ao cliente o que ele mandou (teste `refused_params_are_not_echoed_in_the_answer`). O texto novo diz qual campo foi recusado, mas não a regra: antes, `terminal size must be 1 to 1000`; agora, `not a valid ContractPtyHostRequestV1SessionOpenParamsCols`. Nenhum cliente do repositório lê esse texto, só o código.
+- O texto de `error.message` de um envelope com `jsonrpc` diferente de `"2.0"` (`-32600`) também mudou: era `jsonrpc must be "2.0", got "1.0"`, agora é `expected "2.0", found "1.0"`. O código e o `id` da resposta não mudaram, e em nenhum pedido recusado de `tests/wire_bytes.rs` o código mudou.
 - Um `ErrorBody` fora do contrato (mensagem vazia ou com mais de 500 caracteres, `-32004` sem `data.oldest_seq`, `-32005` sem `data.next_seq`) agora falha ao ser codificado; antes saía no fio. O servidor nunca monta um erro assim.
 
 ### Pendências
