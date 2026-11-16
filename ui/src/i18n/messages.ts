@@ -1,4 +1,9 @@
 export const ptBR = {
+  'session.open': 'Abrir {harness}',
+
+  'session.commandFailed':
+    'Não foi possível executar o comando da sessão. Confira a conexão e a configuração do núcleo.',
+
   'notice.live': 'Conexão ao núcleo local. As sessões exibem os eventos recebidos.',
   'app.title': 'ai-develop-setup',
   'skip.toTerminal': 'Pular para o terminal',
@@ -43,6 +48,11 @@ export const ptBR = {
 export type MessageKey = keyof typeof ptBR
 
 export const en: Record<MessageKey, string> = {
+  'session.open': 'Open {harness}',
+
+  'session.commandFailed':
+    'Could not execute the session command. Check the connection and core configuration.',
+
   'notice.live': 'Local core connection. Sessions display received events.',
   'app.title': 'ai-develop-setup',
   'skip.toTerminal': 'Skip to the terminal',
