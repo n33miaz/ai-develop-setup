@@ -33,7 +33,9 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: bash .github/scripts/check-commits.sh "$BASE_SHA" "$HEAD_SHA"
+          # O nome da branch vem de fora: entra por variável de ambiente, nunca interpolado no comando.
+          HEAD_REF: ${{ github.head_ref }}
+        run: bash .github/scripts/check-commits.sh "$BASE_SHA" "$HEAD_SHA" --branch "$HEAD_REF"
 
   secrets:
     name: secrets

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Testes do checador de commits e do hook. Roda local, sem repositório: bash .github/scripts/check-commits.test.sh
 # Os arquivos de trabalho ficam numa pasta fixa da própria árvore, ignorada pelo git (.test-tmp/), regravados a cada
-# rodada; o teste não apaga nada. Saída 0 = todos passaram.
+# execução; o teste não apaga nada. Saída 0 = todos passaram.
 set -u
 export LC_ALL=C
 
@@ -123,7 +123,7 @@ msg f-maiuscula-fim "feat: add thinG\n\n$sob\n"
 msg f-sigla "docs: describe the API\n\n$sob\n"
 msg f-identificador "fix(core): handle planHash\n\n$sob\n"
 msg f-maiuscula-apos-digito "fix: 3D preview crash\n\n$sob\n"
-msg p-minusculas-com-simbolos "fix(ci): keep utf-8, pty-host/1 and m1 ids\n\n$sob\n"
+msg p-minusculas-com-simbolos "fix(ci): keep utf-8, pty-host/1 and v2 ids\n\n$sob\n"
 expect_rc 1 "maiúscula no meio da descrição" f-maiuscula-meio
 expect_rc 1 "maiúscula no fim da descrição" f-maiuscula-fim
 expect_rc 1 "sigla em maiúsculas" f-sigla
@@ -131,6 +131,67 @@ expect_rc 1 "identificador com maiúscula" f-identificador
 expect_rc 1 "maiúscula depois de dígito" f-maiuscula-apos-digito
 expect_rc 1 "maiúscula na primeira letra" f-maiuscula
 expect_rc 0 "siglas, dígitos e símbolos em minúsculas" p-minusculas-com-simbolos
+
+# ---- Texto público: termos de processo e códigos internos no assunto (código 1)
+msg p-round-trip "test(contracts): cover the round-trip of v2\n\n$sob\n"
+msg p-legitimos "fix: keep utf8, x86_64, e2e, f32 and issue 42\n\n$sob\n"
+msg p-palavra-parecida "docs: describe the roundtable and surround\n\n$sob\n"
+expect_rc 0 "round-trip é uma palavra só no assunto" p-round-trip
+expect_rc 0 "utf8, x86_64, e2e, f32 e número de issue passam" p-legitimos
+expect_rc 0 "termo só como parte de outra palavra passa" p-palavra-parecida
+for t in round rounds finding findings rodada achado achados; do
+  msg "f-termo-$t" "fix(core): close the gate $t\n\n$sob\n"
+  expect_rc 1 "termo de processo \"$t\" no assunto" "f-termo-$t"
+done
+msg f-codigo-marco "feat(contracts): add m1 event families\n\n$sob\n"
+msg f-codigo-cartao "fix(core): close ad-17 in the gate\n\n$sob\n"
+msg f-codigo-tarefa "fix(core): close t-012 in the gate\n\n$sob\n"
+msg f-codigo-tarefa-curto "fix(core): close t12 in the gate\n\n$sob\n"
+msg f-codigo-etapa "feat(ui): finish e1 screens\n\n$sob\n"
+msg f-codigo-fase "chore: start f0 setup\n\n$sob\n"
+expect_rc 1 "código de marco (m1) no assunto" f-codigo-marco
+expect_rc 1 "código de cartão (ad-17) no assunto" f-codigo-cartao
+expect_rc 1 "código de tarefa (t-012) no assunto" f-codigo-tarefa
+expect_rc 1 "código de tarefa (t12) no assunto" f-codigo-tarefa-curto
+expect_rc 1 "código de etapa (e1) no assunto" f-codigo-etapa
+expect_rc 1 "código de fase (f0) no assunto" f-codigo-fase
+# sem diferenciar maiúsculas: com a regra de minúsculas desligada, a maiúscula não escapa
+sed -e 's/^commits.subject_lowercase = .*/commits.subject_lowercase = false/' "$root/defaults/devflow.toml" > "$tmp/livre2.toml"
+msg f-termo-maiusculo "fix(core): close gate Review Findings\n\n$sob\n"
+msg f-codigo-maiusculo "fix(core): close AD-17 and M1\n\n$sob\n"
+expect_rc 1 "termo de processo em maiúsculas" f-termo-maiusculo "$tmp/livre2.toml"
+expect_rc 1 "código interno em maiúsculas" f-codigo-maiusculo "$tmp/livre2.toml"
+# as listas vêm do arquivo: vazias desligam; chave ausente cai no padrão embutido
+sed -e 's/^commits.process_terms = .*/commits.process_terms = []/' -e 's/^commits.internal_code_patterns = .*/commits.internal_code_patterns = []/' "$root/defaults/devflow.toml" > "$tmp/sem-texto.toml"
+expect_rc 0 "process_terms vazia desliga os termos" f-termo-findings "$tmp/sem-texto.toml"
+expect_rc 0 "internal_code_patterns vazia desliga os códigos" f-codigo-marco "$tmp/sem-texto.toml"
+sed -e '/^commits.process_terms = /d' -e '/^commits.internal_code_patterns = /d' "$root/defaults/devflow.toml" > "$tmp/sem-chave.toml"
+expect_rc 1 "sem a chave, os termos do padrão embutido valem" f-termo-rodada "$tmp/sem-chave.toml"
+expect_rc 1 "sem a chave, os códigos do padrão embutido valem" f-codigo-cartao "$tmp/sem-chave.toml"
+sed -e 's/^commits.process_terms = .*/commits.process_terms = ["sprint"]/' "$root/defaults/devflow.toml" > "$tmp/outro-termo.toml"
+msg f-termo-sprint "feat(ui): finish sprint screens\n\n$sob\n"
+expect_rc 1 "termo vindo do arquivo" f-termo-sprint "$tmp/outro-termo.toml"
+expect_rc 0 "termo fora da lista do arquivo passa" f-termo-rodada "$tmp/outro-termo.toml"
+
+# ---- Texto público: nome da branch (o hífen separa palavras)
+expect_branch() { # <código esperado> <branch>
+  local rc=0
+  bash "$checker" --message "$tmp/p-basico.txt" --author "$author" --branch "$2" > "$tmp/out.txt" 2>&1 || rc=$?
+  if [ "$rc" -eq "$1" ]; then
+    passed=$((passed + 1)); echo "ok    branch sai com $1: $2"
+  else
+    failed=$((failed + 1)); echo "FALHA branch esperava saída $1 e veio $rc: $2"; sed 's/^/        /' "$tmp/out.txt"
+  fi
+}
+expect_branch 0 "feature/52-public-text-rule"
+expect_branch 0 "fix/27-pty-host-responsiveness"
+expect_branch 0 "feature/14-ui-contract-types"
+expect_branch 0 ""
+expect_branch 1 "feature/34-gate-review-round-2"
+expect_branch 1 "feature/36-fs-executor-findings"
+expect_branch 1 "feature/12-ad-17-gate"
+expect_branch 1 "feature/9-m1-contracts"
+expect_branch 1 "feature/20-T-012-gaps"
 
 # ---- Parâmetros: o arquivo de configuração manda (P8)
 sed -e 's/^ai_attribution = .*/ai_attribution = "none"/' "$root/defaults/devflow.toml" > "$tmp/none.toml"
@@ -192,6 +253,10 @@ bad_cfg "allowed_trailers vazio" 's/^commits.allowed_trailers = .*/commits.allow
 bad_cfg "coauthors.allowed sem e-mail" 's/^coauthors.allowed = .*/coauthors.allowed = ["not an email"]/'
 bad_cfg "author_email_regex que não compila" "s/^commits.author_email_regex = .*/commits.author_email_regex = '('/"
 bad_cfg "blocked_patterns com regex que não compila" "s/^commits.blocked_patterns = .*/commits.blocked_patterns = ['generated', '(']/"
+bad_cfg "process_terms com maiúscula" 's/^commits.process_terms = .*/commits.process_terms = ["Round"]/'
+bad_cfg "process_terms com espaço" 's/^commits.process_terms = .*/commits.process_terms = ["review round"]/'
+bad_cfg "process_terms não é lista" 's/^commits.process_terms = .*/commits.process_terms = "round"/'
+bad_cfg "internal_code_patterns com regex que não compila" "s/^commits.internal_code_patterns = .*/commits.internal_code_patterns = ['[a-z']/"
 # o erro de configuração vence o desligamento e a mensagem ruim
 sed -e 's/^commits.enabled = .*/commits.enabled = false/' -e 's/^commits.subject_max = .*/commits.subject_max = "invalid"/' "$root/defaults/devflow.toml" > "$tmp/bad.toml"
 expect_rc 2 "configuração: inválida mesmo com commits.enabled=false" f-tipo "$tmp/bad.toml"

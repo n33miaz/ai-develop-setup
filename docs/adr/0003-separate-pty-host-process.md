@@ -1,6 +1,6 @@
 # 0003. Separate PTY host process
 
-Status: aceita em 14/11/2026 (AR-03)
+Status: aceita em 14/11/2026
 
 ## Contexto
 A branch de desenvolvimento é a produção, então o programa instalado é atualizado várias vezes por semana. Se as sessões de terminal vivessem no processo do núcleo, cada atualização encerraria o trabalho em andamento.

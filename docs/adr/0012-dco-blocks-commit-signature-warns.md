@@ -1,6 +1,6 @@
 # 0012. DCO and format block, commit signature warns
 
-Status: aceita em 14/11/2026 (AR-12)
+Status: aceita em 14/11/2026
 
 ## Contexto
 Três mecanismos diferentes estavam em jogo: a linha DCO, a assinatura criptográfica do commit e a assinatura do instalador. A assinatura do commit exige chave configurada e disponível para os agentes, e a junção por rebase pela interface recria os commits sem o selo.

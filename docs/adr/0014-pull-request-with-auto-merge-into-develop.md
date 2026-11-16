@@ -1,6 +1,6 @@
 # 0014. Pull request with auto-merge into develop
 
-Status: aceita em 14/11/2026 (AR-14)
+Status: aceita em 14/11/2026
 
 ## Contexto
 O fluxo é develop → homolog → main, e por enquanto a develop é a produção: o que entra nela é o que o computador do mantenedor passa a rodar.

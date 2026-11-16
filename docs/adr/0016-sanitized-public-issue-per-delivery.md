@@ -1,6 +1,6 @@
 # 0016. Sanitized public issue per delivery
 
-Status: aceita em 14/11/2026 (AR-16)
+Status: aceita em 14/11/2026
 
 ## Contexto
 Todo pedido que vira entrega deve nascer de uma issue. O repositório é público, e pedidos podem citar pessoas, organizações ou caminhos de máquina.

@@ -1,6 +1,6 @@
 # 0004. Local SQLite, no cloud database for now
 
-Status: aceita em 14/11/2026 (AR-04)
+Status: aceita em 14/11/2026
 
 ## Contexto
 O dado do produto nasce e é usado em um único computador. Bancos gerenciados grátis foram avaliados; nenhum resolve um problema atual, e todos colocariam transcrições e auditoria em um terceiro.

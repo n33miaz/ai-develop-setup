@@ -72,6 +72,20 @@ commits.author_email_regex = '^[0-9]+\+[A-Za-z0-9-]+@users\.noreply\.github\.com
 # Cobrem a linha que o Codex e outras ferramentas injetam por conta própria. Os padrões do Codex são palpites a confirmar.
 commits.blocked_patterns = ['generated (with|by)', 'chatgpt-codex-connector', 'codex@users\.noreply\.github\.com', 'made with codex']
 
+# ---- Texto público: assunto do commit e nome da branch ------------------------------------------------------
+# Assunto e branch descrevem o assunto e o resultado da entrega, sem o histórico do processo interno. A lista de
+# termos e os padrões de código abaixo valem para os dois (CONTRIBUTING.md, "Texto público").
+# Termos de processo recusados, por palavra inteira e sem diferença de maiúscula (só letras minúsculas e dígitos).
+# No assunto o hífen une a palavra, então "round-trip" passa; no nome da branch o hífen separa as palavras.
+# Lista vazia desliga esta parte; chave ausente cai no padrão embutido (esta mesma lista).
+commits.process_terms = ["round", "rounds", "finding", "findings", "rodada", "achado", "achados"]
+
+# Códigos internos de organização recusados (regex estendida, sem diferença de maiúscula, com fronteira explícita
+# porque `\b` e `\d` não são POSIX): duas letras, hífen e dois dígitos; T com dois ou três dígitos; E ou M com um ou
+# dois dígitos; F com um dígito (F com dois dígitos ficaria com f32 e f64). Não pegam pty-host/1, v2, utf8, utf-8,
+# x86_64, e2e nem números de issue. Lista vazia desliga; chave ausente cai no padrão embutido (esta mesma lista).
+commits.internal_code_patterns = ['(^|[^a-z0-9])[a-z]{2}-[0-9]{2}([^a-z0-9]|$)', '(^|[^a-z0-9])t-?[0-9]{2,3}([^a-z0-9]|$)', '(^|[^a-z0-9])[em][0-9]{1,2}([^a-z0-9]|$)', '(^|[^a-z0-9])f[0-9]([^a-z0-9]|$)']
+
 # ---- Assinatura criptográfica do commit -------------------------------------------------------------------
 # "warn": só avisa no CI quando o commit não tem assinatura verificada (padrão até existir a chave de assinatura).
 # "block": reprova. "off": não confere. O "rebase and merge" do GitHub recria os commits, então só vale no PR.

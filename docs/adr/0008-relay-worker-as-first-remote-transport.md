@@ -1,6 +1,6 @@
 # 0008. Relay Worker as the first remote transport
 
-Status: aceita em 14/11/2026 (AR-08)
+Status: aceita em 14/11/2026
 
 ## Contexto
 O acesso remoto por túnel exige um domínio próprio. As alternativas sem domínio eram uma rede privada com aplicativo em cada aparelho ou um relé por Worker em endereço `workers.dev`.
