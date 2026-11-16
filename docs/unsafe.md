@@ -9,6 +9,7 @@ Exceção prevista, ainda não usada: `ads-adapter-vault` vai precisar de chamad
 | `ads-ptyhost` | 22 | chamadas da API do Windows, listadas abaixo |
 | `ads-adapter-fs` | 4 | chamadas da API do Windows para abrir, mover e apagar por identificador aberto, listadas abaixo; no Linux as mesmas operações vêm do `rustix`, sem `unsafe` |
 | demais | 0 | nenhum |
+| `ads-storage` | 0 | SQLite e cifra pelas APIs seguras das dependências; herda `forbid` |
 
 ## `ads-ptyhost` (`crates/ptyhost/src/win.rs`)
 

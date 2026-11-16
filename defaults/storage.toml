@@ -1,0 +1,9 @@
+# Camada sobreposta em tempo de abertura; mudanças valem ao reabrir.
+# Padrão recomendado: 5 s; intervalo permitido: 0..=60000 ms.
+busy_timeout_ms = 5000
+# Verificação completa antes de migrar; desligar reduz o custo de abertura.
+integrity_check_on_open = true
+# Apenas estes formatos são suportados; alternativas exigem migração e ADR.
+encryption = "column"
+cipher = "xchacha20poly1305"
+journal_mode = "wal"
