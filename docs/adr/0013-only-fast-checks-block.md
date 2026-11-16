@@ -1,6 +1,6 @@
 # 0013. Only fast checks block
 
-Status: aceita em 14/11/2026 (AR-13)
+Status: aceita em 14/11/2026
 
 ## Contexto
 Em repositório público os minutos de runner padrão não custam; o custo do CI é tempo de espera e alarme falso. Todos os portões de segurança devem existir desde o primeiro dia, mas nem todos precisam barrar cada PR.

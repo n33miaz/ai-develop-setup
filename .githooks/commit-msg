@@ -10,7 +10,8 @@
 #      vazio           -> nenhum coautor neste commit
 #    Só age com ai_attribution = "executor". Se já existir um Co-authored-by, não duplica (e o checador decide).
 # 2. Acrescenta `Signed-off-by` do autor quando faltar (commits.signoff_autoadd).
-# 3. Valida a mensagem com .github/scripts/check-commits.sh (as mesmas regras do CI).
+# 3. Valida a mensagem e o nome da branch atual com .github/scripts/check-commits.sh (as mesmas regras do CI).
+#    Em HEAD destacado (rebase, por exemplo) não há branch e só a mensagem é conferida.
 #
 # Exemplo (PowerShell):  $env:ADS_AI_AUTHOR = "claude"; git commit -m "feat(core): add event envelope"
 set -u
@@ -59,4 +60,5 @@ if [ "$(cfg_str commits.signoff_required true)" = "true" ] && [ "$(cfg_str commi
 fi
 
 # 3. Validação
-exec bash "$checker" --message "$msg_file" --author "$author_email" --strip-comments
+branch="$(git symbolic-ref --short -q HEAD 2>/dev/null || true)"
+exec bash "$checker" --message "$msg_file" --author "$author_email" --strip-comments --branch "$branch"

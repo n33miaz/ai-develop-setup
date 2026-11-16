@@ -87,6 +87,8 @@ Co-authored-by: Nome do agente <noreply@exemplo.org>
 
 Todas essas regras e seus valores ficam em `defaults/devflow.toml` e são aplicadas pelo mesmo script no hook local e no CI (`.github/scripts/check-commits.sh`). O script valida o arquivo de parâmetros antes de olhar qualquer mensagem: valor de tipo errado ou fora do domínio termina com código 2 (erro de configuração), sem analisar commit nenhum; mensagem fora do padrão termina com código 1. O hook roda essa mesma validação antes de tudo, então configuração inválida barra o commit com código 2 mesmo com `commits.enabled = false`.
 
+O mesmo script confere o texto público (ver "Texto público" abaixo) no assunto de cada commit e no nome da branch: recusa, por palavra inteira e sem diferenciar maiúsculas, os termos de processo de `commits.process_terms` e os códigos internos de organização de `commits.internal_code_patterns`, as duas listas em `defaults/devflow.toml`. No CI o nome da branch é o do PR; no hook, o da branch atual (em HEAD destacado não há o que conferir). No assunto o hífen une a palavra (`round-trip` passa); no nome da branch ele separa.
+
 ### DCO e instrução permanente aos agentes
 
 Cada commit leva `Signed-off-by`, atestando o [Developer Certificate of Origin 1.1](https://developercertificate.org/). **O mantenedor deu instrução permanente: agentes de IA que commitam por ordem dele assinam o `Signed-off-by` em nome do mantenedor**, como parte do trabalho dirigido e revisado por ele. O hook acrescenta a linha com a identidade git configurada.
@@ -101,7 +103,7 @@ O hook acrescenta o `Co-authored-by` a partir da variável de ambiente `ADS_AI_A
 | `codex` | acrescenta o coautor definido em `coauthor.codex` |
 | vazio ou ausente | nenhum coautor neste commit |
 
-Regras: um coautor por commit, o agente que escreveu a maior parte, alternando conforme quem trabalhou. A linha de atribuição que o Codex injeta por conta própria é barrada. Para parar de atribuir no futuro, troque `ai_attribution` para `"none"` em `defaults/devflow.toml`; o histórico não é reescrito.
+Regras: um coautor por commit, quem escreveu a maior parte, alternando conforme quem trabalhou. A linha de atribuição que o Codex injeta por conta própria é barrada. Para parar de atribuir no futuro, troque `ai_attribution` para `"none"` em `defaults/devflow.toml`; o histórico não é reescrito.
 
 ### Ligar o hook e testar
 
@@ -118,7 +120,7 @@ bash .github/scripts/check-commits.test.sh
 
 ## Módulos de segurança
 
-Proposta, aguardando ratificação do mantenedor. Mudanças nos módulos abaixo exigem uma segunda revisão antes de juntar, além do `ci-ok` verde. O que a revisão apontar vira commit novo no mesmo PR ou issue aberta antes da junção.
+Proposta, aguardando ratificação do mantenedor. Mudanças nos módulos abaixo exigem uma revisão a mais antes de juntar, além do `ci-ok` verde. Cada correção pedida vira commit novo no mesmo PR ou issue aberta antes da junção.
 
 | Módulo | Por quê |
 |---|---|
@@ -130,6 +132,15 @@ Proposta, aguardando ratificação do mantenedor. Mudanças nos módulos abaixo 
 | Canal do `ptyhost` (pipe do usuário) | Separa as sessões de um usuário das de outro (P3) |
 
 Documentação de proposta (como uma ADR ainda não ratificada) não é mudança no módulo e pode ser juntada só com o `ci-ok`.
+
+## Texto público
+
+Títulos e descrições de issue e PR, nomes de branch, assuntos de commit, comentários, README, ADR e este arquivo descrevem o assunto e o resultado da entrega, como ficou. Não contam o histórico do processo interno de trabalho (etapas, idas e vindas, o que cada conferência encontrou), não trazem códigos internos de organização (identificadores de marco, de cartão, de tarefa ou de etapa) e não trazem marcas de ferramentas nem rodapé de autoria por ferramenta. O único rastro de ferramenta permitido é o trailer `Co-authored-by`, regido por `defaults/devflow.toml`.
+
+- Uma descrição que mudou ao longo do PR é reescrita como um texto único e atual, não acrescida de seções por etapa.
+- Risco corrigido é descrito pelo que ele era, onde foi tratado e o teste que o cobre.
+- Termos do produto continuam valendo: eventos e contratos de revisão de código, o campo `model`, "tipos gerados", "round trip" no sentido de ida e volta de serialização, e "revisão" no sentido genérico ("fica aberto para revisão antes de juntar").
+- O checador de commits aplica a parte mecânica desta regra (ver "Commits"); o resto é conferido na revisão do PR.
 
 ## Segredos e dados
 

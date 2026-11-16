@@ -25,6 +25,7 @@ import type { EventUsageRecordedV1 } from '../../../contracts/generated/ts/event
 
 export type { CommandRequestV1 } from '../../../contracts/generated/ts/command.request.v1'
 export type { CommandResponseV2 } from '../../../contracts/generated/ts/command.response.v2'
+export type { ContractLocalApiServerMessageV1 } from '../../../contracts/generated/ts/contract.local-api.server-message.v1'
 export type {
   CommonActorV1,
   CommonDataClassV1,

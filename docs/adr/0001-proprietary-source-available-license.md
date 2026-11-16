@@ -1,6 +1,6 @@
 # 0001. Proprietary, source-available license
 
-Status: aceita em 14/11/2026 (AR-01)
+Status: aceita em 14/11/2026
 
 ## Contexto
 O repositório é público e precisa de um arquivo LICENSE no primeiro commit. A licença define quem pode usar o código, quais bibliotecas podem entrar e se serviços grátis de assinatura para código aberto ficam disponíveis.

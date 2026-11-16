@@ -1,6 +1,6 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { createFakeCoreClient } from './api'
+import { selectCoreClient } from './api/bootstrap'
 import { App } from './App'
 import { createTranslator, I18nContext, resolveLocale } from './i18n'
 import './styles/theme.css'
@@ -12,13 +12,20 @@ if (!root) throw new Error('missing #root element')
 const locale = resolveLocale(navigator.language)
 document.documentElement.lang = locale
 
-// Sem núcleo ainda: o cliente falso fica desconectado e a tela mostra só dados de exemplo.
-const client = createFakeCoreClient()
+const { client, live } = selectCoreClient(window)
+const configuredStreams: unknown = import.meta.env.VITE_CORE_SESSION_STREAMS
+const sessionStreams =
+  typeof configuredStreams === 'string'
+    ? configuredStreams
+        .split(',')
+        .map((stream) => stream.trim())
+        .filter(Boolean)
+    : []
 
 createRoot(root).render(
   <StrictMode>
     <I18nContext value={createTranslator(locale)}>
-      <App client={client} />
+      <App client={client} live={live} sessionStreams={sessionStreams} />
     </I18nContext>
   </StrictMode>,
 )

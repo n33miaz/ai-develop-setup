@@ -1,6 +1,6 @@
 # 0006. URN namespace for contracts
 
-Status: aceita em 14/11/2026 (AR-06)
+Status: aceita em 14/11/2026
 
 ## Contexto
 Todo contrato e todo evento carregam um identificador. O nome comercial do produto ainda vai mudar, e o identificador não pode mudar junto.

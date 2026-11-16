@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use ads_adapter_fs::Executor;
+use ads_adapter_fs::{Executor, Journal, JournalError, Limits};
 use ads_core::gate::{
     Action, ActionPlan, Actor, ActorKind, Command, DataClass, Estimate, Event, EventMeta,
     ExecutionPermit, GatePolicy, HostFacts, Id, OperationRequest, PlanRequest, ShortText,
@@ -100,8 +100,21 @@ impl Sandbox {
         policy_for(&self.text("fake-home"), overrides)
     }
 
+    /// An executor that removes for good on every system (`definitive_delete = "isolated"`),
+    /// so that the tests of removal run on Linux too. The shipped default is another, and
+    /// has tests of its own: see [`Self::shipped_executor`].
     pub fn executor(&self, overrides: &str) -> Executor {
+        self.shipped_executor(overrides).with_limits(limits(""))
+    }
+
+    /// An executor with the shipped parameters.
+    pub fn shipped_executor(&self, overrides: &str) -> Executor {
         Executor::new(&self.fence, self.policy(overrides)).unwrap()
+    }
+
+    /// The private folder of the executor, below the fence with `/`.
+    pub fn private_dir(&self) -> &'static str {
+        "work/.ads/tmp"
     }
 
     /// The path on disk of `rel` below the fence.
@@ -127,6 +140,16 @@ impl Sandbox {
     pub fn sentinel_is_intact(&self) -> bool {
         fs::read_to_string(self.outside.join(SENTINEL)).is_ok_and(|text| text == SENTINEL_TEXT)
     }
+}
+
+/// The parameters of the tests: the shipped ones, removing for good on every system, with
+/// the keys of `overrides` on top.
+pub fn limits(overrides: &str) -> Limits {
+    let base = match overrides.contains("definitive_delete") {
+        true => "",
+        false => "definitive_delete = \"isolated\"\n",
+    };
+    Limits::from_toml_str(&format!("{base}{overrides}")).unwrap()
 }
 
 pub const SEPARATOR: char = if cfg!(windows) { '\\' } else { '/' };
@@ -213,6 +236,43 @@ pub fn is_link(metadata: &fs::Metadata) -> bool {
     #[cfg(not(windows))]
     {
         metadata.file_type().is_symlink()
+    }
+}
+
+/// A journal that keeps the events in memory and refuses a second `action.started` of an
+/// action. It forgets everything when it is dropped: good for a test, never for production,
+/// which is why it lives here and not in the crate.
+#[derive(Debug, Default)]
+pub struct MemoryJournal {
+    events: Vec<Event>,
+    started: Vec<Id>,
+}
+
+impl MemoryJournal {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn events(&self) -> &[Event] {
+        &self.events
+    }
+}
+
+impl Journal for MemoryJournal {
+    fn consume(&mut self, started: &Event) -> Result<(), JournalError> {
+        let Event::ActionStarted(envelope) = started else {
+            return Err(JournalError(format!(
+                "{} is not action.started",
+                started.kind()
+            )));
+        };
+        let action_id = &envelope.data().action_id;
+        if self.started.contains(action_id) {
+            return Err(JournalError(format!("{action_id} already started")));
+        }
+        self.started.push(action_id.clone());
+        self.events.push(started.clone());
+        Ok(())
     }
 }
 
@@ -322,4 +382,113 @@ pub fn through_gate(policy: &GatePolicy, request: Request<'_>) -> Flow {
 
 pub fn estimate(items: u64, bytes: u64) -> Option<Estimate> {
     Some(Estimate { items, bytes })
+}
+
+// ---- shared by the tests that drive the executor around its checks -----------------------------
+
+/// When a probe is told about a mutation.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Moment {
+    Before,
+    Opened,
+    Midway(ads_adapter_fs::Midway),
+}
+
+/// A probe made of a closure.
+pub struct Hook<F>(pub F);
+
+impl<F> ads_adapter_fs::Probe for Hook<F>
+where
+    F: FnMut(Moment, &ads_adapter_fs::Mutation) -> std::io::Result<()>,
+{
+    fn before(&mut self, mutation: &ads_adapter_fs::Mutation) -> std::io::Result<()> {
+        (self.0)(Moment::Before, mutation)
+    }
+
+    fn opened(&mut self, mutation: &ads_adapter_fs::Mutation) -> std::io::Result<()> {
+        (self.0)(Moment::Opened, mutation)
+    }
+
+    fn midway(
+        &mut self,
+        mutation: &ads_adapter_fs::Mutation,
+        at: ads_adapter_fs::Midway,
+    ) -> std::io::Result<()> {
+        (self.0)(Moment::Midway(at), mutation)
+    }
+}
+
+pub fn hooked(
+    executor: Executor,
+    probe: impl FnMut(Moment, &ads_adapter_fs::Mutation) -> std::io::Result<()> + 'static,
+) -> Executor {
+    executor.with_probe(Box::new(Hook(probe)))
+}
+
+pub fn delete_of(sandbox: &Sandbox, action_id: &'static str, targets: &[&str]) -> Request<'static> {
+    Request {
+        action_id,
+        operation: OperationRequest::DeleteRecursive,
+        work_root: sandbox.work_root(),
+        targets: targets.iter().map(|rel| sandbox.text(rel)).collect(),
+        estimate: estimate(50, 4096),
+    }
+}
+
+pub fn restore_of(sandbox: &Sandbox, action_id: &'static str, batch: &str) -> Request<'static> {
+    Request {
+        action_id,
+        operation: OperationRequest::Move {
+            destination: sandbox.work_root(),
+        },
+        work_root: sandbox.work_root(),
+        targets: vec![batch.to_owned()],
+        estimate: estimate(50, 4096),
+    }
+}
+
+/// Runs a flow with a journal of its own.
+pub fn run(
+    executor: &mut Executor,
+    flow: Flow,
+) -> Result<ads_adapter_fs::Completed, Box<ads_adapter_fs::Failure>> {
+    executor.execute(flow.permit, &flow.started, &mut MemoryJournal::new())
+}
+
+/// The folder of the batch of a quarantine flow: below the fence with `/`, and as a plan
+/// writes it.
+pub fn batch_of(sandbox: &Sandbox, flow: &Flow, action_id: &str) -> (String, String) {
+    let destination = flow.permit.plan().destination().unwrap().to_string();
+    let text = format!("{destination}{SEPARATOR}{action_id}");
+    (sandbox.below(&text), text)
+}
+
+impl Sandbox {
+    /// A path as a plan writes it, as names below the fence with `/`.
+    pub fn below(&self, text: &str) -> String {
+        text.strip_prefix(&self.fence_text)
+            .unwrap_or_else(|| panic!("{text} is not below the fence"))
+            .trim_start_matches(SEPARATOR)
+            .replace(SEPARATOR, "/")
+    }
+
+    /// The work root without what the executor keeps for itself.
+    pub fn work_tree(&self) -> BTreeMap<String, String> {
+        let mut entries = tree(&self.path("work"));
+        entries.retain(|rel, _| !rel.starts_with(".ads"));
+        entries
+    }
+}
+
+/// A folder link to `target`: a junction on Windows, a symbolic link elsewhere.
+pub fn folder_link(link: &Path, target: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        junction(link, target);
+        true
+    }
+    #[cfg(not(windows))]
+    {
+        symlink(link, target)
+    }
 }

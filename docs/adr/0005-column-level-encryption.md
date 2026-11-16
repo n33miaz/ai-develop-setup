@@ -1,6 +1,6 @@
 # 0005. Column-level encryption at rest
 
-Status: aceita em 14/11/2026 (AR-05)
+Status: aceita em 14/11/2026
 
 ## Contexto
 A decisão anterior era cifrar o banco inteiro, com cifra por coluna como plano B já aceito. Cifrar por coluna evita depender de uma variante do SQLite fora do caminho comum.

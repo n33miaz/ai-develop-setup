@@ -1,5 +1,16 @@
 //! Local SQLite storage, column encryption and chained audit.
 
+pub mod cipher;
+
+pub mod config;
+pub mod error;
+mod migrate;
+pub mod open;
+mod snapshot;
+pub use config::StorageConfig;
+pub use error::StorageError;
+pub use open::AuditStore;
+
 /// Package name as declared in the manifest.
 pub const fn crate_name() -> &'static str {
     env!("CARGO_PKG_NAME")

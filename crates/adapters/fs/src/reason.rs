@@ -9,8 +9,10 @@ use ads_core::gate::ErrorCode;
 pub enum Reason {
     /// `action.started` given to the executor is not the one of the permit.
     StartedMismatch,
-    /// The journal did not confirm that `action.started` was written.
+    /// The journal did not record the consumption of the permit.
     JournalRefused,
+    /// This executor already ran a permit of the same action.
+    PermitReused,
     /// A path written in the style of another operating system.
     PathStyle,
     /// A path that is not inside the fence.
@@ -23,6 +25,9 @@ pub enum Reason {
     NotPhysical,
     /// The path crosses into another volume.
     OtherVolume,
+    /// The path crosses into another mount (a bind mount of the same volume too), or the
+    /// system does not say which mount it is on.
+    MountPoint,
     /// The target, or a folder on the way to it, does not exist.
     Missing,
     /// Something that is not a folder where a folder had to be.
@@ -41,6 +46,10 @@ pub enum Reason {
     QuarantineBypassed,
     /// What is on disk contradicts what the plan declared, in a way that changes the verdict.
     FactsContradictPlan,
+    /// The tree of a target holds a repository of its own.
+    NestedRepository,
+    /// A count of items or bytes does not fit in 64 bits.
+    Overflow,
     /// The id of the action cannot be the name of a folder.
     ActionIdUnusable,
     /// The quarantine folder of this action already exists.
@@ -49,12 +58,23 @@ pub enum Reason {
     NotEmpty,
     /// The manifest of a quarantine batch is missing, malformed or does not match its folder.
     ManifestInvalid,
+    /// The manifest of the batch would be larger than the executor reads back.
+    ManifestTooLarge,
     /// The place an item came from is taken.
     RestorePlaceTaken,
     /// No item of the manifest is in quarantine any more.
     NothingToRestore,
-    /// The entry changed between the check and the mutation.
+    /// The entry is not the object that was approved, or its tree holds something else.
     Changed,
+    /// The system made a move, but the check after it did not confirm what arrived.
+    MoveUnverified,
+    /// A definitive delete where the system cannot hold a folder in place while its entries
+    /// are removed, or with definitive deletes turned off.
+    DeleteUncontained,
+    /// A folder that was being emptied is no longer where the executor put it.
+    Displaced,
+    /// The change was made, but the system did not confirm it is on disk.
+    Unconfirmed,
     /// The tree is deeper than the limit.
     TooDeep,
     /// The operating system refused the operation.
@@ -62,15 +82,17 @@ pub enum Reason {
 }
 
 impl Reason {
-    pub const ALL: [Reason; 26] = [
+    pub const ALL: [Reason; 35] = [
         Self::StartedMismatch,
         Self::JournalRefused,
+        Self::PermitReused,
         Self::PathStyle,
         Self::OutsideFence,
         Self::OutsideWorkRoot,
         Self::LinkInPath,
         Self::NotPhysical,
         Self::OtherVolume,
+        Self::MountPoint,
         Self::Missing,
         Self::NotADirectory,
         Self::SpecialFile,
@@ -80,13 +102,20 @@ impl Reason {
         Self::ApprovalMissing,
         Self::QuarantineBypassed,
         Self::FactsContradictPlan,
+        Self::NestedRepository,
+        Self::Overflow,
         Self::ActionIdUnusable,
         Self::DestinationTaken,
         Self::NotEmpty,
         Self::ManifestInvalid,
+        Self::ManifestTooLarge,
         Self::RestorePlaceTaken,
         Self::NothingToRestore,
         Self::Changed,
+        Self::MoveUnverified,
+        Self::DeleteUncontained,
+        Self::Displaced,
+        Self::Unconfirmed,
         Self::TooDeep,
         Self::Io,
     ];
@@ -95,12 +124,14 @@ impl Reason {
         match self {
             Self::StartedMismatch => "E_FS_STARTED_MISMATCH",
             Self::JournalRefused => "E_FS_JOURNAL_REFUSED",
+            Self::PermitReused => "E_FS_PERMIT_REUSED",
             Self::PathStyle => "E_FS_PATH_STYLE",
             Self::OutsideFence => "E_FS_OUTSIDE_FENCE",
             Self::OutsideWorkRoot => "E_FS_OUTSIDE_WORK_ROOT",
             Self::LinkInPath => "E_FS_LINK_IN_PATH",
             Self::NotPhysical => "E_FS_NOT_PHYSICAL",
             Self::OtherVolume => "E_FS_OTHER_VOLUME",
+            Self::MountPoint => "E_FS_MOUNT_POINT",
             Self::Missing => "E_FS_MISSING",
             Self::NotADirectory => "E_FS_NOT_A_DIRECTORY",
             Self::SpecialFile => "E_FS_SPECIAL_FILE",
@@ -110,13 +141,20 @@ impl Reason {
             Self::ApprovalMissing => "E_FS_APPROVAL_MISSING",
             Self::QuarantineBypassed => "E_FS_QUARANTINE_BYPASSED",
             Self::FactsContradictPlan => "E_FS_FACTS_CONTRADICT_PLAN",
+            Self::NestedRepository => "E_FS_NESTED_REPOSITORY",
+            Self::Overflow => "E_FS_OVERFLOW",
             Self::ActionIdUnusable => "E_FS_ACTION_ID_UNUSABLE",
             Self::DestinationTaken => "E_FS_DESTINATION_TAKEN",
             Self::NotEmpty => "E_FS_NOT_EMPTY",
             Self::ManifestInvalid => "E_FS_MANIFEST_INVALID",
+            Self::ManifestTooLarge => "E_FS_MANIFEST_TOO_LARGE",
             Self::RestorePlaceTaken => "E_FS_RESTORE_PLACE_TAKEN",
             Self::NothingToRestore => "E_FS_NOTHING_TO_RESTORE",
             Self::Changed => "E_FS_CHANGED",
+            Self::MoveUnverified => "E_FS_MOVE_UNVERIFIED",
+            Self::DeleteUncontained => "E_FS_DELETE_UNCONTAINED",
+            Self::Displaced => "E_FS_DISPLACED",
+            Self::Unconfirmed => "E_FS_UNCONFIRMED",
             Self::TooDeep => "E_FS_TOO_DEEP",
             Self::Io => "E_FS_IO",
         }
@@ -144,8 +182,8 @@ impl Stop {
         }
     }
 
-    pub(crate) fn io(what: &str, path: &std::path::Path, error: &std::io::Error) -> Self {
-        Self::new(Reason::Io, format!("{what} {}: {error}", path.display()))
+    pub(crate) fn io(what: &str, at: impl fmt::Display, error: impl fmt::Display) -> Self {
+        Self::new(Reason::Io, format!("{what} {at}: {error}"))
     }
 }
 

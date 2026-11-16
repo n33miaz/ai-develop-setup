@@ -1,6 +1,6 @@
 # 0015. CI-built artifact with verified self-update
 
-Status: aceita em 14/11/2026 (AR-15)
+Status: aceita em 14/11/2026
 
 ## Contexto
 Para a develop ser a produção, o código juntado precisa virar o programa instalado. O computador do mantenedor tem pouca memória e disco e não deve compilar release. Não há certificado de assinatura de código. Outro projeto do autor já tem um mecanismo de atualização em uso.

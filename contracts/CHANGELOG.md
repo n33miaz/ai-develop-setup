@@ -26,14 +26,14 @@ Lacunas apontadas pelos consumidores (interface e portão de ações). Nenhum co
   - `event.session.created:1`: `display_name`.
   - Evento que leva um desses campos não pode ser `public`.
 - Código de regra novo na lista do README (a versão de `action-rule` e de `action-plan` não muda): `allowed_root_itself`, alvo que é uma raiz permitida ou a contém.
-- Segunda leva do dia, da segunda revisão do portão de ações. Nenhum contrato `:1` foi alterado.
+- Portão de ações: destino das ações, decisões de aprovação e caminho absoluto. Nenhum contrato `:1` foi alterado.
   - Versões novas, convivendo com a `:1`:
     - `event.approval.granted:2`, `event.approval.denied:2` e `event.approval.expired:2`: `action_id` obrigatório. Sem ele a decisão de uma aprovação não dizia para qual ação foi tomada, e duas ações com o mesmo plano e o mesmo `approval_id` ficavam indistinguíveis no log. O portão passa a escrever a `:2` e não reconstrói estado a partir da `:1`.
     - `common.abspath:2`: recusa, no estilo Windows, nome de dispositivo como componente (`NUL`, `COM1`, `COM¹`, com qualquer extensão) e nome curto 8.3 (`PROGRA~1`). `record.action-plan:1` continua referindo a `abspath:1`; passar o registro para a `:2` é versão nova do registro, ainda por fazer.
   - `corpus/abspath.json`: corpus comum do Schema `abspath:2` e do normalizador do núcleo, com a lista (vazia) das diferenças conhecidas. Descrito no README.
   - Código de regra novo na lista do README (a versão de `action-rule` e de `action-plan` não muda): `destination_entry_reserved`, entrada que um "mover" criaria no destino (`destino/nome do alvo`) e que é a raiz de trabalho, uma raiz permitida ou a pasta de quarentena, ou contém uma delas. `destination_protected.<proteção>` e `destination_inside_target` passam a citar também essa entrada, além da pasta receptora.
   - Ordem no tempo dentro de uma aprovação (pedido, decisão, início) documentada no README como regra entre documentos.
-- Terceira leva do dia, da terceira revisão do portão de ações. Nenhum contrato `:1` foi alterado.
+- Portão de ações: máximo da estimativa no registro do plano. Nenhum contrato `:1` foi alterado.
   - Versão nova, convivendo com a `:1`: `record.action-plan:2`. Aperta a `:1` em dois pontos: os caminhos passam a `common.abspath:2`, e `estimate.items` e `estimate.bytes` ganham máximo 9007199254740991 (2^53 − 1), o maior inteiro que todo leitor representa sem perda. Na `:1` o Schema não tinha máximo e o leitor Rust recusava acima de 2^64 − 1. O campo `version` do registro é `2`; a serialização do `plan_hash` não muda. O portão passa a escrever a `:2`.
   - `golden/record.action-plan.v1/valid/02-quarantined.json` (apagar sem estimativa, reescrito e permitido) não tem equivalente na `:2`: é um registro válido que o portão não escreve mais.
 - Regra `stream` ↔ identificador em `data` documentada no README e conferida pelo validador em todo dourado válido. Dourados corrigidos, que citavam no `stream` outra entidade que a de `data`: `event.approval.expired.v1/valid/02-variant1.json`, `event.approval.requested.v1/valid/02-variant1.json` e `event.task.created.v1/valid/02-variant1.json`.

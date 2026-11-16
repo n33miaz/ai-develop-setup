@@ -1,13 +1,14 @@
 # Orçamento de `unsafe`
 
-Regra: `unsafe_code = "forbid"` vale para todo o workspace (`[workspace.lints.rust]` no `Cargo.toml` da raiz) e cada crate herda com `[lints] workspace = true`. A única exceção em uso é o `ads-ptyhost`, que tem uma tabela `[lints]` própria com `unsafe_code = "deny"` e libera o lint em um só módulo, `crates/ptyhost/src/win.rs` (compilado apenas no Windows). Fora desse módulo, `unsafe` continua reprovando a compilação.
+Regra: `unsafe_code = "forbid"` vale para todo o workspace (`[workspace.lints.rust]` no `Cargo.toml` da raiz) e cada crate herda com `[lints] workspace = true`. As exceções em uso são duas, cada uma com uma tabela `[lints]` própria com `unsafe_code = "deny"` e o lint liberado em um só módulo, compilado apenas no Windows: `ads-ptyhost` (`crates/ptyhost/src/win.rs`) e `ads-adapter-fs` (`crates/adapters/fs/src/sys/windows.rs`). Fora desses módulos, `unsafe` continua reprovando a compilação.
 
 Exceção prevista, ainda não usada: `ads-adapter-vault` vai precisar de chamadas do sistema (cofre de credenciais). Quando o primeiro bloco entrar, o mesmo PR troca a herança desse crate do mesmo jeito e lista cada bloco abaixo, com o motivo. A contagem só sobe com justificativa aqui.
 
 | Crate | Blocos `unsafe` | Motivo |
 |---|---|---|
 | `ads-ptyhost` | 22 | chamadas da API do Windows, listadas abaixo |
-| `ads-adapter-fs` | 0 | move e apaga arquivos só pela biblioteca padrão; a junção dos testes é criada com `mklink /J`, sem `unsafe` |
+| `ads-adapter-fs` | 4 | chamadas da API do Windows para abrir, mover e apagar por identificador aberto, listadas abaixo; no Linux as mesmas operações vêm do `rustix`, sem `unsafe` |
+| `ads-storage` | 0 | SQLite e cifra pelas APIs seguras das dependências; herda `forbid` |
 | demais | 0 | nenhum |
 
 ## `ads-ptyhost` (`crates/ptyhost/src/win.rs`)
@@ -27,3 +28,13 @@ Cada bloco é uma única operação (uma chamada da API do Windows pelo crate `w
 | `current_user_sid` | 5 | `OpenProcessToken`, `OwnedHandle::from_raw_handle`, `GetTokenInformation`, leitura do `TOKEN_USER` preenchido, `ConvertSidToStringSidW` | saber quem é o usuário do processo, para nomear o canal e restringi-lo a ele |
 | `create_user_pipe` | 2 | `ConvertStringSecurityDescriptorToSecurityDescriptorW`, `ServerOptions::create_with_security_attributes_raw` (do `tokio`) | criar o named pipe com lista de acesso de uma entrada só, a do usuário atual |
 | `access_list_text` | 2 | `GetSecurityInfo`, `ConvertSecurityDescriptorToStringSecurityDescriptorW` | ler a lista de acesso de um objeto (prova de que só o usuário abre o canal) |
+
+## `ads-adapter-fs` (`crates/adapters/fs/src/sys/windows.rs`)
+
+A biblioteca padrão só abre, move e apaga por caminho, e um caminho é resolvido de novo a cada chamada: quem troca uma pasta por um link entre a conferência e o uso redireciona a operação. Fechar isso pede abrir cada entrada relativa a uma pasta já aberta, sem seguir ponto de reanálise, e mover e apagar pelo identificador aberto. O Windows só oferece isso pela API nativa. Cada bloco é uma única chamada e leva um comentário `SAFETY`; os identificadores criados passam na hora para um `OwnedHandle`, que os fecha sozinho; as respostas do sistema são lidas de um buffer de palavras de 64 bits por aritmética comum, sem ponteiro. A junção dos testes continua criada com `mklink /J`, sem `unsafe`.
+
+| Onde | Blocos | Chamada | Motivo |
+|---|---|---|---|
+| `open_at` | 2 | `NtCreateFile`, `OwnedHandle::from_raw_handle` | abrir ou criar uma entrada por um nome só, relativa a uma pasta aberta, sem seguir ponto de reanálise |
+| `query` | 1 | `GetFileInformationByHandleEx` | ler do identificador aberto os atributos, a identidade (volume e identificador de arquivo), o tamanho e a lista de nomes de uma pasta |
+| `apply` | 1 | `NtSetInformationFile` | mover sem substituir o destino e apagar, os dois sobre o identificador aberto |
