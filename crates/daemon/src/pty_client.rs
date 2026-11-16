@@ -67,7 +67,7 @@ impl ClientConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum Event {
     Output {
         header: OutputHeader,
@@ -78,6 +78,22 @@ pub enum Event {
         session_id: SessionId,
         error: ClientError,
     },
+}
+
+impl fmt::Debug for Event {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Output { bytes, .. } => f
+                .debug_struct("Output")
+                .field("length", &bytes.len())
+                .finish_non_exhaustive(),
+            Self::Notification(_) => f.write_str("Notification([redacted])"),
+            Self::ResubscribeFailed { error, .. } => f
+                .debug_struct("ResubscribeFailed")
+                .field("error", error)
+                .finish_non_exhaustive(),
+        }
+    }
 }
 
 type Reply = oneshot::Sender<Result<ResultBody, ClientError>>;
