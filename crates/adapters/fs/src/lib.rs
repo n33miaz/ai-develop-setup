@@ -14,6 +14,9 @@ mod prepare;
 mod reason;
 mod report;
 mod survey;
+// Not called yet: the executor moves onto it in the next change.
+#[allow(dead_code, unused_imports)]
+mod sys;
 
 pub use disk::{Mutation, Probe};
 pub use executor::Executor;

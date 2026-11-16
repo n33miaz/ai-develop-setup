@@ -12,5 +12,26 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
 
-[lints]
-workspace = true
+# Abrir, mover e apagar relativo a um diretorio ja aberto, sem seguir link (ver src/sys).
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = [
+  "Wdk_Foundation",
+  "Wdk_Storage_FileSystem",
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Storage_FileSystem",
+  "Win32_System_IO",
+] }
+
+# Copia dos lints do workspace com `unsafe_code` em "deny" no lugar de "forbid": as chamadas do sistema
+# ficam num unico modulo (`sys::windows`), que libera o lint. Ver docs/unsafe.md.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
