@@ -68,6 +68,10 @@ dependencies = [
 [[package]]
 name = "ads-daemon"
 version = "0.0.0"
+dependencies = [
+ "ads-ptyhost",
+ "tokio",
+]
 
 [[package]]
 name = "ads-e2e"
