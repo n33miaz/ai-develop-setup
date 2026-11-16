@@ -718,6 +718,50 @@ fn estimate_of_the_record_has_the_same_range_for_every_reader() {
         assert!(with_estimate(items, bytes).is_err(), "{items}:{bytes}");
     }
 
+    // The bound is of version 2 only. The same content, with the hash of that content (the
+    // hash does not cover the version), is a record of version 1 and not one of version 2:
+    // version 1 never had the bound, and what it wrote is still read, up to 64 bits.
+    let both_versions = |items: &str, bytes: &str| {
+        let mut record = base.clone();
+        record["estimate"] =
+            serde_json::from_str(&format!("{{\"items\":{items},\"bytes\":{bytes}}}")).unwrap();
+        let canonical = canonical_of(&record).replace(
+            &format!(
+                "estimate:{}:{}",
+                record["estimate"]["items"], record["estimate"]["bytes"]
+            ),
+            &format!("estimate:{items}:{bytes}"),
+        );
+        record["plan_hash"] = sha256_of(&canonical).into();
+        let mut old = record.clone();
+        old["version"] = 1.into();
+        assert_eq!(old["plan_hash"], record["plan_hash"]);
+        (
+            serde_json::from_value::<ActionPlanRecordV1>(old),
+            serde_json::from_value::<ActionPlanRecord>(record),
+        )
+    };
+    for (items, bytes) in [
+        ("9007199254740992", "0"),
+        ("0", "9007199254740992"),
+        ("9223372036854775808", "1"),
+        ("18446744073709551615", "18446744073709551615"),
+    ] {
+        let (as_v1, as_v2) = both_versions(items, bytes);
+        let read = as_v1.unwrap_or_else(|err| panic!("{items}:{bytes} as version 1: {err}"));
+        let estimate = read.fields().estimate.unwrap();
+        assert_eq!(estimate.items.to_string(), items);
+        assert_eq!(estimate.bytes.to_string(), bytes);
+        assert!(as_v2.is_err(), "{items}:{bytes} as version 2");
+    }
+    // Inside the bound both versions read it; above 64 bits neither does.
+    let (as_v1, as_v2) = both_versions(&max, &max);
+    assert!(as_v1.is_ok() && as_v2.is_ok());
+    for (items, bytes) in [("18446744073709551616", "0"), ("-1", "0"), ("0.5", "0")] {
+        let (as_v1, as_v2) = both_versions(items, bytes);
+        assert!(as_v1.is_err() && as_v2.is_err(), "{items}:{bytes}");
+    }
+
     // A plan measured above the range has no record, so it starts no action and no event.
     for estimate in [
         Estimate {
