@@ -10,11 +10,14 @@ use std::path::{Path, PathBuf};
 
 use ads_adapter_fs::{
     Completed, Effect, Executor, Failure, ITEMS_DIR, Journal, JournalError, MANIFEST_NAME,
-    Manifest, MemoryJournal, Mutation, Probe, Reason, Status,
+    Manifest, Mutation, Probe, Reason, Status,
 };
 use ads_core::gate::{Command, Event, OperationRequest};
 
-use common::{Flow, Request, SEPARATOR, STARTED_AT, Sandbox, estimate, meta, through_gate, tree};
+use common::{
+    Flow, MemoryJournal, Request, SEPARATOR, STARTED_AT, Sandbox, estimate, meta, through_gate,
+    tree,
+};
 
 const QUARANTINE_OFF: &str = "quarantine_enabled = false";
 
@@ -168,16 +171,13 @@ fn a_delete_goes_to_quarantine_and_comes_back_whole() {
         [sandbox.text("work/a/build"), sandbox.text("work/b/build")]
     );
 
-    // The permit came back and closes the action; the journal saw the one start.
+    // The spent permit only closes the action; the journal saw the one start.
     assert_eq!(rest.journal.events().len(), 1);
+    let (command, _) = done.close();
+    assert!(matches!(command, Command::Executed { .. }));
     let (_, event) = rest
         .action
-        .apply(
-            Command::Executed {
-                permit: done.permit,
-            },
-            meta("2026-11-15T12:00:09Z", 3),
-        )
+        .apply(command, meta("2026-11-15T12:00:09Z", 3))
         .unwrap();
     assert!(matches!(event, Event::ActionExecuted(_)));
 
@@ -223,11 +223,12 @@ fn the_same_request_again_gets_its_own_folder_and_a_replay_is_refused() {
     assert_eq!(stored(&first), "first");
     assert_eq!(stored(&second), "second");
 
-    // The same action again: its folder exists, so nothing is touched.
+    // The same action again, on an executor and a journal that never saw it (as after a
+    // restart that lost the journal): its folder exists, so nothing is touched.
     sandbox.file("work/build/out.txt", "third");
     let before = tree(&sandbox.root);
     let flow = through_gate(&policy, delete(&sandbox, "act-1", &["work/build"]));
-    let (outcome, _) = execute(&mut executor, flow);
+    let (outcome, _) = execute(&mut sandbox.executor(""), flow);
     let failure = outcome.unwrap_err();
     assert_eq!(failure.reason, Reason::DestinationTaken);
     assert!(failure.report.steps.is_empty());
@@ -310,7 +311,8 @@ fn a_manifest_changed_on_disk_is_not_obeyed() {
         change(&mut manifest, &sandbox);
         fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
         let before = tree(&sandbox.root);
-        let flow = through_gate(&policy, restore(&sandbox, "act-2", &batch_text));
+        let action_id = ["act-2", "act-3", "act-4", "act-5"][at];
+        let flow = through_gate(&policy, restore(&sandbox, action_id, &batch_text));
         let (outcome, _) = execute(&mut executor, flow);
         assert_eq!(outcome.unwrap_err().reason, Reason::ManifestInvalid, "{at}");
         assert_eq!(tree(&sandbox.root), before, "{at}");
@@ -421,7 +423,11 @@ struct SwapForLink {
 
 impl Probe for SwapForLink {
     fn before(&mut self, mutation: &Mutation) -> io::Result<()> {
-        if !self.done && matches!(mutation, Mutation::Rename { .. } | Mutation::Remove(_)) {
+        let first = matches!(
+            mutation,
+            Mutation::Rename { .. } | Mutation::Remove(_) | Mutation::RemoveTree(_)
+        );
+        if !self.done && first {
             self.done = true;
             fs::rename(&self.folder, &self.aside)?;
             assert!(folder_link(&self.folder, &self.points_to));
@@ -686,7 +692,10 @@ impl Probe for FailAt {
         let counted = match mutation {
             Mutation::Rename { .. } => self.renames,
             Mutation::Remove(_) => !self.renames,
-            Mutation::CreateDir(_) | Mutation::WriteFile(_) => false,
+            Mutation::CreateDir(_)
+            | Mutation::WriteFile(_)
+            | Mutation::RemoveTree(_)
+            | Mutation::Sync(_) => false,
         };
         if counted {
             self.seen += 1;
@@ -810,7 +819,7 @@ fn a_recursive_delete_that_fails_in_the_middle_says_how_far_it_went() {
 struct Refusing;
 
 impl Journal for Refusing {
-    fn confirm_started(&mut self, _started: &Event) -> Result<(), JournalError> {
+    fn consume(&mut self, _started: &Event) -> Result<(), JournalError> {
         Err(JournalError("the log is not writable".to_owned()))
     }
 }
@@ -822,7 +831,7 @@ struct Watching {
 }
 
 impl Journal for Watching {
-    fn confirm_started(&mut self, _started: &Event) -> Result<(), JournalError> {
+    fn consume(&mut self, _started: &Event) -> Result<(), JournalError> {
         self.seen = Some(tree(&self.root));
         Ok(())
     }
@@ -876,13 +885,15 @@ fn the_memory_journal_takes_one_start_per_action() {
     let first = through_gate(&policy, delete(&sandbox, "act-1", &["work/build"]));
     let again = through_gate(&policy, delete(&sandbox, "act-1", &["work/build"]));
     let mut journal = MemoryJournal::new();
-    let mut executor = sandbox.executor("");
-    executor
+    sandbox
+        .executor("")
         .execute(first.permit, &first.started, &mut journal)
         .unwrap();
     sandbox.file("work/build/out.txt", "again");
     let before = tree(&sandbox.root);
-    let failure = executor
+    // Another executor, as after a restart: the journal is what remembers.
+    let failure = sandbox
+        .executor("")
         .execute(again.permit, &again.started, &mut journal)
         .unwrap_err();
     assert_eq!(failure.reason, Reason::JournalRefused);
