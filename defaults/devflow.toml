@@ -34,7 +34,7 @@ coauthor.claude = "Claude <noreply@anthropic.com>"
 coauthor.codex = "Codex <noreply@openai.com>"
 
 # Lista de e-mails de coautor aceitos pelo checador (precisa conter os de `coauthor.*` que estiverem em uso).
-coauthors.allowed = ["noreply@anthropic.com", "noreply@openai.com"]
+coauthors.allowed = ["noreply@anthropic.com", "noreply@openai.com", "130704790+n33miaz@users.noreply.github.com"]
 
 # No máximo quantos `Co-authored-by` por commit (inteiro de 0 a 99). Padrão 1: quem escreveu a maior parte.
 commits.max_coauthors = 1
