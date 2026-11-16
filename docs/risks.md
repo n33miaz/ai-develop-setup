@@ -1,0 +1,248 @@
+# Registro de riscos
+
+Cada risco conhecido do produto, com dono, teto e plano B (P5, ver [AGENTS.md](../AGENTS.md)). Este arquivo não repete os detalhes: aponta para onde a mitigação está escrita ou implementada.
+
+Estado da mitigação, em cada risco:
+
+- **implementada e testada**: há código em `develop` e um teste ou um job de CI que a cobra;
+- **decidida, não implementada**: há ADR ou Schema, e nenhum código a aplica ainda;
+- **ausente**: nem decisão nem código.
+
+"Teto" é o parâmetro que limita o pior caso, quando existe. "Não definido" quer dizer que ainda não há parâmetro.
+
+## Resumo
+
+| Risco | Dono | Estado da mitigação |
+|---|---|---|
+| [Ação destrutiva fora do escopo](#ação-destrutiva-fora-do-escopo) | portão de ações e executor de arquivos | implementada e testada; executor ainda não ligado |
+| [Troca no disco durante a execução](#troca-no-disco-durante-a-execução) | executor de arquivos | implementada e testada, com limites escritos |
+| [Licença de execução usada duas vezes](#licença-de-execução-usada-duas-vezes) | portão, executor e armazenamento | parcial: só dentro de um processo |
+| [Perda de sessões de terminal](#perda-de-sessões-de-terminal) | host de terminais | implementada e testada; lançador ausente |
+| [Outro usuário da máquina alcança as sessões](#outro-usuário-da-máquina-alcança-as-sessões) | host de terminais e daemon | implementada no host; conferência do lado do cliente em andamento |
+| [Credencial de CLI de IA vaza para o processo filho](#credencial-de-cli-de-ia-vaza-para-o-processo-filho) | adaptadores de ferramenta e host | parcial |
+| [Página ou programa local comanda os terminais](#página-ou-programa-local-comanda-os-terminais) | daemon (API local) | decidida (proposta), não implementada |
+| [Dado sensível em claro no disco](#dado-sensível-em-claro-no-disco) | armazenamento | decidida, não implementada |
+| [Perda do estado local](#perda-do-estado-local) | armazenamento | ausente |
+| [Atualização ruim instalada](#atualização-ruim-instalada) | lançador | decidida, não implementada |
+| [Elevação de privilégio](#elevação-de-privilégio) | auxiliar de elevação | decidida, não implementada |
+| [Exposição pelo transporte remoto](#exposição-pelo-transporte-remoto) | relé e sessão cifrada | decidida, não implementada |
+| [Suspensão de conta por uso automatizado de CLI](#suspensão-de-conta-por-uso-automatizado-de-cli) | adaptadores | decidida, não implementada |
+| [Gasto de IA sem teto](#gasto-de-ia-sem-teto) | núcleo (orçamento) | ausente |
+| [Texto de ferramenta tratado como instrução](#texto-de-ferramenta-tratado-como-instrução) | núcleo e adaptadores | só regra escrita |
+| [Instruções de agente sobrepostas ou ignoradas](#instruções-de-agente-sobrepostas-ou-ignoradas) | mantenedor | parcial |
+| [Segredo ou dado pessoal no repositório público](#segredo-ou-dado-pessoal-no-repositório-público) | mantenedor e CI | parcial |
+| [Dependência com licença incompatível](#dependência-com-licença-incompatível) | mantenedor e CI | implementada e testada |
+| [Cadeia de suprimento do CI e das dependências](#cadeia-de-suprimento-do-ci-e-das-dependências) | mantenedor e CI | parcial |
+| [Código `unsafe`](#código-unsafe) | crates com exceção | implementada e testada |
+
+## Arquivos e ações destrutivas
+
+### Ação destrutiva fora do escopo
+
+- **Descrição.** Um agente pede para apagar, mover ou sobrescrever algo fora da pasta de trabalho, uma pasta protegida (raiz, pasta do usuário, sistema) ou um repositório inteiro, por erro de texto, de caminho ou de plano.
+- **Impacto.** Perda de dados do usuário sem volta.
+- **Dono.** Portão de ações ([`crates/core`](../crates/core/README.md#portão-de-ações-destrutivas-srcgate)) e executor de arquivos ([`crates/adapters/fs`](../crates/adapters/fs/README.md)).
+- **Teto.** `approval_item_limit` e `approval_byte_limit` (acima deles, aprovação), `quarantine_enabled` (apagar vira mover para a quarentena) em [`defaults/action-gate.toml`](../defaults/action-gate.toml); `definitive_delete` em [`defaults/fs-executor.toml`](../defaults/fs-executor.toml).
+- **Mitigação existente (implementada e testada).** O portão normaliza o caminho só por texto, nega pastas protegidas, raiz de trabalho, raízes permitidas e repositórios, exige aprovação acima dos limites e reescreve apagar como quarentena ([regras](../crates/core/README.md#regras)); a aprovação vale só para o `plan_hash` do plano julgado ([máquina de estados](../crates/core/README.md#máquina-de-estados)). O executor julga de novo com a política confiável, abre tudo por identificador sem seguir link e só move ou apaga o que levantou ([o que é conferido](../crates/adapters/fs/README.md#o-que-é-conferido-antes-da-primeira-alteração)). Testes em `crates/core/tests/gate_*.rs` e `crates/adapters/fs/tests/`; os jobs `rust` e `fs-windows` do CI rodam os dois.
+- **Plano B.** Quarentena com [restauração](../crates/adapters/fs/README.md#restauração); execução que para diz exatamente o que mudou ([falha no meio](../crates/adapters/fs/README.md#falha-no-meio-e-recuperação)).
+- **O que falta.** Nada no workspace chama o executor ainda. Curinga, `fs.overwrite`, `fs.clean_untracked` e mover para fora da quarentena são recusados por falta de definição ([o que não é executado](../crates/adapters/fs/README.md#o-que-não-é-executado)). Purga de leva com repositório não tem regra. Um caminho protegido escrito em outra forma Unicode não é reconhecido pelo texto; só o executor, no disco, o alcança.
+
+### Troca no disco durante a execução
+
+- **Descrição.** Outro processo troca uma pasta por um link, renomeia ou substitui uma entrada entre a conferência e a operação.
+- **Impacto.** A operação age sobre outro objeto, inclusive fora da cerca.
+- **Dono.** Executor de arquivos.
+- **Teto.** `definitive_delete = "contained"` (padrão): no Linux nenhum apagar definitivo.
+- **Mitigação existente (implementada e testada).** Identificadores abertos em vez de caminhos, pastas seguradas no lugar no Windows, conferência de identidade e tamanho, mover sem substituir; o que é garantido para cada tipo de adversário está no [Modelo de ameaça](../crates/adapters/fs/README.md#modelo-de-ameaça). Testes em `tests/review.rs`, `tests/contain.rs` e `tests/settle.rs` do crate.
+- **Plano B.** O passo sai "não verificado" quando a chegada não confere; nada é apagado nem sobrescrito por esses caminhos.
+- **O que falta.** Tudo o que está em [Deliberadamente fora](../crates/adapters/fs/README.md#deliberadamente-fora): escritor concorrente depois da última conferência, contenção de quarentena e restauração contra processo hostil, apagar definitivo no Linux sob concorrência hostil, montagem real e corte de energia real sem teste, letra de unidade remapeada, caminhos longos e arquivo em uso sem teste.
+
+### Licença de execução usada duas vezes
+
+- **Descrição.** A mesma aprovação ou a mesma licença executa a ação mais de uma vez, por repetição, por reinício ou por dois executores.
+- **Impacto.** A ação roda de novo sobre um disco que já mudou.
+- **Dono.** Portão (tipos), executor (diário) e quem persiste os eventos.
+- **Teto.** Não definido.
+- **Mitigação existente.** Dentro de um processo, nem a ação nem a licença podem ser copiadas e o `replay` recusa log com `action.started` repetido ([máquina de estados](../crates/core/README.md#máquina-de-estados)); o executor exige que o diário registre o consumo antes de tudo e lembra as licenças recebidas (`E_FS_PERMIT_REUSED`); a pasta da ação na quarentena é criada de forma exclusiva ([entrada do executor](../crates/adapters/fs/README.md#entrada)).
+- **Plano B.** A quarentena deixa marca no disco que recusa a repetição.
+- **O que falta.** Não há diário persistente: entre reinícios, com a quarentena desligada, nada impede a segunda execução. A gravação atômica de `action.started` é dever do armazenamento, que ainda não existe.
+
+## Terminais
+
+### Perda de sessões de terminal
+
+- **Descrição.** Atualizar, reiniciar ou derrubar o núcleo encerra as sessões de terminal em andamento ou perde parte da saída.
+- **Impacto.** Trabalho de agente interrompido; saída perdida.
+- **Dono.** Host de terminais ([`crates/ptyhost`](../crates/ptyhost/README.md)) e o cliente dele no [daemon](../crates/daemon/README.md).
+- **Teto.** `replay_capacity_bytes`, `subscriber_queue_chunks`, `max_sessions` e `max_frame_bytes` em [`defaults/ptyhost.toml`](../defaults/ptyhost.toml).
+- **Mitigação existente (implementada e testada).** Processo separado ([ADR 0003](adr/0003-separate-pty-host-process.md)) com anel de replay numerado: quem reconecta retoma pelo `seq`, sem buraco e sem duplicata, e pedido fora do anel volta erro com o limite ([regras do replay](../crates/ptyhost/README.md#regras-do-replay)). Testes `client_dropped_twenty_times_loses_and_repeats_nothing`, `real_terminal_survives_twenty_client_drops_without_losing_a_byte` e os 20 ciclos de ConPTY (`twenty_cycles_leave_no_process_and_no_handle`) no job `pty-windows`.
+- **Plano B.** Condição de reversão da ADR 0003; para o PTY no Windows, ConPTY direto.
+- **O que falta.** O lançador que inicia o host destacado não existe; não há pedido de desligamento; o processo raiz entra no Job Object depois de criado; não há teto de conexões nem prazo para um terminal que não responde ([limites conhecidos](../crates/ptyhost/README.md#limites-conhecidos)).
+
+### Outro usuário da máquina alcança as sessões
+
+- **Descrição.** Outra conta da mesma máquina, ou um serviço, conecta no canal do host e lê ou comanda os terminais.
+- **Impacto.** Quebra do isolamento entre usuários (P3).
+- **Dono.** Host de terminais e daemon.
+- **Teto.** Não se aplica.
+- **Mitigação existente (implementada e testada).** Named pipe com lista de acesso de uma entrada só, a do usuário, e recusa de subir se o nome já existe; socket Unix `0600` ([como roda](../crates/ptyhost/README.md#como-roda)). Teste `pipe_grants_access_to_the_current_user_only` em `crates/ptyhost/src/channel.rs`.
+- **Plano B.** Não há.
+- **O que falta.** O cliente do daemon ainda não confere o dono do pipe a que se conecta (issue #56). O teste com dois usuários que o P3 pede não existe.
+
+### Credencial de CLI de IA vaza para o processo filho
+
+- **Descrição.** Variáveis de autenticação do ambiente do usuário, ou arquivos de credencial de um CLI de IA, chegam a um processo que não deveria vê-los, ou são lidos pelo produto (C1).
+- **Impacto.** Credencial exposta ou login do CLI alterado.
+- **Dono.** Adaptadores de ferramenta e host de terminais.
+- **Teto.** Não se aplica.
+- **Mitigação existente.** O processo filho vê só o `env` do pedido, nada herdado do host (testes `the_child_environment_is_exactly_what_the_spec_carries` e `child_sees_only_the_environment_of_the_spec`). O comando `session.open` da API local recusa `program`, `args`, `env` e `cwd` no Schema ([API local](../contracts/README.md#api-local)). Os erros do cliente do daemon não carregam ambiente (`errors_never_include_the_host_message_or_environment`).
+- **Plano B.** Não há.
+- **O que falta.** Os adaptadores de ferramenta são esqueletos: ainda não há lista permitida de ambiente por ferramenta. O teste que compara o status do CLI antes e depois, pedido pela regra C1 do [AGENTS.md](../AGENTS.md), não existe.
+
+### Página ou programa local comanda os terminais
+
+- **Descrição.** Uma página aberta no navegador (WebSocket não tem política de mesma origem), DNS rebinding, outro usuário da máquina ou outro programa conecta na API local em loopback.
+- **Impacto.** Comando arbitrário num terminal do usuário com uma ferramenta de IA dentro.
+- **Dono.** Daemon (API local).
+- **Teto.** Prazo do `auth.hello` (padrão proposto 5 s).
+- **Mitigação existente (decidida como proposta, não implementada).** [ADR 0020](adr/0020-local-api-authentication.md): porta efêmera em `127.0.0.1`, conferência de `Host` e `Origin`, token por execução entregue pelo fragmento e conferido em tempo constante, recusa de origem remota. O Schema `urn:ads:command:auth.hello:1` existe.
+- **Plano B.** Condição de reversão da ADR 0020.
+- **O que falta.** A ADR aguarda ratificação. O daemon ainda não escuta WebSocket nenhum; a interface ainda usa um cliente de exemplo.
+
+## Estado local
+
+### Dado sensível em claro no disco
+
+- **Descrição.** Texto de terminal, prompts e caminhos gravados sem cifra, ou chave em arquivo.
+- **Impacto.** Quem lê o disco lê o trabalho do usuário.
+- **Dono.** Armazenamento ([`crates/storage`](../crates/storage/README.md)) e cofre ([`crates/adapters/vault`](../crates/adapters/vault/README.md)).
+- **Teto.** Não se aplica.
+- **Mitigação existente (decidida, não implementada).** [ADR 0005](adr/0005-column-level-encryption.md): cifra autenticada por coluna, chave no cofre do sistema. Hoje nada é gravado: o anel de replay fica só em memória e o cliente do daemon não persiste saída nem tem telemetria ([daemon](../crates/daemon/README.md)).
+- **Plano B.** Banco inteiro cifrado (condição de reversão da ADR 0005).
+- **O que falta.** O armazenamento é esqueleto em `develop`; a abertura do banco e a cifra estão em andamento (issue #47). O teste da ADR 0005 (reabrir, recusar chave errada, frase sentinela ausente do arquivo) ainda não existe.
+
+### Perda do estado local
+
+- **Descrição.** Banco local corrompido ou apagado.
+- **Impacto.** Perda de auditoria, métricas e estado das tarefas.
+- **Dono.** Armazenamento.
+- **Teto.** Não definido.
+- **Mitigação existente.** Ausente. A [ADR 0004](adr/0004-local-sqlite-no-cloud-database.md) cita backup local com restauração testada como condição de reversão, sem mecanismo.
+- **Plano B.** Não definido.
+- **O que falta.** Backup e restauração testada (P5), auditoria só-anexo encadeada.
+
+## Atualização e privilégio
+
+### Atualização ruim instalada
+
+- **Descrição.** Uma versão juntada à `develop` (que é a produção) quebra o programa instalado, ou um binário adulterado é instalado.
+- **Impacto.** Produto parado ou código não confiável rodando.
+- **Dono.** Lançador ([`crates/launcher`](../crates/launcher/README.md)).
+- **Teto.** Duas trocas por dia; prova de 10 minutos com volta em três quedas (ADR 0015).
+- **Mitigação existente (decidida, não implementada).** [ADR 0015](adr/0015-ci-built-artifact-with-verified-self-update.md): manifesto assinado no CI e conferido com chave embutida, versão anterior guardada, volta automática. Os Schemas `record.update-manifest` e `record.update-status` existem.
+- **Plano B.** Suspender a atualização automática (condição de reversão da ADR 0015).
+- **O que falta.** O lançador é esqueleto; o job de artefato do CI está só descrito em comentário.
+
+### Elevação de privilégio
+
+- **Descrição.** O produto ganha direitos de administrador além do necessário, ou um núcleo comprometido se eleva.
+- **Impacto.** Comprometimento da máquina.
+- **Dono.** Auxiliar de elevação (sem crate ainda).
+- **Teto.** Lista fechada de verbos; uma confirmação do sistema por ação.
+- **Mitigação existente (decidida, não implementada).** [ADR 0009](adr/0009-elevation-by-uac-signed-broker-later.md): UAC por ação, nada elevado residente; corretor assinado desenhado e desligado.
+- **Plano B.** Voltar a só mostrar o comando (condição de reversão da ADR 0009).
+- **O que falta.** Não há código de elevação, nem teste de que o daemon roda como usuário comum.
+
+## Remoto e provedores
+
+### Exposição pelo transporte remoto
+
+- **Descrição.** O relé vê texto em claro, guarda credencial, ou aceita comando não assinado.
+- **Impacto.** Terminais comandados de fora da máquina.
+- **Dono.** Relé ([`crates/adapters/relay`](../crates/adapters/relay/README.md)) e sessão cifrada ([`crates/e2e`](../crates/e2e/README.md)).
+- **Teto.** `remote.transport = none` por padrão, decidido na ADR 0008; o parâmetro ainda não existe em `defaults/`.
+- **Mitigação existente (decidida, não implementada).** [ADR 0008](adr/0008-relay-worker-as-first-remote-transport.md): cifra de ponta a ponta, comandos assinados pelo aparelho, relé na conta do próprio usuário. Schemas `relay.envelope` e `relay.device`; a API local recusa `origin: "remote"` (ADR 0020).
+- **Plano B.** Trocar de transporte (condição de reversão da ADR 0008).
+- **O que falta.** Relé e sessão cifrada são esqueletos.
+
+### Suspensão de conta por uso automatizado de CLI
+
+- **Descrição.** Uso automatizado de uma CLI de IA fora dos termos do fornecedor.
+- **Impacto.** Conta do usuário suspensa.
+- **Dono.** Adaptadores de ferramenta.
+- **Teto.** `adapters.agy.headless = false` por padrão, decidido na ADR 0010; rotação automática de contas proibida.
+- **Mitigação existente (decidida, não implementada).** [ADR 0010](adr/0010-api-key-for-automation-agy-headless-on-demand.md): automação pela chave de API, modo sem interface só depois de aceite registrado.
+- **Plano B.** Retirar a CLI do produto (condição de reversão da ADR 0010).
+- **O que falta.** Adaptadores são esqueletos; o parâmetro ainda não existe em `defaults/`.
+
+### Gasto de IA sem teto
+
+- **Descrição.** Tarefas ou tentativas repetidas consomem cota ou custo sem limite.
+- **Impacto.** Custo inesperado ou cota esgotada.
+- **Dono.** Núcleo (orçamento e roteamento).
+- **Teto.** Não definido.
+- **Mitigação existente.** Ausente. Os Schemas `record.usage_event`, `event.usage.*`, `event.task.cancelled` (que prevê cancelamento por teto de custo) e `event.routing.fallback` existem.
+- **Plano B.** Não definido.
+- **O que falta.** Limites de gasto e de tentativas, coleta de uso, roteador.
+
+### Texto de ferramenta tratado como instrução
+
+- **Descrição.** Saída de terminal, conteúdo da web ou o pacote de uma tarefa é obedecido como ordem.
+- **Impacto.** Ação não pedida pelo usuário.
+- **Dono.** Núcleo e adaptadores.
+- **Teto.** Não se aplica.
+- **Mitigação existente.** Só regra: o [AGENTS.md](../AGENTS.md) diz que esse texto é dado; o Schema `record.task-packet` diz que permissões vêm da configuração do usuário, não do pacote; toda ação destrutiva passa pelo portão.
+- **Plano B.** O portão de ações limita o dano em arquivos.
+- **O que falta.** Nada no código separa instrução de dado além do portão.
+
+## Repositório e processo
+
+### Instruções de agente sobrepostas ou ignoradas
+
+- **Descrição.** Um agente de terminal não lê o `AGENTS.md`, ou um arquivo local o substitui sem ninguém perceber.
+- **Impacto.** Regras deste repositório deixam de valer para quem altera o código.
+- **Dono.** Mantenedor.
+- **Teto.** Não se aplica.
+- **Mitigação existente.** `CLAUDE.md` importa o `AGENTS.md`; os arquivos locais conhecidos estão no `.gitignore`; o que cada ferramenta lê está em [tools.md](tools.md).
+- **Plano B.** Hooks e CI cobram as regras de commit independentemente do agente.
+- **O que falta.** `AGENTS.override.md`, que substitui o `AGENTS.md` para o Codex na mesma pasta, não está no `.gitignore`. Nenhuma das ferramentas registradas lê `AGENTS.local.md` (ver [tools.md](tools.md)).
+
+### Segredo ou dado pessoal no repositório público
+
+- **Descrição.** Segredo, dado pessoal, nome de empregador ou caminho de máquina entra num commit, issue ou PR.
+- **Impacto.** Exposição permanente (todo commit é público).
+- **Dono.** Mantenedor e CI.
+- **Teto.** Não se aplica.
+- **Mitigação existente.** Job `secrets` (gitleaks, configuração em `.gitleaks.toml`) bloqueia no CI; `.gitignore` exclui `.env*`, chaves, bancos e logs; [ADR 0016](adr/0016-sanitized-public-issue-per-delivery.md) para issues.
+- **Plano B.** Mover issues para rastreador privado (condição de reversão da ADR 0016).
+- **O que falta.** O job `terms` (termos proibidos) só roda com a variável de repositório `TERMS_CHECK = on` e o segredo `FORBIDDEN_TERMS`; hoje a variável não está configurada e a conferência roda só localmente, antes do push.
+
+### Dependência com licença incompatível
+
+- **Descrição.** Uma dependência GPL, AGPL ou outra incompatível com distribuição fechada entra na árvore.
+- **Impacto.** Impedimento de distribuir o produto.
+- **Dono.** Mantenedor e CI.
+- **Teto.** Lista permitida em [`deny.toml`](../deny.toml).
+- **Mitigação existente (implementada e testada).** `cargo deny check` no job `rust` (nas duas árvores, com e sem a casca); `npm run licenses` no job `ui`; exceção MPL-2.0 por nome para a árvore do Tauri ([ADR 0018](adr/0018-mpl-2-0-exception-for-the-tauri-dependency-tree.md), proposta).
+- **Plano B.** Retirar a casca ou trocar a biblioteca (condição de reversão da ADR 0018).
+- **O que falta.** O arquivo de avisos de terceiros do pacote, previsto na ADR 0018, sai com o empacotamento.
+
+### Cadeia de suprimento do CI e das dependências
+
+- **Descrição.** Uma Action ou dependência comprometida executa código no CI ou no produto.
+- **Impacto.** Segredo do CI exposto, binário adulterado.
+- **Dono.** Mantenedor e CI.
+- **Teto.** Não se aplica.
+- **Mitigação existente.** Actions fixadas por SHA de commit em `.github/workflows/`; `Cargo.lock` e `package-lock.json` versionados e usados com `--locked` e `npm ci --ignore-scripts`; avisos de segurança pelo `cargo deny`; CodeQL e Scorecard semanais, só avisando ([ADR 0013](adr/0013-only-fast-checks-block.md), `.github/workflows/weekly.yml`).
+- **Plano B.** Condição de reversão da ADR 0013 (a análise passa a bloquear).
+- **O que falta.** O job de revisão de dependências por PR está só descrito em comentário no `ci.yml`.
+
+### Código `unsafe`
+
+- **Descrição.** Erro de memória em chamada direta ao sistema.
+- **Impacto.** Falha ou brecha no host de terminais ou no executor de arquivos.
+- **Dono.** `ads-ptyhost` e `ads-adapter-fs`.
+- **Teto.** Orçamento por crate em [unsafe.md](unsafe.md).
+- **Mitigação existente (implementada e testada).** `unsafe_code = "forbid"` no workspace; exceção só em um módulo Windows de cada crate, com cada bloco listado e comentado; o lint reprova a compilação fora deles.
+- **Plano B.** Não há.
+- **O que falta.** O cofre vai precisar de exceção própria quando ganhar código.
