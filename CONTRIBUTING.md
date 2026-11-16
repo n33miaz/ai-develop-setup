@@ -116,6 +116,21 @@ bash .github/scripts/check-commits.test.sh
 - Junção por rebase, com auto-merge ligado, depois do check `ci-ok` verde. Apague a branch após a junção.
 - Antes de juntar, confira o `ci-ok` da execução mais recente do commit exato.
 
+## Módulos de segurança
+
+Proposta, aguardando ratificação do mantenedor. Mudança nos módulos abaixo pede **revisão independente** (outro modelo ou outra pessoa, que não escreveu a mudança) antes de juntar, além do `ci-ok` verde. Os achados da revisão viram commits novos no mesmo PR ou issues abertas antes da junção. O PR diz quem revisou e o que foi apontado.
+
+| Módulo | Por quê |
+|---|---|
+| Portão de ações (`crates/core/src/gate`) | Decide o que pode apagar, mover ou sobrescrever arquivos |
+| Executor de arquivos (`crates/adapters/fs`) | Executa no disco o que o portão licenciou |
+| Armazenamento e cifra (`crates/storage`, cofre) | Guarda texto de terminal, prompts e caminhos cifrados, e a chave |
+| Autenticação da API local ([ADR 0020](docs/adr/0020-local-api-authentication.md)) | Decide quem comanda os terminais do usuário |
+| Ambiente do processo filho e entrada de comandos (adaptadores de ferramenta, `session.open` e `session.write` no núcleo) | Decide o que roda, com que ambiente e com que entrada; é onde credencial de CLI de IA poderia vazar (C1) |
+| Canal do `ptyhost` (pipe do usuário) | Separa as sessões de um usuário das de outro (P3) |
+
+Documentação de proposta (como uma ADR ainda não ratificada) não é mudança no módulo e pode ser juntada só com o `ci-ok`.
+
 ## Segredos e dados
 
 Nunca commite segredos, `.env`, chaves, bancos, logs ou dados de usuário. O CI varre segredos (gitleaks) e uma lista de termos proibidos mantida fora do repo.
