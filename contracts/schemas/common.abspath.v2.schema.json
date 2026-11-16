@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:common:abspath:2",
+  "title": "Caminho absoluto normalizado",
+  "description": "Caminho absoluto literal, já normalizado, no estilo Windows (unidade em maiúscula e barra invertida) ou POSIX (barra normal): um separador só, sem separador no fim (salvo a raiz), sem componente '.' ou '..', sem variável ($ ou %), sem til no começo de componente, sem curinga e sem caminho de rede. A versão 2 recusa também, no estilo Windows, o que é apelido de outro caminho: componente que é nome de dispositivo (CON, PRN, AUX, NUL, COM0 a COM9, LPT0 a LPT9 e os mesmos com ¹, ² ou ³, com qualquer extensão) e nome curto 8.3 (til seguido de dígitos até o fim do nome ou até um ponto).",
+  "type": "string",
+  "minLength": 1,
+  "maxLength": 4096,
+  "pattern": "^([A-Z]:\\\\([^\\\\/:\"<>|]*[^\\\\/:\"<>|. ](\\\\[^\\\\/:\"<>|]*[^\\\\/:\"<>|. ])*)?|/([^/\\\\]+(/[^/\\\\]+)*)?)$",
+  "not": {
+    "anyOf": [
+      {
+        "$comment": "Componente '.' ou '..'.",
+        "pattern": "(^|[\\\\/])\\.\\.?([\\\\/]|$)"
+      },
+      {
+        "$comment": "Variável não expandida.",
+        "pattern": "[$%]"
+      },
+      {
+        "$comment": "Til no começo do caminho ou de um componente.",
+        "pattern": "(^|[\\\\/])~"
+      },
+      {
+        "$comment": "Curinga.",
+        "pattern": "[*?]"
+      },
+      {
+        "$comment": "Caractere de controle.",
+        "pattern": "[\\u0000-\\u001f\\u007f-\\u009f]"
+      },
+      {
+        "$comment": "Estilo Windows: componente que é nome de dispositivo, com ou sem extensão (o radical vai até o primeiro ponto, sem os espaços finais).",
+        "pattern": "^[A-Z]:\\\\([^\\\\]*\\\\)*([Cc][Oo][Nn]|[Pp][Rr][Nn]|[Aa][Uu][Xx]|[Nn][Uu][Ll]|([Cc][Oo][Mm]|[Ll][Pp][Tt])[0-9\\u00b9\\u00b2\\u00b3])[ \\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]*(\\.[^\\\\]*)?(\\\\|$)"
+      },
+      {
+        "$comment": "Estilo Windows: nome curto 8.3 (til seguido de dígitos até o fim do nome ou até um ponto).",
+        "pattern": "^[A-Z]:\\\\([^\\\\]*\\\\)*[^\\\\]*~[0-9]+(\\.|\\\\|$)"
+      }
+    ]
+  },
+  "examples": [
+    "C:\\work\\proj\\build"
+  ]
+}

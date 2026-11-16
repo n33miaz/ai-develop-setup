@@ -153,8 +153,9 @@ text_type!(
     }
 );
 text_type!(
-    /// `urn:ads:common:abspath:1`: an absolute path exactly as the gate normalizes it. A path
-    /// the normalization would refuse or rewrite is not one.
+    /// `urn:ads:common:abspath:2`: an absolute path exactly as the gate normalizes it. A path
+    /// the normalization would refuse or rewrite is not one. Version 1 of the Schema is wider
+    /// (Windows device names and short names pass it); this type refuses them all the same.
     PathText,
     "normalized absolute path",
     |text| {
@@ -245,6 +246,7 @@ fn timestamp_key(text: &str) -> Option<(&str, u32)> {
 }
 
 impl Timestamp {
+    /// Compared as instants: `05Z` and `05.000Z` are the same one, and neither is before.
     pub fn is_before(&self, other: &Timestamp) -> bool {
         timestamp_key(&self.0) < timestamp_key(&other.0)
     }
@@ -593,43 +595,96 @@ event_data!(
     approval_id
 );
 
+/// `approval.granted:2`, the one the gate writes: it names the action the decision was taken
+/// for, so the log keeps what the command checked.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApprovalGranted {
     pub approval_id: Id,
+    pub action_id: Id,
     pub plan_hash: PlanHash,
     pub via: Via,
 }
 event_data!(
     ApprovalGranted,
-    "urn:ads:event:approval.granted:1",
+    "urn:ads:event:approval.granted:2",
     "approval",
     approval_id
 );
 
+/// `approval.denied:2`, the one the gate writes: it names the action.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApprovalDenied {
     pub approval_id: Id,
+    pub action_id: Id,
     pub plan_hash: PlanHash,
     #[serde(deserialize_with = "nullable")]
     pub reason: Option<ShortText>,
 }
 event_data!(
     ApprovalDenied,
+    "urn:ads:event:approval.denied:2",
+    "approval",
+    approval_id
+);
+
+/// `approval.expired:2`, the one the gate writes: it names the action.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovalExpired {
+    pub approval_id: Id,
+    pub action_id: Id,
+    pub plan_hash: PlanHash,
+}
+event_data!(
+    ApprovalExpired,
+    "urn:ads:event:approval.expired:2",
+    "approval",
+    approval_id
+);
+
+/// `approval.granted:1`, which does not say which action the decision was taken for. Read
+/// only, like the two below: the gate never writes them and never rebuilds a state from them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovalGrantedV1 {
+    pub approval_id: Id,
+    pub plan_hash: PlanHash,
+    pub via: Via,
+}
+event_data!(
+    ApprovalGrantedV1,
+    "urn:ads:event:approval.granted:1",
+    "approval",
+    approval_id
+);
+
+/// `approval.denied:1`. Read only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovalDeniedV1 {
+    pub approval_id: Id,
+    pub plan_hash: PlanHash,
+    #[serde(deserialize_with = "nullable")]
+    pub reason: Option<ShortText>,
+}
+event_data!(
+    ApprovalDeniedV1,
     "urn:ads:event:approval.denied:1",
     "approval",
     approval_id
 );
 
+/// `approval.expired:1`. Read only.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ApprovalExpired {
+pub struct ApprovalExpiredV1 {
     pub approval_id: Id,
     pub plan_hash: PlanHash,
 }
 event_data!(
-    ApprovalExpired,
+    ApprovalExpiredV1,
     "urn:ads:event:approval.expired:1",
     "approval",
     approval_id
@@ -673,7 +728,7 @@ impl Event {
     }
 
     /// Reads one event of the gate from a log, by its `type`. Anything else is refused,
-    /// `approval.requested:1` included: it does not name its action.
+    /// version 1 of the four approval events included: they do not name their action.
     pub fn from_json(json: serde_json::Value) -> Result<Self, ContractError> {
         fn read<D: EventData>(json: serde_json::Value) -> Result<Envelope<D>, ContractError> {
             serde_json::from_value(json).map_err(|err| ContractError {

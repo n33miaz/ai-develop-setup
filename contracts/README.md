@@ -9,6 +9,7 @@ Fonte única de toda mensagem e todo registro do produto: JSON Schema 2020-12, u
 | `schemas/` | Um arquivo por Schema: `<tipo>.<nome>.v<versão>.schema.json` |
 | `golden/<tipo>.<nome>.v<versão>/valid/` | Exemplos que têm de passar (pelo menos 2) |
 | `golden/<tipo>.<nome>.v<versão>/invalid/` | Exemplos que têm de falhar (pelo menos 3), mais `index.json` |
+| `corpus/` | Casos comuns a dois validadores: o Schema e o código que lê o mesmo dado. Hoje, `abspath.json` ([caminho absoluto](#caminho-absoluto-o-schema-e-o-núcleo)) |
 | `generated/ts/` | Tipos TypeScript gerados, versionados; o CI reprova se estiverem desatualizados. A interface os importa por `ui/src/api/contracts.ts` |
 | `../crates/contracts/src/generated/` | Tipos Rust gerados (crate `ads-contracts`), versionados; o CI reprova se estiverem desatualizados. Como cada parte do Schema vira tipo está no [README do crate](../crates/contracts/README.md) |
 | `tools/` | Validador, geradores (`gen-ts.mjs`, `gen-rust.mjs`), regras entre campos (`rules.mjs`) e os testes deles |
@@ -72,7 +73,30 @@ Dados dos dourados são sempre sintéticos: sem nomes reais, e-mails, caminhos d
 - Campo que pode faltar de verdade é opcional; campo que existe e pode não ter valor é obrigatório e aceita `null`.
 - Regras entre campos (`if`/`then`) só cobrem o que depende de valores do próprio documento. Regra que precisa de outro documento (o hash de um plano contra o plano, por exemplo) é teste de contrato, não Schema.
 - `data_class` (`public`, `internal`, `private`, `secret`) acompanha todo evento; texto de terminal e perguntas de permissão nunca são `public`, e evento que leva texto escrito pelo usuário (`title` em `task.created`, `display_name` em `session.created`) também não.
-- Caminho absoluto é `urn:ads:common:abspath:1`, sempre já normalizado: `C:\pasta\arquivo` ou `/pasta/arquivo`, com `C:\` e `/` como raízes. O Schema recusa caminho relativo, `..`, `.`, variável (`$`, `%`), til no começo de componente, curinga, separador sobrando e caminho de rede. Nomes curtos 8.3 e nomes de dispositivo do Windows não cabem em expressão regular legível: recusá-los é trabalho de quem normaliza, antes de gravar.
+- Caminho absoluto é `urn:ads:common:abspath:2`, sempre já normalizado: `C:\pasta\arquivo` ou `/pasta/arquivo`, com `C:\` e `/` como raízes. O Schema recusa caminho relativo, `..`, `.`, variável (`$`, `%`), til no começo de componente, curinga, separador sobrando e caminho de rede; no estilo Windows, também componente terminado em ponto ou espaço, nome de dispositivo e nome curto 8.3. A `:1` não recusa os dois últimos: ver [Caminho absoluto: o Schema e o núcleo](#caminho-absoluto-o-schema-e-o-núcleo).
+
+## Caminho absoluto: o Schema e o núcleo
+
+Dois validadores leem o mesmo texto: o Schema `urn:ads:common:abspath:2` e o normalizador do núcleo (`ads-core`, que só grava caminho que ele mesmo aceita e não reescreve). Os dois têm de concordar. `corpus/abspath.json` é o corpus comum: cada caso traz o caminho e se ele vale; `tools/corpus.test.mjs` roda o Schema e `crates/core/tests/gate_golden.rs` roda o núcleo sobre o mesmo arquivo, e cada um reprova se o seu veredito não for o declarado. Caso novo de divergência entra no corpus antes da correção.
+
+A `:2` acrescenta à `:1`, só no estilo Windows (no POSIX esses nomes são nomes comuns):
+
+| Recusado | Regra |
+|---|---|
+| Nome de dispositivo como componente | `CON`, `PRN`, `AUX`, `NUL`, `COM0` a `COM9`, `LPT0` a `LPT9` e os mesmos com `¹`, `²` ou `³` no lugar do dígito; em qualquer caixa ASCII, com qualquer extensão (o radical vai até o primeiro ponto, sem os espaços finais: `nul.tar.gz`, `NUL .txt`) |
+| Nome curto 8.3 | til seguido de dígitos até o fim do nome ou até um ponto (`PROGRA~1`, `REPORT~2.TXT`); `a~b` e `v~1x` valem |
+| Componente terminado em ponto ou espaço | já era recusado na `:1`; a `:2` ganhou os dourados |
+
+Diferenças conhecidas entre os dois validadores, em `known_differences` do corpus: **nenhuma**. A lista existe para que uma divergência aceita de propósito fique escrita, com o veredito de cada lado e o motivo, em vez de escondida.
+
+O que continua sendo só do núcleo, porque texto nenhum resolve:
+
+- **Normalização da entrada.** O Schema só aceita o caminho já normalizado; quem transforma `c:/work//proj/./src/` em `C:\work\proj\src`, ou recusa, é o núcleo.
+- **Identidade no sistema de arquivos.** Link simbólico, junção, ponto de montagem, apelido de volume, caixa e forma Unicode (NFC e NFD são textos diferentes, e alguns sistemas de arquivos os tratam como o mesmo nome). O Schema e o núcleo comparam texto; quem executa confere no disco.
+- **Política.** Pasta protegida, raiz de trabalho, raízes permitidas e quarentena dependem da configuração e do plano, não do caminho sozinho.
+- **Regras entre campos** do registro do plano: ordem canônica e não repetição dos alvos e o `plan_hash` (abaixo).
+
+`urn:ads:record:action-plan:1` continua referindo a `abspath:1`: apertar os caminhos do registro é mudança de versão do registro (regra 2), que ainda não foi feita. Até lá o Schema do registro aceita nome de dispositivo e nome curto, e quem os recusa é o núcleo, na escrita e na leitura; um teste confere que todo caminho dos dourados válidos do registro cabe na `:2`.
 
 ## Stream e entidade
 
@@ -103,7 +127,9 @@ As duas versões convivem; quem ainda responde `{ "accepted": true }` segue na `
 
 ### Ciclo de uma ação nos eventos
 
-Cada estado da ação é reconstruível do log. Os eventos `action.*` ficam no stream `action/<action_id>`; os `approval.*`, no stream `approval/<approval_id>`, amarrados à ação pelo `action_id` de `approval.requested:2` e pelo `approval_id` de `action.started` e `action.executed`.
+Cada estado da ação é reconstruível do log. Os eventos `action.*` ficam no stream `action/<action_id>`; os `approval.*`, no stream `approval/<approval_id>`, amarrados à ação pelo `action_id` que os quatro levam na versão `:2` (o pedido e cada decisão: conceder, negar, expirar) e pelo `approval_id` de `action.started` e `action.executed`. A `:1` dos quatro não diz de qual ação é: duas ações com o mesmo plano e o mesmo `approval_id` ficariam indistinguíveis no log, e por isso o portão não a escreve nem reconstrói estado a partir dela.
+
+Ordem no tempo dentro de uma aprovação, conferida pelo portão na escrita e na reconstrução: o instante (`ts`) de `approval.granted` e de `approval.denied` não é anterior ao de `approval.requested`; o de `action.started` não é anterior ao de `approval.granted`; `approval.requested`, `approval.granted` e `action.started` são anteriores a `expires_at`, e `approval.expired` não é. Instantes iguais valem. É regra entre documentos, não de Schema.
 
 | Evento | Estado depois dele |
 |---|---|
@@ -134,7 +160,7 @@ Códigos de regra em uso (código novo não muda a versão do Schema). Onde há 
 
 | Veredito | Códigos |
 |---|---|
-| `denied` | `protected.<proteção>`, `work_root_protected.<proteção>`, `work_root_itself`, `allowed_root_itself`, `outside_allowed_roots`, `repository_root`, `quarantine_itself`, `destination_protected.<proteção>`, `destination_outside_allowed_roots`, `destination_inside_target` |
+| `denied` | `protected.<proteção>`, `work_root_protected.<proteção>`, `work_root_itself`, `allowed_root_itself`, `outside_allowed_roots`, `repository_root`, `quarantine_itself`, `destination_protected.<proteção>`, `destination_outside_allowed_roots`, `destination_inside_target`, `destination_entry_reserved` |
 | `requires_approval` | `outside_work_root`, `destination_outside_work_root`, `estimate_unknown`, `item_limit_exceeded`, `byte_limit_exceeded`, `quarantine_purge` |
 
 ### Serialização canônica do plan_hash
@@ -256,7 +282,8 @@ O manifesto (`urn:ads:record:update-manifest:1`) é assinado no CI. A assinatura
 | `urn:ads:common:data-class:1` | Classe de sensibilidade de um dado: public, internal, private ou secret. Segredo nunca sai da máquina. |
 | `urn:ads:common:risk:1` | Nível de risco de uma ação ou tarefa: low, medium ou high. |
 | `urn:ads:common:relpath:1` | Caminho relativo com barra normal, sem raiz, sem letra de unidade e sem segmento '..'. |
-| `urn:ads:common:abspath:1` | Caminho absoluto literal, já normalizado, no estilo Windows ou POSIX: sem relativo, '..', variável, til, curinga nem caminho de rede. |
+| `urn:ads:common:abspath:1` | Caminho absoluto literal, já normalizado, no estilo Windows ou POSIX: sem relativo, '..', variável, til, curinga nem caminho de rede. Aceita nome de dispositivo e nome curto do Windows. |
+| `urn:ads:common:abspath:2` | O mesmo caminho, recusando também, no estilo Windows, nome de dispositivo e nome curto 8.3. Convive com a `:1`. |
 | `urn:ads:common:action-rule:1` | Código estável de uma regra do portão de ações que disparou num plano. |
 | `urn:ads:common:actor:1` | Quem causou um evento ou uma decisão: um aparelho, um agente de IA ou o próprio daemon. |
 
@@ -301,9 +328,12 @@ O manifesto (`urn:ads:record:update-manifest:1`) é assinado no CI. A assinatura
 |---|---|
 | `urn:ads:event:approval.requested:1` | Uma ação com risco pede aprovação: vale para o hash do plano e expira na validade indicada. Não diz de qual ação é. |
 | `urn:ads:event:approval.requested:2` | O mesmo pedido com action_id obrigatório, que amarra a aprovação à ação. Convive com a `:1`. |
-| `urn:ads:event:approval.granted:1` | A aprovação foi concedida para o hash do plano, por um dos três caminhos permitidos. |
-| `urn:ads:event:approval.denied:1` | A aprovação foi negada para o hash do plano, com motivo opcional. |
-| `urn:ads:event:approval.expired:1` | O prazo da aprovação passou sem decisão; o plano precisa ser refeito. |
+| `urn:ads:event:approval.granted:1` | A aprovação foi concedida para o hash do plano, por um dos três caminhos permitidos. Não diz para qual ação. |
+| `urn:ads:event:approval.granted:2` | A mesma concessão com action_id obrigatório: a ação para a qual a decisão foi tomada. Convive com a `:1`. |
+| `urn:ads:event:approval.denied:1` | A aprovação foi negada para o hash do plano, com motivo opcional. Não diz para qual ação. |
+| `urn:ads:event:approval.denied:2` | A mesma negação com action_id obrigatório. Convive com a `:1`. |
+| `urn:ads:event:approval.expired:1` | O prazo da aprovação passou sem decisão; o plano precisa ser refeito. Não diz de qual ação. |
+| `urn:ads:event:approval.expired:2` | A mesma expiração com action_id obrigatório. Convive com a `:1`. |
 
 ### Eventos de uso
 

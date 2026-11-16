@@ -1,0 +1,775 @@
+{
+  "description": "Corpus comum dos dois validadores de caminho absoluto: o Schema urn:ads:common:abspath:2 (tools/corpus.test.mjs) e o normalizador do núcleo (crates/core/tests/gate_golden.rs). Cada caso diz se o caminho vale; os dois têm de dar esse mesmo veredito. known_differences lista os caminhos em que os dois divergem de propósito, com o veredito de cada um e o motivo; vazio quer dizer que não há divergência conhecida.",
+  "schema": "urn:ads:common:abspath:2",
+  "known_differences": [],
+  "cases": [
+    {
+      "path": "C:\\",
+      "valid": true
+    },
+    {
+      "path": "Z:\\",
+      "valid": true
+    },
+    {
+      "path": "/",
+      "valid": true
+    },
+    {
+      "path": "C:\\work",
+      "valid": true
+    },
+    {
+      "path": "C:\\work\\proj\\build",
+      "valid": true
+    },
+    {
+      "path": "/work/proj/build",
+      "valid": true
+    },
+    {
+      "path": "D:\\data\\My Files\\report.final.txt",
+      "valid": true
+    },
+    {
+      "path": "C:\\ work",
+      "valid": true
+    },
+    {
+      "path": "C:\\work\\.hidden",
+      "valid": true
+    },
+    {
+      "path": "/work/.hidden",
+      "valid": true
+    },
+    {
+      "path": "/work/..hidden",
+      "valid": true
+    },
+    {
+      "path": "/work/...",
+      "valid": true
+    },
+    {
+      "path": "/work/proj.",
+      "valid": true
+    },
+    {
+      "path": "/work/proj ",
+      "valid": true
+    },
+    {
+      "path": "/work /proj",
+      "valid": true
+    },
+    {
+      "path": "C:\\work\\console",
+      "valid": true
+    },
+    {
+      "path": "C:\\work\\NULL",
+      "valid": true
+    },
+    {
+      "path": "C:\\work\\NUL1",
+      "valid": true
+    },
+    {
+      "path": "C:\\work\\xNUL",
+      "valid": true
+    },
+    {
+      "path": "C:\\work\\COM",
+      "valid": true
+    },
+    {
+      "path": "C:\\work\\COM10",
+      "valid": true
+    },
+    {
+      "path": "C:\\work\\COM12.txt",
+      "valid": true
+    },
+    {
+      "path": "C:\\work\\LPT",
+      "valid": true
+    },
+    {
+      "path": "C:\\work\\LPTX",
+      "valid": true
+    },
+    {
+      "path": "C:\\work\\COM⁴",
+      "valid": true
+    },
+    {
+      "path": "C:\\work\\COM１",
+      "valid": true
+    },
+    {
+      "path": "C:\\work\\ＮＵＬ",
+      "valid": true
+    },
+    {
+      "path": "C:\\work\\NUL​",
+      "valid": true
+    },
+    {
+      "path": "C:\\work\\NUL﻿",
+      "valid": true
+    },
+    {
+      "path": "C:\\work\\my.NUL",
+      "valid": true
+    },
+    {
+      "path": "C:\\work\\a.COM1",
+      "valid": true
+    },
+    {
+      "path": "C:\\work\\NUL-1",
+      "valid": true
+    },
+    {
+      "path": "C:\\work\\AUXILIARY",
+      "valid": true
+    },
+    {
+      "path": "C:\\work\\PRN_",
+      "valid": true
+    },
+    {
+      "path": "C:\\work\\CONF",
+      "valid": true
+    },
+    {
+      "path": "/work/NUL",
+      "valid": true
+    },
+    {
+      "path": "/work/nul.txt",
+      "valid": true
+    },
+    {
+      "path": "/work/COM1",
+      "valid": true
+    },
+    {
+      "path": "/work/COM¹",
+      "valid": true
+    },
+    {
+      "path": "/work/PROGRA~1",
+      "valid": true
+    },
+    {
+      "path": "/work/a~1.txt",
+      "valid": true
+    },
+    {
+      "path": "/NUL",
+      "valid": true
+    },
+    {
+      "path": "/c/NUL",
+      "valid": true
+    },
+    {
+      "path": "C:\\work\\a~b",
+      "valid": true
+    },
+    {
+      "path": "C:\\work\\v~1x",
+      "valid": true
+    },
+    {
+      "path": "C:\\work\\a~",
+      "valid": true
+    },
+    {
+      "path": "C:\\work\\a~.txt",
+      "valid": true
+    },
+    {
+      "path": "C:\\work\\a~1b.txt",
+      "valid": true
+    },
+    {
+      "path": "C:\\work\\a~1 b",
+      "valid": true
+    },
+    {
+      "path": "C:\\work\\a~x1",
+      "valid": true
+    },
+    {
+      "path": "C:\\work\\a~１",
+      "valid": true
+    },
+    {
+      "path": "/work/a~",
+      "valid": true
+    },
+    {
+      "path": "/work/a~b",
+      "valid": true
+    },
+    {
+      "path": "/work/café",
+      "valid": true
+    },
+    {
+      "path": "/work/café",
+      "valid": true
+    },
+    {
+      "path": "C:\\work\\café",
+      "valid": true
+    },
+    {
+      "path": "C:\\work\\café",
+      "valid": true
+    },
+    {
+      "path": "/work/a b",
+      "valid": true
+    },
+    {
+      "path": "C:\\work\\a b",
+      "valid": true
+    },
+    {
+      "path": "/work/／x",
+      "valid": true
+    },
+    {
+      "path": "C:\\work\\＼x",
+      "valid": true
+    },
+    {
+      "path": "C:\\work\\a：b",
+      "valid": true
+    },
+    {
+      "path": "/work/．．",
+      "valid": true
+    },
+    {
+      "path": "C:\\work\\K",
+      "valid": true
+    },
+    {
+      "path": "/ ",
+      "valid": true
+    },
+    {
+      "path": "/work/a ",
+      "valid": true
+    },
+    {
+      "path": "/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "valid": true
+    },
+    {
+      "path": "",
+      "valid": false
+    },
+    {
+      "path": " ",
+      "valid": false
+    },
+    {
+      "path": "work",
+      "valid": false
+    },
+    {
+      "path": "work/proj",
+      "valid": false
+    },
+    {
+      "path": "./work",
+      "valid": false
+    },
+    {
+      "path": ".\\work",
+      "valid": false
+    },
+    {
+      "path": "\\work",
+      "valid": false
+    },
+    {
+      "path": " /work",
+      "valid": false
+    },
+    {
+      "path": " C:\\work",
+      "valid": false
+    },
+    {
+      "path": "C:",
+      "valid": false
+    },
+    {
+      "path": "C:work",
+      "valid": false
+    },
+    {
+      "path": "c:\\work",
+      "valid": false
+    },
+    {
+      "path": "C:/work",
+      "valid": false
+    },
+    {
+      "path": "C:\\work/proj",
+      "valid": false
+    },
+    {
+      "path": "C:\\\\work",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\\\proj",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\",
+      "valid": false
+    },
+    {
+      "path": "/work/",
+      "valid": false
+    },
+    {
+      "path": "/work//proj",
+      "valid": false
+    },
+    {
+      "path": "//work",
+      "valid": false
+    },
+    {
+      "path": "//server/share/x",
+      "valid": false
+    },
+    {
+      "path": "\\\\server\\share\\x",
+      "valid": false
+    },
+    {
+      "path": "\\\\?\\C:\\work",
+      "valid": false
+    },
+    {
+      "path": "\\\\.\\C:\\work",
+      "valid": false
+    },
+    {
+      "path": "Ｃ:\\work",
+      "valid": false
+    },
+    {
+      "path": "1:\\work",
+      "valid": false
+    },
+    {
+      "path": "/.",
+      "valid": false
+    },
+    {
+      "path": "/..",
+      "valid": false
+    },
+    {
+      "path": "/work/.",
+      "valid": false
+    },
+    {
+      "path": "/work/..",
+      "valid": false
+    },
+    {
+      "path": "/work/./proj",
+      "valid": false
+    },
+    {
+      "path": "/work/../proj",
+      "valid": false
+    },
+    {
+      "path": "C:\\.",
+      "valid": false
+    },
+    {
+      "path": "C:\\..",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\.\\proj",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\..\\proj",
+      "valid": false
+    },
+    {
+      "path": "~",
+      "valid": false
+    },
+    {
+      "path": "~/proj",
+      "valid": false
+    },
+    {
+      "path": "/~",
+      "valid": false
+    },
+    {
+      "path": "/work/~a",
+      "valid": false
+    },
+    {
+      "path": "/work/~",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\~tmp",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\~1",
+      "valid": false
+    },
+    {
+      "path": "$HOME/proj",
+      "valid": false
+    },
+    {
+      "path": "/work/$DIR",
+      "valid": false
+    },
+    {
+      "path": "/work/100%",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\%NAME%",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\CONIN$",
+      "valid": false
+    },
+    {
+      "path": "/work/*",
+      "valid": false
+    },
+    {
+      "path": "/work/a?",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\*.tmp",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\a?b",
+      "valid": false
+    },
+    {
+      "path": "/work/*/x",
+      "valid": false
+    },
+    {
+      "path": "/work/a\\b",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\a:b",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\a.txt:stream",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\a<b",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\a>b",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\a\"b",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\a|b",
+      "valid": false
+    },
+    {
+      "path": "/work/a\tb",
+      "valid": false
+    },
+    {
+      "path": "/work/a\nb",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\a\u0000b",
+      "valid": false
+    },
+    {
+      "path": "/work/ab",
+      "valid": false
+    },
+    {
+      "path": "/work/ab",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\ab",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\proj.",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\proj ",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\proj.\\build",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\proj \\build",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\...",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\ ",
+      "valid": false
+    },
+    {
+      "path": "C:\\ ",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\CON",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\PRN",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\AUX",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\NUL",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\con",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\Prn",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\aUx",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\nUL",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\COM0",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\COM1",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\COM9",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\com5",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\LPT0",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\LPT1",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\LPT9",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\lpt3",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\COM¹",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\COM²",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\COM³",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\LPT¹",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\lpt²",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\LPT³",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\NUL.txt",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\nul.tar.gz",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\COM1.txt",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\CON.",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\NUL .txt",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\NUL  .txt",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\AUX .d",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\NUL ",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\NUL　",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\NUL ",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\COM¹ .log",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\NUL.",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\NUL ",
+      "valid": false
+    },
+    {
+      "path": "C:\\NUL",
+      "valid": false
+    },
+    {
+      "path": "C:\\NUL\\x",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\AUX\\build",
+      "valid": false
+    },
+    {
+      "path": "C:\\con\\prn\\aux",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\LPT².log",
+      "valid": false
+    },
+    {
+      "path": "C:\\PROGRA~1",
+      "valid": false
+    },
+    {
+      "path": "C:\\PROGRA~1\\x",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\a~1",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\a~12",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\a~1.txt",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\REPORT~2.TXT",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\a~b~3",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\a~1.b~c",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\USER-A~1.B\\x",
+      "valid": false
+    },
+    {
+      "path": "C:\\work\\a~1x~2",
+      "valid": false
+    },
+    {
+      "path": "/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "valid": false
+    },
+    {
+      "path": "C:\\aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "valid": false
+    }
+  ]
+}

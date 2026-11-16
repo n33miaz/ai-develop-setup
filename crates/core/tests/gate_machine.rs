@@ -648,3 +648,109 @@ fn estimate_is_part_of_what_was_approved() {
         TransitionError::PlanHashMismatch,
     );
 }
+
+// ---- Order in time ----------------------------------------------------------------------------
+
+const BEFORE: &str = "2030-01-02T03:04:04.999999Z";
+/// The instant of T0 and of T1, spelled another way.
+const T0_AGAIN: &str = "2030-01-02T03:04:05.000Z";
+const T1_AGAIN: &str = "2030-01-02T03:06:05.0Z";
+const LONG_BEFORE: &str = "2020-01-01T00:00:00Z";
+
+#[test]
+fn decision_is_not_dated_before_its_request() {
+    let verdict = approval_needed(&[BUILD]);
+    // Asked at T0: granting or denying at any earlier instant is refused, and nothing changes.
+    let mut action = waiting(&verdict);
+    for early in [BEFORE, LONG_BEFORE] {
+        let command = grant_of(&action, "appr-01");
+        action = refused(
+            action.apply(command, meta(early, 2)),
+            TransitionError::OutOfOrder,
+        );
+        let command = deny_of(&action);
+        action = refused(
+            action.apply(command, meta(early, 2)),
+            TransitionError::OutOfOrder,
+        );
+        // An expiry dated before the request is before the validity is over.
+        let command = expire_of(&action);
+        action = refused(
+            action.apply(command, meta(early, 2)),
+            TransitionError::NotYetExpired,
+        );
+    }
+    assert!(matches!(action.state(), State::AwaitingApproval { .. }));
+
+    // At the very instant of the request, in either spelling, the decision is in order.
+    for same in [T0, T0_AGAIN] {
+        let action = waiting(&verdict);
+        let command = grant_of(&action, "appr-01");
+        let (granted, _) = action.apply(command, meta(same, 2)).unwrap();
+        assert!(matches!(granted.state(), State::Approved { .. }));
+        let action = waiting(&verdict);
+        let command = deny_of(&action);
+        let (denied, _) = action.apply(command, meta(same, 2)).unwrap();
+        assert_eq!(denied.state(), &State::ApprovalDenied);
+    }
+}
+
+#[test]
+fn execution_does_not_start_before_the_grant() {
+    let verdict = approval_needed(&[BUILD]);
+    // Granted at T1: a start at T0 is after the request and before the grant.
+    let mut action = approved(&verdict);
+    for early in [T0, LONG_BEFORE, "2030-01-02T03:06:04.999999Z"] {
+        action = refused(
+            action.authorize(verdict.plan(), meta(early, 2)),
+            TransitionError::OutOfOrder,
+        );
+    }
+    assert!(matches!(action.state(), State::Approved { .. }));
+    // At the very instant of the grant it starts.
+    for same in [T1, T1_AGAIN] {
+        let (executing, permit, _) = approved(&verdict)
+            .authorize(verdict.plan(), meta(same, 2))
+            .unwrap();
+        assert!(matches!(executing.state(), State::Executing { .. }));
+        assert_eq!(permit.approval_id(), Some(&id("appr-01")));
+    }
+}
+
+#[test]
+fn state_keeps_the_instants_of_the_request_and_of_the_grant() {
+    let verdict = approval_needed(&[BUILD]);
+    let waiting = waiting(&verdict);
+    assert_eq!(
+        waiting.state(),
+        &State::AwaitingApproval {
+            approval_id: id("appr-01"),
+            requested_at: at(T0),
+            expires_at: at(EXPIRES),
+        }
+    );
+    assert_eq!(
+        grant(waiting).state(),
+        &State::Approved {
+            approval_id: id("appr-01"),
+            granted_at: at(T1),
+            expires_at: at(EXPIRES),
+        }
+    );
+}
+
+/// The example of the review: asked in 2030, granted and started with a clock in 2020.
+#[test]
+fn approval_decided_and_used_before_it_was_asked_yields_no_permit() {
+    let verdict = approval_needed(&[BUILD]);
+    let action = waiting(&verdict);
+    let command = grant_of(&action, "appr-01");
+    let action = refused(
+        action.apply(command, meta(LONG_BEFORE, 2)),
+        TransitionError::OutOfOrder,
+    );
+    let refusal = action
+        .authorize(verdict.plan(), meta(LONG_BEFORE, 2))
+        .unwrap_err();
+    assert_eq!(refusal.error, TransitionError::ApprovalRequired);
+}

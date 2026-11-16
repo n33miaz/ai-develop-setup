@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:event:approval.expired:2",
+  "title": "Aprovação expirada",
+  "description": "O prazo da aprovação passou sem decisão; o plano precisa ser refeito. A versão 2 acrescenta action_id, obrigatório: a ação a que a aprovação pertencia.",
+  "allOf": [
+    {
+      "$ref": "urn:ads:event:envelope:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "type",
+        "stream",
+        "data"
+      ],
+      "properties": {
+        "type": {
+          "const": "urn:ads:event:approval.expired:2"
+        },
+        "stream": {
+          "type": "string",
+          "pattern": "^approval/"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "approval_id",
+            "action_id",
+            "plan_hash"
+          ],
+          "properties": {
+            "approval_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "action_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "plan_hash": {
+              "$ref": "urn:ads:common:sha256:1"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+      "type": "urn:ads:event:approval.expired:2",
+      "ts": "2030-01-02T03:04:05Z",
+      "stream": "approval/appr-01",
+      "seq": 1,
+      "actor": {
+        "kind": "daemon",
+        "id": "core-01"
+      },
+      "cause": null,
+      "data_class": "internal",
+      "data": {
+        "approval_id": "appr-01",
+        "action_id": "act-01",
+        "plan_hash": "sha256:abababababababababababababababababababababababababababababababab"
+      }
+    }
+  ]
+}

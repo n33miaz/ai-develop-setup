@@ -280,6 +280,11 @@ fn generate(rng: &mut Rng) -> Case {
     if rng.chance(30) {
         overrides.push_str(&format!("approval_item_limit = {}\n", rng.below(1000)));
     }
+    // Now and then the quarantine sits somewhere else in the work root.
+    if rng.chance(20) {
+        let dir = *rng.pick(&["trash", "build/.trash", "proj", "cache/q"]);
+        overrides.push_str(&format!("quarantine_dir = '{dir}'\n"));
+    }
     let policy = GatePolicy::from_toml_str(&overrides, &HostFacts { user_home: home })
         .unwrap_or_else(|err| panic!("{overrides}: {err}"));
 
@@ -398,7 +403,7 @@ fn meta() -> EventMeta {
 fn no_plan_with_a_target_outside_the_allowed_roots_gets_past_denied() {
     let mut rng = Rng(0x00AD_5C0D_E000_0001);
     let (mut outside, mut inside_passed, mut inside_denied, mut other_style) = (0, 0, 0, 0);
-    let mut rewritten_with_approval = 0;
+    let (mut rewritten_with_approval, mut rewritten_plain_delete) = (0, 0);
     for index in 0..CASES {
         let case = generate(&mut rng);
         let plan = ActionPlan::normalize(&case.request)
@@ -431,6 +436,33 @@ fn no_plan_with_a_target_outside_the_allowed_roots_gets_past_denied() {
             again.decision(),
             case.request
         );
+        // Nor for more: the verdict already holds everything judging its plan again finds.
+        // The generated destination was judged before the verdict was closed.
+        assert!(
+            again.decision() <= verdict.decision(),
+            "case {index}: {:?} became {:?}: {:?}",
+            verdict.decision(),
+            again.decision(),
+            case.request
+        );
+        for finding in again.findings() {
+            assert!(
+                verdict.findings().contains(finding),
+                "case {index}: {finding:?} only shows when judged again: {:?}",
+                case.request
+            );
+        }
+        assert_eq!(again.plan(), verdict.plan(), "case {index}");
+        assert_eq!(again.plan().hash(), verdict.plan().hash(), "case {index}");
+        let plain_delete = matches!(case.request.operation, OperationRequest::Delete);
+        rewritten_plain_delete += usize::from(verdict.is_quarantined() && plain_delete);
+        // No finding comes twice.
+        for (at, finding) in verdict.findings().iter().enumerate() {
+            assert!(
+                !verdict.findings()[..at].contains(finding),
+                "case {index}: {finding:?} twice"
+            );
+        }
 
         if case.other_style {
             other_style += 1;
@@ -483,6 +515,10 @@ fn no_plan_with_a_target_outside_the_allowed_roots_gets_past_denied() {
     assert!(
         rewritten_with_approval > CASES / 500,
         "rewritten with approval: {rewritten_with_approval}"
+    );
+    assert!(
+        rewritten_plain_delete > CASES / 500,
+        "plain delete rewritten: {rewritten_plain_delete}"
     );
 }
 

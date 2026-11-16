@@ -63,6 +63,7 @@ pub enum PolicyError {
         error: PathError,
     },
     /// A folder name, the quarantine sub-path or the user home in a shape that is not accepted.
+    /// For `quarantine_dir`, also a sub-path that would put the quarantine in a protected folder.
     Invalid {
         key: &'static str,
         value: String,
@@ -238,14 +239,51 @@ impl GatePolicy {
             )?,
             quarantine_dir,
         };
-        match policy
+        if let Some(root) = policy
             .allowed_roots
             .iter()
             .find(|root| policy.protection(root).is_some())
         {
-            Some(root) => Err(PolicyError::ProtectedAllowedRoot(root.to_string())),
-            None => Ok(policy),
+            return Err(PolicyError::ProtectedAllowedRoot(root.to_string()));
         }
+        if !policy.quarantine_fits() {
+            return Err(PolicyError::Invalid {
+                key: "quarantine_dir",
+                value: policy.quarantine_dir.join("/"),
+            });
+        }
+        Ok(policy)
+    }
+
+    /// Whether the quarantine folder can sit in a work root without landing in a protected
+    /// folder. The work root is not known here, so what is checked is the sub-path against the
+    /// protected lists: a folder of a protected list that ends where the sub-path begins would
+    /// put the quarantine of some work root inside it. Checked even with quarantine turned off.
+    /// The rules judge the generated destination again, with the work root of each plan.
+    fn quarantine_fits(&self) -> bool {
+        let dir = &self.quarantine_dir;
+        // Every name must be one Windows accepts as it is written (`nul` is a device there).
+        let literal = AbsPath::parse(&format!("C:\\{}", dir.join("\\")))
+            .is_ok_and(|path| path.depth() == dir.len());
+        let first_level = self
+            .windows_system_dirs
+            .iter()
+            .chain(&self.windows_user_parents)
+            .any(|name| same_name_loosely(name, &dir[0]));
+        let ends_where_it_begins = self
+            .posix_system_dirs
+            .iter()
+            .chain(&self.posix_user_parents)
+            .any(|protected| {
+                let names = protected.components();
+                (1..=dir.len().min(names.len())).any(|shared| {
+                    names[names.len() - shared..]
+                        .iter()
+                        .zip(&dir[..shared])
+                        .all(|(theirs, mine)| same_name_loosely(theirs, mine))
+                })
+            });
+        literal && !first_level && !ends_where_it_begins
     }
 
     pub fn user_home(&self) -> &AbsPath {
@@ -407,6 +445,61 @@ mod tests {
             "posix_user_parents = ['home']",
         ] {
             assert!(GatePolicy::from_toml_str(bad, &WINDOWS).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn quarantine_that_would_land_in_a_protected_folder_is_refused() {
+        let refused = |host: &HostFacts<'_>, overrides: &str, dir: &str| {
+            assert_eq!(
+                GatePolicy::from_toml_str(overrides, host),
+                Err(PolicyError::Invalid {
+                    key: "quarantine_dir",
+                    value: dir.to_owned()
+                }),
+                "{overrides}"
+            );
+        };
+        // A shipped system folder, a shipped folder of profiles, a custom one of each.
+        for dir in ["etc", "usr/q", "private/q", "home/q", "Users"] {
+            refused(&POSIX, &format!("quarantine_dir = '{dir}'"), dir);
+        }
+        refused(
+            &POSIX,
+            "posix_system_dirs = ['/work/proj/trash']\nquarantine_dir = 'trash'",
+            "trash",
+        );
+        refused(
+            &POSIX,
+            "posix_user_parents = ['/srv/people']\nquarantine_dir = 'PEOPLE/q'",
+            "PEOPLE/q",
+        );
+        // The first level of a drive.
+        for dir in ["Windows", "program.files", "ProgramData/q", "users/q"] {
+            let listed = dir != "program.files";
+            let overrides = format!("quarantine_dir = '{dir}'");
+            assert_eq!(
+                GatePolicy::from_toml_str(&overrides, &WINDOWS).is_err(),
+                listed,
+                "{dir}"
+            );
+        }
+        // Device names of Windows, in any component.
+        for dir in ["nul", "q/con", "aux.d/q", "COM1"] {
+            refused(&WINDOWS, &format!("quarantine_dir = '{dir}'"), dir);
+        }
+
+        // Only a protected folder that ends where the sub-path begins is in the way.
+        for overrides in [
+            "quarantine_dir = 'trash'",
+            "quarantine_dir = 'q/etc'",
+            "quarantine_dir = 'etc.d/q'",
+            "posix_system_dirs = ['/srv/vault/keep']\nquarantine_dir = 'vault/q'",
+        ] {
+            assert!(
+                GatePolicy::from_toml_str(overrides, &POSIX).is_ok(),
+                "{overrides}"
+            );
         }
     }
 

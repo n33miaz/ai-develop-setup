@@ -278,9 +278,9 @@ fn replay_gives_the_state_in_memory_on_every_path_of_the_machine() {
             "urn:ads:event:action.failed:1",
             "urn:ads:event:action.planned:1",
             "urn:ads:event:action.started:1",
-            "urn:ads:event:approval.denied:1",
-            "urn:ads:event:approval.expired:1",
-            "urn:ads:event:approval.granted:1",
+            "urn:ads:event:approval.denied:2",
+            "urn:ads:event:approval.expired:2",
+            "urn:ads:event:approval.granted:2",
             "urn:ads:event:approval.requested:2",
         ])
     );
@@ -297,8 +297,8 @@ fn every_emitted_event_is_in_the_stream_of_the_entity_in_its_data() {
     }
     assert!(checked >= 16, "only {checked} events checked");
 
-    // The approval events sit in the stream of the approval, and the request ties it to the
-    // action: nothing else says which action an approval belongs to.
+    // The approval events sit in the stream of the approval; the request and each decision
+    // name the action they belong to.
     let (_, log) = approved_run("act-01", "appr-01", &approval_needed(&[BUILD]));
     let streams: Vec<&str> = log.iter().map(Event::stream).collect();
     assert_eq!(
@@ -312,6 +312,7 @@ fn every_emitted_event_is_in_the_stream_of_the_entity_in_its_data() {
         ]
     );
     assert_eq!(log[1].to_json()["data"]["action_id"], "act-01");
+    assert_eq!(log[2].to_json()["data"]["action_id"], "act-01");
     assert_eq!(log[3].to_json()["data"]["approval_id"], "appr-01");
 }
 
@@ -419,9 +420,14 @@ fn events_of_another_action_plan_or_approval_are_refused() {
     };
 
     let (_, other_action) = approved_run("act-02", "appr-01", &verdict);
-    assert_eq!(splice(1, &other_action), Err(ReplayError::ActionMismatch));
-    assert_eq!(splice(3, &other_action), Err(ReplayError::ActionMismatch));
-    assert_eq!(splice(4, &other_action), Err(ReplayError::ActionMismatch));
+    // Every event after the first names its action, the grant included.
+    for index in 1..log.len() {
+        assert_eq!(
+            splice(index, &other_action),
+            Err(ReplayError::ActionMismatch),
+            "event {index}"
+        );
+    }
 
     let other_verdict = approval_needed(&[BUILD, "C:\\Users\\user-a\\work\\proj\\src"]);
     let (_, other_plan) = approved_run("act-01", "appr-01", &other_verdict);
@@ -450,6 +456,159 @@ fn events_of_another_action_plan_or_approval_are_refused() {
         event["data"]["approval_id"] = "appr-01".into();
     });
     assert_eq!(replay(&with_approval), Err(ReplayError::ApprovalMismatch));
+}
+
+/// Planned and asked, then closed by `decision`: the log up to that decision.
+fn decided_run(action_id: &str, verdict: &Verdict, decision: Move) -> (Action, Vec<Event>) {
+    let (action, planned, _) = Action::plan(id(action_id), verdict, meta(T0, 1)).unwrap();
+    let (action, requested) = action.apply(ask("appr-01"), meta(T0, 1)).unwrap();
+    let (action_id, approval_id) = (id(action_id), id("appr-01"));
+    let plan_hash = action.plan_hash().clone();
+    let (command, ts) = match decision {
+        Move::Grant => (
+            Command::Grant {
+                action_id,
+                approval_id,
+                plan_hash,
+                via: Via::LocalUi,
+            },
+            T1,
+        ),
+        Move::Deny => (
+            Command::Deny {
+                action_id,
+                approval_id,
+                plan_hash,
+                reason: None,
+            },
+            T1,
+        ),
+        Move::Expire => (
+            Command::Expire {
+                action_id,
+                approval_id,
+                plan_hash,
+            },
+            AFTER,
+        ),
+        other => panic!("{other:?} is not a decision of an approval"),
+    };
+    let (action, decided) = action.apply(command, meta(ts, 2)).unwrap();
+    (action, vec![planned, requested, decided])
+}
+
+/// Two actions with the same plan and the same approval id: before `action_id` went into the
+/// decisions, the grant, the denial and the expiry of one read as those of the other.
+#[test]
+fn decision_of_an_approval_taken_for_another_action_is_refused() {
+    let verdict = approval_needed(&[BUILD]);
+    for decision in [Move::Grant, Move::Deny, Move::Expire] {
+        let (first, log) = decided_run("act-01", &verdict, decision);
+        let (second, other) = decided_run("act-02", &verdict, decision);
+        assert_eq!(first.plan_hash(), second.plan_hash());
+        assert_eq!(replay(&log), Ok(first.snapshot()));
+        assert_eq!(replay(&other), Ok(second.snapshot()));
+
+        // The two decisions differ in nothing but the action they name.
+        let (mine, theirs) = (log[2].to_json(), other[2].to_json());
+        assert_eq!(mine["data"]["action_id"], "act-01");
+        assert_eq!(theirs["data"]["action_id"], "act-02");
+        let mut renamed = theirs.clone();
+        renamed["data"]["action_id"] = "act-01".into();
+        assert_eq!(renamed, mine, "{decision:?}");
+
+        // Swapped, each log is refused, straight from memory and read back from storage.
+        for (own, foreign) in [(&log, &other), (&other, &log)] {
+            let mut swapped = own.clone();
+            swapped[2] = foreign[2].clone();
+            assert_eq!(
+                replay(&swapped),
+                Err(ReplayError::ActionMismatch),
+                "{decision:?}"
+            );
+            let read_back: Vec<Event> = swapped
+                .iter()
+                .map(|event| Event::from_json(event.to_json()).unwrap())
+                .collect();
+            assert_eq!(replay(&read_back), Err(ReplayError::ActionMismatch));
+        }
+    }
+}
+
+/// Version 1 of the decisions does not name the action: it does not read as an event of the
+/// gate, so no state is rebuilt from it.
+#[test]
+fn version_1_of_the_approval_decisions_is_refused() {
+    let verdict = approval_needed(&[BUILD]);
+    for decision in [Move::Grant, Move::Deny, Move::Expire] {
+        let (_, log) = decided_run("act-01", &verdict, decision);
+        let current = log[2].to_json();
+        let kind = current["type"].as_str().unwrap();
+        assert!(kind.ends_with(":2"), "{kind}");
+        assert!(Event::from_json(current.clone()).is_ok());
+
+        // Exactly what version 1 of the contract holds.
+        let mut old = current.clone();
+        old["type"] = format!("{}1", kind.strip_suffix('2').unwrap()).into();
+        old["data"].as_object_mut().unwrap().remove("action_id");
+        assert!(Event::from_json(old).is_err(), "{kind}");
+        // Nor the old type with the new field, nor the new type without it.
+        let mut mixed = current.clone();
+        mixed["type"] = format!("{}1", kind.strip_suffix('2').unwrap()).into();
+        assert!(Event::from_json(mixed).is_err(), "{kind}");
+        let mut bare = current.clone();
+        bare["data"].as_object_mut().unwrap().remove("action_id");
+        assert!(Event::from_json(bare).is_err(), "{kind}");
+    }
+}
+
+#[test]
+fn events_dated_before_the_step_they_follow_are_refused() {
+    let verdict = approval_needed(&[BUILD]);
+    // Asked at T0, granted and started at T1.
+    let (_, log) = approved_run("act-01", "appr-01", &verdict);
+    let at_instant = |index: usize, ts: &'static str| {
+        let log = rewritten(&log, index, &|event| event["ts"] = ts.into());
+        replay(&log[..=index])
+    };
+    let before_request = ["2030-01-02T03:04:04.999999Z", "2020-01-01T00:00:00Z"];
+    for early in before_request {
+        assert_eq!(at_instant(2, early), Err(ReplayError::OutOfOrder));
+    }
+    // Started after the request and before the grant, or before both.
+    for early in [T0, "2030-01-02T03:06:04.999999Z", "2020-01-01T00:00:00Z"] {
+        assert_eq!(at_instant(3, early), Err(ReplayError::OutOfOrder));
+    }
+    // The same instant is in order, in any spelling of it.
+    for same in [T0, "2030-01-02T03:04:05.000000Z"] {
+        assert!(at_instant(2, same).is_ok(), "{same}");
+    }
+    for same in [T1, "2030-01-02T03:06:05.0Z"] {
+        assert!(at_instant(3, same).is_ok(), "{same}");
+    }
+    // Granted at the instant it was asked and started at that same instant.
+    let all_at_once = rewritten(&log, 2, &|event| event["ts"] = T0.into());
+    let all_at_once = rewritten(&all_at_once, 3, &|event| event["ts"] = T0.into());
+    assert!(replay(&all_at_once[..4]).is_ok());
+
+    // The example of the review: the whole approval used with a clock ten years behind.
+    let stale = rewritten(&log, 2, &|event| {
+        event["ts"] = "2020-01-01T00:00:00Z".into();
+    });
+    let stale = rewritten(&stale, 3, &|event| {
+        event["ts"] = "2020-01-01T00:00:00Z".into();
+    });
+    assert_eq!(replay(&stale), Err(ReplayError::OutOfOrder));
+
+    // A denial dated before the request.
+    let (_, denied) = decided_run("act-01", &verdict, Move::Deny);
+    assert!(replay(&denied).is_ok());
+    for early in before_request {
+        let early = rewritten(&denied, 2, &|event| event["ts"] = early.into());
+        assert_eq!(replay(&early), Err(ReplayError::OutOfOrder));
+    }
+    let same = rewritten(&denied, 2, &|event| event["ts"] = T0.into());
+    assert!(replay(&same).is_ok());
 }
 
 #[test]

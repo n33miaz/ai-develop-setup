@@ -11,10 +11,11 @@ use std::path::Path;
 
 use ads_core::gate::{
     Action, ActionDenied, ActionExecuted, ActionFailed, ActionPlan, ActionPlanRecord,
-    ActionPlanned, ActionStarted, ApprovalDenied, ApprovalExpired, ApprovalGranted, ApprovalRecord,
-    ApprovalRequested, ApprovalRequestedV1, Command, Decision, Envelope, ErrorCode, Estimate,
-    Event, EventMeta, Id, OperationRequest as Op, PathText, PlanRequest, RuleCode, ShortText,
-    TargetRequest, Timestamp, Verdict, Via, classify,
+    ActionPlanned, ActionStarted, ApprovalDenied, ApprovalDeniedV1, ApprovalExpired,
+    ApprovalExpiredV1, ApprovalGranted, ApprovalGrantedV1, ApprovalRecord, ApprovalRequested,
+    ApprovalRequestedV1, Command, Decision, Envelope, ErrorCode, Estimate, Event, EventMeta, Id,
+    OperationRequest as Op, PathText, PlanRequest, RuleCode, ShortText, TargetRequest, Timestamp,
+    Verdict, Via, classify,
 };
 use common::{POSIX_HOME, WIN_HOME, WIN_ROOT, at, canonical_of, policy, request, sha256_of, win};
 use serde::Serialize;
@@ -28,6 +29,7 @@ const NOT_COVERED_BY_TYPES: &[&str] = &[];
 /// with them.
 const GATE_FOLDERS: &[&str] = &[
     "common.abspath.v1",
+    "common.abspath.v2",
     "common.action-rule.v1",
     "event.action.denied.v1",
     "event.action.executed.v1",
@@ -35,8 +37,11 @@ const GATE_FOLDERS: &[&str] = &[
     "event.action.planned.v1",
     "event.action.started.v1",
     "event.approval.denied.v1",
+    "event.approval.denied.v2",
     "event.approval.expired.v1",
+    "event.approval.expired.v2",
     "event.approval.granted.v1",
+    "event.approval.granted.v2",
     "event.approval.requested.v1",
     "event.approval.requested.v2",
     "record.action-plan.v1",
@@ -113,6 +118,7 @@ fn types_match_the_golden_files_of_every_version() {
         checked.insert(folder);
     };
     check("common.abspath.v1", types_match::<PathText>);
+    check("common.abspath.v2", types_match::<PathText>);
     check("common.action-rule.v1", types_match::<RuleCode>);
     check(
         "event.action.planned.v1",
@@ -144,14 +150,26 @@ fn types_match_the_golden_files_of_every_version() {
     );
     check(
         "event.approval.granted.v1",
+        types_match::<Envelope<ApprovalGrantedV1>>,
+    );
+    check(
+        "event.approval.granted.v2",
         types_match::<Envelope<ApprovalGranted>>,
     );
     check(
         "event.approval.denied.v1",
+        types_match::<Envelope<ApprovalDeniedV1>>,
+    );
+    check(
+        "event.approval.denied.v2",
         types_match::<Envelope<ApprovalDenied>>,
     );
     check(
         "event.approval.expired.v1",
+        types_match::<Envelope<ApprovalExpiredV1>>,
+    );
+    check(
+        "event.approval.expired.v2",
         types_match::<Envelope<ApprovalExpired>>,
     );
     check("record.action-plan.v1", types_match::<ActionPlanRecord>);
@@ -384,10 +402,11 @@ fn generated_approval_requested_is_the_golden_event_of_version_2() {
 }
 
 #[test]
-fn generated_approval_decisions_are_the_golden_events() {
-    let folder = "event.approval.granted.v1";
+fn generated_approval_decisions_are_the_golden_events_of_version_2() {
+    let folder = "event.approval.granted.v2";
     for (name, golden) in golden_files(folder, "valid") {
-        let action = waiting(act("act-01"), data_id(&golden, "approval_id"), at(LATER));
+        let action_id = data_id(&golden, "action_id");
+        let action = waiting(action_id, data_id(&golden, "approval_id"), at(LATER));
         let command = Command::Grant {
             approval_id: data_id(&golden, "approval_id"),
             action_id: action.action_id().clone(),
@@ -397,9 +416,10 @@ fn generated_approval_decisions_are_the_golden_events() {
         let (_, event) = action.apply(command, meta_of(&golden)).unwrap();
         same_as_golden(folder, &name, &event, &golden, &["plan_hash"]);
     }
-    let folder = "event.approval.denied.v1";
+    let folder = "event.approval.denied.v2";
     for (name, golden) in golden_files(folder, "valid") {
-        let action = waiting(act("act-01"), data_id(&golden, "approval_id"), at(LATER));
+        let action_id = data_id(&golden, "action_id");
+        let action = waiting(action_id, data_id(&golden, "approval_id"), at(LATER));
         let command = Command::Deny {
             approval_id: data_id(&golden, "approval_id"),
             action_id: action.action_id().clone(),
@@ -409,11 +429,12 @@ fn generated_approval_decisions_are_the_golden_events() {
         let (_, event) = action.apply(command, meta_of(&golden)).unwrap();
         same_as_golden(folder, &name, &event, &golden, &["plan_hash"]);
     }
-    let folder = "event.approval.expired.v1";
+    let folder = "event.approval.expired.v2";
     for (name, golden) in golden_files(folder, "valid") {
         // Valid exactly until the instant of the golden event.
         let expires_at: Timestamp = serde_json::from_value(golden["ts"].clone()).unwrap();
-        let action = waiting(act("act-01"), data_id(&golden, "approval_id"), expires_at);
+        let action_id = data_id(&golden, "action_id");
+        let action = waiting(action_id, data_id(&golden, "approval_id"), expires_at);
         let command = Command::Expire {
             approval_id: data_id(&golden, "approval_id"),
             action_id: action.action_id().clone(),
@@ -584,7 +605,12 @@ fn every_golden_action_plan_is_rebuilt_by_the_core() {
     // The policy of each golden record: whose home, and whether quarantine is on.
     let cases = [
         ("01-base.json", POSIX_HOME, false, "action.planned"),
-        ("02-quarantined.json", WIN_HOME, true, "action.planned"),
+        (
+            "06-quarantined-measured.json",
+            WIN_HOME,
+            true,
+            "action.planned",
+        ),
         (
             "03-requires-approval.json",
             WIN_HOME,
@@ -594,13 +620,93 @@ fn every_golden_action_plan_is_rebuilt_by_the_core() {
         ("04-denied.json", POSIX_HOME, false, "action.denied"),
         ("05-move.json", POSIX_HOME, true, "action.planned"),
     ];
-    assert_eq!(cases.len(), golden_files(RECORD, "valid").len());
+    assert_eq!(cases.len() + 1, golden_files(RECORD, "valid").len());
     for (name, home, quarantine, kind) in cases {
         let golden = golden_record(name);
         let (record, event) = rebuilt(&golden, home, quarantine);
         assert_eq!(record, golden, "{name}");
         assert_eq!(event["data"]["plan_hash"], golden["plan_hash"], "{name}");
         assert_eq!(event["type"], format!("urn:ads:event:{kind}:1"), "{name}");
+    }
+
+    // The one valid record this gate no longer writes: a delete nobody measured, rewritten as
+    // a move to quarantine and allowed. The contract still holds it and the type still reads
+    // it, but the rewrite is a measured move, so the core now asks for approval: same plan,
+    // same hash, another verdict.
+    let golden = golden_record("02-quarantined.json");
+    assert!(serde_json::from_value::<ActionPlanRecord>(golden.clone()).is_ok());
+    assert_eq!(golden["estimate"], Value::Null);
+    assert_eq!(golden["verdict"]["decision"], "allowed");
+    let (record, _) = rebuilt(&golden, WIN_HOME, true);
+    assert_eq!(record["plan_hash"], golden["plan_hash"]);
+    assert_eq!(record["destination"], golden["destination"]);
+    assert_eq!(record["verdict"]["decision"], "requires_approval");
+    assert_eq!(
+        record["verdict"]["reasons"],
+        serde_json::json!([{ "rule": "estimate_unknown", "subject": "C:\\work\\proj" }])
+    );
+}
+
+// ---- common.abspath: the Schema and the core over one corpus ----------------------------------
+
+/// `contracts/corpus/abspath.json`: each case is a path and whether it is valid. The Schema
+/// (`contracts/tools/corpus.test.mjs`) and the core (here) each run the whole file and must
+/// both give the verdict it declares, so the two validators agree on every case. The table of
+/// known differences holds the cases where they are meant not to, with the verdict of each.
+#[test]
+fn core_gives_every_path_of_the_common_corpus_the_declared_verdict() {
+    let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../contracts/corpus/abspath.json");
+    let corpus: Value = serde_json::from_str(&std::fs::read_to_string(file).unwrap()).unwrap();
+    assert_eq!(corpus["schema"], "urn:ads:common:abspath:2");
+
+    let known: Vec<(&str, bool)> = corpus["known_differences"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| {
+            let (schema, core) = (
+                entry["schema"].as_bool().unwrap(),
+                entry["core"].as_bool().unwrap(),
+            );
+            assert_ne!(schema, core, "{entry}: not a difference");
+            assert!(!entry["reason"].as_str().unwrap().trim().is_empty());
+            (entry["path"].as_str().unwrap(), core)
+        })
+        .collect();
+    // No difference is known today: one that shows up fails below and has to be written down.
+    assert!(known.is_empty(), "{known:?}");
+
+    let cases = corpus["cases"].as_array().unwrap();
+    let (mut valid, mut invalid) = (0, 0);
+    let mut wrong = Vec::new();
+    for case in cases {
+        let path = case["path"].as_str().unwrap();
+        let declared = case["valid"].as_bool().unwrap();
+        let expected = known
+            .iter()
+            .find(|(known, _)| *known == path)
+            .map_or(declared, |(_, core)| *core);
+        if PathText::new(path).is_ok() != expected {
+            wrong.push(format!("{path:?}: expected {expected}"));
+        }
+        if declared {
+            valid += 1;
+        } else {
+            invalid += 1;
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+    assert!(
+        valid >= 50 && invalid >= 100,
+        "{valid} valid, {invalid} invalid"
+    );
+
+    // The cases the review named are in the corpus, as invalid.
+    for named in ["C:\\work\\NUL", "C:\\PROGRA~1", "C:\\work\\COM\u{b9}"] {
+        let found = cases
+            .iter()
+            .any(|case| case["path"] == named && case["valid"] == false);
+        assert!(found, "{named}");
     }
 }
 

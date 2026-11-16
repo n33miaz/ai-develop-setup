@@ -1,0 +1,56 @@
+{
+  "01-wrong-type.json": {
+    "rule": "O type tem de ser exatamente a URN deste evento.",
+    "keyword": "const",
+    "instancePath": "/type"
+  },
+  "02-missing-plan_hash.json": {
+    "rule": "O campo plan_hash é obrigatório em data.",
+    "keyword": "required",
+    "instancePath": "/data",
+    "params": {
+      "missingProperty": "plan_hash"
+    }
+  },
+  "03-extra-data-field.json": {
+    "rule": "data é fechado: campo desconhecido reprova.",
+    "keyword": "additionalProperties",
+    "instancePath": "/data",
+    "params": {
+      "additionalProperty": "unexpected"
+    }
+  },
+  "04-wrong-stream.json": {
+    "rule": "O stream deste evento começa por approval/.",
+    "keyword": "pattern",
+    "instancePath": "/stream"
+  },
+  "05-empty-reason.json": {
+    "rule": "Motivo, se houver, não é vazio.",
+    "keyword": "minLength",
+    "instancePath": "/data/reason"
+  },
+  "06-missing-action_id.json": {
+    "rule": "O campo action_id é obrigatório em data.",
+    "keyword": "required",
+    "instancePath": "/data",
+    "params": {
+      "missingProperty": "action_id"
+    }
+  },
+  "07-null-action_id.json": {
+    "rule": "Toda decisão de aprovação é de uma ação: action_id não aceita null.",
+    "keyword": "type",
+    "instancePath": "/data/action_id"
+  },
+  "08-action_id-not-an-id.json": {
+    "rule": "action_id é um identificador opaco, sem espaço.",
+    "keyword": "pattern",
+    "instancePath": "/data/action_id"
+  },
+  "09-version-1-type.json": {
+    "rule": "O type da versão 1 não vale na versão 2, mesmo com action_id.",
+    "keyword": "const",
+    "instancePath": "/type"
+  }
+}

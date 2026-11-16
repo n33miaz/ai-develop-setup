@@ -1,0 +1,19 @@
+{
+  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+  "type": "urn:ads:event:approval.denied:2",
+  "ts": "2030-01-02T03:04:05Z",
+  "stream": "approval/appr-01",
+  "seq": 1,
+  "actor": {
+    "kind": "daemon",
+    "id": "core-01"
+  },
+  "cause": null,
+  "data_class": "internal",
+  "data": {
+    "approval_id": "appr-01",
+    "action_id": null,
+    "plan_hash": "sha256:abababababababababababababababababababababababababababababababab",
+    "reason": "fora de hora"
+  }
+}
