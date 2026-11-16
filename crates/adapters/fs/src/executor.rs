@@ -152,6 +152,7 @@ impl Executor {
             probe: self.probe.as_deref_mut(),
             limits: &self.limits,
             laid: Vec::new(),
+            holding: None,
         };
         let outcome = disk.run(&mut job, manifest.as_deref());
         let mut report = job.report;
