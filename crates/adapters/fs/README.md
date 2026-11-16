@@ -26,7 +26,7 @@ executor.rehearse(&licença) -> relatório  // ensaio: todas as conferências, n
 executor.measure(raiz de trabalho, alvo)  // fatos reais, para o plano nascer com dado e não com palpite
 ```
 
-- `execute` consome a licença (`ExecutionPermit`), que só `Action::authorize` constrói, e **não a devolve**. `Completed` guarda a licença gasta fora do alcance de quem chamou e só a entrega dentro do comando que fecha a ação (`Completed::close()` devolve `Command::Executed` e o relatório). Na falha, `motivo.error_code()` vai em `Command::Fail`.
+- `execute` consome a licença (`ExecutionPermit`), que só `Action::authorize` constrói, e **não a devolve**. `Completed` guarda a licença gasta fora do alcance de quem chamou; `Completed::close(ação, meta)` a entrega direto ao portão (`Command::Executed`) e devolve a ação fechada, o evento `action.executed` e o relatório. Aceita ou recusada pelo portão, a licença não volta. Na falha, `motivo.error_code()` vai em `Command::Fail`.
 - **Ordem com o log e uso único.** Nada é lido nem alterado antes de o diário (`Journal::consume`) registrar que a licença daquele `action.started` foi gasta. O evento tem de ser o da licença (mesma ação, mesmo hash, mesma aprovação). O contrato do traço: devolver `Ok` no máximo uma vez por ação, para sempre, com registro durável, atômico, compartilhado entre executores e que sobrevive a reinício. Este crate não traz nenhum diário: o de memória mora só nos testes (`tests/common`), porque esquece tudo ao reiniciar. Como segunda barreira, cada `Executor` lembra as ações de que já recebeu licença e recusa a segunda (`E_FS_PERMIT_REUSED`), mesmo com outro diário; essa memória acaba com o processo.
 - **A política é a de quem constrói o executor**, não a do plano: o plano da licença é julgado de novo com ela antes de qualquer coisa.
 - **Sistemas.** Linux e Windows. Em qualquer outro, `Executor::new` recusa (`UnsupportedSystem`): faltam as chamadas de que a segurança depende, e nada é simulado por caminho.
@@ -49,7 +49,7 @@ Trocar um componente do caminho por um link depois da última conferência não 
 3. **Resolução.** Cada nome é aberto a partir da cerca. Link simbólico, junção ou qualquer ponto de reanálise no meio do caminho é recusa; no último nome é "o alvo é um link", e o que ele aponta nunca é olhado. No Windows o nome tem de ser exatamente o que a pasta lista: outra caixa ou o nome curto (8.3) é recusa, então o texto que o portão julgou é a entrada que será aberta, também em pasta sensível a maiúsculas.
 4. **Volume e montagem.** Entrada em outro volume é recusa. No Linux, entrada em outra montagem também, inclusive montagem do mesmo dispositivo (bind mount): a identificação de montagem e a marca de raiz de montagem vêm do `statx`; kernel ou sistema de arquivos que não informa as duas recusa tudo. No Windows, volume montado em pasta é ponto de reanálise: visto como link, nunca atravessado.
 5. **Fatos e inventário.** O executor percorre a árvore de cada alvo por identificadores abertos (sem seguir link; um link conta um), conta itens e bytes com soma verificada (estouro é recusa) e registra o inventário: a identidade e o tipo de cada entrada. O plano é julgado mais uma vez com os fatos reais. Veredito mais duro que o declarado é recusa; com aprovação, mais itens ou mais bytes do que a estimativa aprovada também.
-6. **Repositórios.** `.git` no nível do alvo é o fato "raiz de repositório", julgado pela política. `.git` (pasta, ou o arquivo de uma worktree) em qualquer profundidade abaixo disso é recusa (`E_FS_NESTED_REPOSITORY`), para apagar e para quarentena.
+6. **Repositórios.** `.git` no nível do alvo é o fato "raiz de repositório", julgado pela política. `.git` (pasta, ou o arquivo de uma worktree) em qualquer profundidade abaixo disso é recusa (`E_FS_NESTED_REPOSITORY`), para apagar e para quarentena. O nome é comparado sem distinguir caixa: `.GIT` conta.
 7. **Onde cada alvo cai de verdade.** O veredito julga a pasta que recebe os alvos; o executor julga o lugar final de cada um: estritamente dentro da raiz de trabalho, fora de pasta protegida pela política e, no disco, pela mesma abertura sem link.
 8. **Tamanho do manifesto.** O manifesto da leva é montado e medido antes de qualquer alteração; maior que `max_manifest_bytes` é recusa (`E_FS_MANIFEST_TOO_LARGE`): não se cria leva que o executor não saberia restaurar.
 9. Alvos sobrepostos, curinga, sobrescrever, limpar não rastreados e mover que não seja para a quarentena nem restauração: recusa. Ver [o que não é executado](#o-que-não-é-executado).
@@ -92,7 +92,7 @@ Só existe em dois casos: esvaziar a quarentena (todos os alvos dentro dela, a r
 
 ### Falha no meio e recuperação
 
-O executor para na primeira falha: não desfaz e não continua. `Failure.stage` diz até onde foi, e o relatório traz primeiro a infraestrutura (`staging`: cada pasta e o manifesto, com "pendente", "já existia", "criado", "falhou" ou "não confirmado") e depois um passo por alvo (pendente, feito, ausente, falhou, não confirmado; no apagar recursivo, quantas entradas já tinham saído). `Report::untouched()` responde se alguma coisa mudou no disco.
+O executor para na primeira falha: não desfaz e não continua. `Failure.stage` diz até onde foi, e o relatório traz primeiro a infraestrutura (`staging`: cada pasta e o manifesto, com "pendente", "já existia", "criado", "falhou" ou "não confirmado") e depois um passo por alvo (pendente, feito, ausente, falhou, não confirmado, fora do lugar; no apagar recursivo, quantas entradas já tinham saído). `Report::untouched()` responde se alguma coisa mudou no disco.
 
 | Etapa | O que mudou no disco |
 |---|---|
@@ -147,6 +147,7 @@ Um código nunca muda de sentido; motivo novo ganha código novo.
 | `E_FS_RESTORE_PLACE_TAKEN` | o lugar de origem de um item está ocupado |
 | `E_FS_NOTHING_TO_RESTORE` | nenhum item do manifesto está na quarentena |
 | `E_FS_CHANGED` | a entrada não é o objeto aprovado, ou a árvore dela tem algo a mais ou a menos |
+| `E_FS_MOVED_UNAPPROVED` | o que um movimento levou ao destino não é a entrada aprovada (só no Linux; ver limites) |
 | `E_FS_UNCONFIRMED` | a alteração foi feita, mas o sistema não confirmou que está no disco |
 | `E_FS_TOO_DEEP` | árvore mais funda que `max_depth` |
 | `E_FS_IO` | o sistema operacional recusou a operação |
@@ -157,10 +158,11 @@ Recusado inteiro, por falta de definição (o caminho mais restritivo): alvo com
 
 ## Limites conhecidos
 
-- **Linux: a folha entre a conferência e a chamada.** `unlinkat` e `renameat2` agem sobre um nome dentro da pasta aberta, não sobre um objeto aberto. A pasta não pode ser trocada, mas a entrada sob aquele nome pode, entre a comparação de identidade e a chamada: a operação continua dentro da pasta aprovada e atinge o que estiver sob o nome. No movimento, a identidade do que chegou é conferida depois e a diferença vira `E_FS_CHANGED` (o que foi movido está na quarentena, restaurável). No apagar não há conferência possível depois. No Windows a janela não existe: a operação é feita no identificador conferido.
+- **Linux: a folha entre a conferência e a chamada.** `unlinkat` e `renameat2` agem sobre um nome dentro da pasta aberta, não sobre um objeto aberto. A pasta não pode ser trocada, mas a entrada sob aquele nome pode, entre a comparação de identidade e a chamada: a operação continua dentro da pasta aprovada e atinge o que estiver sob o nome. No movimento, a identidade do que chegou é conferida depois e a diferença vira `E_FS_MOVED_UNAPPROVED`, com o passo marcado como "fora do lugar" (o que foi movido está inteiro no destino e volta por uma restauração). No apagar não há conferência possível depois. No Windows a janela não existe: a operação é feita no identificador conferido.
 - **Entradas criadas dentro de uma árvore durante o movimento.** A árvore é comparada com o inventário logo antes de mover; o que for criado nela entre essa comparação e a chamada vai junto para a quarentena (nada é destruído). Impedir isso pede bloquear a árvore contra outros processos.
 - **Purga de leva com repositório.** Uma leva que guarda um repositório tem `.git` abaixo do primeiro nível e a purga dela é recusada. Falta definir como se esvazia.
-- **Uso único depois de reinício.** Com a quarentena desligada não fica marca no disco; depois de reiniciar, quem impede a segunda execução é só o diário. O contrato do traço exige isso, mas a implementação persistente ainda não existe. A licença gasta sai dentro de `Command::Executed`, que é um tipo público do núcleo: fechar isso por tipo pede mudança no núcleo.
+- **Uso único depois de reinício.** Com a quarentena desligada não fica marca no disco; depois de reiniciar, quem impede a segunda execução é só o diário. O contrato do traço exige isso, mas a implementação persistente ainda não existe.
+- **Windows: pasta com arquivo aberto por outro processo.** Mover uma pasta falha com acesso negado enquanto outro processo (antivírus, indexador) tem aberto um arquivo dentro dela. O executor para e relata (`E_FS_IO`); nada é tentado de novo.
 - **Durabilidade.** A sincronização de pasta usa `fsync` no Linux e `FlushFileBuffers` no Windows. Nenhum teste corta a energia; o apagar recursivo sincroniza só a pasta do alvo, no fim.
 - **Montagem.** A recusa de montagem no Linux é testada pela função de decisão com respostas sintéticas do sistema, não com uma montagem de verdade (pede privilégio).
 - **Custo.** No Windows, conferir a grafia de um nome lista a pasta onde ele está, e cada entrada de uma árvore é aberta mais de uma vez (levantamento, comparação, alteração).

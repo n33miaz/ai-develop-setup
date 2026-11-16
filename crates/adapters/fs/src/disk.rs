@@ -227,7 +227,7 @@ impl Disk<'_> {
             Err(sys::Error::Exists) => return Err(self.taken(to, taken)),
             Err(sys::Error::Changed) => {
                 return Err(Stop::new(
-                    Reason::Changed,
+                    Reason::MovedUnapproved,
                     format!(
                         "what arrived at {} is not the entry that was approved",
                         self.fence.text_of(to)
@@ -394,6 +394,9 @@ impl Disk<'_> {
                 Err((stop, at_target)) => {
                     step.status = match stop.reason {
                         Reason::Unconfirmed if at_target => Status::Unconfirmed {
+                            detail: stop.detail.clone(),
+                        },
+                        Reason::MovedUnapproved => Status::Misplaced {
                             detail: stop.detail.clone(),
                         },
                         reason => Status::Failed {
