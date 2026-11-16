@@ -11,7 +11,7 @@ use std::fs;
 use std::io;
 use std::rc::Rc;
 
-use ads_adapter_fs::{Midway, Mutation, Reason, Status};
+use ads_adapter_fs::{Laid, Midway, Mutation, Reason, Stage, Status};
 
 use common::{Moment, Sandbox, delete_of, hooked, run, through_gate, tree};
 
@@ -186,4 +186,105 @@ fn a_tree_not_verified_in_its_holding_folder_is_not_reported_as_held() {
         other => panic!("{other:?}"),
     }
     assert!(!sandbox.path("work/tree").exists());
+}
+
+// ---- the holding folder goes at the end like any other removal ---------------------------------
+
+fn holding_of<'a>(report: &'a ads_adapter_fs::Report, sandbox: &Sandbox) -> &'a Laid {
+    let holding = sandbox.path(&format!("{}/act-1", sandbox.private_dir()));
+    &report
+        .staging
+        .iter()
+        .find(|staged| std::path::Path::new(&staged.path) == holding)
+        .unwrap()
+        .status
+}
+
+/// The holding folder of the execution is removed at the end. When the system removed it and
+/// does not confirm its folder on disk, the execution does not end as a success: every step
+/// is done, and the report says the removal went and was not confirmed.
+#[test]
+fn a_holding_folder_removed_and_not_confirmed_is_a_failure() {
+    let sandbox = Sandbox::new("clear-sync");
+    sandbox.file("work/tree/a.txt", "a");
+    let flow = through_gate(
+        &sandbox.policy(QUARANTINE_OFF),
+        delete_of(&sandbox, "act-1", &["work/tree"]),
+    );
+    let mut executor = hooked(sandbox.executor(QUARANTINE_OFF), {
+        let mut cleared = false;
+        move |moment, mutation| match (moment, mutation) {
+            (Moment::Opened, Mutation::Remove(path)) if path.ends_with("act-1") => {
+                cleared = true;
+                Ok(())
+            }
+            (Moment::Before, Mutation::Sync(path)) if cleared && path.ends_with("tmp") => {
+                Err(io::Error::other("the flush failed"))
+            }
+            _ => Ok(()),
+        }
+    });
+    let failure = run(&mut executor, flow).unwrap_err();
+    assert_eq!(failure.reason, Reason::Unconfirmed, "{failure}");
+    assert_eq!(failure.stage, Stage::Clearing);
+    assert_eq!(failure.report.steps[0].status, Status::Done);
+    assert!(
+        matches!(
+            holding_of(&failure.report, &sandbox),
+            Laid::ClearedUnconfirmed { .. }
+        ),
+        "{:?}",
+        failure.report.staging
+    );
+    assert!(tree(&sandbox.path(sandbox.private_dir())).is_empty());
+}
+
+/// While the holding folder is removed, it and the folder it is in stay where they are: on
+/// Windows the system refuses to move either out of the fence. On Linux the folder that left
+/// is not found again under its name, and is not removed; the execution still ends, its
+/// steps done, with the folder reported as made.
+#[test]
+fn a_holding_folder_cannot_be_taken_out_of_the_fence_while_it_is_removed() {
+    let sandbox = Sandbox::new("clear-hold");
+    sandbox.file("work/tree/a.txt", "a");
+    let outside_before = tree(&sandbox.outside);
+    let flow = through_gate(
+        &sandbox.policy(QUARANTINE_OFF),
+        delete_of(&sandbox, "act-1", &["work/tree"]),
+    );
+    let attempts = Rc::new(RefCell::new(Vec::new()));
+    let mut executor = hooked(sandbox.executor(QUARANTINE_OFF), {
+        let (attempts, outside) = (attempts.clone(), sandbox.outside.clone());
+        move |moment, mutation| {
+            let Mutation::Remove(path) = mutation else {
+                return Ok(());
+            };
+            if moment != Moment::Opened || !path.ends_with("act-1") {
+                return Ok(());
+            }
+            // The holding folder, then the private folder it is in.
+            for folder in path.ancestors().take(2) {
+                let n = attempts.borrow().len();
+                let moved = fs::rename(folder, outside.join(format!("taken-{n}"))).is_ok();
+                attempts.borrow_mut().push(moved);
+                if moved {
+                    break;
+                }
+            }
+            Ok(())
+        }
+    });
+    let done = run(&mut executor, flow).unwrap();
+    assert_eq!(done.report.steps[0].status, Status::Done);
+    let attempts = attempts.borrow().clone();
+    if cfg!(windows) {
+        assert_eq!(attempts, [false, false]);
+        assert_eq!(holding_of(&done.report, &sandbox), &Laid::Cleared);
+        assert_eq!(tree(&sandbox.outside), outside_before);
+    } else {
+        assert_eq!(attempts, [true]);
+        assert_eq!(holding_of(&done.report, &sandbox), &Laid::Made);
+        assert!(sandbox.outside.join("taken-0").is_dir());
+    }
+    assert!(sandbox.sentinel_is_intact());
 }

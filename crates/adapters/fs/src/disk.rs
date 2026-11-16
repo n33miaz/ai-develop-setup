@@ -102,6 +102,9 @@ pub(crate) struct Disk<'a> {
     pub limits: &'a Limits,
     /// The folders made on the way to a destination, as they were made.
     pub laid: Vec<Staged>,
+    /// The holding folder of this execution, as it was made: only that object is removed
+    /// at the end.
+    pub holding: Option<Identity>,
 }
 
 fn parent_of(rel: &[String]) -> &[String] {
@@ -596,29 +599,54 @@ impl Disk<'_> {
         Ok(())
     }
 
-    /// Takes the holding folder of this execution away, when everything in it is gone.
-    /// Whatever goes wrong, the folder stays and the report keeps saying it was made.
-    fn clear_holding(&mut self, job: &mut Job) {
-        let Some(private) = self.private else { return };
-        let Some(name) = private.last() else { return };
+    /// Takes the holding folder of this execution away, when everything in it is gone, with
+    /// the protections of every other removal: its folder held, the folder itself claimed
+    /// to be removed and found again under its name. A failure before the removal leaves the
+    /// folder there and the report saying it was made, which is true. A removal the system
+    /// made and did not confirm on disk is a failure, and is reported as such.
+    fn clear_holding(&mut self, job: &mut Job) -> Result<(), Stop> {
+        let (Some(private), Some(id)) = (self.private, self.holding) else {
+            return Ok(());
+        };
+        let Some(name) = private.last() else {
+            return Ok(());
+        };
         let home = parent_of(private);
-        let mutation = Mutation::Remove(self.fence.path_of(private));
-        let cleared = (|| {
-            self.announce(&mutation).ok()?;
-            let parent = self.fence.open_dir(home).ok()?;
-            let id = parent.child(name).ok()?.meta().ok()?.id;
-            let claim = parent.claim(name, id).ok()?;
-            self.opened(&mutation).ok()?;
-            claim.remove().ok()?;
-            self.sync(&parent, home).ok()
+        let seen = Seen {
+            id,
+            kind: Kind::Dir,
+            size: 0,
+            children: Default::default(),
+        };
+        let removed = (|| {
+            let folder = self.fence.hold_dir(home)?;
+            let mut chain = Vec::new();
+            if let Some(own) = home.last() {
+                let io = |error| Stop::io("looking at", self.fence.text_of(home), error);
+                chain.push(Link {
+                    parent: self.fence.open_dir(parent_of(home))?,
+                    name: own.clone(),
+                    id: folder.node.meta().map_err(io)?.id,
+                });
+            }
+            self.remove_claimed(&folder.node, name, &seen, private, &chain)?;
+            Ok::<_, Stop>(folder)
         })();
-        if cleared.is_some() {
-            for (stage, staged) in job.stages.iter().zip(&mut job.report.staging) {
-                if stage.rel == private {
-                    staged.status = Laid::Cleared;
-                }
+        // Not removed: the folder stays, and `Made` says so.
+        let Ok(folder) = removed else { return Ok(()) };
+        let synced = self.sync(&folder.node, home);
+        let status = match &synced {
+            Ok(()) => Laid::Cleared,
+            Err(stop) => Laid::ClearedUnconfirmed {
+                detail: stop.detail.clone(),
+            },
+        };
+        for (stage, staged) in job.stages.iter().zip(&mut job.report.staging) {
+            if stage.rel == private {
+                staged.status = status.clone();
             }
         }
+        synced
     }
 
     /// Runs the job, stopping at the first refusal. The report of the job says what was done.
@@ -634,7 +662,18 @@ impl Disk<'_> {
                     false => Laid::AlreadyThere,
                 }),
                 Lay::Reserve => self.create_dir(&stage.rel, false).map(|()| Laid::Made),
-                Lay::ReservePrivate => self.create_dir(&stage.rel, true).map(|()| Laid::Made),
+                Lay::ReservePrivate => self.create_dir(&stage.rel, true).map(|()| {
+                    // What was made, to remove that and nothing else at the end. Not found
+                    // again: it is not removed, and the report keeps saying it was made.
+                    self.holding = self
+                        .fence
+                        .locate(&stage.rel)
+                        .ok()
+                        .and_then(|spot| spot.entry)
+                        .filter(|entry| entry.kind == Kind::Dir)
+                        .map(|entry| entry.meta.id);
+                    Laid::Made
+                }),
                 Lay::Manifest => self
                     .write_new(&stage.rel, manifest.unwrap_or_default())
                     .map(|()| Laid::Made),
@@ -685,8 +724,8 @@ impl Disk<'_> {
                 }
             }
         }
-        self.clear_holding(job);
-        Ok(())
+        self.clear_holding(job)
+            .map_err(|stop| (Stage::Clearing, stop))
     }
 }
 

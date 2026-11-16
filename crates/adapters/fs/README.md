@@ -109,13 +109,13 @@ Como uma árvore é apagada, nos modos que apagam:
 2. Lá a árvore é comparada de novo com o inventário (nomes, identidades, tamanhos).
 3. Cada pasta é aberta por identificador e, no Windows, **segurada no lugar**: ela e todas as pastas acima dela até a cerca ficam abertas sem o direito de apagar concedido a outros, então nenhuma pode ser renomeada, movida ou removida enquanto é esvaziada. Cada entrada é reivindicada pelo próprio identificador (identidade e tamanho conferidos), também sem conceder a outros o direito de apagar: da reivindicação até a remoção o sistema recusa renomeá-la ou movê-la, por qualquer nome dela. Depois disso ela é procurada de novo sob o nome, na pasta segurada, com a mesma identidade, e só então removida. Uma pasta é solta antes de ser reivindicada (as duas aberturas não convivem); quem a tirar do lugar nesse intervalo faz a reivindicação, pelo nome na pasta de cima segurada, não achar o objeto aprovado. Link é removido como link, nunca atravessado.
 4. Cada pasta que perdeu entradas é sincronizada antes de ser deixada, também quando a remoção para no meio. O relatório distingue entradas vistas sair (`removed`) de entradas cuja pasta foi confirmada depois (`confirmed`).
-5. No fim a pasta `<action_id>` é removida.
+5. No fim a pasta `<action_id>` é removida como qualquer entrada: a pasta onde ela está segurada no lugar (Windows), ela reivindicada sem conceder a outros o direito de apagar, procurada de novo sob o nome e conferida contra a identidade que tinha ao ser criada. Se algo falha antes da remoção, ela fica e o relatório continua dizendo "criado", o que é verdade, e a execução termina com sucesso. Se a remoção foi feita e a sincronização da pasta de cima falhou, a execução falha (`E_FS_UNCONFIRMED`, etapa `Clearing`) com todos os passos feitos e a pasta marcada "removida no fim, sem confirmação".
 
 Uma entrada única (arquivo, link, pasta vazia) é removida onde está, com a pasta dela segurada no lugar e ela mesma reivindicada do mesmo jeito (no Windows). No Linux, onde nada segura, ela é procurada de novo sob o nome logo antes da remoção (`E_FS_DISPLACED` se saiu), o que estreita a janela e não a fecha. Reivindicar falha se outro processo já tem a entrada aberta com o direito de apagar.
 
 ### Falha no meio e recuperação
 
-O executor para na primeira falha: não desfaz e não continua. `Failure.stage` diz até onde foi, e o relatório traz primeiro a infraestrutura (`staging`: cada pasta e o manifesto, com "pendente", "já existia", "criado", "removido no fim", "falhou" ou "não confirmado") e depois um passo por alvo. `Report::untouched()` responde se alguma coisa mudou no disco.
+O executor para na primeira falha: não desfaz e não continua. `Failure.stage` diz até onde foi, e o relatório traz primeiro a infraestrutura (`staging`: cada pasta e o manifesto, com "pendente", "já existia", "criado", "removido no fim", "removido no fim, sem confirmação", "falhou" ou "não confirmado") e depois um passo por alvo. `Report::untouched()` responde se alguma coisa mudou no disco.
 
 | Estado do passo | O que quer dizer |
 |---|---|
@@ -132,6 +132,7 @@ O executor para na primeira falha: não desfaz e não continua. `Failure.stage` 
 | `Checks` | nada |
 | `Staging` | nenhum alvo; as pastas e o manifesto que o relatório marca como criados ou não confirmados existem |
 | `Steps` | o que os estados dos passos dizem |
+| `Clearing` | todos os passos feitos; a pasta de espera da execução foi removida e a remoção não foi confirmada no disco |
 
 O que uma nova execução encontra depois de uma interrupção:
 
@@ -247,4 +248,4 @@ O executor dos testes usa `definitive_delete = "isolated"`, para os testes de ap
 | `tests/execute.rs` | quarentena, restauração, apagar, falha no meio, ordem com o log |
 | `tests/review.rs` | a primeira revisão independente: troca depois da última conferência, destino que aparece no último instante, entrada não aprovada, repositório aninhado, parada em cada passo, licença usada duas vezes |
 | `tests/contain.rs` | a segunda: cerca aberta nome a nome, arquivo que cresceu, movimento não verificado, manifesto parado depois de criado, árvore apagada na pasta de espera com cada pasta sincronizada, pasta em esvaziamento que não sai do lugar, padrão por sistema, restauração sobre pasta reservada |
-| `tests/settle.rs` | a terceira: entrada reivindicada para remoção que não sai da cerca, movimento à pasta de espera não verificado |
+| `tests/settle.rs` | a terceira: entrada reivindicada para remoção que não sai da cerca, movimento à pasta de espera não verificado, remoção protegida e relatada da pasta de espera |

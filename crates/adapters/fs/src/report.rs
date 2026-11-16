@@ -79,6 +79,9 @@ pub enum Laid {
     Made,
     /// Created for this execution and removed at its end.
     Cleared,
+    /// Created for this execution and removed at its end, but the system did not confirm the
+    /// removal on disk: after a power loss the folder may or may not be there, empty.
+    ClearedUnconfirmed { detail: String },
     /// Not created.
     Failed { reason: Reason, detail: String },
     /// Created, and it stopped there: a file whose content was not written to the end, or
@@ -142,6 +145,9 @@ pub enum Stage {
     Staging,
     /// At a target: the report says which, and what was done before it.
     Steps,
+    /// After every step was done, while removing the holding folder of the execution: the
+    /// report says how that removal went (`Laid::ClearedUnconfirmed`).
+    Clearing,
 }
 
 /// The plan ran to the end. The permit is spent and never comes back: it is used here, once,
