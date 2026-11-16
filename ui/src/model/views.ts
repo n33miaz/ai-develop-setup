@@ -1,6 +1,13 @@
-import type { EventDraft, EventSessionActivityChangedV1, SessionEvent, TaskEvent } from '../api'
+import type {
+  ApprovalEvent,
+  EventDraft,
+  EventSessionActivityChangedV1,
+  SessionEvent,
+  TaskEvent,
+} from '../api'
 
-// O que a barra lateral mostra de cada tarefa e de cada sessão, reconstruído só dos eventos.
+// O que a barra lateral mostra de cada tarefa e de cada sessão, e o estado de cada aprovação,
+// reconstruídos só dos eventos.
 
 /** Estado local da tela: os contratos trazem os eventos da tarefa, não um estado pronto. */
 export type TaskState = 'pending' | 'running' | 'done' | 'failed' | 'cancelled'
@@ -21,6 +28,17 @@ export interface SessionView {
   activity: SessionActivity
 }
 
+/** Estado local da tela: sai dos eventos da aprovação, não do registro `record.approval`. */
+export type ApprovalState = 'pending' | 'granted' | 'denied' | 'expired'
+
+export interface ApprovalView {
+  id: string
+  /** O `action_id` do pedido. É ele que diz de qual ação é a aprovação: o plano pode se repetir. */
+  actionId: string
+  planHash: string
+  state: ApprovalState
+}
+
 // Um estado por tipo de evento: evento de tarefa novo nos contratos não compila sem entrar aqui.
 const TASK_STATE_AFTER: Record<TaskEvent['type'], TaskState> = {
   'urn:ads:event:task.created:1': 'pending',
@@ -28,6 +46,52 @@ const TASK_STATE_AFTER: Record<TaskEvent['type'], TaskState> = {
   'urn:ads:event:task.completed:1': 'done',
   'urn:ads:event:task.failed:1': 'failed',
   'urn:ads:event:task.cancelled:1': 'cancelled',
+}
+
+// O mesmo para as aprovações. Só as `:2`: as `:1` não dizem de qual ação são e o núcleo as recusa.
+const APPROVAL_STATE_AFTER: Record<ApprovalEvent['type'], ApprovalState> = {
+  'urn:ads:event:approval.requested:2': 'pending',
+  'urn:ads:event:approval.granted:2': 'granted',
+  'urn:ads:event:approval.denied:2': 'denied',
+  'urn:ads:event:approval.expired:2': 'expired',
+}
+
+/**
+ * Diz se o evento é uma das aprovações que a interface conhece, pela URN inteira, versão incluída:
+ * `approval.granted:1` não é `approval.granted:2`. O que não passa continua sendo só um envelope.
+ */
+export function isApprovalEvent(event: EventDraft): event is EventDraft<ApprovalEvent> {
+  return Object.hasOwn(APPROVAL_STATE_AFTER, event.type)
+}
+
+/**
+ * As aprovações, na ordem em que foram pedidas, depois de aplicar os eventos em ordem. Recebe
+ * qualquer evento e ignora o que não é aprovação `:2`: uma `:1` no histórico não cria nem decide
+ * nada. A decisão só vale para a aprovação pendente da mesma ação e do mesmo plano; a primeira
+ * decisão fica.
+ */
+export function approvalsFrom(events: readonly EventDraft[]): ApprovalView[] {
+  const approvals = new Map<string, ApprovalView>()
+  for (const event of events) {
+    if (!isApprovalEvent(event)) continue
+    const { approval_id: id, action_id: actionId, plan_hash: planHash } = event.data
+    // O tipo não é conferido em execução: sem a ação, ou em fluxo de outra entidade, não vale.
+    if (typeof actionId !== 'string' || actionId === '') continue
+    if (event.stream !== `approval/${id}`) continue
+    const approval = approvals.get(id)
+    if (event.type === 'urn:ads:event:approval.requested:2') {
+      if (!approval) approvals.set(id, { id, actionId, planHash, state: 'pending' })
+      continue
+    }
+    if (
+      approval?.state === 'pending' &&
+      approval.actionId === actionId &&
+      approval.planHash === planHash
+    ) {
+      approval.state = APPROVAL_STATE_AFTER[event.type]
+    }
+  }
+  return [...approvals.values()]
 }
 
 /** As tarefas, na ordem em que nasceram, depois de aplicar os eventos em ordem. */
