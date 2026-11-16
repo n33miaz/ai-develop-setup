@@ -42,9 +42,17 @@ export function createFakeCoreClient(): FakeCoreClient {
     return new CoreClientError('not_connected', 'o núcleo não está conectado')
   }
 
+  // Uma assinatura vale enquanto for ela mesma (por identidade) que está registrada e a conexão
+  // estiver ativa. Um callback pode desligar a conexão ou cancelar uma assinatura no meio da entrega.
+  function isLive(subscription: Subscription): boolean {
+    return state === 'connected' && subscriptions.has(subscription)
+  }
+
   function deliver(subscription: Subscription): void {
     const log = logs.get(subscription.stream) ?? []
     for (const event of log) {
+      // Conferido antes de cada callback: o anterior pode ter encerrado esta assinatura.
+      if (!isLive(subscription)) return
       if (event.seq > subscription.lastDelivered) {
         subscription.lastDelivered = event.seq
         subscription.onEvent(event)
@@ -97,8 +105,8 @@ export function createFakeCoreClient(): FakeCoreClient {
       return attempt
     },
 
-    // A conexão leva as assinaturas junto; os eventos continuam sendo gravados e quem reconectar
-    // retoma pelo último `seq` que viu.
+    // A conexão leva as assinaturas junto, inclusive a que está no meio de uma entrega; os eventos
+    // continuam sendo gravados e quem reconectar retoma pelo último `seq` que viu.
     disconnect() {
       connecting = null
       subscriptions.clear()
