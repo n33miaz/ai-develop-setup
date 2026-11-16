@@ -1,0 +1,117 @@
+{
+  "01-relative.json": {
+    "rule": "Caminho relativo não vale: falta a raiz.",
+    "keyword": "pattern",
+    "instancePath": ""
+  },
+  "02-drive-relative.json": {
+    "rule": "Caminho relativo à pasta atual da unidade não vale.",
+    "keyword": "pattern",
+    "instancePath": ""
+  },
+  "03-parent-posix.json": {
+    "rule": "Componente .. não vale, nem no meio.",
+    "keyword": "not",
+    "instancePath": ""
+  },
+  "04-parent-windows.json": {
+    "rule": "Componente .. não vale no estilo Windows.",
+    "keyword": "not",
+    "instancePath": ""
+  },
+  "05-variable-posix.json": {
+    "rule": "Variável não expandida ($) não vale.",
+    "keyword": "not",
+    "instancePath": ""
+  },
+  "06-variable-windows.json": {
+    "rule": "Variável não expandida (%) não vale.",
+    "keyword": "not",
+    "instancePath": ""
+  },
+  "07-tilde.json": {
+    "rule": "Til não expandido não vale.",
+    "keyword": "not",
+    "instancePath": ""
+  },
+  "08-network-windows.json": {
+    "rule": "Caminho de rede não vale.",
+    "keyword": "pattern",
+    "instancePath": ""
+  },
+  "09-network-posix.json": {
+    "rule": "Caminho de rede com barra normal não vale.",
+    "keyword": "pattern",
+    "instancePath": ""
+  },
+  "10-lowercase-drive.json": {
+    "rule": "A letra da unidade é maiúscula.",
+    "keyword": "pattern",
+    "instancePath": ""
+  },
+  "11-trailing-separator.json": {
+    "rule": "Sem separador no fim, salvo na raiz.",
+    "keyword": "pattern",
+    "instancePath": ""
+  },
+  "12-mixed-separator.json": {
+    "rule": "No estilo Windows o separador é a barra invertida.",
+    "keyword": "pattern",
+    "instancePath": ""
+  },
+  "13-wildcard.json": {
+    "rule": "Curinga não vale num caminho literal.",
+    "keyword": "not",
+    "instancePath": ""
+  },
+  "14-dot-component.json": {
+    "rule": "Componente . não vale: o caminho já vem normalizado.",
+    "keyword": "not",
+    "instancePath": ""
+  },
+  "15-empty.json": {
+    "rule": "Caminho vazio não vale.",
+    "keyword": "minLength",
+    "instancePath": ""
+  },
+  "16-device-name.json": {
+    "rule": "No estilo Windows, componente que é nome de dispositivo não vale.",
+    "keyword": "not",
+    "instancePath": ""
+  },
+  "17-device-name-with-extension.json": {
+    "rule": "Nome de dispositivo com extensão, em qualquer caixa, não vale.",
+    "keyword": "not",
+    "instancePath": ""
+  },
+  "18-device-name-in-the-middle.json": {
+    "rule": "Nome de dispositivo não vale em nenhum componente.",
+    "keyword": "not",
+    "instancePath": ""
+  },
+  "19-device-name-superscript.json": {
+    "rule": "COM e LPT seguidos de ¹, ² ou ³ também são dispositivos.",
+    "keyword": "not",
+    "instancePath": ""
+  },
+  "20-short-name.json": {
+    "rule": "Nome curto 8.3 não vale: pode ser apelido de outra pasta.",
+    "keyword": "not",
+    "instancePath": ""
+  },
+  "21-short-name-with-extension.json": {
+    "rule": "Nome curto 8.3 com extensão não vale.",
+    "keyword": "not",
+    "instancePath": ""
+  },
+  "22-trailing-dot.json": {
+    "rule": "No estilo Windows, componente não termina em ponto.",
+    "keyword": "pattern",
+    "instancePath": ""
+  },
+  "23-trailing-space.json": {
+    "rule": "No estilo Windows, componente não termina em espaço.",
+    "keyword": "pattern",
+    "instancePath": ""
+  }
+}

@@ -505,13 +505,142 @@ fn move_destination_is_judged_too() {
         Decision::Allowed
     );
     assert_eq!(
-        win(move_to(WIN_ROOT), &target).decision(),
+        win(
+            move_to(WIN_ROOT),
+            &["C:\\Users\\user-a\\work\\proj\\out\\build"]
+        )
+        .decision(),
         Decision::Allowed
     );
 
     let policy = policy(WIN_HOME, "allowed_roots = ['D:\\cache']");
     let verdict = classify(&plan(move_to("D:\\cache"), WIN_ROOT, &target), &policy);
     needs_approval_by(&verdict, Rule::DestinationOutsideWorkRoot);
+}
+
+/// The destination is the folder that receives the targets. What the move creates or replaces
+/// is `destination/name of the target`, and that entry goes through the deny rules as well.
+#[test]
+fn entry_a_move_creates_in_its_destination_is_judged_too() {
+    let entry = |verdict: &Verdict, rule: Rule, subject: &str| {
+        denied_by(verdict, rule);
+        let found = verdict
+            .findings()
+            .iter()
+            .any(|finding| finding.rule == rule && finding.subject == subject);
+        assert!(found, "{rule:?} on {subject}: {:?}", verdict.findings());
+    };
+
+    // Onto the work root: `/work/other/proj` moved into `/work` lands on `/work/proj`.
+    let policy = policy(POSIX_HOME, "allowed_roots = ['/work']");
+    let verdict = classify(
+        &plan(move_to("/work"), "/work/proj", &["/work/other/proj"]),
+        &policy,
+    );
+    entry(&verdict, Rule::DestinationEntryReserved, "/work/proj");
+    // The same with another case, and onto a folder that holds the work root.
+    let verdict = classify(
+        &plan(move_to("/work"), "/work/proj", &["/work/other/PROJ"]),
+        &policy,
+    );
+    entry(&verdict, Rule::DestinationEntryReserved, "/work/PROJ");
+    let nested = common::policy(POSIX_HOME, "allowed_roots = ['/data']");
+    let verdict = classify(
+        &plan(move_to("/data"), "/data/work/proj", &["/data/tmp/work"]),
+        &nested,
+    );
+    entry(&verdict, Rule::DestinationEntryReserved, "/data/work");
+
+    // Onto an allowed root, and onto the quarantine folder or a folder that holds it.
+    let roots = common::policy(POSIX_HOME, "allowed_roots = ['/work/proj/old/data']");
+    let verdict = classify(
+        &plan(
+            move_to("/work/proj/old"),
+            "/work/proj",
+            &["/work/proj/data"],
+        ),
+        &roots,
+    );
+    entry(
+        &verdict,
+        Rule::DestinationEntryReserved,
+        "/work/proj/old/data",
+    );
+    let verdict = posix(
+        move_to("/home/user-a/work/proj"),
+        &["/home/user-a/work/proj/tmp/.ads"],
+    );
+    entry(
+        &verdict,
+        Rule::DestinationEntryReserved,
+        "/home/user-a/work/proj/.ads",
+    );
+    let verdict = posix(
+        move_to("/home/user-a/work/proj/.ads"),
+        &["/home/user-a/work/proj/tmp/quarantine"],
+    );
+    entry(
+        &verdict,
+        Rule::DestinationEntryReserved,
+        "/home/user-a/work/proj/.ads/quarantine",
+    );
+
+    // Onto one of the targets: itself (a move to where it already is) or another one.
+    let verdict = posix(
+        move_to("/home/user-a/work/proj"),
+        &["/home/user-a/work/proj/build"],
+    );
+    entry(
+        &verdict,
+        Rule::DestinationInsideTarget,
+        "/home/user-a/work/proj/build",
+    );
+    let verdict = posix(
+        move_to("/home/user-a/work/proj/a"),
+        &["/home/user-a/work/proj/a/b", "/home/user-a/work/proj/b"],
+    );
+    entry(
+        &verdict,
+        Rule::DestinationInsideTarget,
+        "/home/user-a/work/proj/a/b",
+    );
+
+    // A wildcard names no entry: any child of the destination it may name counts.
+    let verdict = posix(
+        move_to("/home/user-a/work/proj"),
+        &["/home/user-a/work/proj/tmp/*"],
+    );
+    entry(
+        &verdict,
+        Rule::DestinationEntryReserved,
+        "/home/user-a/work/proj/.ads",
+    );
+    for may_name in ["?ADS", ".a*", "*s"] {
+        let target = format!("/home/user-a/work/proj/tmp/{may_name}");
+        let verdict = posix(move_to("/home/user-a/work/proj"), &[&target]);
+        denied_by(&verdict, Rule::DestinationEntryReserved);
+    }
+    // One that cannot name it is not held back, nor is the same move with quarantine off.
+    for cannot in ["*.log", "?", "ads*"] {
+        let target = format!("/home/user-a/work/proj/tmp/{cannot}");
+        let verdict = posix(move_to("/home/user-a/work/proj"), &[&target]);
+        assert_eq!(verdict.decision(), Decision::Allowed, "{cannot}");
+    }
+    let off = common::policy(POSIX_HOME, "quarantine_enabled = false");
+    let asked = plan(
+        move_to(POSIX_ROOT),
+        POSIX_ROOT,
+        &["/home/user-a/work/proj/tmp/*"],
+    );
+    assert_eq!(classify(&asked, &off).decision(), Decision::Allowed);
+
+    // An entry beside all of that is the plain move it always was.
+    let verdict = posix(
+        move_to("/home/user-a/work/proj/old"),
+        &["/home/user-a/work/proj/build"],
+    );
+    assert_eq!(verdict.decision(), Decision::Allowed);
+    assert!(verdict.findings().is_empty());
 }
 
 // ---- Requires approval ------------------------------------------------------------------------
@@ -538,13 +667,27 @@ fn recursive_delete_above_a_limit_requires_approval() {
         );
         needs_approval_by(&with(op, None), Rule::EstimateUnknown);
     }
-    // The limits are about recursive removal only.
-    for op in [Op::Delete, Op::Overwrite] {
-        assert_eq!(
-            with(op, estimate(u64::MAX, u64::MAX)).decision(),
-            Decision::Allowed
-        );
-    }
+    // An overwrite is not measured.
+    assert_eq!(
+        with(Op::Overwrite, estimate(u64::MAX, u64::MAX)).decision(),
+        Decision::Allowed
+    );
+    // A plain delete is measured through its rewrite: it becomes a move into quarantine, and
+    // that move is measured. With quarantine off it is the plain delete, not measured.
+    let verdict = with(Op::Delete, estimate(u64::MAX, u64::MAX));
+    needs_approval_by(&verdict, Rule::ItemLimitExceeded);
+    assert!(verdict.has(Rule::ByteLimitExceeded));
+    assert!(verdict.is_quarantined());
+    needs_approval_by(&with(Op::Delete, None), Rule::EstimateUnknown);
+    assert_eq!(
+        with(Op::Delete, estimate(500, 104_857_600)).decision(),
+        Decision::Allowed
+    );
+    let off = common::policy(WIN_HOME, "quarantine_enabled = false");
+    let mut request = request(Op::Delete, WIN_ROOT, &target);
+    request.estimate = None;
+    let verdict = classify(&ActionPlan::normalize(&request).unwrap(), &off);
+    assert_eq!(verdict.decision(), Decision::Allowed);
 }
 
 #[test]
@@ -764,6 +907,7 @@ fn every_rule_has_its_stable_code() {
         "quarantine_itself",
         "destination_outside_allowed_roots",
         "destination_inside_target",
+        "destination_entry_reserved",
     ] {
         denied.push(rule.to_owned());
     }
@@ -786,7 +930,7 @@ fn every_rule_has_its_stable_code() {
     assert_eq!(codes_of(Decision::Denied), denied);
     assert_eq!(codes_of(Decision::RequiresApproval), approval);
     assert!(codes_of(Decision::Allowed).is_empty());
-    assert_eq!(Rule::all().len(), 31);
+    assert_eq!(Rule::all().len(), 32);
 
     assert_eq!(
         Rule::Protected(Protection::UserHome).code().as_str(),

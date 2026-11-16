@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:event:approval.denied:2",
+  "title": "Aprovação negada",
+  "description": "A aprovação foi negada para o hash do plano, com motivo opcional. A versão 2 acrescenta action_id, obrigatório: a ação para a qual a decisão foi tomada.",
+  "allOf": [
+    {
+      "$ref": "urn:ads:event:envelope:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "type",
+        "stream",
+        "data"
+      ],
+      "properties": {
+        "type": {
+          "const": "urn:ads:event:approval.denied:2"
+        },
+        "stream": {
+          "type": "string",
+          "pattern": "^approval/"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "approval_id",
+            "action_id",
+            "plan_hash",
+            "reason"
+          ],
+          "properties": {
+            "approval_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "action_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "plan_hash": {
+              "$ref": "urn:ads:common:sha256:1"
+            },
+            "reason": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 500
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+      "type": "urn:ads:event:approval.denied:2",
+      "ts": "2030-01-02T03:04:05Z",
+      "stream": "approval/appr-01",
+      "seq": 1,
+      "actor": {
+        "kind": "daemon",
+        "id": "core-01"
+      },
+      "cause": null,
+      "data_class": "internal",
+      "data": {
+        "approval_id": "appr-01",
+        "action_id": "act-01",
+        "plan_hash": "sha256:abababababababababababababababababababababababababababababababab",
+        "reason": "fora de hora"
+      }
+    }
+  ]
+}

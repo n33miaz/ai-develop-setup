@@ -27,8 +27,11 @@ pub enum Rule {
     QuarantineItself,
     DestinationProtected(Protection),
     DestinationOutsideAllowedRoots,
-    /// A move into one of its own targets.
+    /// A move into one of its own targets, or onto one of them.
     DestinationInsideTarget,
+    /// The entry a move would create in its destination (`destination/name of the target`) is
+    /// the work root, an allowed root or the quarantine folder, or contains one.
+    DestinationEntryReserved,
 
     // Requires approval.
     /// Inside an allowed root, outside the work root. Covers overwriting outside the work root.
@@ -62,6 +65,7 @@ impl Rule {
             Self::QuarantineItself,
             Self::DestinationOutsideAllowedRoots,
             Self::DestinationInsideTarget,
+            Self::DestinationEntryReserved,
             Self::OutsideWorkRoot,
             Self::DestinationOutsideWorkRoot,
             Self::EstimateUnknown,
@@ -87,6 +91,7 @@ impl Rule {
             Self::QuarantineItself => "quarantine_itself".to_owned(),
             Self::DestinationOutsideAllowedRoots => "destination_outside_allowed_roots".to_owned(),
             Self::DestinationInsideTarget => "destination_inside_target".to_owned(),
+            Self::DestinationEntryReserved => "destination_entry_reserved".to_owned(),
             Self::OutsideWorkRoot => "outside_work_root".to_owned(),
             Self::DestinationOutsideWorkRoot => "destination_outside_work_root".to_owned(),
             Self::EstimateUnknown => "estimate_unknown".to_owned(),
@@ -108,7 +113,8 @@ impl Rule {
             | Self::QuarantineItself
             | Self::DestinationProtected(_)
             | Self::DestinationOutsideAllowedRoots
-            | Self::DestinationInsideTarget => Decision::Denied,
+            | Self::DestinationInsideTarget
+            | Self::DestinationEntryReserved => Decision::Denied,
             Self::OutsideWorkRoot
             | Self::DestinationOutsideWorkRoot
             | Self::EstimateUnknown
@@ -224,14 +230,68 @@ impl Verdict {
     }
 }
 
-/// Judges every target of the plan. One denied target denies the whole plan.
+/// Judges the plan and, when a delete becomes a move to quarantine, the rewritten plan as well,
+/// before the verdict is closed: the generated destination goes through the rules of any move.
+/// The verdict keeps every finding of both and takes the strictest level, so judging
+/// [`Verdict::plan`] again never finds anything the verdict does not already hold. One denied
+/// target, or a denied destination, denies the whole plan, and a denied plan is not rewritten.
 pub fn classify(plan: &ActionPlan, policy: &GatePolicy) -> Verdict {
-    let mut findings = Vec::new();
+    let strictest = |findings: &[Finding]| {
+        findings
+            .iter()
+            .map(|finding| finding.rule.decision())
+            .max()
+            .unwrap_or(Decision::Allowed)
+    };
+    let mut findings = judge(plan, policy);
+
+    let deletes = matches!(
+        plan.operation(),
+        Operation::Delete | Operation::DeleteRecursive
+    );
+    // Deleting what is already in quarantine cannot go to quarantine again.
+    let purge = findings
+        .iter()
+        .any(|finding| finding.rule == Rule::QuarantinePurge);
+    let mut rewrite = None;
+    if policy.quarantine_enabled() && deletes && !purge && strictest(&findings) != Decision::Denied
+    {
+        // The folder is named after the hash of the plan as asked, so two plans never share one.
+        let hash = plan.hash();
+        let name = hash.as_str()["sha256:".len()..][..16].to_owned();
+        let moved = plan.as_move_to(policy.quarantine_root(plan.work_root()).join(&[name]));
+        for finding in judge(&moved, policy) {
+            if !findings.contains(&finding) {
+                findings.push(finding);
+            }
+        }
+        rewrite = Some(moved);
+    }
+
+    let decision = strictest(&findings);
+    let rewrite = rewrite.filter(|_| decision != Decision::Denied);
+    let quarantined = rewrite.is_some();
+    Verdict {
+        decision,
+        findings,
+        plan: rewrite.unwrap_or_else(|| plan.clone()),
+        requested: plan.operation().clone(),
+        quarantined,
+    }
+}
+
+/// Every rule that fires on the plan exactly as it is written, with no rewrite. Each finding
+/// comes once.
+fn judge(plan: &ActionPlan, policy: &GatePolicy) -> Vec<Finding> {
+    let mut findings: Vec<Finding> = Vec::new();
     let mut find = |rule: Rule, subject: &dyn std::fmt::Display| {
-        findings.push(Finding {
+        let finding = Finding {
             rule,
             subject: subject.to_string(),
-        });
+        };
+        if !findings.contains(&finding) {
+            findings.push(finding);
+        }
     };
 
     let work_root = plan.work_root();
@@ -252,7 +312,6 @@ pub fn classify(plan: &ActionPlan, policy: &GatePolicy) -> Verdict {
         plan.operation(),
         Operation::Delete | Operation::DeleteRecursive
     );
-    let mut purge = false;
 
     for target in plan.targets() {
         let scope = target.path().scope();
@@ -283,7 +342,6 @@ pub fn classify(plan: &ActionPlan, policy: &GatePolicy) -> Verdict {
             if quarantine.is_loosely_within(scope) {
                 find(Rule::QuarantineItself, subject);
             } else if deletes && scope.is_loosely_within(quarantine) {
-                purge = true;
                 find(Rule::QuarantinePurge, subject);
             }
         }
@@ -311,10 +369,57 @@ pub fn classify(plan: &ActionPlan, policy: &GatePolicy) -> Verdict {
         if !destination.is_within(work_root) {
             find(Rule::DestinationOutsideWorkRoot, destination);
         }
+
+        // The destination is the folder that receives the targets: what a move creates or
+        // replaces is `destination/name`, judged too. Deny rules only, so the wide comparison.
+        let reserved: Vec<&AbsPath> = std::iter::once(work_root)
+            .chain(policy.allowed_roots())
+            .chain(&quarantine)
+            .collect();
+        for target in plan.targets() {
+            let scope = target.path().scope();
+            match target.path().pattern() {
+                None => {
+                    let Some(name) = scope.components().last() else {
+                        continue;
+                    };
+                    let entry = destination.join(std::slice::from_ref(name));
+                    if let Some(protection) = policy.protection(&entry) {
+                        find(Rule::DestinationProtected(protection), &entry);
+                    }
+                    let onto_a_target = plan
+                        .targets()
+                        .iter()
+                        .any(|other| entry.is_loosely_within(other.path().scope()));
+                    if onto_a_target {
+                        find(Rule::DestinationInsideTarget, &entry);
+                    }
+                    if reserved.iter().any(|path| path.is_loosely_within(&entry)) {
+                        find(Rule::DestinationEntryReserved, &entry);
+                    }
+                }
+                // The names are not known: any child of the destination the wildcard may name.
+                Some(pattern) => {
+                    for path in &reserved {
+                        let below = path.depth() > destination.depth()
+                            && path.is_loosely_within(destination);
+                        if !below {
+                            continue;
+                        }
+                        let name = &path.components()[destination.depth()];
+                        if may_name(pattern, name) {
+                            let entry = destination.join(std::slice::from_ref(name));
+                            find(Rule::DestinationEntryReserved, &entry);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // A move into quarantine is a delete that was rewritten, and nothing in it says which
-    // one: it is judged as the recursive one, so judging a rewrite again never asks for less.
+    // one: it is judged as the recursive one. A plain delete that is rewritten is judged that
+    // way too, through its rewrite.
     let sized = match plan.operation() {
         Operation::DeleteRecursive | Operation::CleanUntracked => true,
         Operation::Move { destination } => quarantine
@@ -338,27 +443,25 @@ pub fn classify(plan: &ActionPlan, policy: &GatePolicy) -> Verdict {
         }
     }
 
-    let decision = findings
-        .iter()
-        .map(|finding| finding.rule.decision())
-        .max()
-        .unwrap_or(Decision::Allowed);
+    findings
+}
 
-    // The folder is named after the hash of the plan as asked, so two plans never share one.
-    let rewrite = match &quarantine {
-        Some(quarantine) if deletes && !purge && decision != Decision::Denied => {
-            let hash = plan.hash();
-            let name = hash.as_str()["sha256:".len()..][..16].to_owned();
-            Some(plan.as_move_to(quarantine.join(&[name])))
+/// Whether a wildcard (`*` any run of characters, `?` any one) could name `name` on some file
+/// system: case is ignored either way. For deny rules only.
+fn may_name(pattern: &str, name: &str) -> bool {
+    fn matches(pattern: &[char], name: &[char]) -> bool {
+        match pattern.split_first() {
+            None => name.is_empty(),
+            Some(('*', rest)) => (0..=name.len()).any(|skipped| matches(rest, &name[skipped..])),
+            Some((first, rest)) => name.split_first().is_some_and(|(letter, tail)| {
+                (*first == '?' || first == letter) && matches(rest, tail)
+            }),
         }
-        _ => None,
-    };
-    let quarantined = rewrite.is_some();
-    Verdict {
-        decision,
-        findings,
-        plan: rewrite.unwrap_or_else(|| plan.clone()),
-        requested: plan.operation().clone(),
-        quarantined,
     }
+    let folded = |fold: fn(&str) -> String| {
+        let pattern: Vec<char> = fold(pattern).chars().collect();
+        let name: Vec<char> = fold(name).chars().collect();
+        matches(&pattern, &name)
+    };
+    folded(str::to_lowercase) || folded(str::to_uppercase)
 }

@@ -8,6 +8,7 @@ pub mod command_request_v1;
 pub mod command_response_v1;
 pub mod command_response_v2;
 pub mod common_abspath_v1;
+pub mod common_abspath_v2;
 pub mod common_action_rule_v1;
 pub mod common_actor_v1;
 pub mod common_base64_v1;
@@ -29,8 +30,11 @@ pub mod event_action_failed_v1;
 pub mod event_action_planned_v1;
 pub mod event_action_started_v1;
 pub mod event_approval_denied_v1;
+pub mod event_approval_denied_v2;
 pub mod event_approval_expired_v1;
+pub mod event_approval_expired_v2;
 pub mod event_approval_granted_v1;
+pub mod event_approval_granted_v2;
 pub mod event_approval_requested_v1;
 pub mod event_approval_requested_v2;
 pub mod event_envelope_v1;
@@ -72,6 +76,7 @@ pub use command_request_v1::*;
 pub use command_response_v1::*;
 pub use command_response_v2::*;
 pub use common_abspath_v1::*;
+pub use common_abspath_v2::*;
 pub use common_action_rule_v1::*;
 pub use common_actor_v1::*;
 pub use common_base64_v1::*;
@@ -93,8 +98,11 @@ pub use event_action_failed_v1::*;
 pub use event_action_planned_v1::*;
 pub use event_action_started_v1::*;
 pub use event_approval_denied_v1::*;
+pub use event_approval_denied_v2::*;
 pub use event_approval_expired_v1::*;
+pub use event_approval_expired_v2::*;
 pub use event_approval_granted_v1::*;
+pub use event_approval_granted_v2::*;
 pub use event_approval_requested_v1::*;
 pub use event_approval_requested_v2::*;
 pub use event_envelope_v1::*;
@@ -138,6 +146,7 @@ pub const SCHEMAS: &[(&str, &str)] = &[
     ("command.response.v1", "urn:ads:command:response:1"),
     ("command.response.v2", "urn:ads:command:response:2"),
     ("common.abspath.v1", "urn:ads:common:abspath:1"),
+    ("common.abspath.v2", "urn:ads:common:abspath:2"),
     ("common.action-rule.v1", "urn:ads:common:action-rule:1"),
     ("common.actor.v1", "urn:ads:common:actor:1"),
     ("common.base64.v1", "urn:ads:common:base64:1"),
@@ -181,12 +190,24 @@ pub const SCHEMAS: &[(&str, &str)] = &[
         "urn:ads:event:approval.denied:1",
     ),
     (
+        "event.approval.denied.v2",
+        "urn:ads:event:approval.denied:2",
+    ),
+    (
         "event.approval.expired.v1",
         "urn:ads:event:approval.expired:1",
     ),
     (
+        "event.approval.expired.v2",
+        "urn:ads:event:approval.expired:2",
+    ),
+    (
         "event.approval.granted.v1",
         "urn:ads:event:approval.granted:1",
+    ),
+    (
+        "event.approval.granted.v2",
+        "urn:ads:event:approval.granted:2",
     ),
     (
         "event.approval.requested.v1",
@@ -289,6 +310,8 @@ pub const PATTERNS: &[&str] = &[
     r"^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
     r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,6})?Z$",
     r"^[0-9a-f]{40}$",
+    r"^[A-Z]:\\([^\\]*\\)*([Cc][Oo][Nn]|[Pp][Rr][Nn]|[Aa][Uu][Xx]|[Nn][Uu][Ll]|([Cc][Oo][Mm]|[Ll][Pp][Tt])[0-9\x{00b9}\x{00b2}\x{00b3}])[ \x{00a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*(\.[^\\]*)?(\\|$)",
+    r"^[A-Z]:\\([^\\]*\\)*[^\\]*~[0-9]+(\.|\\|$)",
     r"^[A-Za-z0-9+/]{43}=$",
     r"^[A-Za-z0-9._-][A-Za-z0-9._/-]*$",
     r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
@@ -321,6 +344,7 @@ pub fn reencode(id: &str, value: Value) -> Option<Result<Value, serde_json::Erro
         "urn:ads:command:response:1" => support::reencode::<CommandResponseV1>(value),
         "urn:ads:command:response:2" => support::reencode::<CommandResponseV2>(value),
         "urn:ads:common:abspath:1" => support::reencode::<CommonAbspathV1>(value),
+        "urn:ads:common:abspath:2" => support::reencode::<CommonAbspathV2>(value),
         "urn:ads:common:action-rule:1" => support::reencode::<CommonActionRuleV1>(value),
         "urn:ads:common:actor:1" => support::reencode::<CommonActorV1>(value),
         "urn:ads:common:base64:1" => support::reencode::<CommonBase64V1>(value),
@@ -350,8 +374,11 @@ pub fn reencode(id: &str, value: Value) -> Option<Result<Value, serde_json::Erro
         "urn:ads:event:action.planned:1" => support::reencode::<EventActionPlannedV1>(value),
         "urn:ads:event:action.started:1" => support::reencode::<EventActionStartedV1>(value),
         "urn:ads:event:approval.denied:1" => support::reencode::<EventApprovalDeniedV1>(value),
+        "urn:ads:event:approval.denied:2" => support::reencode::<EventApprovalDeniedV2>(value),
         "urn:ads:event:approval.expired:1" => support::reencode::<EventApprovalExpiredV1>(value),
+        "urn:ads:event:approval.expired:2" => support::reencode::<EventApprovalExpiredV2>(value),
         "urn:ads:event:approval.granted:1" => support::reencode::<EventApprovalGrantedV1>(value),
+        "urn:ads:event:approval.granted:2" => support::reencode::<EventApprovalGrantedV2>(value),
         "urn:ads:event:approval.requested:1" => {
             support::reencode::<EventApprovalRequestedV1>(value)
         }

@@ -39,7 +39,8 @@ pub enum PathError {
     AlternateStream,
     /// `< > " |` on Windows, `\` inside a POSIX component.
     ReservedCharacter,
-    /// `NUL`, `CON`, `COM1` and the like on Windows.
+    /// `NUL`, `CON`, `COM1` and the like on Windows, with any extension: `COM0` to `COM9`,
+    /// `LPT0` to `LPT9` and the same with a superscript 1, 2 or 3.
     DeviceName,
     ControlCharacter,
 }
@@ -325,9 +326,15 @@ fn check_windows_name(name: &str) -> Result<(), PathError> {
     }
     let stem = name.split('.').next().unwrap_or(name).trim_end();
     let stem = stem.to_ascii_uppercase();
+    // `COM0` to `COM9` and the superscript digits Windows also takes for a port number.
     let numbered = |prefix: &str| {
         stem.strip_prefix(prefix).is_some_and(|rest| {
-            rest.len() == 1 && rest != "0" && rest.bytes().all(|b| b.is_ascii_digit())
+            let mut digits = rest.chars();
+            let digit = digits.next();
+            digits.next().is_none()
+                && digit.is_some_and(|digit| {
+                    digit.is_ascii_digit() || matches!(digit, '\u{b9}' | '\u{b2}' | '\u{b3}')
+                })
         })
     };
     if matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL") || numbered("COM") || numbered("LPT")
@@ -498,9 +505,34 @@ mod tests {
             AbsPath::parse("C:\\work\\a|b"),
             Err(PathError::ReservedCharacter)
         );
+        // Zero and the superscript digits name a port too, with spaces before the extension.
+        for device in [
+            "COM0",
+            "lpt0.txt",
+            "COM\u{b9}",
+            "com\u{b2}.log",
+            "LPT\u{b3}",
+            "COM\u{b9} .log",
+            "NUL\u{a0}.txt",
+            "prn.a.b",
+        ] {
+            assert_eq!(
+                AbsPath::parse(&format!("C:\\work\\{device}")),
+                Err(PathError::DeviceName),
+                "{device}"
+            );
+        }
         // Names that only look like the refused ones.
         assert_eq!(abs("C:\\work\\a~b\\console"), "C:\\work\\a~b\\console");
         assert_eq!(abs("C:\\work\\v~1x"), "C:\\work\\v~1x");
+        for plain in ["COM10", "COM\u{2074}", "COM\u{ff11}", "NUL1", "my.NUL"] {
+            assert!(
+                AbsPath::parse(&format!("C:\\work\\{plain}")).is_ok(),
+                "{plain}"
+            );
+        }
+        // On POSIX they are plain names.
+        assert_eq!(abs("/work/NUL/COM\u{b9}/a~1"), "/work/NUL/COM\u{b9}/a~1");
     }
 
     #[test]

@@ -60,6 +60,7 @@ posix_user_parents = ["/home", "/Users"]
 # Apagar recursivo, limpar nao rastreados e mover para dentro da pasta de quarentena pedem aprovacao
 # quando o plano estima MAIS itens ou MAIS bytes que estes limites. Plano sem estimativa conta como acima
 # do limite. Zero: sempre pede aprovacao, qualquer que seja a estimativa (zero inclusive).
+# Com a quarentena ligada, o apagar simples vira mover para a quarentena e por isso tambem e medido.
 approval_item_limit = 500
 approval_byte_limit = 104857600
 
@@ -70,4 +71,7 @@ quarantine_enabled = true
 # Pasta de quarentena, relativa a raiz de trabalho (barra normal; letras, digitos e . _ -; sem `..`).
 # Cada plano ganha uma subpasta com o comeco do hash do plano original. Alvo que e esta pasta ou a contem
 # e negado; apagar algo ja dentro dela (purga) nao tem como ir para a quarentena e pede aprovacao.
+# Recusado na carga: caminho absoluto ou com `..` (fora da raiz de trabalho), nome que o Windows trata como
+# dispositivo (`nul`, `com1`), e subcaminho que cairia numa pasta protegida: o que comeca onde termina uma
+# pasta de sistema ou de perfis das listas acima (`etc/q`, `home/q`, `Windows/q`).
 quarantine_dir = ".ads/quarantine"

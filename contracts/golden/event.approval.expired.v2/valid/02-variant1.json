@@ -1,0 +1,18 @@
+{
+  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAC",
+  "type": "urn:ads:event:approval.expired:2",
+  "ts": "2030-01-02T03:04:05Z",
+  "stream": "approval/appr-02",
+  "seq": 42,
+  "actor": {
+    "kind": "agent",
+    "id": "agent-a"
+  },
+  "cause": "01ARZ3NDEKTSV4RRFFQ69G5FAK",
+  "data_class": "private",
+  "data": {
+    "approval_id": "appr-02",
+    "action_id": "act-02",
+    "plan_hash": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+  }
+}
