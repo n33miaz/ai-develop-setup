@@ -161,7 +161,8 @@ O que é garantido, por tipo de adversário. "Dentro da cerca" quer dizer: nenhu
 **(b) Processo concorrente não hostil** (outra ferramenta, um editor, uma compilação, usando caminhos, sem intenção de enganar). Além do item (a):
 
 - trocas feitas antes da última conferência são vistas e viram recusa (entrada nova, entrada que sumiu, outro objeto com o mesmo nome, arquivo que mudou de tamanho, link no caminho);
-- trocas feitas depois da última conferência não redirecionam a operação: ela acontece no objeto aberto ou falha;
+- trocas feitas depois da última conferência, **no Windows**, não redirecionam a operação: mover e apagar agem no identificador aberto da própria entrada, então acontecem no objeto aberto ou falham;
+- **no Linux**, `renameat2` e `unlinkat` agem sobre o nome dentro da pasta aberta, não sobre um objeto aberto. Uma ferramenta comum que troca a entrada sob o nome entre a comparação de identidade e a chamada (renomeia o arquivo antigo e publica outro com o mesmo nome, como faz uma compilação) faz o movimento levar a entrada nova. O que se garante é a **detecção depois**: a conferência da chegada, pelo nome no destino, não acha o objeto aprovado e o passo sai "não verificado" (`E_FS_MOVE_UNVERIFIED`). A consequência é recuperável: a outra entrada foi para a quarentena (restaurável) ou, numa restauração, voltou para a raiz de trabalho; nada foi apagado nem sobrescrito. Com `definitive_delete = "isolated"` não há essa garantia para a remoção: uma entrada publicada sob o nome entre a última conferência e o `unlinkat` é apagada no lugar da aprovada, sem detecção e sem volta (é por isso que o padrão no Linux não apaga);
 - um destino que aparece no último instante não é substituído;
 - uma árvore a apagar é tirada do alcance dos caminhos (movida para a pasta de espera) antes da primeira remoção, e comparada de novo lá.
 

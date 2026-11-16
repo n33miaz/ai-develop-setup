@@ -1,9 +1,11 @@
 //! The only place where the disk is changed. Every mutation is one entry, reached again from
 //! the fence by open handles right before it is made: strictly inside the work root, no link
 //! on the way, and the entry the very object that was approved, with the size it had. The
-//! system call then acts on what is open, not on a path, so nothing that is swapped afterwards
-//! can send it elsewhere. Nothing here is recursive by itself; a tree goes away entry by
-//! entry, each one compared with the inventory.
+//! system call then acts on what is open, not on a path: on Windows on the handle of the entry
+//! itself; on Linux on a name inside the open folder, where an entry swapped under the name
+//! right before the call is moved instead and the check after the move tells it. Nothing here
+//! is recursive by itself; a tree goes away entry by entry, each one compared with the
+//! inventory.
 
 use std::io::{self, Write};
 use std::path::PathBuf;
