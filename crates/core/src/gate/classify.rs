@@ -449,14 +449,27 @@ fn judge(plan: &ActionPlan, policy: &GatePolicy) -> Vec<Finding> {
 /// Whether a wildcard (`*` any run of characters, `?` any one) could name `name` on some file
 /// system: case is ignored either way. For deny rules only.
 fn may_name(pattern: &str, name: &str) -> bool {
+    // No recursion and no blow-up: both texts come from the request and have no size limit
+    // here. On a mismatch the last `*` takes one more character and the match resumes there.
     fn matches(pattern: &[char], name: &[char]) -> bool {
-        match pattern.split_first() {
-            None => name.is_empty(),
-            Some(('*', rest)) => (0..=name.len()).any(|skipped| matches(rest, &name[skipped..])),
-            Some((first, rest)) => name.split_first().is_some_and(|(letter, tail)| {
-                (*first == '?' || first == letter) && matches(rest, tail)
-            }),
+        let (mut p, mut n) = (0, 0);
+        let mut star: Option<(usize, usize)> = None;
+        while n < name.len() {
+            if p < pattern.len() && pattern[p] == '*' {
+                star = Some((p, n));
+                p += 1;
+            } else if p < pattern.len() && (pattern[p] == '?' || pattern[p] == name[n]) {
+                p += 1;
+                n += 1;
+            } else if let Some((at, taken)) = star {
+                star = Some((at, taken + 1));
+                p = at + 1;
+                n = taken + 1;
+            } else {
+                return false;
+            }
         }
+        pattern[p..].iter().all(|rest| *rest == '*')
     }
     let folded = |fold: fn(&str) -> String| {
         let pattern: Vec<char> = fold(pattern).chars().collect();
@@ -464,4 +477,46 @@ fn may_name(pattern: &str, name: &str) -> bool {
         matches(&pattern, &name)
     };
     folded(str::to_lowercase) || folded(str::to_uppercase)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::may_name;
+
+    #[test]
+    fn wildcard_names_what_it_could_match_in_any_case() {
+        for (pattern, name) in [
+            ("*", ".ads"),
+            ("?ADS", ".ads"),
+            (".a*", ".ads"),
+            ("*s", ".ADS"),
+            ("*.*", "a.b"),
+            ("a*b*c", "aXbYc"),
+            ("**", ""),
+            ("a?c", "ABC"),
+        ] {
+            assert!(may_name(pattern, name), "{pattern} against {name}");
+        }
+        for (pattern, name) in [
+            ("*.log", ".ads"),
+            ("?", ".ads"),
+            ("ads*", ".ads"),
+            ("a*b", "ac"),
+            ("a?", "a"),
+            ("", "a"),
+        ] {
+            assert!(!may_name(pattern, name), "{pattern} against {name}");
+        }
+    }
+
+    /// The texts come from the request, with no size limit before the rules: the match must
+    /// neither take exponential time nor grow the stack with them.
+    #[test]
+    fn wildcard_match_is_bounded_in_time_and_in_stack() {
+        let greedy = format!("{}b", "*a".repeat(60));
+        assert!(!may_name(&greedy, &"a".repeat(100)));
+        let long = "a".repeat(200_000);
+        assert!(may_name(&format!("{long}?"), &format!("{long}a")));
+        assert!(!may_name(&format!("{long}?"), &long));
+    }
 }
