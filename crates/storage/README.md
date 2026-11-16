@@ -2,4 +2,4 @@
 
 Guarda o estado local: SQLite, cifra por coluna e auditoria encadeada.
 
-Estado: esqueleto, sem comportamento na `develop`. Abertura do banco e cifra por coluna estão em andamento (issue #47); a decisão da cifra está na [ADR 0005](../../docs/adr/0005-column-level-encryption.md).
+Estado: abre e confere o banco de auditoria (`AuditStore`, `src/open.rs`), recusando arquivo estranho, mais novo ou corrompido sem alterá-lo, e cifra e decifra valores com XChaCha20-Poly1305 (`src/cipher.rs`). A cifra ainda não está ligada ao banco, o banco só tem a tabela `meta`, e a auditoria encadeada não existe. Decisões na [ADR 0005](../../docs/adr/0005-column-level-encryption.md) e na [ADR 0021](../../docs/adr/0021-storage-atomic-file-and-cipher.md) (proposta); parâmetros em [`defaults/storage.toml`](../../defaults/storage.toml).
