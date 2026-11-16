@@ -9,8 +9,10 @@ useDefault = true
 # 1. O modelo de variáveis, que tem só nomes e nenhum valor real (AGENTS.md).
 # 2. A chave de idempotência de um comando: é um ULID (identificador ordenável, não segredo), e a regra genérica de
 #    chave de API casa com os exemplos sintéticos dos contratos pelo nome do campo. A expressão olha a linha inteira.
+# 3. A chave de exemplo do handshake WebSocket da RFC 6455 (base64 de "the sample nonce"), pública, usada em testes
+#    que montam o pedido HTTP à mão. Só esse valor exato é aceito.
 [allowlist]
-description = "modelo de variáveis sem valores e chave de idempotência em formato ULID"
+description = "modelo de variáveis sem valores, chave de idempotência em formato ULID e chave de exemplo da RFC 6455"
 paths = ['''(^|/)\.env\.example$''']
 regexTarget = "line"
-regexes = ['''"idempotency_key":\s*"[0-9A-HJKMNP-TV-Z]{26}"''']
+regexes = ['''"idempotency_key":\s*"[0-9A-HJKMNP-TV-Z]{26}"''', '''Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==''']
