@@ -65,7 +65,7 @@ fn start(backend: &Arc<FakeBackend>, label: &str) -> (String, Arc<PtyHost>) {
 fn open(session_id: &SessionId) -> Call {
     Call::Open(OpenParams {
         session_id: session_id.clone(),
-        program: "fake-shell".to_owned(),
+        program: "fake-shell".to_owned().try_into().unwrap(),
         args: Vec::new(),
         cwd: None,
         env: BTreeMap::new(),

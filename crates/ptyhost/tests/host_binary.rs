@@ -66,12 +66,12 @@ impl Drop for HostProcess {
 /// An interactive system shell: it prints only when the test types something.
 fn open_shell(session_id: &SessionId) -> Call {
     #[cfg(windows)]
-    let (program, args) = ("cmd.exe", vec!["/d".to_owned()]);
+    let (program, args) = ("cmd.exe", vec!["/d".to_owned().try_into().unwrap()]);
     #[cfg(not(windows))]
     let (program, args) = ("/bin/sh", Vec::new());
     Call::Open(OpenParams {
         session_id: session_id.clone(),
-        program: program.to_owned(),
+        program: program.to_owned().try_into().unwrap(),
         args,
         cwd: None,
         env: allowed_env().into_iter().collect::<BTreeMap<_, _>>(),
@@ -84,7 +84,7 @@ async fn type_line(client: &mut Client<ChannelStream>, session_id: &SessionId, l
     let enter = if cfg!(windows) { "\r" } else { "\n" };
     let write = Call::Write(WriteParams {
         session_id: session_id.clone(),
-        data: Base64(format!("{line}{enter}").into_bytes()),
+        data: Base64(format!("{line}{enter}").into_bytes()).into(),
     });
     client.call(write).await.unwrap();
 }

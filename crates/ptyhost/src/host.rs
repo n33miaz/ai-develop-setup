@@ -115,7 +115,7 @@ impl PtyHost {
 
     pub fn session_ids(&self) -> Vec<SessionId> {
         let mut ids: Vec<_> = self.open_sessions().into_iter().map(|(id, _)| id).collect();
-        ids.sort_unstable();
+        ids.sort_unstable_by(|a, b| a.as_str().cmp(b.as_str()));
         ids
     }
 
@@ -134,7 +134,7 @@ impl PtyHost {
                 }
             })
             .collect();
-        sessions.sort_unstable_by(|a, b| a.id.cmp(&b.id));
+        sessions.sort_unstable_by(|a, b| a.id.as_str().cmp(b.id.as_str()));
         sessions
     }
 

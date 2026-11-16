@@ -1,6 +1,8 @@
 # Mapa de troca dos tipos escritos à mão
 
-Dois módulos ainda escrevem à mão os tipos dos contratos: `crates/core/src/gate/event.rs` (portão de ações) e `crates/ptyhost/src/wire.rs` (contrato `pty-host/1`). Este mapa diz, para cada tipo público deles, qual tipo gerado o substitui e o que muda de forma. A troca em si é a entrega seguinte; quando ela terminar, este arquivo sai.
+Dois módulos escreviam à mão os tipos dos contratos: `crates/core/src/gate/event.rs` (portão de ações) e `crates/ptyhost/src/wire.rs` (contrato `pty-host/1`). Este mapa diz, para cada tipo público deles, qual tipo gerado o substitui e o que muda de forma.
+
+Estado: a troca do `ptyhost` está feita, e a seção dele diz o que foi trocado, o que ficou e por quê. A do portão continua por fazer. Quando ela terminar, este arquivo sai.
 
 Vale para todos:
 
@@ -82,27 +84,54 @@ Continuam escritos à mão, por serem comportamento e não Schema: `EventMeta`, 
 
 ## `crates/ptyhost/src/wire.rs`
 
-| Escrito à mão | Gerado | Diferença |
-|---|---|---|
-| `OutputHeader` | `ContractPtyHostFrameV1` | `length` é `NonZeroU64` (o Schema não dá teto), não `NonZeroU32`: o limite de 32 bits do quadro continua conferido no codec |
-| `JsonRpc` | um tipo sem dados por mensagem (`ContractPtyHostResponseV1Jsonrpc`, `ContractPtyHostRequestV1HostHelloJsonrpc`, …) | um por lugar; todos têm `Default` |
-| `RequestId` | `NonZeroU64` | nenhuma |
-| `SessionId` | `CommonIdV1` | guarda `String`, não `Arc<str>`, e não deriva `Ord`: se o host precisa de cópia barata ou de ordem, embrulha |
-| `Dimension` | `ContractPtyHostRequestV1SessionOpenParamsCols`/`Rows`, `ContractPtyHostRequestV1SessionResizeParamsCols`/`Rows` | um tipo por lugar; `get()` igual, sobre `u16` |
-| `Base64` | `CommonBase64V1` | o gerado é o texto validado, não os bytes: codificar e decodificar continuam no host |
-| `Request { id, call }` e `Call` | `ContractPtyHostRequestV1` | um `enum` com a marca `method`; cada variante guarda um `struct` com `jsonrpc`, `id` e `params` (`ContractPtyHostRequestV1SessionOpen`, …). O `id` fica dentro da variante |
-| `HelloParams` | `ContractPtyHostRequestV1HostHelloParams` | `contract` é o valor fixo `pty-host/1`: versão desconhecida é recusada na leitura. Para responder `-32009`, o host lê o `contract` antes da leitura tipada (como já faz `Request::parse` com o método) |
-| `OpenParams` | `ContractPtyHostRequestV1SessionOpenParams` | `program`, cada item de `args` e `cwd` são textos validados com tipo próprio |
-| `WriteParams`, `ResizeParams`, `SubscribeParams`, `SessionParams`, `NoParams` | `ContractPtyHostRequestV1SessionWriteParams`, `…SessionResizeParams`, `…SessionSubscribeParams`, `…SessionCloseParams`, `…SessionListParams` | mesmos campos |
-| `Response { id, outcome }` | `ContractPtyHostResponseV1` (`ContractPtyHostResponseV1Fields`) | no lugar de `outcome: Result<ResultBody, ErrorBody>` há dois `Option` (`result` e `error`), e a regra do Schema exige exatamente um; o host converte para `Result` ao ler. Há o campo `jsonrpc` |
-| `ResultBody` | `ContractPtyHostResponseV1Result` | `enum` sem marca, variantes `Empty`, `Hello`, `ReplayBounds`, `Closed`, `SessionList` |
-| `HelloResult` | `ContractPtyHostResponseV1Hello` | `contract` é o valor fixo `pty-host/1`, não `String` |
-| `ReplayBounds`, `Closed`, `SessionList`, `SessionEntry` | `ContractPtyHostResponseV1ReplayBounds`, `…Closed`, `…SessionList`, `…SessionListSessionsItem` | mesmos campos e mesmos tipos (`NonZeroU64`, `Option<i64>`) |
-| `ErrorCode` | `ContractPtyHostResponseV1ErrorCode` | variantes pelo número (`Neg32004`), não pelo significado; `number()` igual. Os nomes com significado continuam no host, como constantes |
-| `ErrorBody` | `ContractPtyHostResponseV1Error` (`…ErrorFields`) | conferido: `-32004` exige `data.oldest_seq` e `-32005` exige `data.next_seq`; `message` é texto validado de 1 a 500 caracteres (`ContractPtyHostResponseV1ErrorMessage`), não `String` |
-| `ErrorData` | `ContractPtyHostResponseV1ErrorData` | mesmos campos |
-| `Notification` | `ContractPtyHostNotificationV1` | `enum` com a marca `method`; cada variante guarda `jsonrpc` e `params` |
-| `SessionExited`, `SubscriptionClosed` | `ContractPtyHostNotificationV1SessionExitedParams`, `…SubscriptionClosedParams` | mesmos campos e mesmos tipos (`last_seq` é `u64`) |
-| `CloseReason` | `ContractPtyHostNotificationV1SubscriptionClosedParamsReason` | nenhuma |
+Trocado. O módulo reexporta os gerados com os nomes que o host já usava (`pub use … as …`), então o resto do crate e os testes continuam dizendo `SessionId`, `OpenParams`, `ResultBody`. O que ficou escrito à mão lê o tipo gerado primeiro e converte: nenhuma mensagem é aceita além do que o Schema aceita. O formato no fio não mudou, byte a byte: `tests/wire_bytes.rs` fixa os bytes de cada mensagem que o host emite e o código de erro de cada pedido malformado, e foi escrito e rodado contra os tipos antigos antes da troca.
 
-Continuam escritos à mão, por serem comportamento e não Schema: o codec do quadro binário (`Frame`, `WireError`, `encode_json`, `encode_output`, `decode_payload`, as constantes `KIND_*`), `Rejection` e `Request::parse` (que erro JSON-RPC responder a um pedido malformado), `HostMessage` (resposta ou notificação) e a conversão de `Base64` em bytes.
+### Trocados pelo gerado
+
+| Escrito à mão (removido) | Gerado em uso | Nome no host |
+|---|---|---|
+| `JsonRpc` | `ContractPtyHostResponseV1Jsonrpc`, `ContractPtyHostRequestV1HostHelloJsonrpc`, `ContractPtyHostNotificationV1SessionExitedJsonrpc` | sem nome próprio: um por envelope |
+| `SessionId` | `CommonIdV1` | `SessionId` |
+| `Dimension` | `ContractPtyHostRequestV1SessionOpenParamsCols`/`Rows`, `…SessionResizeParamsCols`/`Rows` | sem nome próprio |
+| `OpenParams` (e os validadores de `program`, `args` e `cwd`) | `ContractPtyHostRequestV1SessionOpenParams` | `OpenParams` |
+| `WriteParams`, `ResizeParams`, `SubscribeParams`, `SessionParams`, `NoParams` | `ContractPtyHostRequestV1SessionWriteParams`, `…SessionResizeParams`, `…SessionSubscribeParams`, `…SessionCloseParams`, `…SessionListParams` | os mesmos nomes |
+| `ResultBody` | `ContractPtyHostResponseV1Result` | `ResultBody` |
+| `NoParams` usado como resultado vazio | `ContractPtyHostResponseV1Empty` | `Empty` |
+| `HelloResult` | `ContractPtyHostResponseV1Hello` | `HelloResult` |
+| `ReplayBounds`, `Closed`, `SessionList`, `SessionEntry` | `ContractPtyHostResponseV1ReplayBounds`, `…Closed`, `…SessionList`, `…SessionListSessionsItem` | os mesmos nomes |
+| `ErrorData` | `ContractPtyHostResponseV1ErrorData` | `ErrorData` |
+| `SessionExited`, `SubscriptionClosed` | `ContractPtyHostNotificationV1SessionExitedParams`, `…SubscriptionClosedParams` | os mesmos nomes |
+| `CloseReason` | `ContractPtyHostNotificationV1SubscriptionClosedParamsReason` | `CloseReason` |
+| `RawResponse`, `RawError` (leitura campo a campo) | `ContractPtyHostResponseV1` (`…Fields`), `ContractPtyHostResponseV1Error` (`…ErrorFields`) | internos |
+
+O que mudou de forma para quem usa o host como biblioteca:
+
+- `SessionId::new` devolve `ads_contracts::ContractError`, não `String`. O tipo guarda `String` e não deriva `Ord`: o host ordena as sessões por `as_str()` (a mesma ordem de antes) e copia o nome uma vez por quadro de saída.
+- `program`, cada item de `args` e `cwd` de `OpenParams`, e as dimensões, são tipos conferidos: constroem-se por `try_into()` ou `new`. `data` de `WriteParams` é o texto `CommonBase64V1`, não os bytes.
+- `ErrorData`, `ReplayBounds` e `Closed` não são mais `Copy`, e `ErrorData` não tem `Default`.
+- `contract` de `HelloResult` é o valor fixo `pty-host/1` (`Default::default()`), não `String`.
+
+### Ficaram escritos à mão, com conversão a partir do gerado
+
+| Tipo do host | Gerado que ele lê | Por que ficou |
+|---|---|---|
+| `OutputHeader` | `ContractPtyHostFrameV1` | `length` é `NonZeroU32`: o prefixo do quadro conta o payload em 32 bits e o Schema não dá teto. A leitura passa pelo gerado e recusa o que não cabe; teste: `header_the_schema_accepts_with_a_length_over_32_bits_is_refused_by_the_codec` |
+| `HelloParams` | nenhum | o gerado só lê `pty-host/1`. O host tem de ler uma versão que não fala para responder `-32009` e manter a conexão; `is_supported()` é a conferência. Teste: `hello_of_another_version_is_read_by_the_host_and_refused_by_the_generated_type` |
+| `Request { id, call }`, `Call`, `Rejection`, `Request::parse` | os `params` de cada método são os gerados; o envelope não usa `ContractPtyHostRequestV1` | cada etapa da leitura que falha é um erro JSON-RPC diferente (`-32700`, `-32600`, `-32601`, `-32602`), e o `enum` gerado devolve um erro só. O envelope escrito à mão mantém a ordem das chaves que o host sempre leu e escreveu. Teste: `requests_the_host_writes_are_the_ones_the_generated_type_reads` |
+| `Response { id, outcome }` | `ContractPtyHostResponseV1` | `outcome` é um `Result`; no fio são dois campos opcionais e o Schema exige exatamente um. A leitura passa pelo tipo conferido; a escrita monta os campos do gerado. Teste: `response_with_result_and_error_or_with_neither_is_refused_past_the_field_types` |
+| `ErrorCode` | `ContractPtyHostResponseV1ErrorCode` | o host nomeia os códigos pelo significado (`ReplayEvicted`), o gerado pelo número (`Neg32004`). O mapa são dois `match` completos, um em cada sentido. Teste: `error_codes_map_one_to_one_onto_the_numbers_of_the_contract` |
+| `ErrorBody` | `ContractPtyHostResponseV1Error` | leva o código pelo significado e o construtor que corta a mensagem em 500 caracteres. Lê e escreve pelo gerado conferido. Teste: `error_outside_the_contract_fails_to_encode_instead_of_going_out` |
+| `Notification` | `ContractPtyHostNotificationV1` | lê pelo gerado. Escreve por um envelope próprio porque o `enum` gerado põe `method` antes de `jsonrpc` e os `params` na ordem do Schema; o host sempre escreveu `jsonrpc`, `method`, `params`, com as chaves de `params` em ordem alfabética, e essa ordem foi mantida |
+| `Base64` | `CommonBase64V1` | o gerado é o texto conferido; `Base64` são os bytes, e codificar e decodificar continuam no host. Teste: `base64_text_the_schema_accepts_always_becomes_bytes_and_loose_text_never_gets_there` |
+
+Continuam escritos à mão por serem comportamento e não Schema: o codec do quadro binário (`Frame`, `WireError`, `encode_json`, `encode_output`, `decode_payload`, `read_frame`, as constantes `KIND_*`) e `HostMessage` (resposta ou notificação).
+
+### Diferenças de comportamento
+
+- O texto de `error.message` de um `params` recusado (`-32602`) mudou de redação, porque agora vem da leitura dos gerados. O contrato só fixa o tamanho desse texto. O erro dos gerados cita o valor recusado; a resposta do host corta essa parte e diz só o nome do tipo (`not a valid CommonIdV1`), para não devolver ao cliente o que ele mandou (teste `refused_params_are_not_echoed_in_the_answer`).
+- Um `ErrorBody` fora do contrato (mensagem vazia ou com mais de 500 caracteres, `-32004` sem `data.oldest_seq`, `-32005` sem `data.next_seq`) agora falha ao ser codificado; antes saía no fio. O servidor nunca monta um erro assim.
+
+### Pendências
+
+- `params` escrito como lista (`"params": []` em `session.list`, ou os campos na ordem, por posição) é aceito na leitura, porque os tipos derivados leem um `struct` também de uma sequência. Já era assim com os tipos escritos à mão e continua com os gerados; o Schema pede objeto. Fechar isso muda o que o host aceita, então não entrou nesta troca.
+- `Request` não usa `ContractPtyHostRequestV1`: unir a leitura em etapas ao `enum` gerado pede que o gerado diga em que etapa falhou.

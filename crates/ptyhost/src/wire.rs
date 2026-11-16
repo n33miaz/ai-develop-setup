@@ -1,17 +1,45 @@
 //! The `pty-host/1` contract: frame codec and message types.
 //!
-//! Written by hand from `contracts/schemas/contract.pty-host.*` and checked against the golden
-//! files in `contracts/golden/` (`tests/wire_golden.rs`). Nothing else in the crate knows the
-//! byte layout or the JSON field names.
+//! The JSON shapes are the types `ads-contracts` generates from
+//! `contracts/schemas/contract.pty-host.*`, re-exported here under the names the host uses.
+//! What stays written here is what the Schemas do not say: the binary frame, which JSON-RPC
+//! error answers a malformed request, and the few places where the host holds a value in
+//! another form than the wire does (see `crates/contracts/swap-map.md`). Each of those reads
+//! the generated type first and converts, so a message is never accepted past its Schema.
+//! Nothing else in the crate knows the byte layout or the JSON field names.
 
-use std::collections::BTreeMap;
 use std::fmt;
 use std::io;
 use std::num::{NonZeroU32, NonZeroU64};
-use std::sync::Arc;
 
-use serde::de::{DeserializeOwned, Error as _};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use ads_contracts::{
+    CommonBase64V1, ContractPtyHostFrameV1, ContractPtyHostNotificationV1,
+    ContractPtyHostNotificationV1SessionExited, ContractPtyHostNotificationV1SessionExitedJsonrpc,
+    ContractPtyHostNotificationV1SubscriptionClosed, ContractPtyHostRequestV1HostHelloJsonrpc,
+    ContractPtyHostResponseV1, ContractPtyHostResponseV1Error, ContractPtyHostResponseV1ErrorCode,
+    ContractPtyHostResponseV1ErrorFields, ContractPtyHostResponseV1ErrorMessage,
+    ContractPtyHostResponseV1Fields, ContractPtyHostResponseV1Jsonrpc,
+};
+pub use ads_contracts::{
+    CommonIdV1 as SessionId, ContractPtyHostNotificationV1SessionExitedParams as SessionExited,
+    ContractPtyHostNotificationV1SubscriptionClosedParams as SubscriptionClosed,
+    ContractPtyHostNotificationV1SubscriptionClosedParamsReason as CloseReason,
+    ContractPtyHostRequestV1SessionCloseParams as SessionParams,
+    ContractPtyHostRequestV1SessionListParams as NoParams,
+    ContractPtyHostRequestV1SessionOpenParams as OpenParams,
+    ContractPtyHostRequestV1SessionResizeParams as ResizeParams,
+    ContractPtyHostRequestV1SessionSubscribeParams as SubscribeParams,
+    ContractPtyHostRequestV1SessionWriteParams as WriteParams,
+    ContractPtyHostResponseV1Closed as Closed, ContractPtyHostResponseV1Empty as Empty,
+    ContractPtyHostResponseV1ErrorData as ErrorData, ContractPtyHostResponseV1Hello as HelloResult,
+    ContractPtyHostResponseV1ReplayBounds as ReplayBounds,
+    ContractPtyHostResponseV1Result as ResultBody,
+    ContractPtyHostResponseV1SessionList as SessionList,
+    ContractPtyHostResponseV1SessionListSessionsItem as SessionEntry,
+};
+use serde::de::DeserializeOwned;
+use serde::ser::Error as _;
+use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
@@ -24,11 +52,6 @@ pub const KIND_OUTPUT: u8 = 0x02;
 const PREFIX_LEN: usize = 5;
 const HEADER_LEN_LEN: usize = 2;
 
-const SESSION_ID_MAX: usize = 64;
-const PROGRAM_MAX: usize = 1024;
-const ARG_MAX: usize = 8192;
-const CWD_MAX: usize = 1024;
-const DIMENSION_MAX: u16 = 1000;
 const ERROR_MESSAGE_MAX: usize = 500;
 
 // ---- frame ---------------------------------------------------------------------------------
@@ -77,12 +100,38 @@ pub enum Frame {
 }
 
 /// Header of an output frame (`urn:ads:contract:pty-host.frame:1`).
+///
+/// The Schema gives `length` no ceiling; the frame prefix counts the payload in 32 bits, so a
+/// header that passes the Schema with a larger `length` is refused here.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "ContractPtyHostFrameV1", into = "ContractPtyHostFrameV1")]
 pub struct OutputHeader {
     pub session_id: SessionId,
     pub seq: NonZeroU64,
     pub length: NonZeroU32,
+}
+
+impl TryFrom<ContractPtyHostFrameV1> for OutputHeader {
+    type Error = String;
+    fn try_from(header: ContractPtyHostFrameV1) -> Result<Self, String> {
+        let length = NonZeroU32::try_from(header.length)
+            .map_err(|_| format!("length {} does not fit a frame", header.length))?;
+        Ok(Self {
+            session_id: header.session_id,
+            seq: header.seq,
+            length,
+        })
+    }
+}
+
+impl From<OutputHeader> for ContractPtyHostFrameV1 {
+    fn from(header: OutputHeader) -> Self {
+        Self {
+            session_id: header.session_id,
+            seq: header.seq,
+            length: header.length.into(),
+        }
+    }
 }
 
 fn frame(kind: u8, parts: &[&[u8]]) -> Result<Vec<u8>, WireError> {
@@ -181,104 +230,13 @@ where
     decode_payload(kind, payload).map(Some)
 }
 
-// ---- small validated values ----------------------------------------------------------------
-
-/// The literal `"2.0"`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct JsonRpc;
-
-impl Serialize for JsonRpc {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str("2.0")
-    }
-}
-
-impl<'de> Deserialize<'de> for JsonRpc {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        match String::deserialize(deserializer)?.as_str() {
-            "2.0" => Ok(Self),
-            other => Err(D::Error::custom(format!(
-                "jsonrpc must be \"2.0\", got {other:?}"
-            ))),
-        }
-    }
-}
+// ---- small values ---------------------------------------------------------------------------
 
 /// Request number, per connection, starting at 1.
 pub type RequestId = NonZeroU64;
 
-/// Opaque session name chosen by the client (`urn:ads:common:id:1`).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct SessionId(Arc<str>);
-
-impl SessionId {
-    pub fn new(text: &str) -> Result<Self, String> {
-        let bytes = text.as_bytes();
-        let first_ok = bytes.first().is_some_and(u8::is_ascii_alphanumeric);
-        let rest_ok = bytes
-            .iter()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'-'));
-        if first_ok && rest_ok && bytes.len() <= SESSION_ID_MAX {
-            Ok(Self(Arc::from(text)))
-        } else {
-            Err("session_id must be 1 to 64 of letters, digits and . _ : -".to_owned())
-        }
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for SessionId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl TryFrom<String> for SessionId {
-    type Error = String;
-    fn try_from(text: String) -> Result<Self, String> {
-        Self::new(&text)
-    }
-}
-
-impl From<SessionId> for String {
-    fn from(id: SessionId) -> Self {
-        id.0.as_ref().to_owned()
-    }
-}
-
-/// Columns or rows of a terminal: 1 to 1000.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "u16", into = "u16")]
-pub struct Dimension(u16);
-
-impl Dimension {
-    pub fn get(self) -> u16 {
-        self.0
-    }
-}
-
-impl TryFrom<u16> for Dimension {
-    type Error = String;
-    fn try_from(value: u16) -> Result<Self, String> {
-        if (1..=DIMENSION_MAX).contains(&value) {
-            Ok(Self(value))
-        } else {
-            Err(format!("terminal size must be 1 to {DIMENSION_MAX}"))
-        }
-    }
-}
-
-impl From<Dimension> for u16 {
-    fn from(value: Dimension) -> Self {
-        value.0
-    }
-}
-
-/// Bytes that travel as padded standard base64 (`urn:ads:common:base64:1`).
+/// The bytes a `urn:ads:common:base64:1` text stands for. The generated type is the text and
+/// checks its shape; turning it into bytes and back is done here.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Base64(pub Vec<u8>);
 
@@ -327,69 +285,25 @@ fn base64_decode(text: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-impl Serialize for Base64 {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&base64_encode(&self.0))
+impl From<&Base64> for CommonBase64V1 {
+    fn from(bytes: &Base64) -> Self {
+        Self::new(base64_encode(&bytes.0)).expect("the encoder writes padded standard base64")
     }
 }
 
-impl<'de> Deserialize<'de> for Base64 {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        base64_decode(&String::deserialize(deserializer)?)
+impl From<Base64> for CommonBase64V1 {
+    fn from(bytes: Base64) -> Self {
+        Self::from(&bytes)
+    }
+}
+
+impl TryFrom<&CommonBase64V1> for Base64 {
+    type Error = &'static str;
+    fn try_from(text: &CommonBase64V1) -> Result<Self, Self::Error> {
+        base64_decode(text.as_str())
             .map(Self)
-            .ok_or_else(|| D::Error::custom("not padded standard base64"))
+            .ok_or("not padded standard base64")
     }
-}
-
-/// A field that must be present and may be `null`.
-fn nullable<'de, T, D>(deserializer: D) -> Result<Option<T>, D::Error>
-where
-    T: Deserialize<'de>,
-    D: Deserializer<'de>,
-{
-    Option::<T>::deserialize(deserializer)
-}
-
-/// A field that may be absent (with `default`) but, when present, is never `null`.
-fn present<'de, T, D>(deserializer: D) -> Result<Option<T>, D::Error>
-where
-    T: Deserialize<'de>,
-    D: Deserializer<'de>,
-{
-    T::deserialize(deserializer).map(Some)
-}
-
-fn bounded<E: serde::de::Error>(what: &str, text: &str, min: usize, max: usize) -> Result<(), E> {
-    let len = text.chars().count();
-    if (min..=max).contains(&len) {
-        Ok(())
-    } else {
-        Err(E::custom(format!(
-            "{what} must have {min} to {max} characters"
-        )))
-    }
-}
-
-fn program<'de, D: Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
-    let text = String::deserialize(deserializer)?;
-    bounded("program", &text, 1, PROGRAM_MAX)?;
-    Ok(text)
-}
-
-fn args<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<String>, D::Error> {
-    let args = Vec::<String>::deserialize(deserializer)?;
-    for arg in &args {
-        bounded("each argument", arg, 0, ARG_MAX)?;
-    }
-    Ok(args)
-}
-
-fn cwd<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<String>, D::Error> {
-    let cwd = Option::<String>::deserialize(deserializer)?;
-    if let Some(cwd) = &cwd {
-        bounded("cwd", cwd, 1, CWD_MAX)?;
-    }
-    Ok(cwd)
 }
 
 fn to_value<T: Serialize>(value: &T) -> Value {
@@ -397,9 +311,23 @@ fn to_value<T: Serialize>(value: &T) -> Value {
     serde_json::to_value(value).unwrap_or(Value::Null)
 }
 
+/// What a refused `params` says. The generated types put the refused value in their error;
+/// an answer names only the type, so it never carries back what the client sent.
+fn params_error(err: &serde_json::Error) -> String {
+    let text = err.to_string();
+    match text.strip_prefix("not a valid ") {
+        Some(rest) => format!("not a valid {}", rest.split(':').next().unwrap_or(rest)),
+        None => text,
+    }
+}
+
 // ---- request -------------------------------------------------------------------------------
 
 /// A request from the client (`urn:ads:contract:pty-host.request:1`).
+///
+/// The envelope is read in steps and not through the generated `ContractPtyHostRequestV1`,
+/// because each step that fails is a different JSON-RPC error (see [`Request::parse`]) and
+/// because the host has to read a `host.hello` of a version it does not speak.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "RawRequest", into = "RawRequest")]
 pub struct Request {
@@ -418,66 +346,25 @@ pub enum Call {
     List(NoParams),
 }
 
+/// `params` of `host.hello`. The generated type only reads `pty-host/1`; this one reads any
+/// version, so the host can answer an unknown one with its own error code.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HelloParams {
-    /// Any text here, so the host can answer an unknown version with its own error code.
     pub contract: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct OpenParams {
-    pub session_id: SessionId,
-    #[serde(deserialize_with = "program")]
-    pub program: String,
-    #[serde(deserialize_with = "args")]
-    pub args: Vec<String>,
-    #[serde(deserialize_with = "cwd")]
-    pub cwd: Option<String>,
-    pub env: BTreeMap<String, String>,
-    pub cols: Dimension,
-    pub rows: Dimension,
+impl HelloParams {
+    /// Whether the client asked for the version this host speaks.
+    pub fn is_supported(&self) -> bool {
+        self.contract == CONTRACT
+    }
 }
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct WriteParams {
-    pub session_id: SessionId,
-    pub data: Base64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ResizeParams {
-    pub session_id: SessionId,
-    pub cols: Dimension,
-    pub rows: Dimension,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SubscribeParams {
-    pub session_id: SessionId,
-    /// `None` asks for everything the replay ring still holds.
-    #[serde(deserialize_with = "nullable")]
-    pub from_seq: Option<NonZeroU64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SessionParams {
-    pub session_id: SessionId,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct NoParams {}
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawRequest {
-    jsonrpc: JsonRpc,
+    jsonrpc: ContractPtyHostRequestV1HostHelloJsonrpc,
     id: RequestId,
     method: String,
     params: Value,
@@ -520,7 +407,7 @@ impl Call {
     fn from_parts(method: &str, params: Value) -> Result<Self, (ErrorCode, String)> {
         fn typed<T: DeserializeOwned>(params: Value) -> Result<T, (ErrorCode, String)> {
             serde_json::from_value(params)
-                .map_err(|err| (ErrorCode::InvalidParams, err.to_string()))
+                .map_err(|err| (ErrorCode::InvalidParams, params_error(&err)))
         }
         Ok(match method {
             "host.hello" => Self::Hello(typed(params)?),
@@ -579,7 +466,7 @@ impl TryFrom<RawRequest> for Request {
 impl From<Request> for RawRequest {
     fn from(request: Request) -> Self {
         Self {
-            jsonrpc: JsonRpc,
+            jsonrpc: ContractPtyHostRequestV1HostHelloJsonrpc,
             id: request.id,
             method: request.call.method().to_owned(),
             params: request.call.params(),
@@ -590,114 +477,55 @@ impl From<Request> for RawRequest {
 // ---- response ------------------------------------------------------------------------------
 
 /// A response from the host (`urn:ads:contract:pty-host.response:1`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "RawResponse", into = "RawResponse")]
+///
+/// On the wire `result` and `error` are two optional fields and the Schema demands exactly
+/// one; here they are one `Result`. Reading goes through the generated type, which checks it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "ContractPtyHostResponseV1")]
 pub struct Response {
     /// `None` only when the request was too broken to carry a number.
     pub id: Option<RequestId>,
     pub outcome: Result<ResultBody, ErrorBody>,
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawResponse {
-    jsonrpc: JsonRpc,
-    #[serde(deserialize_with = "nullable")]
-    id: Option<RequestId>,
-    #[serde(
-        default,
-        deserialize_with = "present",
-        skip_serializing_if = "Option::is_none"
-    )]
-    result: Option<ResultBody>,
-    #[serde(
-        default,
-        deserialize_with = "present",
-        skip_serializing_if = "Option::is_none"
-    )]
-    error: Option<ErrorBody>,
-}
-
-impl TryFrom<RawResponse> for Response {
+impl TryFrom<ContractPtyHostResponseV1> for Response {
     type Error = String;
-    fn try_from(raw: RawResponse) -> Result<Self, String> {
-        let outcome = match (raw.result, raw.error) {
+    fn try_from(wire: ContractPtyHostResponseV1) -> Result<Self, String> {
+        let wire = wire.into_fields();
+        let outcome = match (wire.result, wire.error) {
             (Some(result), None) => Ok(result),
-            (None, Some(error)) => Err(error),
+            (None, Some(error)) => Err(error.into()),
             _ => return Err("a response carries either result or error".to_owned()),
         };
         Ok(Self {
-            id: raw.id,
+            id: wire.id,
             outcome,
         })
     }
 }
 
-impl From<Response> for RawResponse {
-    fn from(response: Response) -> Self {
-        let (result, error) = match response.outcome {
-            Ok(result) => (Some(result), None),
-            Err(error) => (None, Some(error)),
+impl Serialize for Response {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let (result, error) = match &self.outcome {
+            Ok(result) => (Some(result.clone()), None),
+            Err(error) => (
+                None,
+                Some(ContractPtyHostResponseV1Error::try_from(error).map_err(S::Error::custom)?),
+            ),
         };
-        Self {
-            jsonrpc: JsonRpc,
-            id: response.id,
+        ContractPtyHostResponseV1Fields {
+            jsonrpc: ContractPtyHostResponseV1Jsonrpc,
+            id: self.id,
             result,
             error,
         }
+        .serialize(serializer)
     }
 }
 
-/// The shapes a `result` can have. `Empty` is last: it is what is left when nothing else fits.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum ResultBody {
-    Hello(HelloResult),
-    ReplayBounds(ReplayBounds),
-    Closed(Closed),
-    SessionList(SessionList),
-    Empty(NoParams),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct HelloResult {
-    pub contract: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ReplayBounds {
-    pub oldest_seq: NonZeroU64,
-    pub next_seq: NonZeroU64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Closed {
-    #[serde(deserialize_with = "nullable")]
-    pub exit_code: Option<i64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SessionList {
-    pub sessions: Vec<SessionEntry>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SessionEntry {
-    pub session_id: SessionId,
-    pub running: bool,
-    #[serde(deserialize_with = "nullable")]
-    pub exit_code: Option<i64>,
-    pub oldest_seq: NonZeroU64,
-    pub next_seq: NonZeroU64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(try_from = "i64", into = "i64")]
+/// The error codes of the contract by what they mean. The generated type names them by number
+/// (`Neg32004`); the two matches below are the whole map, and the compiler keeps it complete.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ErrorCode {
     ParseError,
     InvalidRequest,
@@ -716,98 +544,63 @@ pub enum ErrorCode {
 }
 
 impl ErrorCode {
-    const ALL: [Self; 14] = [
-        Self::ParseError,
-        Self::InvalidRequest,
-        Self::MethodNotFound,
-        Self::InvalidParams,
-        Self::InternalError,
-        Self::UnknownSession,
-        Self::SessionExists,
-        Self::TooManySessions,
-        Self::ReplayEvicted,
-        Self::ReplayAhead,
-        Self::SessionEnded,
-        Self::SpawnFailed,
-        Self::TerminalIo,
-        Self::UnsupportedContract,
-    ];
-
     pub fn number(self) -> i64 {
-        match self {
-            Self::ParseError => -32700,
-            Self::InvalidRequest => -32600,
-            Self::MethodNotFound => -32601,
-            Self::InvalidParams => -32602,
-            Self::InternalError => -32603,
-            Self::UnknownSession => -32001,
-            Self::SessionExists => -32002,
-            Self::TooManySessions => -32003,
-            Self::ReplayEvicted => -32004,
-            Self::ReplayAhead => -32005,
-            Self::SessionEnded => -32006,
-            Self::SpawnFailed => -32007,
-            Self::TerminalIo => -32008,
-            Self::UnsupportedContract => -32009,
+        ContractPtyHostResponseV1ErrorCode::from(self).number()
+    }
+}
+
+impl From<ErrorCode> for ContractPtyHostResponseV1ErrorCode {
+    fn from(code: ErrorCode) -> Self {
+        match code {
+            ErrorCode::ParseError => Self::Neg32700,
+            ErrorCode::InvalidRequest => Self::Neg32600,
+            ErrorCode::MethodNotFound => Self::Neg32601,
+            ErrorCode::InvalidParams => Self::Neg32602,
+            ErrorCode::InternalError => Self::Neg32603,
+            ErrorCode::UnknownSession => Self::Neg32001,
+            ErrorCode::SessionExists => Self::Neg32002,
+            ErrorCode::TooManySessions => Self::Neg32003,
+            ErrorCode::ReplayEvicted => Self::Neg32004,
+            ErrorCode::ReplayAhead => Self::Neg32005,
+            ErrorCode::SessionEnded => Self::Neg32006,
+            ErrorCode::SpawnFailed => Self::Neg32007,
+            ErrorCode::TerminalIo => Self::Neg32008,
+            ErrorCode::UnsupportedContract => Self::Neg32009,
         }
     }
 }
 
-impl TryFrom<i64> for ErrorCode {
-    type Error = String;
-    fn try_from(number: i64) -> Result<Self, String> {
-        Self::ALL
-            .into_iter()
-            .find(|code| code.number() == number)
-            .ok_or_else(|| format!("{number} is not an error code of the contract"))
+impl From<ContractPtyHostResponseV1ErrorCode> for ErrorCode {
+    fn from(code: ContractPtyHostResponseV1ErrorCode) -> Self {
+        use ContractPtyHostResponseV1ErrorCode as Wire;
+        match code {
+            Wire::Neg32700 => Self::ParseError,
+            Wire::Neg32600 => Self::InvalidRequest,
+            Wire::Neg32601 => Self::MethodNotFound,
+            Wire::Neg32602 => Self::InvalidParams,
+            Wire::Neg32603 => Self::InternalError,
+            Wire::Neg32001 => Self::UnknownSession,
+            Wire::Neg32002 => Self::SessionExists,
+            Wire::Neg32003 => Self::TooManySessions,
+            Wire::Neg32004 => Self::ReplayEvicted,
+            Wire::Neg32005 => Self::ReplayAhead,
+            Wire::Neg32006 => Self::SessionEnded,
+            Wire::Neg32007 => Self::SpawnFailed,
+            Wire::Neg32008 => Self::TerminalIo,
+            Wire::Neg32009 => Self::UnsupportedContract,
+        }
     }
 }
 
-impl From<ErrorCode> for i64 {
-    fn from(code: ErrorCode) -> Self {
-        code.number()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "RawError")]
+/// The `error` of a response, with the code by its meaning. Read through the generated type,
+/// which checks the message length and that a replay refusal carries its bound; written
+/// through it too, so an error outside the contract fails to encode instead of going out.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(from = "ContractPtyHostResponseV1Error")]
 pub struct ErrorBody {
     pub code: ErrorCode,
     pub message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<ErrorData>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ErrorData {
-    #[serde(
-        default,
-        deserialize_with = "present",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub oldest_seq: Option<NonZeroU64>,
-    #[serde(
-        default,
-        deserialize_with = "present",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub next_seq: Option<NonZeroU64>,
-    #[serde(
-        default,
-        deserialize_with = "present",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub limit: Option<NonZeroU64>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawError {
-    code: ErrorCode,
-    message: String,
-    #[serde(default, deserialize_with = "present")]
-    data: Option<ErrorData>,
 }
 
 impl ErrorBody {
@@ -825,89 +618,67 @@ impl ErrorBody {
     }
 }
 
-impl TryFrom<RawError> for ErrorBody {
-    type Error = String;
-    fn try_from(raw: RawError) -> Result<Self, String> {
-        let len = raw.message.chars().count();
-        if !(1..=ERROR_MESSAGE_MAX).contains(&len) {
-            return Err(format!(
-                "error message must have 1 to {ERROR_MESSAGE_MAX} characters"
-            ));
+impl From<ContractPtyHostResponseV1Error> for ErrorBody {
+    fn from(wire: ContractPtyHostResponseV1Error) -> Self {
+        let wire = wire.into_fields();
+        Self {
+            code: wire.code.into(),
+            message: wire.message.into(),
+            data: wire.data,
         }
-        let data = raw.data.unwrap_or_default();
-        match raw.code {
-            ErrorCode::ReplayEvicted if data.oldest_seq.is_none() => {
-                return Err("a replay refusal must carry data.oldest_seq".to_owned());
-            }
-            ErrorCode::ReplayAhead if data.next_seq.is_none() => {
-                return Err("a replay refusal must carry data.next_seq".to_owned());
-            }
-            _ => {}
-        }
-        Ok(Self {
-            code: raw.code,
-            message: raw.message,
-            data: raw.data,
+    }
+}
+
+impl TryFrom<&ErrorBody> for ContractPtyHostResponseV1Error {
+    type Error = ads_contracts::ContractError;
+    fn try_from(error: &ErrorBody) -> Result<Self, Self::Error> {
+        Self::new(ContractPtyHostResponseV1ErrorFields {
+            code: error.code.into(),
+            message: ContractPtyHostResponseV1ErrorMessage::new(error.message.as_str())?,
+            data: error.data.clone(),
         })
+    }
+}
+
+impl Serialize for ErrorBody {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        ContractPtyHostResponseV1Error::try_from(self)
+            .map_err(S::Error::custom)?
+            .serialize(serializer)
     }
 }
 
 // ---- notification --------------------------------------------------------------------------
 
 /// A notification from the host (`urn:ads:contract:pty-host.notification:1`).
+///
+/// Read through the generated type. Written by the envelope below, which keeps the order of
+/// the keys the host has always sent (`jsonrpc`, `method`, `params`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "RawNotification", into = "RawNotification")]
+#[serde(from = "ContractPtyHostNotificationV1", into = "RawNotification")]
 pub enum Notification {
     SessionExited(SessionExited),
     SubscriptionClosed(SubscriptionClosed),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SessionExited {
-    pub session_id: SessionId,
-    #[serde(deserialize_with = "nullable")]
-    pub exit_code: Option<i64>,
-    /// Last numbered piece of output; 0 when there was none.
-    pub last_seq: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SubscriptionClosed {
-    pub session_id: SessionId,
-    pub reason: CloseReason,
-    /// Last piece this subscription delivered; subscribing again from `last_seq + 1` loses nothing.
-    pub last_seq: u64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CloseReason {
-    SlowSubscriber,
-    SessionClosed,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawNotification {
-    jsonrpc: JsonRpc,
-    method: String,
-    params: Value,
-}
-
-impl TryFrom<RawNotification> for Notification {
-    type Error = String;
-    fn try_from(raw: RawNotification) -> Result<Self, String> {
-        let typed = match raw.method.as_str() {
-            "session.exited" => serde_json::from_value(raw.params).map(Self::SessionExited),
-            "subscription.closed" => {
-                serde_json::from_value(raw.params).map(Self::SubscriptionClosed)
-            }
-            other => return Err(format!("unknown notification {other:?}")),
-        };
-        typed.map_err(|err| err.to_string())
+impl From<ContractPtyHostNotificationV1> for Notification {
+    fn from(wire: ContractPtyHostNotificationV1) -> Self {
+        match wire {
+            ContractPtyHostNotificationV1::SessionExited(
+                ContractPtyHostNotificationV1SessionExited { params, .. },
+            ) => Self::SessionExited(params),
+            ContractPtyHostNotificationV1::SubscriptionClosed(
+                ContractPtyHostNotificationV1SubscriptionClosed { params, .. },
+            ) => Self::SubscriptionClosed(params),
+        }
     }
+}
+
+#[derive(Serialize)]
+struct RawNotification {
+    jsonrpc: ContractPtyHostNotificationV1SessionExitedJsonrpc,
+    method: &'static str,
+    params: Value,
 }
 
 impl From<Notification> for RawNotification {
@@ -917,8 +688,8 @@ impl From<Notification> for RawNotification {
             Notification::SubscriptionClosed(params) => ("subscription.closed", to_value(params)),
         };
         Self {
-            jsonrpc: JsonRpc,
-            method: method.to_owned(),
+            jsonrpc: ContractPtyHostNotificationV1SessionExitedJsonrpc,
+            method,
             params,
         }
     }
@@ -1104,5 +875,293 @@ mod tests {
         assert_eq!(long.message.chars().count(), 500);
         let empty = ErrorBody::new(ErrorCode::InternalError, "", None);
         assert!(!empty.message.is_empty());
+    }
+
+    // ---- where the host and the generated types differ: reading the generated type with
+    // success never stands in for the check the host makes on top of it.
+
+    fn output_payload(header: &str, bytes: &[u8]) -> Vec<u8> {
+        [
+            &(header.len() as u16).to_be_bytes()[..],
+            header.as_bytes(),
+            bytes,
+        ]
+        .concat()
+    }
+
+    #[test]
+    fn header_the_schema_accepts_with_a_length_over_32_bits_is_refused_by_the_codec() {
+        for length in [u64::from(u32::MAX) + 1, u64::from(u32::MAX) + 4, u64::MAX] {
+            let header = format!(r#"{{"session_id":"s","seq":1,"length":{length}}}"#);
+            let generated: ContractPtyHostFrameV1 = serde_json::from_str(&header).unwrap();
+            assert_eq!(generated.length.get(), length);
+
+            assert!(OutputHeader::try_from(generated).is_err(), "{length}");
+            assert!(serde_json::from_str::<OutputHeader>(&header).is_err());
+            assert!(matches!(
+                decode_payload(KIND_OUTPUT, output_payload(&header, b"abc")),
+                Err(WireError::BadOutputFrame(_))
+            ));
+        }
+        // The largest length the layout can say still converts both ways.
+        let header = format!(r#"{{"session_id":"s","seq":1,"length":{}}}"#, u32::MAX);
+        let read: OutputHeader = serde_json::from_str(&header).unwrap();
+        assert_eq!(read.length.get(), u32::MAX);
+        assert_eq!(serde_json::to_string(&read).unwrap(), header);
+    }
+
+    #[test]
+    fn hello_of_another_version_is_read_by_the_host_and_refused_by_the_generated_type() {
+        let hello = |contract: &str| {
+            format!(
+                r#"{{"jsonrpc":"2.0","id":1,"method":"host.hello","params":{{"contract":"{contract}"}}}}"#
+            )
+        };
+        type Generated = ads_contracts::ContractPtyHostRequestV1;
+
+        assert!(serde_json::from_str::<Generated>(&hello(CONTRACT)).is_ok());
+        let Call::Hello(params) = Request::parse(hello(CONTRACT).as_bytes()).unwrap().call else {
+            panic!("not a hello");
+        };
+        assert!(params.is_supported());
+
+        for other in ["pty-host/2", "pty-host/10", "PTY-HOST/1", " pty-host/1", ""] {
+            assert!(serde_json::from_str::<Generated>(&hello(other)).is_err());
+            // Read, so that the host can answer with its own code; never taken for supported.
+            let Call::Hello(params) = Request::parse(hello(other).as_bytes()).unwrap().call else {
+                panic!("not a hello");
+            };
+            assert_eq!(params.contract, other);
+            assert!(!params.is_supported(), "{other:?}");
+        }
+    }
+
+    #[test]
+    fn requests_the_host_writes_are_the_ones_the_generated_type_reads() {
+        let session_id = id("sess-01");
+        let calls = [
+            Call::Hello(HelloParams {
+                contract: CONTRACT.to_owned(),
+            }),
+            Call::Open(OpenParams {
+                session_id: session_id.clone(),
+                program: "sh".to_owned().try_into().unwrap(),
+                args: vec!["-c".to_owned().try_into().unwrap()],
+                cwd: Some("/work".to_owned().try_into().unwrap()),
+                env: [("LANG".to_owned(), "C".to_owned())].into(),
+                cols: 120.try_into().unwrap(),
+                rows: 30.try_into().unwrap(),
+            }),
+            Call::Write(WriteParams {
+                session_id: session_id.clone(),
+                data: Base64(b"dir\r".to_vec()).into(),
+            }),
+            Call::Resize(ResizeParams {
+                session_id: session_id.clone(),
+                cols: 1.try_into().unwrap(),
+                rows: 1000.try_into().unwrap(),
+            }),
+            Call::Subscribe(SubscribeParams {
+                session_id: session_id.clone(),
+                from_seq: None,
+            }),
+            Call::Close(SessionParams { session_id }),
+            Call::List(NoParams {}),
+        ];
+        for call in calls {
+            let request = Request {
+                id: RequestId::MIN,
+                call,
+            };
+            let written = serde_json::to_value(&request).unwrap();
+            let generated: ads_contracts::ContractPtyHostRequestV1 =
+                serde_json::from_value(written.clone()).unwrap();
+            assert_eq!(serde_json::to_value(&generated).unwrap(), written);
+            let payload = serde_json::to_vec(&generated).unwrap();
+            assert_eq!(Request::parse(&payload).unwrap(), request);
+        }
+    }
+
+    #[test]
+    fn response_with_result_and_error_or_with_neither_is_refused_past_the_field_types() {
+        let both = r#"{"jsonrpc":"2.0","id":1,"result":{},"error":{"code":-32603,"message":"m"}}"#;
+        let neither = r#"{"jsonrpc":"2.0","id":1}"#;
+        for payload in [both, neither] {
+            // Field by field the message is fine: each field has its type.
+            assert!(serde_json::from_str::<ContractPtyHostResponseV1Fields>(payload).is_ok());
+            assert!(serde_json::from_str::<Response>(payload).is_err());
+            assert!(HostMessage::parse(payload.as_bytes()).is_err());
+        }
+        let one = r#"{"jsonrpc":"2.0","id":1,"result":{}}"#;
+        let Ok(HostMessage::Response(response)) = HostMessage::parse(one.as_bytes()) else {
+            panic!("refused");
+        };
+        assert_eq!(response.outcome, Ok(ResultBody::Empty(Empty {})));
+        assert_eq!(serde_json::to_string(&response).unwrap(), one);
+    }
+
+    #[test]
+    fn error_codes_map_one_to_one_onto_the_numbers_of_the_contract() {
+        let table = [
+            (ErrorCode::ParseError, -32700),
+            (ErrorCode::InvalidRequest, -32600),
+            (ErrorCode::MethodNotFound, -32601),
+            (ErrorCode::InvalidParams, -32602),
+            (ErrorCode::InternalError, -32603),
+            (ErrorCode::UnknownSession, -32001),
+            (ErrorCode::SessionExists, -32002),
+            (ErrorCode::TooManySessions, -32003),
+            (ErrorCode::ReplayEvicted, -32004),
+            (ErrorCode::ReplayAhead, -32005),
+            (ErrorCode::SessionEnded, -32006),
+            (ErrorCode::SpawnFailed, -32007),
+            (ErrorCode::TerminalIo, -32008),
+            (ErrorCode::UnsupportedContract, -32009),
+        ];
+        for (code, number) in table {
+            assert_eq!(code.number(), number);
+            let wire = ContractPtyHostResponseV1ErrorCode::try_from(number).unwrap();
+            assert_eq!(ContractPtyHostResponseV1ErrorCode::from(code), wire);
+            assert_eq!(ErrorCode::from(wire), code);
+            // And through a whole message, in and out.
+            let payload = format!(
+                r#"{{"jsonrpc":"2.0","id":1,"error":{{"code":{number},"message":"m","data":{{"oldest_seq":1,"next_seq":2}}}}}}"#
+            );
+            let response: Response = serde_json::from_str(&payload).unwrap();
+            assert_eq!(response.outcome.as_ref().unwrap_err().code, code);
+            assert_eq!(serde_json::to_string(&response).unwrap(), payload);
+        }
+        let numbers: std::collections::HashSet<i64> = table.iter().map(|(_, n)| *n).collect();
+        assert_eq!(numbers.len(), table.len());
+    }
+
+    #[test]
+    fn error_outside_the_contract_fails_to_encode_instead_of_going_out() {
+        let respond = |error: ErrorBody| Response {
+            id: None,
+            outcome: Err(error),
+        };
+        let no_data = || ErrorData {
+            oldest_seq: None,
+            next_seq: None,
+            limit: None,
+        };
+        let bound = NonZeroU64::new(9);
+        let broken = [
+            ErrorBody::new(ErrorCode::ReplayEvicted, "m", None),
+            ErrorBody::new(ErrorCode::ReplayEvicted, "m", Some(no_data())),
+            ErrorBody::new(
+                ErrorCode::ReplayEvicted,
+                "m",
+                Some(ErrorData {
+                    next_seq: bound,
+                    ..no_data()
+                }),
+            ),
+            ErrorBody::new(ErrorCode::ReplayAhead, "m", None),
+            ErrorBody {
+                code: ErrorCode::InternalError,
+                message: String::new(),
+                data: None,
+            },
+            ErrorBody {
+                code: ErrorCode::InternalError,
+                message: "x".repeat(501),
+                data: None,
+            },
+        ];
+        for error in broken {
+            assert!(serde_json::to_string(&error).is_err(), "{error:?}");
+            assert!(encode_json(&respond(error)).is_err());
+        }
+        let fine = [
+            ErrorBody::new(
+                ErrorCode::ReplayEvicted,
+                "m",
+                Some(ErrorData {
+                    oldest_seq: bound,
+                    ..no_data()
+                }),
+            ),
+            ErrorBody::new(
+                ErrorCode::ReplayAhead,
+                "m",
+                Some(ErrorData {
+                    next_seq: bound,
+                    ..no_data()
+                }),
+            ),
+            ErrorBody::new(ErrorCode::InternalError, &"x".repeat(900), None),
+            ErrorBody::new(ErrorCode::InternalError, "", None),
+        ];
+        for error in fine {
+            let text = serde_json::to_string(&respond(error.clone())).unwrap();
+            let read: Response = serde_json::from_str(&text).unwrap();
+            assert_eq!(read.outcome, Err(error));
+        }
+    }
+
+    #[test]
+    fn base64_text_the_schema_accepts_always_becomes_bytes_and_loose_text_never_gets_there() {
+        for len in 0..=255_usize {
+            let bytes: Vec<u8> = (0..len).map(|n| (n * 7) as u8).collect();
+            let text = CommonBase64V1::from(Base64(bytes.clone()));
+            assert_eq!(Base64::try_from(&text), Ok(Base64(bytes)));
+        }
+        // Padding bits that are not zero pass the pattern; they still decode, to the same bytes.
+        for (text, bytes) in [("Zh==", b"f".as_slice()), ("Zm9=", b"fo".as_slice())] {
+            let text = CommonBase64V1::new(text).unwrap();
+            assert_eq!(Base64::try_from(&text), Ok(Base64(bytes.to_vec())));
+        }
+        for loose in [
+            "Zg", "Zg=", "Z===", "Zm9v\n", "Zg==Zg==", "Zm 9", "=Zg=", "Zm9-",
+        ] {
+            assert!(CommonBase64V1::new(loose).is_err(), "{loose:?}");
+            let payload = serde_json::json!({
+                "jsonrpc": "2.0", "id": 3, "method": "session.write",
+                "params": {"session_id": "a", "data": loose}
+            });
+            let rejection = Request::parse(payload.to_string().as_bytes()).unwrap_err();
+            assert_eq!(rejection.code, ErrorCode::InvalidParams, "{loose:?}");
+        }
+    }
+
+    #[test]
+    fn refused_params_are_not_echoed_in_the_answer() {
+        let marker = "s3cr3t-marker";
+        let request = |method: &str, params: Value| {
+            serde_json::json!({"jsonrpc": "2.0", "id": 3, "method": method, "params": params})
+                .to_string()
+        };
+        let open = |field: &str, value: Value| {
+            let mut params = serde_json::json!({
+                "session_id": "a", "program": "sh", "args": [], "cwd": null,
+                "env": {}, "cols": 80, "rows": 24
+            });
+            params[field] = value;
+            request("session.open", params)
+        };
+        let refused = [
+            request(
+                "session.close",
+                serde_json::json!({"session_id": format!("a b {marker}")}),
+            ),
+            request(
+                "session.write",
+                serde_json::json!({"session_id": "a", "data": format!("{marker}!")}),
+            ),
+            open("program", format!("{marker}{}", "x".repeat(1100)).into()),
+            open("cwd", format!("{marker}{}", "x".repeat(1100)).into()),
+            open(
+                "args",
+                serde_json::json!([format!("{marker}{}", "x".repeat(8200))]),
+            ),
+        ];
+        for payload in refused {
+            let rejection = Request::parse(payload.as_bytes()).unwrap_err();
+            assert_eq!(rejection.code, ErrorCode::InvalidParams, "{payload}");
+            assert!(rejection.message.starts_with("not a valid "), "{payload}");
+            assert!(!rejection.message.contains(marker), "{}", rejection.message);
+        }
     }
 }
