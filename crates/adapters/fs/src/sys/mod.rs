@@ -84,6 +84,7 @@ pub enum Error {
     /// The entry under the name is not the object that was checked.
     Changed,
     /// The name reaches an entry the folder lists under another spelling.
+    #[cfg_attr(not(windows), allow(dead_code))]
     Alias,
     Io(io::Error),
 }
