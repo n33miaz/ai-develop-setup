@@ -41,8 +41,20 @@ impl Executor {
         policy: GatePolicy,
         resolved: impl FnOnce(),
     ) -> Result<Self, FenceError> {
+        Self::new_walked(fence, policy, resolved, |_| {})
+    }
+
+    /// Like [`Self::new_watched`], also calling `walked` with each name on the way from the
+    /// root of the volume to the fence, once it is open. For tests of those instants.
+    #[doc(hidden)]
+    pub fn new_walked(
+        fence: &Path,
+        policy: GatePolicy,
+        resolved: impl FnOnce(),
+        mut walked: impl FnMut(&str),
+    ) -> Result<Self, FenceError> {
         Ok(Self {
-            fence: Fence::build(fence, resolved)?,
+            fence: Fence::build(fence, resolved, &mut walked)?,
             policy,
             limits: Limits::defaults(),
             probe: None,
