@@ -91,4 +91,4 @@ incrementar a versão a partir da versão 1 que contém apenas `meta`.
 Reabrir a decisão se uma invariante exigir dois arquivos ou se medições de latência
 com `synchronous=FULL` excederem o orçamento de uso definido pela composição.
 A mudança exige a migração com backup e demonstração de atomicidade descrita acima.
-Este registro usa 0021; o número 0020 permanece sem documento nesta árvore.
+O número 0020 é a autenticação da API local ([0020](0020-local-api-authentication.md)); este registro usa 0021.
