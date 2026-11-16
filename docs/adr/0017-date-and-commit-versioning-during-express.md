@@ -1,6 +1,6 @@
 # 0017. Date-and-commit versioning during the express period
 
-Status: aceita em 14/11/2026 (AR-17)
+Status: aceita em 14/11/2026
 
 ## Contexto
 O release clássico acontece na branch principal, que fica parada durante o período expresso. O programa ainda precisa dizer qual versão é, para a conferência depois de cada atualização.

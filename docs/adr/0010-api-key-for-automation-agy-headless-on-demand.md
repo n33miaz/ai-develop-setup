@@ -1,6 +1,6 @@
 # 0010. API key for automation, headless agy only on demand
 
-Status: aceita em 14/11/2026 (AR-10)
+Status: aceita em 14/11/2026
 
 ## Contexto
 O uso automatizado da CLI Antigravity por aplicativo de terceiros não é coberto pelos termos do fornecedor, com risco de suspensão da conta. O mesmo modelo é alcançável por chave de API.

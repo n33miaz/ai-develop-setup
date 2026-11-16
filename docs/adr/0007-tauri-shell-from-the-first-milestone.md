@@ -1,6 +1,6 @@
 # 0007. Tauri shell from the first milestone
 
-Status: aceita em 14/11/2026 (AR-07)
+Status: aceita em 14/11/2026
 
 ## Contexto
 A interface funciona no navegador servida pelo núcleo. A casca de desktop acrescenta janela própria, ícone na bandeja e painel suspenso, ao custo de mais tempo de build.

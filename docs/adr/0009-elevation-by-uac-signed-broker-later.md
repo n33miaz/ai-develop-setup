@@ -1,6 +1,6 @@
 # 0009. Elevation by UAC now, signed broker later
 
-Status: aceita em 14/11/2026 (AR-09)
+Status: aceita em 14/11/2026
 
 ## Contexto
 Algumas ações de manutenção exigem administrador. O núcleo nunca roda elevado. O objetivo declarado é, no futuro, poder fazer tudo pelo celular com segurança, e ninguém confirma uma janela de elevação à distância.

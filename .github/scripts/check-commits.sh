@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Valida mensagens de commit. Uma implementação só, dois modos (o hook local e o CI usam o mesmo conjunto de regras):
 #
-#   check-commits.sh <base> <head>
+#   check-commits.sh <base> <head> [--branch <nome>]
 #       Modo CI: valida cada commit (sem merges) do intervalo base..head, lendo mensagem e autor do git.
-#   check-commits.sh --message <arquivo> --author <e-mail> [--strip-comments]
+#   check-commits.sh --message <arquivo> --author <e-mail> [--strip-comments] [--branch <nome>]
 #       Modo mensagem: valida um arquivo de mensagem. É o que `.githooks/commit-msg` chama.
+#   Com --branch, o nome da branch passa pela mesma regra de texto público do assunto (termos de processo e códigos
+#   internos de organização, ver devflow.toml).
 #   check-commits.sh --check-config
 #       Só valida o arquivo de parâmetros, sem ler mensagem nenhuma: 0 = válido; 2 = inválido. O hook chama este modo
 #       antes de qualquer outra coisa, para o erro de configuração vencer também o desligamento da checagem.
@@ -131,6 +133,8 @@ validate_config() {
   cfg_check_bool commits.signoff_autoadd
   cfg_check_regex commits.author_email_regex
   cfg_check_list commits.blocked_patterns 0 regex
+  cfg_check_list commits.process_terms 0 '^[a-z0-9]+$'
+  cfg_check_list commits.internal_code_patterns 0 regex
   cfg_check_enum signature.mode warn block off
   if [ "$cfg_errors" -gt 0 ]; then
     echo "Configuração inválida em $cfg: $cfg_errors problema(s). Nenhuma mensagem foi analisada." >&2
@@ -151,6 +155,34 @@ report() { # <rótulo> <texto>
 }
 
 lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+# Lista do arquivo, ou o padrão embutido quando a chave não existe (lista vazia no arquivo desliga a regra).
+default_process_terms=$'round\nrounds\nfinding\nfindings\nrodada\nachado\nachados'
+default_code_patterns=$'(^|[^a-z0-9])[a-z]{2}-[0-9]{2}([^a-z0-9]|$)\n(^|[^a-z0-9])t-?[0-9]{2,3}([^a-z0-9]|$)\n(^|[^a-z0-9])[em][0-9]{1,2}([^a-z0-9]|$)\n(^|[^a-z0-9])f[0-9]([^a-z0-9]|$)'
+cfg_list_or() { # <chave> <padrão, um por linha>
+  if cfg_has "$1"; then cfg_arr "$1"; else printf '%s\n' "$2"; fi
+}
+
+# check_public_text <rótulo> <o que é> <texto> <caracteres que formam palavra, para tr>
+# Texto público descreve assunto e resultado: sem termos do processo interno nem códigos internos de organização.
+check_public_text() {
+  local label="$1" what="$2" text keep="$4" word p
+  text="$(lower "$3")"
+  local terms
+  terms="$(cfg_list_or commits.process_terms "$default_process_terms")"
+  while IFS= read -r word; do
+    [ -z "$word" ] && continue
+    if in_list "$word" "$terms"; then
+      report "$label" "$what tem o termo de processo \"$word\"; descreva o assunto e o resultado (lista em commits.process_terms)."
+    fi
+  done < <(printf '%s\n' "$text" | tr -cs "$keep" '\n')
+  while IFS= read -r p; do
+    [ -z "$p" ] && continue
+    if printf '%s\n' "$text" | grep -Eiq -- "$p"; then
+      report "$label" "$what tem um código interno de organização (padrão de commits.internal_code_patterns)."
+    fi
+  done < <(cfg_list_or commits.internal_code_patterns "$default_code_patterns")
+}
 
 in_list() { # <item> <lista, um por linha>: sem diferença de maiúscula
   local want it
@@ -226,6 +258,8 @@ check_message() {
   if [[ "$subject" == *. ]]; then
     report "$label" "o assunto não pode terminar em ponto."
   fi
+  # No assunto o hífen une a palavra ("round-trip" é uma palavra só, e não "round").
+  check_public_text "$label" "o assunto" "$subject" 'a-z0-9-'
 
   # Estrutura: assunto, linha em branco, trailers (nada de corpo)
   local -a signoff_emails=() co_emails=()
@@ -312,31 +346,46 @@ check_message() {
   done < <(cfg_arr commits.blocked_patterns)
 }
 
+# check_branch <nome>: o nome da branch segue a mesma regra do assunto; aqui o hífen separa palavras.
+check_branch() {
+  [ -z "$1" ] && return 0
+  [ "$(cfg_str commits.enabled true)" = "false" ] && return 0
+  check_public_text "branch" "o nome da branch \"$1\"" "$1" 'a-z0-9'
+}
+
+usage="uso: $0 <base> <head> [--branch <nome>] | --message <arquivo> --author <e-mail> [--strip-comments] [--branch <nome>] | --check-config"
 mode="${1:-}"
 if [ "$mode" = "--message" ]; then
-  file="" author="" strip=0
+  file="" author="" strip=0 branch=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --message) file="${2:-}"; shift 2 ;;
       --author) author="${2:-}"; shift 2 ;;
       --strip-comments) strip=1; shift ;;
-      *) echo "uso: $0 --message <arquivo> --author <e-mail> [--strip-comments]" >&2; exit 2 ;;
+      --branch) branch="${2:-}"; shift 2 ;;
+      *) echo "$usage" >&2; exit 2 ;;
     esac
   done
-  [ -z "$file" ] && { echo "uso: $0 --message <arquivo> --author <e-mail> [--strip-comments]" >&2; exit 2; }
+  [ -z "$file" ] && { echo "$usage" >&2; exit 2; }
   [ -r "$file" ] || { echo "erro: arquivo ilegível: $file" >&2; exit 2; }
   check_message "$file" "$author" "mensagem" "$strip"
+  check_branch "$branch"
 else
   base="${1:-}"
   head="${2:-}"
+  branch=""
   if [ -z "$base" ] || [ -z "$head" ]; then
-    echo "uso: $0 <base> <head> | --message <arquivo> --author <e-mail> [--strip-comments] | --check-config" >&2
+    echo "$usage" >&2
     exit 2
   fi
+  if [ $# -gt 2 ]; then
+    if [ "$#" -eq 4 ] && [ "$3" = "--branch" ]; then branch="$4"; else echo "$usage" >&2; exit 2; fi
+  fi
   [ "$(cfg_str commits.enabled true)" = "false" ] && { echo "Checagem de commits desligada (commits.enabled = false)."; exit 0; }
+  check_branch "$branch"
   sig_mode="$(cfg_str signature.mode warn)"
   commits="$(git rev-list --reverse --no-merges "${base}..${head}")" || exit 2
-  if [ -z "$commits" ]; then
+  if [ -z "$commits" ] && [ "$errors" -eq 0 ]; then
     echo "Nenhum commit para validar."
     exit 0
   fi
