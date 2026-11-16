@@ -1,7 +1,4 @@
-//! Every contract type of the gate (`action.*` and `approval.*` events, the action plan record
-//! and the common types they use), checked against the golden files. Hand-written and kept in
-//! this one module on purpose: generating Rust types from the Schemas is a separate delivery,
-//! and these leave when `ads-contracts` ships the generated ones.
+//! Gate domain values and explicit conversions to generated wire contracts.
 
 use std::fmt;
 use std::num::NonZeroU64;
@@ -12,18 +9,11 @@ use sha2::{Digest, Sha256};
 
 use super::path::{AbsPath, TargetPath};
 
-/// A value that does not fit the contract type it was meant for.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ContractError {
-    pub what: &'static str,
-    pub value: String,
-}
+#[path = "wire.rs"]
+mod conversion;
 
-impl fmt::Display for ContractError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "not a valid {}: {:?}", self.what, self.value)
-    }
-}
+use ads_contracts as wire;
+pub use ads_contracts::ContractError;
 
 macro_rules! text_type {
     ($(#[$doc:meta])* $name:ident, $what:literal, $check:expr) => {
@@ -39,7 +29,7 @@ macro_rules! text_type {
                 if check(&text) {
                     Ok(Self(text))
                 } else {
-                    Err(ContractError { what: $what, value: text })
+                    Err(ContractError { what: $what, detail: text })
                 }
             }
 
@@ -69,89 +59,24 @@ macro_rules! text_type {
     };
 }
 
-text_type!(
-    /// `urn:ads:common:id:1`.
-    Id,
-    "id",
-    is_id
-);
-text_type!(
-    /// `urn:ads:common:ulid:1`.
-    Ulid,
-    "ulid",
-    |text| {
-        let bytes = text.as_bytes();
-        bytes.len() == 26
-            && matches!(bytes[0], b'0'..=b'7')
-            && bytes.iter().all(|b| {
-                b.is_ascii_digit() || (b.is_ascii_uppercase() && !matches!(b, b'I' | b'L' | b'O' | b'U'))
-            })
-    }
-);
+pub use wire::CommonIdV1 as Id;
+pub use wire::CommonUlidV1 as Ulid;
 text_type!(
     /// `urn:ads:common:timestamp:1`: UTC, `Z` suffix, up to 6 fraction digits.
     Timestamp,
     "timestamp",
-    |text| timestamp_key(text).is_some()
+    |text| wire::CommonTimestampV1::new(text).is_ok()
 );
 text_type!(
     /// `urn:ads:common:sha256:1`, used as the hash of a plan.
     PlanHash,
     "sha256 digest",
-    |text| {
-        text.strip_prefix("sha256:").is_some_and(|hex| {
-            hex.len() == 64 && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
-        })
-    }
+    |text| wire::CommonSha256V1::new(text).is_ok()
 );
-text_type!(
-    /// The `verb` of `action.planned`: dotted lower-case words.
-    Verb,
-    "verb",
-    |text| {
-        text.len() <= 64
-            && text.split('.').all(|word| {
-                word.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
-                    && word
-                        .bytes()
-                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
-            })
-    }
-);
-text_type!(
-    /// The `error_code` of `action.failed`: `E_` and up to 60 of `A-Z 0-9 _`.
-    ErrorCode,
-    "error code",
-    |text| {
-        text.strip_prefix("E_").is_some_and(|rest| {
-            (1..=60).contains(&rest.len())
-                && rest
-                    .bytes()
-                    .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
-        })
-    }
-);
-text_type!(
-    /// Free text of 1 to 500 characters (`summary` and `reason`).
-    ShortText,
-    "text of 1 to 500 characters",
-    |text| (1..=500).contains(&text.chars().count())
-);
-text_type!(
-    /// `urn:ads:common:action-rule:1`: the stable code of a gate rule, with at most one detail
-    /// after a dot. Open text, not a closed list: a new code does not change the contract.
-    RuleCode,
-    "action rule code",
-    |text| {
-        let word = |word: &str| {
-            word.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
-                && word
-                    .bytes()
-                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
-        };
-        text.len() <= 64 && text.split('.').count() <= 2 && text.split('.').all(word)
-    }
-);
+pub use wire::CommonActionRuleV1 as RuleCode;
+pub use wire::EventActionFailedV1DataErrorCode as ErrorCode;
+pub use wire::EventActionPlannedV1DataVerb as Verb;
+pub use wire::EventApprovalRequestedV2DataSummary as ShortText;
 text_type!(
     /// `urn:ads:common:abspath:2`: an absolute path exactly as the gate normalizes it. A path
     /// the normalization would refuse or rewrite is not one. Version 1 of the Schema is wider
@@ -163,22 +88,8 @@ text_type!(
             && AbsPath::parse(text).is_ok_and(|path| path.to_string() == text)
     }
 );
-text_type!(
-    /// The `pattern` of a target in the action plan record: one name with a wildcard.
-    PatternText,
-    "wildcard pattern",
-    |text| {
-        text.chars().count() <= 255
-            && text.contains(['*', '?'])
-            && !text.contains(['\\', '/', '$', '%'])
-    }
-);
-text_type!(
-    /// The `subject` of a reason in the action plan record: the path a rule fired on.
-    SubjectText,
-    "text of 1 to 4096 characters",
-    |text| (1..=4096).contains(&text.chars().count())
-);
+pub use wire::RecordActionPlanV2TargetsItemPattern as PatternText;
+pub use wire::RecordActionPlanV2VerdictReasonsItemSubject as SubjectText;
 
 impl PlanHash {
     /// `sha256:` and the SHA-256 of the UTF-8 bytes of `text`, in lower-case hex.
@@ -187,15 +98,6 @@ impl PlanHash {
         let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
         Self(format!("sha256:{hex}"))
     }
-}
-
-fn is_id(text: &str) -> bool {
-    let bytes = text.as_bytes();
-    (1..=64).contains(&bytes.len())
-        && bytes[0].is_ascii_alphanumeric()
-        && bytes
-            .iter()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'-'))
 }
 
 /// `(date and time to the second, microseconds)`; `None` when the text is not a timestamp.
@@ -282,39 +184,15 @@ impl Decision {
 }
 
 /// `urn:ads:common:data-class:1`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum DataClass {
-    Public,
-    Internal,
-    Private,
-    Secret,
-}
+pub use wire::CommonDataClassV1 as DataClass;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ActorKind {
-    Device,
-    Agent,
-    Daemon,
-}
+pub use wire::CommonActorV1Kind as ActorKind;
 
 /// `urn:ads:common:actor:1`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Actor {
-    pub kind: ActorKind,
-    pub id: Id,
-}
+pub use wire::CommonActorV1 as Actor;
 
 /// The path an approval was granted through.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Via {
-    LocalUi,
-    Tray,
-    RemoteDevice,
-}
+pub use wire::EventApprovalGrantedV2DataVia as Via;
 
 /// What the core cannot produce by itself (no clock, no counter, no random source): the caller
 /// supplies it for each event. `seq` counts within the stream of that event.
@@ -329,7 +207,14 @@ pub struct EventMeta {
 }
 
 /// The `data` of one event type.
-pub trait EventData: Serialize + DeserializeOwned {
+pub trait EventData {
+    type Wire: Serialize + DeserializeOwned;
+    fn from_wire(wire: Self::Wire) -> Result<Envelope<Self>, ContractError>
+    where
+        Self: Sized;
+    fn to_wire(envelope: &Envelope<Self>) -> Self::Wire
+    where
+        Self: Sized;
     /// The URN of the event.
     const TYPE: &'static str;
     /// The stream family, before the slash.
@@ -339,12 +224,9 @@ pub trait EventData: Serialize + DeserializeOwned {
 }
 
 /// `urn:ads:event:envelope:1` fixed to one event type.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-// The bounds come from `EventData`; the ones serde would add repeat them and do not compile.
-#[serde(try_from = "RawEnvelope<D>", bound = "")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Envelope<D: EventData> {
     id: Ulid,
-    #[serde(rename = "type")]
     kind: String,
     ts: Timestamp,
     stream: String,
@@ -355,59 +237,15 @@ pub struct Envelope<D: EventData> {
     data: D,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawEnvelope<D> {
-    id: Ulid,
-    #[serde(rename = "type")]
-    kind: String,
-    ts: Timestamp,
-    stream: String,
-    seq: NonZeroU64,
-    actor: Actor,
-    #[serde(deserialize_with = "nullable")]
-    cause: Option<Ulid>,
-    data_class: DataClass,
-    data: D,
+impl<'de, D: EventData> Deserialize<'de> for Envelope<D> {
+    fn deserialize<De: Deserializer<'de>>(deserializer: De) -> Result<Self, De::Error> {
+        D::from_wire(D::Wire::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
 }
 
-/// A field that must be present and may be `null`.
-fn nullable<'de, T, De>(deserializer: De) -> Result<Option<T>, De::Error>
-where
-    T: Deserialize<'de>,
-    De: Deserializer<'de>,
-{
-    Option::<T>::deserialize(deserializer)
-}
-
-impl<D: EventData> TryFrom<RawEnvelope<D>> for Envelope<D> {
-    type Error = ContractError;
-
-    fn try_from(raw: RawEnvelope<D>) -> Result<Self, ContractError> {
-        if raw.kind != D::TYPE {
-            return Err(ContractError {
-                what: "event type",
-                value: raw.kind,
-            });
-        }
-        // The stream names the entity `data` names: a rule of the contract, not of the Schema.
-        if raw.stream != format!("{}/{}", D::STREAM, raw.data.stream_id()) {
-            return Err(ContractError {
-                what: "event stream",
-                value: raw.stream,
-            });
-        }
-        Ok(Self {
-            id: raw.id,
-            kind: raw.kind,
-            ts: raw.ts,
-            stream: raw.stream,
-            seq: raw.seq,
-            actor: raw.actor,
-            cause: raw.cause,
-            data_class: raw.data_class,
-            data: raw.data,
-        })
+impl<D: EventData> Serialize for Envelope<D> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        D::to_wire(self).serialize(serializer)
     }
 }
 
@@ -439,20 +277,7 @@ impl<D: EventData> Envelope<D> {
     }
 }
 
-macro_rules! event_data {
-    ($name:ident, $urn:literal, $stream:literal, $id:ident) => {
-        impl EventData for $name {
-            const TYPE: &'static str = $urn;
-            const STREAM: &'static str = $stream;
-            fn stream_id(&self) -> &Id {
-                &self.$id
-            }
-        }
-    };
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActionPlanned {
     pub action_id: Id,
     pub verb: Verb,
@@ -460,106 +285,42 @@ pub struct ActionPlanned {
     pub plan_hash: PlanHash,
     pub needs_elevation: bool,
 }
-event_data!(
-    ActionPlanned,
-    "urn:ads:event:action.planned:1",
-    "action",
-    action_id
-);
 
 /// The `rules` of `action.denied`: 1 to 100 codes, each one once.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "Vec<RuleCode>")]
-pub struct RuleList(Vec<RuleCode>);
-
-impl RuleList {
-    pub fn new(rules: Vec<RuleCode>) -> Result<Self, ContractError> {
-        let repeated = (1..rules.len()).any(|at| rules[..at].contains(&rules[at]));
-        if rules.is_empty() || rules.len() > 100 || repeated {
-            let codes: Vec<&str> = rules.iter().map(RuleCode::as_str).collect();
-            return Err(ContractError {
-                what: "list of 1 to 100 distinct rule codes",
-                value: codes.join(","),
-            });
-        }
-        Ok(Self(rules))
-    }
-
-    pub fn as_slice(&self) -> &[RuleCode] {
-        &self.0
-    }
-}
-
-impl TryFrom<Vec<RuleCode>> for RuleList {
-    type Error = ContractError;
-    fn try_from(rules: Vec<RuleCode>) -> Result<Self, ContractError> {
-        Self::new(rules)
-    }
-}
+pub use wire::EventActionDeniedV1DataRules as RuleList;
 
 /// The only event of a denied action: it comes in the place of `action.planned`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActionDenied {
     pub action_id: Id,
     pub verb: Verb,
     pub plan_hash: PlanHash,
     pub rules: RuleList,
 }
-event_data!(
-    ActionDenied,
-    "urn:ads:event:action.denied:1",
-    "action",
-    action_id
-);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActionStarted {
     pub action_id: Id,
     pub plan_hash: PlanHash,
-    #[serde(deserialize_with = "nullable")]
     pub approval_id: Option<Id>,
 }
-event_data!(
-    ActionStarted,
-    "urn:ads:event:action.started:1",
-    "action",
-    action_id
-);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActionExecuted {
     pub action_id: Id,
     pub plan_hash: PlanHash,
-    #[serde(deserialize_with = "nullable")]
     pub approval_id: Option<Id>,
 }
-event_data!(
-    ActionExecuted,
-    "urn:ads:event:action.executed:1",
-    "action",
-    action_id
-);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActionFailed {
     pub action_id: Id,
     pub plan_hash: PlanHash,
     pub error_code: ErrorCode,
 }
-event_data!(
-    ActionFailed,
-    "urn:ads:event:action.failed:1",
-    "action",
-    action_id
-);
 
 /// `approval.requested:2`, the one the gate writes: it names the action.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApprovalRequested {
     pub approval_id: Id,
     pub action_id: Id,
@@ -569,17 +330,10 @@ pub struct ApprovalRequested {
     pub expires_at: Timestamp,
     pub needs_elevation: bool,
 }
-event_data!(
-    ApprovalRequested,
-    "urn:ads:event:approval.requested:2",
-    "approval",
-    approval_id
-);
 
 /// `approval.requested:1`, which does not say which action it belongs to. Read only: the gate
 /// never writes it and never rebuilds a state from it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApprovalRequestedV1 {
     pub approval_id: Id,
     pub plan_hash: PlanHash,
@@ -588,109 +342,68 @@ pub struct ApprovalRequestedV1 {
     pub expires_at: Timestamp,
     pub needs_elevation: bool,
 }
-event_data!(
-    ApprovalRequestedV1,
-    "urn:ads:event:approval.requested:1",
-    "approval",
-    approval_id
-);
 
 /// `approval.granted:2`, the one the gate writes: it names the action the decision was taken
 /// for, so the log keeps what the command checked.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApprovalGranted {
     pub approval_id: Id,
     pub action_id: Id,
     pub plan_hash: PlanHash,
     pub via: Via,
 }
-event_data!(
-    ApprovalGranted,
-    "urn:ads:event:approval.granted:2",
-    "approval",
-    approval_id
-);
 
 /// `approval.denied:2`, the one the gate writes: it names the action.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApprovalDenied {
     pub approval_id: Id,
     pub action_id: Id,
     pub plan_hash: PlanHash,
-    #[serde(deserialize_with = "nullable")]
     pub reason: Option<ShortText>,
 }
-event_data!(
-    ApprovalDenied,
-    "urn:ads:event:approval.denied:2",
-    "approval",
-    approval_id
-);
 
 /// `approval.expired:2`, the one the gate writes: it names the action.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApprovalExpired {
     pub approval_id: Id,
     pub action_id: Id,
     pub plan_hash: PlanHash,
 }
-event_data!(
-    ApprovalExpired,
-    "urn:ads:event:approval.expired:2",
-    "approval",
-    approval_id
-);
 
 /// `approval.granted:1`, which does not say which action the decision was taken for. Read
 /// only, like the two below: the gate never writes them and never rebuilds a state from them.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApprovalGrantedV1 {
     pub approval_id: Id,
     pub plan_hash: PlanHash,
     pub via: Via,
 }
-event_data!(
-    ApprovalGrantedV1,
-    "urn:ads:event:approval.granted:1",
-    "approval",
-    approval_id
-);
 
 /// `approval.denied:1`. Read only.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApprovalDeniedV1 {
     pub approval_id: Id,
     pub plan_hash: PlanHash,
-    #[serde(deserialize_with = "nullable")]
     pub reason: Option<ShortText>,
 }
-event_data!(
-    ApprovalDeniedV1,
-    "urn:ads:event:approval.denied:1",
-    "approval",
-    approval_id
-);
 
 /// `approval.expired:1`. Read only.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApprovalExpiredV1 {
     pub approval_id: Id,
     pub plan_hash: PlanHash,
 }
-event_data!(
-    ApprovalExpiredV1,
-    "urn:ads:event:approval.expired:1",
-    "approval",
-    approval_id
-);
 
 /// The one event a transition of the action state machine produces.
+/// Reading a document cannot create an action or an execution permit.
+///
+/// ```compile_fail
+/// let _: ads_core::gate::Action = serde_json::from_str("{}").unwrap();
+/// ```
+///
+/// ```compile_fail
+/// let _: ads_core::gate::ExecutionPermit = serde_json::from_str("{}").unwrap();
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     ActionPlanned(Envelope<ActionPlanned>),
@@ -733,7 +446,7 @@ impl Event {
         fn read<D: EventData>(json: serde_json::Value) -> Result<Envelope<D>, ContractError> {
             serde_json::from_value(json).map_err(|err| ContractError {
                 what: "event",
-                value: err.to_string(),
+                detail: err.to_string(),
             })
         }
         let kind = json["type"].as_str().unwrap_or_default().to_owned();
@@ -749,7 +462,7 @@ impl Event {
             ActionFailed::TYPE => read(json).map(Self::ActionFailed),
             _ => Err(ContractError {
                 what: "event type of the gate",
-                value: kind,
+                detail: kind,
             }),
         }
     }
@@ -769,37 +482,11 @@ impl Event {
 }
 
 /// The `operation` of the action plan record: what was asked for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum PlanOperation {
-    #[serde(rename = "fs.delete")]
-    Delete,
-    #[serde(rename = "fs.delete_recursive")]
-    DeleteRecursive,
-    #[serde(rename = "fs.move")]
-    Move,
-    #[serde(rename = "fs.overwrite")]
-    Overwrite,
-    #[serde(rename = "fs.clean_untracked")]
-    CleanUntracked,
-}
+pub use wire::RecordActionPlanV2Operation as PlanOperation;
 
-impl PlanOperation {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Delete => "fs.delete",
-            Self::DeleteRecursive => "fs.delete_recursive",
-            Self::Move => "fs.move",
-            Self::Overwrite => "fs.overwrite",
-            Self::CleanUntracked => "fs.clean_untracked",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PlanTarget {
     pub path: PathText,
-    #[serde(deserialize_with = "nullable")]
     pub pattern: Option<PatternText>,
     pub repo_root: bool,
 }
@@ -821,22 +508,19 @@ impl PlanTarget {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PlanEstimate {
     pub items: u64,
     pub bytes: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PlanReason {
     pub rule: RuleCode,
     pub subject: SubjectText,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlanVerdict {
     pub decision: Decision,
     pub risk: Risk,
@@ -845,18 +529,15 @@ pub struct PlanVerdict {
 
 /// The fields of `urn:ads:record:action-plan`, versions 1 and 2 (the same fields; version 2
 /// narrows the paths and bounds the estimate), before the rules between them are checked.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActionPlanFields {
     pub version: u64,
     pub action_id: Id,
     pub plan_hash: PlanHash,
     pub operation: PlanOperation,
     pub work_root: PathText,
-    #[serde(deserialize_with = "nullable")]
     pub destination: Option<PathText>,
     pub targets: Vec<PlanTarget>,
-    #[serde(deserialize_with = "nullable")]
     pub estimate: Option<PlanEstimate>,
     pub verdict: PlanVerdict,
     pub quarantined: bool,
@@ -871,7 +552,12 @@ impl ActionPlanFields {
     /// The rules between the fields that the Schema cannot express, for the record of
     /// `version`.
     fn checked(self, version: u64) -> Result<Self, ContractError> {
-        let broken = |what: &'static str, value: String| Err(ContractError { what, value });
+        let broken = |what: &'static str, value: String| {
+            Err(ContractError {
+                what,
+                detail: value,
+            })
+        };
         if self.version != version {
             return broken("action plan version", self.version.to_string());
         }
@@ -955,12 +641,15 @@ impl ActionPlanFields {
 /// One exists only when it keeps every rule of the contract, the order of the targets, the
 /// range of the estimate and the `plan_hash` included.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "ActionPlanFields", into = "ActionPlanFields")]
+#[serde(
+    try_from = "wire::RecordActionPlanV2",
+    into = "wire::RecordActionPlanV2"
+)]
 pub struct ActionPlanRecord(ActionPlanFields);
 
 impl ActionPlanRecord {
     /// The `version` field of the record this gate writes.
-    pub const VERSION: u64 = 2;
+    pub const VERSION: u64 = wire::RecordActionPlanV2Version::VALUE as u64;
 }
 
 impl From<ActionPlanRecord> for ActionPlanFields {
@@ -997,7 +686,10 @@ impl ActionPlanRecord {
 /// what version 1 could hold: an estimate up to 64 bits, with no bound of version 2. Its
 /// Schema is still wider than this type in the paths (`abspath:1`) and above 64 bits.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "ActionPlanFields", into = "ActionPlanFields")]
+#[serde(
+    try_from = "wire::RecordActionPlanV1",
+    into = "wire::RecordActionPlanV1"
+)]
 pub struct ActionPlanRecordV1(ActionPlanFields);
 
 impl From<ActionPlanRecordV1> for ActionPlanFields {
@@ -1059,18 +751,10 @@ pub(crate) fn canonical_plan(
     out
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ApprovalStatus {
-    Pending,
-    Granted,
-    Denied,
-    Expired,
-}
+pub use wire::RecordApprovalV1Status as ApprovalStatus;
 
 /// The fields of `urn:ads:record:approval:1`, before the rules between them are checked.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApprovalFields {
     pub version: u64,
     pub approval_id: Id,
@@ -1080,20 +764,16 @@ pub struct ApprovalFields {
     pub status: ApprovalStatus,
     pub requested_at: Timestamp,
     pub expires_at: Timestamp,
-    #[serde(deserialize_with = "nullable")]
     pub decided_at: Option<Timestamp>,
-    #[serde(deserialize_with = "nullable")]
     pub decided_by: Option<Actor>,
-    #[serde(deserialize_with = "nullable")]
     pub via: Option<Via>,
-    #[serde(deserialize_with = "nullable")]
     pub reason: Option<ShortText>,
 }
 
 /// `urn:ads:record:approval:1`: the state of an approval. Read only: the gate writes the
 /// approval events, and whoever persists them keeps this record.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "ApprovalFields", into = "ApprovalFields")]
+#[serde(try_from = "wire::RecordApprovalV1", into = "wire::RecordApprovalV1")]
 pub struct ApprovalRecord(ApprovalFields);
 
 impl From<ApprovalRecord> for ApprovalFields {
@@ -1118,7 +798,7 @@ impl TryFrom<ApprovalFields> for ApprovalRecord {
         if fields.version != 1 || !coherent {
             return Err(ContractError {
                 what: "approval with the decision its status asks for",
-                value: format!("version {}, {:?}", fields.version, fields.status),
+                detail: format!("version {}, {:?}", fields.version, fields.status),
             });
         }
         Ok(Self(fields))

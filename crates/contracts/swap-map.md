@@ -2,7 +2,7 @@
 
 Dois módulos escreviam à mão os tipos dos contratos: `crates/core/src/gate/event.rs` (portão de ações) e `crates/ptyhost/src/wire.rs` (contrato `pty-host/1`). Este mapa diz, para cada tipo público deles, qual tipo gerado o substitui e o que muda de forma.
 
-Estado: a troca do `ptyhost` está feita, e a seção dele diz o que foi trocado, o que ficou e por quê. A do portão continua por fazer. Quando ela terminar, este arquivo sai.
+Estado: a troca do `ptyhost` e a da camada de wire do portão estão feitas. O mapa registra os tipos usados e os valores de domínio que continuam escritos à mão.
 
 Vale para todos:
 
@@ -14,6 +14,24 @@ Vale para todos:
 - Versões: o portão escreve `approval.requested:2`, `approval.granted:2`, `approval.denied:2`, `approval.expired:2` e `record.action-plan:2` (com `common.abspath:2`), e as tabelas apontam para os gerados dessas versões. Os tipos escritos à mão com sufixo `V1` são só de leitura e têm linha própria.
 
 ## `crates/core/src/gate/event.rs`
+
+A leitura e a escrita de todo `Envelope<D>` passam pelo evento gerado indicado nas tabelas. `EventData::Wire` fixa o tipo por evento; `wire.rs` converte os campos explicitamente nos dois sentidos. Não há envelope de wire escrito à mão. O despacho de `Event::from_json` continua recusando as quatro aprovações `:1`; os envelopes tipados dessas versões continuam disponíveis para ler documentos antigos sem reconstruir ações.
+
+`ActionPlanRecord`, `ActionPlanRecordV1` e `ApprovalRecord` leem e escrevem pelos registros gerados correspondentes. A conversão dos planos chama `ActionPlanFields::checked`: hash canônico, ordem estrita e identidade dos alvos e normalização dos caminhos continuam no núcleo, inclusive para os caminhos mais largos da `:1`. O teto da estimativa continua aplicado só à `:2` na construção de domínio, além da validação do tipo gerado na leitura.
+
+Os aliases substituem os validadores manuais de `Id`, `Ulid`, `RuleCode`, `Verb`, `ErrorCode`, `ShortText`, `PatternText`, `SubjectText`, `RuleList`, `Actor`, `ActorKind`, `DataClass`, `Via`, `PlanOperation` e `ApprovalStatus`. `ContractError` também é o gerado (`detail` substitui `value`).
+
+Continuam manuais por serem valores ou comportamento de domínio:
+
+- `Timestamp` e `PlanHash`: validam o texto pelo gerado, mas preservam a comparação de instantes e o cálculo do hash. `PathText` exige que `AbsPath` aceite o texto sem reescrita.
+- `Risk` e `Decision`: têm ordem e correspondência de risco que pertencem à política. Os mapas para os enums gerados são exaustivos.
+- `EventMeta`, `Envelope`, `EventData`, `Event` e os dados de cada evento: mantêm a API da máquina e o vínculo stream ↔ entidade. Os dados são projeções de domínio, sem derivações de serialização; só o envelope converte para o evento gerado.
+- `ActionPlanFields`, `PlanTarget`, `PlanEstimate`, `PlanReason`, `PlanVerdict`, `ApprovalFields` e os três wrappers de registro: preservam os construtores e as conferências do domínio. Os campos são projeções sem serialização própria; os wrappers usam exclusivamente os registros gerados.
+- `canonical_plan`, a máquina, o replay e a licença: desserialização produz documentos conferidos, nunca `Action` nem `ExecutionPermit`. O replay devolve somente `ActionSnapshot` e continua verificando ação, aprovação, hash e ordem temporal entre documentos.
+
+Regressões em `gate_golden` demonstram que o gerado aceita digest bem formado trocado, alvos fora da ordem canônica e stream de outra entidade, enquanto a conversão de domínio os recusa. Em `gate_replay`, uma concessão `:2` de outra ação é desserializada com sucesso e recusada pelo replay; uma concessão `:1` passa no gerado e não entra no despacho do portão. Os dourados e as expectativas existentes permanecem iguais.
+
+As tabelas abaixo registram a correspondência dos tipos de wire; os nomes de domínio mantidos acima não são aliases quando precisam das conferências adicionais.
 
 ### Tipos comuns e textos
 
