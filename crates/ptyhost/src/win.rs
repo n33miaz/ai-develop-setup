@@ -1,5 +1,5 @@
 //! Windows system calls: the Job Object that ends a process tree, the named pipe only the current
-//! user can open, and the probes that prove both.
+//! user can open, the check a client makes of who serves a pipe, and the probes that prove them.
 //! Every `unsafe` block of the crate lives here and is listed in `docs/unsafe.md`.
 #![allow(unsafe_code)]
 
@@ -15,8 +15,9 @@ use windows::Win32::Security::Authorization::{
     SE_KERNEL_OBJECT,
 };
 use windows::Win32::Security::{
-    DACL_SECURITY_INFORMATION, GetTokenInformation, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES,
-    TOKEN_QUERY, TOKEN_USER, TokenUser,
+    DACL_SECURITY_INFORMATION, GetTokenInformation, OWNER_SECURITY_INFORMATION,
+    PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES, TOKEN_INFORMATION_CLASS, TOKEN_QUERY,
+    TokenOwner, TokenUser,
 };
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
@@ -27,8 +28,10 @@ use windows::Win32::System::JobObjects::{
     JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
     TerminateJobObject,
 };
+use windows::Win32::System::Pipes::GetNamedPipeServerProcessId;
 use windows::Win32::System::Threading::{
-    GetCurrentProcess, GetProcessHandleCount, OpenProcessToken,
+    GetCurrentProcess, GetProcessHandleCount, OpenProcess, OpenProcessToken,
+    PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::core::{PCWSTR, PWSTR};
 
@@ -172,33 +175,155 @@ fn take_text(text: PWSTR) -> io::Result<String> {
     unsafe { text.to_string() }.map_err(io::Error::other)
 }
 
-/// The user this process runs as, as a security identifier in text form (`S-1-...`).
-pub fn current_user_sid() -> io::Result<String> {
-    let mut token = HANDLE::default();
-    // SAFETY: the pseudo handle of the current process is always valid; `token` outlives the call.
-    unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut token) }?;
-    // SAFETY: `token` was just opened, is valid and has no other owner.
-    let token = unsafe { OwnedHandle::from_raw_handle(token.0) };
+/// A security identifier in text form (`S-1-...`).
+fn sid_text(sid: PSID) -> io::Result<String> {
+    let mut text = PWSTR::null();
+    // SAFETY: the caller keeps the memory `sid` points to alive during the call; `text`
+    // receives a new string.
+    unsafe { ConvertSidToStringSidW(sid, &raw mut text) }?;
+    take_text(text)
+}
 
-    // `TOKEN_USER` followed by the identifier it points to; `u64` keeps the alignment.
+/// The token of a process, opened only to be read.
+fn process_token(process: HANDLE) -> io::Result<OwnedHandle> {
+    let mut token = HANDLE::default();
+    // SAFETY: the caller's process handle is only read; `token` outlives the call.
+    unsafe { OpenProcessToken(process, TOKEN_QUERY, &raw mut token) }?;
+    // SAFETY: `token` was just opened, is valid and has no other owner.
+    Ok(unsafe { OwnedHandle::from_raw_handle(token.0) })
+}
+
+/// The identifier a token names in `class`: its user (`TokenUser`) or the owner it gives the
+/// objects it creates (`TokenOwner`).
+fn token_sid(token: &OwnedHandle, class: TOKEN_INFORMATION_CLASS) -> io::Result<String> {
+    if class != TokenUser && class != TokenOwner {
+        return Err(io::Error::from(io::ErrorKind::InvalidInput));
+    }
+    // `TOKEN_USER` or `TOKEN_OWNER` followed by the identifier it points to; `u64` keeps the
+    // alignment.
     let mut buffer = [0_u64; 32];
     let mut written = 0_u32;
     // SAFETY: the buffer is writable for the size passed and `written` outlives the call.
     unsafe {
         GetTokenInformation(
             HANDLE(token.as_raw_handle()),
-            TokenUser,
+            class,
             Some(buffer.as_mut_ptr().cast()),
             size_of_val(&buffer) as u32,
             &raw mut written,
         )
     }?;
-    // SAFETY: the call succeeded, so the buffer starts with an aligned, initialized `TOKEN_USER`.
-    let sid = unsafe { (*buffer.as_ptr().cast::<TOKEN_USER>()).User.Sid };
-    let mut text = PWSTR::null();
-    // SAFETY: `sid` points into `buffer`, alive during the call; `text` receives a new string.
-    unsafe { ConvertSidToStringSidW(sid, &raw mut text) }?;
-    take_text(text)
+    // SAFETY: the call succeeded, so the buffer starts with an aligned, initialized
+    // `TOKEN_USER` or `TOKEN_OWNER`; both begin with the pointer to the identifier, which
+    // points into `buffer`.
+    let sid = unsafe { *buffer.as_ptr().cast::<PSID>() };
+    sid_text(sid)
+}
+
+fn own_token() -> io::Result<OwnedHandle> {
+    // SAFETY: the call only returns the pseudo handle of the current process, always valid.
+    process_token(unsafe { GetCurrentProcess() })
+}
+
+/// The user this process runs as, as a security identifier in text form (`S-1-...`).
+pub fn current_user_sid() -> io::Result<String> {
+    token_sid(&own_token()?, TokenUser)
+}
+
+/// Who this process is, to compare with whoever answers on the other end of a pipe.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalUser {
+    /// The user of the token.
+    pub user: String,
+    /// The owner the token gives the objects it creates: the user, or the administrators group
+    /// for an elevated process under that system policy.
+    pub default_owner: String,
+}
+
+pub fn local_user() -> io::Result<LocalUser> {
+    let token = own_token()?;
+    Ok(LocalUser {
+        user: token_sid(&token, TokenUser)?,
+        default_owner: token_sid(&token, TokenOwner)?,
+    })
+}
+
+/// Who answers on a pipe this process opened as a client.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PipeServer {
+    /// The user of the process that holds the server end.
+    pub process_user: String,
+    /// The owner of the pipe object, set by whoever created the pipe's name.
+    pub object_owner: String,
+}
+
+/// Reads who serves the pipe behind `pipe`, a client handle opened with read access.
+/// A normal account is denied another user's process or token, so a stranger's server comes
+/// back as an error.
+pub fn pipe_server(pipe: RawHandle) -> io::Result<PipeServer> {
+    let mut process_id = 0_u32;
+    // SAFETY: the caller's handle is only read; `process_id` outlives the call.
+    unsafe { GetNamedPipeServerProcessId(HANDLE(pipe), &raw mut process_id) }?;
+    // SAFETY: the call only returns a new handle, with the least access that reads a token.
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id) }?;
+    // SAFETY: `process` was just opened, is valid and has no other owner.
+    let process = unsafe { OwnedHandle::from_raw_handle(process.0) };
+    let token = process_token(HANDLE(process.as_raw_handle()))?;
+    Ok(PipeServer {
+        process_user: token_sid(&token, TokenUser)?,
+        object_owner: object_owner_sid(pipe)?,
+    })
+}
+
+/// The owner of a kernel object, as a security identifier in text form.
+fn object_owner_sid(handle: RawHandle) -> io::Result<String> {
+    let mut owner = PSID::default();
+    let mut descriptor = PSECURITY_DESCRIPTOR::default();
+    // SAFETY: the caller's handle is only read; `descriptor` receives a new allocation and
+    // `owner` a pointer into it.
+    let status = unsafe {
+        GetSecurityInfo(
+            HANDLE(handle),
+            SE_KERNEL_OBJECT,
+            OWNER_SECURITY_INFORMATION,
+            Some(&raw mut owner),
+            None,
+            None,
+            None,
+            Some(&raw mut descriptor),
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return Err(io::Error::from_raw_os_error(status.0 as i32));
+    }
+    let _memory = LocalMemory(descriptor.0);
+    if owner.is_invalid() {
+        return Err(io::Error::other("the object has no owner"));
+    }
+    sid_text(owner)
+}
+
+/// The decision: the server process runs as this user and the pipe's name was created by this
+/// user (owned by the user, or by the owner this user's objects get). Either part alone leaves
+/// a gap: a process id can be reused after the server exits, and an object owner says nothing
+/// about who holds the server end now.
+pub fn is_own_server(local: &LocalUser, server: &PipeServer) -> bool {
+    !local.user.is_empty()
+        && server.process_user == local.user
+        && (server.object_owner == local.user || server.object_owner == local.default_owner)
+}
+
+/// Confirms that the pipe behind the client handle `pipe` is served by the current user.
+/// A failure to read who serves it is a refusal too.
+pub fn check_pipe_server(pipe: RawHandle) -> io::Result<()> {
+    if is_own_server(&local_user()?, &pipe_server(pipe)?) {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "the pipe is not served by the current user",
+        ))
+    }
 }
 
 /// A new instance of the named pipe `name` that only `user_sid` can open: the access list has
@@ -269,4 +394,81 @@ pub fn access_list_text(handle: RawHandle) -> io::Result<String> {
         )
     }?;
     take_text(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ME: &str = "S-1-5-21-1000-2000-3000-1001";
+    const OTHER: &str = "S-1-5-21-1000-2000-3000-1002";
+    const ADMINISTRATORS: &str = "S-1-5-32-544";
+
+    fn me(default_owner: &str) -> LocalUser {
+        LocalUser {
+            user: ME.to_owned(),
+            default_owner: default_owner.to_owned(),
+        }
+    }
+
+    fn server(process_user: &str, object_owner: &str) -> PipeServer {
+        PipeServer {
+            process_user: process_user.to_owned(),
+            object_owner: object_owner.to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_pipe_served_and_owned_by_the_user_is_accepted() {
+        assert!(is_own_server(&me(ME), &server(ME, ME)));
+        // An elevated process names the administrators group as the owner of what it creates.
+        assert!(is_own_server(
+            &me(ADMINISTRATORS),
+            &server(ME, ADMINISTRATORS)
+        ));
+        assert!(is_own_server(&me(ADMINISTRATORS), &server(ME, ME)));
+    }
+
+    #[test]
+    fn a_pipe_served_by_another_user_is_refused() {
+        assert!(!is_own_server(&me(ME), &server(OTHER, ME)));
+        assert!(!is_own_server(&me(ME), &server(OTHER, OTHER)));
+    }
+
+    #[test]
+    fn a_pipe_whose_name_another_user_created_is_refused() {
+        assert!(!is_own_server(&me(ME), &server(ME, OTHER)));
+        assert!(!is_own_server(&me(ME), &server(ME, ADMINISTRATORS)));
+        assert!(!is_own_server(&me(ADMINISTRATORS), &server(ME, OTHER)));
+    }
+
+    #[test]
+    fn identifiers_are_compared_whole() {
+        assert!(!is_own_server(
+            &me(ME),
+            &server("S-1-5-21-1000-2000-3000-100", ME)
+        ));
+        assert!(!is_own_server(&me(ME), &server(&ME.to_lowercase(), ME)));
+        let nobody = LocalUser {
+            user: String::new(),
+            default_owner: String::new(),
+        };
+        assert!(!is_own_server(&nobody, &server("", "")));
+    }
+
+    #[test]
+    fn a_handle_that_is_not_a_pipe_is_refused() {
+        use std::os::windows::io::AsRawHandle;
+
+        let file = std::fs::File::open(std::env::current_exe().unwrap()).unwrap();
+        assert!(pipe_server(file.as_raw_handle()).is_err());
+        assert!(check_pipe_server(file.as_raw_handle()).is_err());
+    }
+
+    #[test]
+    fn the_local_user_reads_the_token() {
+        let local = local_user().unwrap();
+        assert_eq!(local.user, current_user_sid().unwrap());
+        assert!(local.default_owner.starts_with("S-1-"), "{local:?}");
+    }
 }
