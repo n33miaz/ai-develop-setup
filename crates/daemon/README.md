@@ -5,9 +5,11 @@ cliente assíncrono do contrato `pty-host/1` através do codec público do ptyho
 `OpenParams`, `WriteParams`, `ResizeParams` e `SessionParams` são os tipos gerados
 reexportados pelo host; o cliente não constrói JSON nem quadros próprios.
 
-`connect` recebe `HostConfig` para resolver o canal com `channel::endpoint` e
-completa `host.hello`. O host precisa estar disponível; iniciar o processo e decidir
-quando tentar conectar novamente cabe ao chamador. `over` permite fornecer outro
+`connect` recebe `HostConfig` para resolver o canal com `channel::endpoint`, abre-o
+com `channel::connect` e completa `host.hello`. No Windows o canal só entrega a
+conexão depois de confirmar que o pipe é servido pelo usuário atual; senão o erro é
+`NotOwnedByUser` e nenhum byte foi enviado (`tests/channel_owner.rs`). O host precisa
+estar disponível; iniciar o processo e decidir quando tentar conectar novamente cabe ao chamador. `over` permite fornecer outro
 transporte assíncrono, inclusive `tokio::io::duplex` nos testes.
 
 `subscribe(session_id, after_seq)` começa depois da sequência informada; `Some(0)`
