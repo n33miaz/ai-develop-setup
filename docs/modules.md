@@ -16,7 +16,7 @@ A coluna "Estado" diz o que existe hoje na `develop`. "Esqueleto" é um crate qu
 | `ads-shell` | `crates/shell` | Casca Tauri (janela, bandeja e painel) como cliente fino do núcleo. | Esqueleto: janela vazia que carrega a interface e ícone de bandeja. |
 | `ads-e2e` | `crates/e2e` | Sessão cifrada de ponta a ponta do transporte remoto, para o PC e a PWA. | Esqueleto. |
 | `ads-adapter-claude` | `crates/adapters/claude` | Adapta a ferramenta de linha de comando Claude ao contrato do núcleo. | Esqueleto. |
-| `ads-adapter-codex` | `crates/adapters/codex` | Adapta a ferramenta de linha de comando Codex ao contrato do núcleo. | Esqueleto. |
+| `ads-adapter-codex` | `crates/adapters/codex` | Monta os parâmetros de abertura de terminal para a ferramenta Codex. | Implementado: configuração em camadas, ambiente filtrado pelo núcleo e validação de abertura com testes. |
 | `ads-adapter-antigravity` | `crates/adapters/antigravity` | Adapta a ferramenta de linha de comando Antigravity ao contrato do núcleo. | Esqueleto. |
 | `ads-adapter-api` | `crates/adapters/api` | Adapta as chamadas diretas às APIs de provedores ao contrato do núcleo. | Esqueleto. |
 | `ads-adapter-vault` | `crates/adapters/vault` | Adapta o cofre de segredos do sistema operacional ao contrato do núcleo. | Esqueleto. |

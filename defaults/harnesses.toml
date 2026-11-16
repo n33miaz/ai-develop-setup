@@ -99,3 +99,9 @@ args = []
 
 # Modo de uso. So `interactive` (terminal operado pela pessoa) e aceito por enquanto.
 mode = "interactive"
+
+# Mesmas chaves e regras de `[tools.claude]`.
+[tools.codex]
+program = ""
+args = []
+mode = "interactive"
