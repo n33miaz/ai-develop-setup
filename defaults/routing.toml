@@ -1,0 +1,43 @@
+# Modo usado quando o pacote traz um modo de trabalho, como "implement".
+# shadow preserva a escolha manual e calcula a proposta para observação.
+mode = "shadow"
+
+# Idade máxima da observação de cota, em segundos. Amostras futuras são ignoradas.
+quota_max_age_secs = 900
+
+# A partir deste percentual em qualquer janela, a rota fica indisponível.
+quota_block_at_pct = 100.0
+
+# Aceita candidatos sem medição recente. Use false se a operação exigir cota conhecida.
+allow_unknown_quota = true
+
+# Primeira regra compatível vence. kind, size e sensitivity opcionais atuam como filtros.
+# tiers contém a ordem de preferência. Sem tiers, vale a faixa pedida no pacote.
+# Modifique a tabela para mudar a política sem recompilar o núcleo.
+[[rules]]
+id = "secret"
+sensitivity = "secret"
+tiers = ["T3"]
+
+[[rules]]
+id = "private"
+sensitivity = "private"
+tiers = ["T3"]
+
+[[rules]]
+id = "review"
+kind = "review"
+tiers = ["T2", "T3"]
+
+[[rules]]
+id = "large"
+size = "large"
+tiers = ["T2", "T3"]
+
+[[rules]]
+id = "small"
+size = "small"
+tiers = ["T0", "T1"]
+
+[[rules]]
+id = "requested-tier"
