@@ -381,6 +381,11 @@ fn immediate() -> StorageConfig {
     StorageConfig::from_toml_str("busy_timeout_ms = 0").unwrap()
 }
 
+/// Short wait so leftover files are judged as stuck rather than in progress.
+fn short() -> StorageConfig {
+    StorageConfig::from_toml_str("busy_timeout_ms = 50").unwrap()
+}
+
 #[test]
 fn auxiliary_file_beside_empty_or_missing_main_is_refused() {
     for (main, suffix) in [
@@ -394,7 +399,7 @@ fn auxiliary_file_beside_empty_or_missing_main_is_refused() {
             std::fs::write(&path, bytes).unwrap();
         }
         std::fs::write(sibling(&path, suffix), b"committed frames").unwrap();
-        refused(&path, &immediate(), StorageError::Corrupt);
+        refused(&path, &short(), StorageError::Corrupt);
         assert_eq!(path.exists(), main.is_some());
     }
 }
@@ -446,7 +451,7 @@ fn interrupted_rollback_journal_is_refused_before_replay() {
     header[24..28].copy_from_slice(&4096u32.to_be_bytes());
     std::fs::write(sibling(&unmarked, "-journal"), header).unwrap();
     for path in [product, unmarked] {
-        refused(&path, &immediate(), StorageError::Corrupt);
+        refused(&path, &short(), StorageError::Corrupt);
     }
 }
 
@@ -470,13 +475,19 @@ fn wal_checksum(bytes: &[u8], mut sum: [u32; 2], big: bool) -> [u32; 2] {
     sum
 }
 
+fn reseal_header(wal: &mut [u8]) -> [u32; 2] {
+    let big = word(wal) & 1 == 1;
+    let sum = wal_checksum(&wal[..24], [0, 0], big);
+    wal[24..28].copy_from_slice(&sum[0].to_be_bytes());
+    wal[28..32].copy_from_slice(&sum[1].to_be_bytes());
+    sum
+}
+
 /// Recomputes header and frame checksums so only the edited field is wrong.
 fn reseal(wal: &mut [u8]) {
     let big = word(wal) & 1 == 1;
     let page = word(&wal[8..]) as usize;
-    let mut sum = wal_checksum(&wal[..24], [0, 0], big);
-    wal[24..28].copy_from_slice(&sum[0].to_be_bytes());
-    wal[28..32].copy_from_slice(&sum[1].to_be_bytes());
+    let mut sum = reseal_header(wal);
     for frame in wal[32..].chunks_exact_mut(24 + page) {
         sum = wal_checksum(&frame[24..], wal_checksum(&frame[..8], sum, big), big);
         frame[16..20].copy_from_slice(&sum[0].to_be_bytes());
@@ -580,8 +591,10 @@ fn product_wal_with_damaged_header_is_refused() {
     let mut version = wal.clone();
     version[4..8].copy_from_slice(&3_007_001u32.to_be_bytes());
     reseal(&mut version);
+    // A valid but different page size would make SQLite misalign every frame.
     let mut page = wal.clone();
     page[8..12].copy_from_slice(&(word(&wal[8..]) * 2).to_be_bytes());
+    reseal_header(&mut page);
     let mut checksum = wal.clone();
     checksum[24] ^= 1;
     for wal in [magic, version, page, checksum] {
@@ -590,6 +603,132 @@ fn product_wal_with_damaged_header_is_refused() {
             &immediate(),
             StorageError::Corrupt,
         );
+    }
+}
+
+/// Main file and pending WAL of a product file, copied while the writer is open.
+fn pending_product_wal(statements: &[&str]) -> (Vec<u8>, Vec<u8>) {
+    let source = fixture();
+    drop(AuditStore::open(&source, &StorageConfig::defaults()).unwrap());
+    let c = Connection::open(&source).unwrap();
+    c.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
+    for sql in statements {
+        c.execute_batch(sql).unwrap();
+    }
+    let pair = (
+        std::fs::read(&source).unwrap(),
+        std::fs::read(sibling(&source, "-wal")).unwrap(),
+    );
+    drop(c);
+    pair
+}
+
+/// Refuses and leaves the main file and the WAL byte-identical; `-shm` may appear.
+fn refused_keeping_pair(path: &std::path::Path, expected: StorageError) {
+    let wal = sibling(path, "-wal");
+    let before = (std::fs::read(path).unwrap(), std::fs::read(&wal).unwrap());
+    assert_eq!(
+        AuditStore::open(path, &StorageConfig::defaults()).unwrap_err(),
+        expected
+    );
+    assert!(
+        std::fs::read(path).unwrap() == before.0,
+        "main file changed"
+    );
+    assert!(std::fs::read(&wal).unwrap() == before.1, "wal changed");
+}
+
+#[test]
+fn refusal_keeps_pending_product_wal_out_of_main_file() {
+    let (main, wal) = pending_product_wal(&["CREATE TABLE extra (x)"]);
+    refused_keeping_pair(&write_pair(&main, &wal), StorageError::UnsupportedSchema);
+}
+
+/// Frame offsets of each transaction, in order.
+fn transactions(wal: &[u8]) -> Vec<Vec<usize>> {
+    let page = word(&wal[8..]) as usize;
+    let mut all = vec![vec![]];
+    for (index, frame) in wal[32..].chunks_exact(24 + page).enumerate() {
+        all.last_mut().unwrap().push(32 + index * (24 + page));
+        if word(&frame[4..]) != 0 {
+            all.push(vec![]);
+        }
+    }
+    all.pop();
+    all
+}
+
+#[test]
+fn damaged_product_wal_frame_before_later_commit_is_refused() {
+    let (main, wal) = pending_product_wal(&[
+        "INSERT INTO meta VALUES ('first', x'01')",
+        "INSERT INTO meta VALUES ('second', zeroblob(20000))",
+        "INSERT INTO meta VALUES ('third', x'03')",
+    ]);
+    let all = transactions(&wal);
+    assert_eq!(all.len(), 3);
+    assert!(all[1].len() > 1);
+    // Break in the middle of a transaction, and in its commit frame.
+    for frame in [all[1][0], *all[1].last().unwrap()] {
+        let mut damaged = wal.clone();
+        damaged[frame + 24 + 100] ^= 1;
+        refused_keeping_pair(&write_pair(&main, &damaged), StorageError::Corrupt);
+    }
+    // A torn last transaction is an ordinary crash: earlier commits survive.
+    let mut torn = wal.clone();
+    torn[all[2][0] + 24 + 100] ^= 1;
+    let path = write_pair(&main, &torn);
+    drop(AuditStore::open(&path, &StorageConfig::defaults()).unwrap());
+    let c = Connection::open(&path).unwrap();
+    let keys: Vec<String> = c
+        .prepare("SELECT key FROM meta ORDER BY key")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(keys, ["first", "second"]);
+}
+
+#[test]
+fn leftover_journal_with_zero_timeout_is_busy() {
+    let path = fixture();
+    std::fs::write(&path, []).unwrap();
+    std::fs::write(sibling(&path, "-journal"), b"in progress").unwrap();
+    refused(&path, &immediate(), StorageError::Busy);
+}
+
+#[test]
+fn journal_still_changing_at_deadline_is_busy() {
+    let path = fixture();
+    std::fs::write(&path, []).unwrap();
+    let journal = sibling(&path, "-journal");
+    std::fs::write(&journal, b"0").unwrap();
+    let done = std::sync::atomic::AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let mut length = 1;
+            while !done.load(Ordering::Relaxed) {
+                length += 1;
+                std::fs::write(&journal, vec![1; length]).unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        });
+        let config = StorageConfig::from_toml_str("busy_timeout_ms = 200").unwrap();
+        let result = AuditStore::open(&path, &config).map(drop);
+        done.store(true, Ordering::Relaxed);
+        assert_eq!(result, Err(StorageError::Busy));
+    });
+    assert_eq!(std::fs::read(&path).unwrap(), b"");
+}
+
+#[test]
+fn inert_journal_beside_product_file_is_refused() {
+    for journal in [vec![], vec![0; 512]] {
+        let path = fixture();
+        drop(AuditStore::open(&path, &StorageConfig::defaults()).unwrap());
+        std::fs::write(sibling(&path, "-journal"), journal).unwrap();
+        refused(&path, &short(), StorageError::Corrupt);
     }
 }
 

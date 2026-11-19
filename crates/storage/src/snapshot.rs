@@ -85,17 +85,52 @@ fn wal_header(wal: &[u8], page: usize) -> Result<(bool, [u32; 2]), StorageError>
     Ok((big, sum))
 }
 
-/// Product files skip the image, but SQLite would silently discard a WAL whose
-/// header is damaged, losing committed frames; refuse that before it opens.
-pub(crate) fn check_wal_header(path: &Path, page: usize) -> Result<(), StorageError> {
-    let mut header = Vec::with_capacity(32);
-    match File::open(wal_path(path)) {
-        Ok(file) => file.take(32).read_to_end(&mut header)?,
+fn fill(reader: &mut impl Read, buffer: &mut [u8]) -> Result<bool, StorageError> {
+    match reader.read_exact(buffer) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Product files skip the image, but SQLite silently discards a WAL with a
+/// damaged header, and every frame after the first invalid one. Refuse when
+/// that would drop a commit made after the transaction holding the break.
+pub(crate) fn check_product_wal(path: &Path, page: usize) -> Result<(), StorageError> {
+    let file = match File::open(wal_path(path)) {
+        Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error.into()),
     };
-    if header.len() == 32 {
-        wal_header(&header, page)?;
+    let mut reader = std::io::BufReader::new(file);
+    let mut header = [0; 32];
+    if !fill(&mut reader, &mut header)? {
+        return Ok(());
+    }
+    let (big, mut sum) = wal_header(&header, page)?;
+    let mut frame = vec![0; 24 + page];
+    let mut broken = false;
+    let mut broken_commit = false;
+    while fill(&mut reader, &mut frame)? {
+        // Frames of an older generation carry other salts and are expected.
+        if frame[8..16] != header[16..24] {
+            broken = true;
+            continue;
+        }
+        if !broken {
+            let next = checksum(&frame[24..], checksum(&frame[..8], sum, big), big);
+            if word(&frame) != 0 && next == [word(&frame[16..]), word(&frame[20..])] {
+                sum = next;
+                continue;
+            }
+            broken = true;
+        }
+        if word(&frame[4..]) != 0 {
+            if broken_commit {
+                return Err(StorageError::Corrupt);
+            }
+            broken_commit = true;
+        }
     }
     Ok(())
 }

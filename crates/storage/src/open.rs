@@ -1,5 +1,5 @@
 use crate::{StorageConfig, StorageError, migrate};
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, config::DbConfig};
 use std::{
     io::Read,
     path::{Path, PathBuf},
@@ -168,10 +168,20 @@ fn residue(path: &Path) -> Result<bool, StorageError> {
     Ok(present(&sibling(path, "-journal"))? || (empty && present(&sibling(path, "-wal"))?))
 }
 
-fn stamp(path: &Path) -> Option<(u64, Option<std::time::SystemTime>)> {
+type Stamp = Option<(u64, Option<std::time::SystemTime>)>;
+
+fn file_stamp(path: &Path) -> Stamp {
     std::fs::metadata(path)
         .ok()
         .map(|meta| (meta.len(), meta.modified().ok()))
+}
+
+fn stamp(path: &Path) -> [Stamp; 3] {
+    [
+        file_stamp(path),
+        file_stamp(&sibling(path, "-wal")),
+        file_stamp(&sibling(path, "-journal")),
+    ]
 }
 
 /// Returns whether the main file exists. Only unmarked files get the private
@@ -184,7 +194,7 @@ fn inspect(path: &Path, config: &StorageConfig) -> Result<bool, StorageError> {
             }
             let kind = header(path)?;
             if let Header::Product { page } = kind {
-                crate::snapshot::check_wal_header(path, page)?;
+                crate::snapshot::check_product_wal(path, page)?;
             }
             if kind == Header::Unmarked {
                 let image = crate::snapshot::image(path, config.inspection_max_bytes)?;
@@ -205,23 +215,34 @@ fn inspect(path: &Path, config: &StorageConfig) -> Result<bool, StorageError> {
     }
 }
 
-/// Waits up to the busy timeout for a concurrent creator's journal to clear;
-/// leftovers that remain refuse as `Corrupt` before SQLite can touch them.
+/// Waits up to the busy timeout for a concurrent creator's journal to clear.
+/// Leftovers that stay unchanged refuse as `Corrupt`; ones still changing, or
+/// any seen with a zero timeout, refuse as `Busy`. SQLite is never reached.
 fn settle(path: &Path, config: &StorageConfig) -> Result<bool, StorageError> {
     let deadline = Instant::now() + Duration::from_millis(config.busy_timeout_ms.into());
+    let mut seen = stamp(path);
+    let mut moving = false;
     loop {
         let mut outcome = Err(StorageError::Corrupt);
         let mut stable = false;
-        if !residue(path)? {
+        let mut blocked = residue(path)?;
+        if !blocked {
             let before = stamp(path);
             outcome = inspect(path, config);
-            if residue(path)? {
+            blocked = residue(path)?;
+            if blocked {
                 outcome = Err(StorageError::Corrupt);
             } else {
                 stable = outcome.is_ok() || stamp(path) == before;
             }
         }
+        let now = stamp(path);
+        moving |= blocked && now != seen;
+        seen = now;
         if stable || Instant::now() >= deadline {
+            if blocked && (moving || config.busy_timeout_ms == 0) {
+                return Err(StorageError::Busy);
+            }
             return outcome;
         }
         std::thread::sleep(Duration::from_millis(10));
@@ -250,11 +271,15 @@ impl AuditStore {
         } else {
             existing_flags() | OpenFlags::SQLITE_OPEN_CREATE
         };
+        let pending = file_stamp(&sibling(path, "-wal")).is_some_and(|(len, _)| len > 32);
         let mut connection = Connection::open_with_flags(path, flags)?;
+        // A refusal must not checkpoint the frames it just refused into the main file.
+        connection.set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, pending)?;
         let inspection =
             connection.transaction_with_behavior(rusqlite::TransactionBehavior::Deferred)?;
         preflight(&inspection, config)?;
         inspection.commit()?;
+        connection.set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, false)?;
         connection.pragma_update(None, "journal_mode", "WAL")?;
         for (name, value) in [
             ("synchronous", 2),
