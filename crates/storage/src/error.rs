@@ -15,7 +15,11 @@ pub enum StorageError {
     ForeignApplication,
     SchemaTooNew,
     UnsupportedSchema,
+    /// Written by a pre-release format no build reads any more; move the file aside.
+    RetiredSchema,
     PragmaMismatch,
+    /// The product connection refused a statement outside its allow-list.
+    Denied,
     /// The event's `seq` is not the next one of its stream.
     Conflict,
     /// A key with this id was registered with different key material.
@@ -44,10 +48,22 @@ impl From<rusqlite::Error> for StorageError {
     fn from(value: rusqlite::Error) -> Self {
         use rusqlite::{Error, ErrorCode};
         match value {
+            // A denied function is reported as a generic error with this message.
+            Error::SqliteFailure(e, Some(message))
+                if e.code == ErrorCode::Unknown && message.starts_with("not authorized") =>
+            {
+                Self::Denied
+            }
+            Error::SqlInputError { error, msg, .. }
+                if error.code == ErrorCode::Unknown && msg.starts_with("not authorized") =>
+            {
+                Self::Denied
+            }
             Error::SqliteFailure(e, _) => match e.code {
                 ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked => Self::Busy,
                 ErrorCode::DatabaseCorrupt | ErrorCode::NotADatabase => Self::Corrupt,
                 ErrorCode::ConstraintViolation => Self::Constraint,
+                ErrorCode::AuthorizationForStatementDenied => Self::Denied,
                 ErrorCode::ReadOnly => Self::ReadOnly,
                 ErrorCode::PermissionDenied => Self::Permission,
                 ErrorCode::CannotOpen => Self::CantOpen,
@@ -98,6 +114,7 @@ mod tests {
             (13, StorageError::Full),
             (5, StorageError::Busy),
             (11, StorageError::Corrupt),
+            (23, StorageError::Denied),
         ] {
             assert_eq!(
                 StorageError::from(rusqlite::Error::SqliteFailure(
@@ -122,5 +139,16 @@ mod tests {
             StorageError::from(rusqlite::Error::QueryReturnedNoRows),
             StorageError::UnsupportedSchema
         );
+        let denied = |message: &str| {
+            StorageError::from(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(1),
+                Some(message.to_owned()),
+            ))
+        };
+        assert_eq!(
+            denied("not authorized to use function: hex"),
+            StorageError::Denied
+        );
+        assert_eq!(denied("no such table: x"), StorageError::Io);
     }
 }

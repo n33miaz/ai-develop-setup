@@ -10,6 +10,7 @@ pub struct StorageConfig {
     pub(crate) integrity_check_on_open: bool,
     pub(crate) max_event_bytes: usize,
     pub(crate) read_page_limit: u32,
+    pub(crate) read_page_max_bytes: usize,
 }
 
 #[derive(Deserialize)]
@@ -20,6 +21,7 @@ struct Layer {
     integrity_check_on_open: Option<bool>,
     max_event_bytes: Option<usize>,
     read_page_limit: Option<u32>,
+    read_page_max_bytes: Option<usize>,
     encryption: Option<String>,
     cipher: Option<String>,
     journal_mode: Option<String>,
@@ -48,6 +50,17 @@ impl StorageConfig {
             .or(base.busy_timeout_ms)
             .filter(|n| *n <= 60_000)
             .ok_or(StorageError::Configuration)?;
+        let max_event_bytes = over
+            .max_event_bytes
+            .or(base.max_event_bytes)
+            .filter(|n| (64..=16_777_216).contains(n))
+            .ok_or(StorageError::Configuration)?;
+        // One event of the largest allowed size always fits in a page.
+        let read_page_max_bytes = over
+            .read_page_max_bytes
+            .or(base.read_page_max_bytes)
+            .filter(|n| (max_event_bytes..=268_435_456).contains(n))
+            .ok_or(StorageError::Configuration)?;
         Ok(Self {
             busy_timeout_ms,
             inspection_max_bytes: over
@@ -59,11 +72,8 @@ impl StorageConfig {
                 .integrity_check_on_open
                 .or(base.integrity_check_on_open)
                 .ok_or(StorageError::Configuration)?,
-            max_event_bytes: over
-                .max_event_bytes
-                .or(base.max_event_bytes)
-                .filter(|n| (64..=16_777_216).contains(n))
-                .ok_or(StorageError::Configuration)?,
+            max_event_bytes,
+            read_page_max_bytes,
             read_page_limit: over
                 .read_page_limit
                 .or(base.read_page_limit)
@@ -84,6 +94,9 @@ impl StorageConfig {
     pub fn read_page_limit(&self) -> u32 {
         self.read_page_limit
     }
+    pub fn read_page_max_bytes(&self) -> usize {
+        self.read_page_max_bytes
+    }
 }
 
 #[cfg(test)]
@@ -96,6 +109,13 @@ mod tests {
         assert_eq!(over.busy_timeout_ms(), 17);
         assert_eq!(base.max_event_bytes(), 1_048_576);
         assert_eq!(base.read_page_limit(), 500);
+        assert_eq!(base.read_page_max_bytes(), 8_388_608);
+        let paged = StorageConfig::from_toml_str(
+            "max_event_bytes = 64
+read_page_max_bytes = 64",
+        )
+        .unwrap();
+        assert_eq!(paged.read_page_max_bytes(), 64);
         let over_log = StorageConfig::from_toml_str(
             "max_event_bytes = 64
 read_page_limit = 1",
@@ -118,6 +138,9 @@ read_page_limit = 1",
             "max_event_bytes = 16777217",
             "read_page_limit = 0",
             "read_page_limit = 10001",
+            "read_page_max_bytes = 1048575",
+            "read_page_max_bytes = 268435457",
+            "max_event_bytes = 16777216",
             "synchronous = 'normal'",
             "encryption = 'none'",
             "cipher = 'other'",

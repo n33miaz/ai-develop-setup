@@ -206,30 +206,35 @@ fn rotation_reads_old_rows_with_older_key() {
     assert_eq!(log.verify_chain(), Ok(4));
 }
 
-/// Runs `sql` on a raw connection with the append-only triggers dropped, then
-/// recreates them with identical text so the schema check still passes.
-fn tamper(path: &Path, sql: &str, blob: Option<Vec<u8>>) {
+/// Runs `change` on a raw connection with every append-only trigger dropped,
+/// then recreates them with identical text so the schema check still passes.
+fn tamper_with(path: &Path, change: impl FnOnce(&Connection)) {
     let c = Connection::open(path).unwrap();
     let triggers: Vec<(String, String)> = c
-        .prepare(
-            "SELECT name, sql FROM sqlite_schema WHERE type = 'trigger' AND tbl_name = 'event'",
-        )
+        .prepare("SELECT name, sql FROM sqlite_schema WHERE type = 'trigger'")
         .unwrap()
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap();
-    assert_eq!(triggers.len(), 3);
+    assert_eq!(triggers.len(), 6);
     for (name, _) in &triggers {
         c.execute_batch(&format!("DROP TRIGGER {name}")).unwrap();
     }
-    match blob {
-        Some(bytes) => assert_eq!(c.execute(sql, [bytes]).unwrap(), 1),
-        None => assert_eq!(c.execute(sql, []).unwrap(), 1),
-    };
+    change(&c);
     for (_, sql) in &triggers {
         c.execute_batch(sql).unwrap();
     }
+}
+
+/// `tamper_with` for one statement that must change exactly one row.
+fn tamper(path: &Path, sql: &str, blob: Option<Vec<u8>>) {
+    tamper_with(path, |c| {
+        match blob {
+            Some(bytes) => assert_eq!(c.execute(sql, [bytes]).unwrap(), 1),
+            None => assert_eq!(c.execute(sql, []).unwrap(), 1),
+        };
+    });
 }
 
 fn data_ct(path: &Path, position: i64) -> Vec<u8> {
@@ -458,8 +463,9 @@ fn seq_gap_or_repeat_is_refused_by_api_and_database() {
     let insert = |id: &str, seq: &str, position: &str, prev: &str, verb: &str| {
         c.execute(
             &format!(
-                "{verb} INTO event SELECT {position}, '{id}', type, ts, stream, {seq}, \
-                 actor_kind, actor_id, cause, data_class, key_id, nonce, data_ct, {prev}, chain \
+                "{verb} INTO event SELECT {position}, format, '{id}', type, ts, stream, {seq}, \
+                 actor_kind, actor_id, cause, data_class, action_id, approval_id, key_id, \
+                 nonce, data_ct, {prev}, chain \
                  FROM event WHERE position = (SELECT max(position) FROM event)"
             ),
             [],
@@ -654,4 +660,847 @@ fn oversized_event_is_refused_without_writing_and_reads_are_paged() {
     assert_eq!(seqs(3), [3, 4]);
     assert_eq!(seqs(5), [5]);
     assert_eq!(seqs(6), Vec::<u64>::new());
+}
+
+fn count(path: &Path) -> i64 {
+    Connection::open(path)
+        .unwrap()
+        .query_row("SELECT count(*) FROM event", [], |r| r.get(0))
+        .unwrap()
+}
+
+fn refused(result: rusqlite::Result<usize>, what: &str) {
+    match result {
+        Err(rusqlite::Error::SqliteFailure(e, _)) => {
+            assert_eq!(e.code, rusqlite::ErrorCode::ConstraintViolation, "{what}")
+        }
+        other => panic!("not refused: {what} {other:?}"),
+    }
+}
+
+#[test]
+fn every_write_verb_that_could_replace_or_skip_is_refused() {
+    let path = fixture();
+    let mut log = open(&path);
+    three(&mut log);
+    drop(log);
+    let c = Connection::open(&path).unwrap();
+    let last_id: String = c
+        .query_row("SELECT id FROM event WHERE position = 3", [], |r| r.get(0))
+        .unwrap();
+    // A copy of the last row with a new id and the next position and link, but
+    // the repeated (stream, seq) 3: REPLACE would delete the old row silently.
+    let copy = |verb: &str, seq: &str, tail: &str| {
+        c.execute(
+            &format!(
+                "{verb} INTO event SELECT position + 1, format, '01J00000000000000000000077', \
+                 type, ts, stream, {seq}, actor_kind, actor_id, cause, data_class, action_id, \
+                 approval_id, key_id, nonce, data_ct, chain, chain \
+                 FROM event WHERE position = 3 {tail}"
+            ),
+            [],
+        )
+    };
+    refused(copy("INSERT OR REPLACE", "seq", ""), "insert or replace");
+    refused(copy("REPLACE", "seq", ""), "replace into");
+    refused(copy("INSERT OR IGNORE", "seq + 2", ""), "insert or ignore");
+    refused(
+        copy(
+            "INSERT",
+            "seq",
+            "ON CONFLICT (stream, seq) DO UPDATE SET ts = excluded.ts",
+        ),
+        "upsert update",
+    );
+    refused(
+        copy("INSERT", "seq", "ON CONFLICT DO NOTHING"),
+        "upsert nothing",
+    );
+    refused(
+        c.execute("UPDATE OR REPLACE event SET seq = 2 WHERE position = 3", []),
+        "update or replace",
+    );
+    let still: String = c
+        .query_row(
+            "SELECT id FROM event WHERE stream = 'task/t1' AND seq = 3",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(still, last_id);
+    drop(c);
+    assert_eq!(count(&path), 3);
+    let log = open(&path);
+    assert_eq!(log.verify_chain(), Ok(3));
+    assert_eq!(log.read_stream(&stream("task/t1"), 1, 10).unwrap().len(), 3);
+}
+
+#[test]
+fn ciphertext_swapped_between_rows_is_refused() {
+    let path = fixture();
+    let mut log = open(&path);
+    three(&mut log);
+    drop(log);
+    tamper(
+        &path,
+        "UPDATE event SET (nonce, data_ct) = \
+         (SELECT nonce, data_ct FROM event WHERE position = 3) WHERE position = 2",
+        None,
+    );
+    let log = open(&path);
+    assert_eq!(
+        log.read_stream(&stream("task/t1"), 2, 1).unwrap_err(),
+        StorageError::Tampered
+    );
+    assert_eq!(
+        log.verify_chain(),
+        Err(StorageError::ChainBroken { position: 2 })
+    );
+}
+
+#[test]
+fn reordered_rows_break_the_chain() {
+    let path = fixture();
+    let mut log = open(&path);
+    three(&mut log);
+    drop(log);
+    tamper_with(&path, |c| {
+        c.execute_batch(
+            "UPDATE event SET position = 100 WHERE position = 2;
+             UPDATE event SET position = 2 WHERE position = 3;
+             UPDATE event SET position = 3 WHERE position = 100;",
+        )
+        .unwrap();
+    });
+    assert_eq!(
+        open(&path).verify_chain(),
+        Err(StorageError::ChainBroken { position: 2 })
+    );
+}
+
+#[test]
+fn cut_tail_passes_but_a_forged_row_does_not() {
+    // Known limit: without an anchor outside the file, a cut tail is a valid chain.
+    let path = fixture();
+    let mut log = open(&path);
+    three(&mut log);
+    drop(log);
+    tamper(&path, "DELETE FROM event WHERE position = 3", None);
+    assert_eq!(open(&path).verify_chain(), Ok(2));
+    // A plain INSERT, no trigger removed, with every clear column right but a link
+    // computed without the key: the database takes it, the chain refuses it.
+    let path = fixture();
+    let mut log = open(&path);
+    three(&mut log);
+    drop(log);
+    let c = Connection::open(&path).unwrap();
+    assert_eq!(
+        c.execute(
+            "INSERT INTO event SELECT 4, format, '01J00000000000000000000004', type, ts, \
+             stream, 4, actor_kind, actor_id, NULL, data_class, action_id, approval_id, key_id, \
+             randomblob(24), randomblob(40), chain, randomblob(32) \
+             FROM event WHERE position = 3",
+            [],
+        )
+        .unwrap(),
+        1
+    );
+    drop(c);
+    let log = open(&path);
+    assert_eq!(
+        log.verify_chain(),
+        Err(StorageError::ChainBroken { position: 4 })
+    );
+    assert_eq!(
+        log.read_stream(&stream("task/t1"), 4, 1).unwrap_err(),
+        StorageError::Tampered
+    );
+}
+
+#[test]
+fn held_write_lock_gives_busy_without_writing() {
+    let path = fixture();
+    let config = StorageConfig::from_toml_str("busy_timeout_ms = 0").unwrap();
+    // Opened before the lock is taken: opening runs the migration under it.
+    let mut log = EventLog::open(&path, &config, keys("key-a", 1)).unwrap();
+    let holder = Connection::open(&path).unwrap();
+    holder.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let first = event("task/t1", 1, 1, serde_json::json!({}));
+    assert_eq!(log.append(&first).unwrap_err(), StorageError::Busy);
+    assert_eq!(log.head(&stream("task/t1")), Ok(0));
+    holder.execute_batch("COMMIT").unwrap();
+    // Busy means retry the same event.
+    assert_eq!(log.append(&first).unwrap().get(), 1);
+}
+
+#[test]
+fn tampered_key_check_is_wrong_key() {
+    let path = fixture();
+    let mut log = open(&path);
+    three(&mut log);
+    drop(log);
+    tamper(
+        &path,
+        "UPDATE cipher_key SET key_check = ?1 WHERE key_id = 'key-a'",
+        Some(vec![7; 16]),
+    );
+    assert_eq!(
+        EventLog::open(&path, &StorageConfig::defaults(), keys("key-a", 1)).unwrap_err(),
+        StorageError::WrongKey
+    );
+}
+
+/// Provider whose `current()` can be made to disagree with its own `by_id`.
+struct Flaky(std::sync::Arc<std::sync::atomic::AtomicBool>);
+impl KeyProvider for Flaky {
+    fn current(&self) -> Result<(KeyId, SecretKey), CipherError> {
+        let byte = if self.0.load(Ordering::SeqCst) { 9 } else { 1 };
+        Ok((KeyId::new("key-a")?, SecretKey::new(&[byte; 32])))
+    }
+    fn by_id(&self, id: &KeyId) -> Result<SecretKey, CipherError> {
+        match id.as_str() {
+            "key-a" => Ok(SecretKey::new(&[1; 32])),
+            _ => Err(CipherError::KeyUnavailable),
+        }
+    }
+}
+
+#[test]
+fn provider_whose_current_and_by_id_disagree_is_refused_before_writing() {
+    let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let path = fixture();
+    assert_eq!(
+        EventLog::open(
+            &path,
+            &StorageConfig::defaults(),
+            Box::new(Flaky(flag.clone()))
+        )
+        .unwrap_err(),
+        StorageError::WrongKey
+    );
+    flag.store(false, Ordering::SeqCst);
+    let mut log = EventLog::open(
+        &path,
+        &StorageConfig::defaults(),
+        Box::new(Flaky(flag.clone())),
+    )
+    .unwrap();
+    flag.store(true, Ordering::SeqCst);
+    let e = event("task/t1", 1, 1, serde_json::json!({}));
+    assert_eq!(log.append(&e).unwrap_err(), StorageError::WrongKey);
+    assert_eq!(count(&path), 0);
+    flag.store(false, Ordering::SeqCst);
+    log.append(&e).unwrap();
+    assert_eq!(log.read_stream(&stream("task/t1"), 1, 1).unwrap().len(), 1);
+}
+
+fn gate_event(
+    kind: &str,
+    stream_name: &str,
+    seq: u64,
+    n: u64,
+    data: serde_json::Value,
+) -> EventEnvelopeV1 {
+    EventEnvelopeV1 {
+        r#type: EventEnvelopeV1Type::new(kind).unwrap(),
+        ..event(stream_name, seq, n, data)
+    }
+}
+
+#[test]
+fn gate_ids_are_clear_columns_bound_to_the_row() {
+    let path = fixture();
+    let mut log = open(&path);
+    log.append(&gate_event(
+        "urn:ads:event:action.planned:1",
+        "action/a1",
+        1,
+        1,
+        serde_json::json!({ "action_id": "a1" }),
+    ))
+    .unwrap();
+    log.append(&gate_event(
+        "urn:ads:event:approval.requested:2",
+        "approval/ap1",
+        1,
+        2,
+        serde_json::json!({ "action_id": "a1", "approval_id": "ap1" }),
+    ))
+    .unwrap();
+    log.append(&gate_event(
+        "urn:ads:event:action.started:1",
+        "action/a1",
+        2,
+        3,
+        serde_json::json!({ "action_id": "a1", "approval_id": "ap1" }),
+    ))
+    .unwrap();
+    log.append(&event(
+        "task/t1",
+        1,
+        4,
+        serde_json::json!({ "action_id": "a1" }),
+    ))
+    .unwrap();
+    // The id named by data must be the stream's own.
+    assert_eq!(
+        log.append(&gate_event(
+            "urn:ads:event:action.executed:1",
+            "action/a1",
+            3,
+            5,
+            serde_json::json!({ "action_id": "a2", "approval_id": "ap1" }),
+        ))
+        .unwrap_err(),
+        StorageError::InvalidEvent
+    );
+    drop(log);
+    let c = Connection::open(&path).unwrap();
+    let ids: Vec<(Option<String>, Option<String>)> = c
+        .prepare("SELECT action_id, approval_id FROM event ORDER BY position")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let some = |s: &str| Some(s.to_owned());
+    assert_eq!(
+        ids,
+        [
+            (some("a1"), None),
+            (some("a1"), some("ap1")),
+            (some("a1"), some("ap1")),
+            (None, None),
+        ]
+    );
+    // The database refuses an action row whose clear id is not its stream's.
+    refused(
+        c.execute(
+            "INSERT INTO event SELECT 5, format, '01J00000000000000000000005', type, ts, \
+             stream, 3, actor_kind, actor_id, cause, data_class, 'a2', approval_id, key_id, \
+             nonce, data_ct, (SELECT chain FROM event WHERE position = 4), chain \
+             FROM event WHERE position = 3",
+            [],
+        ),
+        "action_id of another stream",
+    );
+    drop(c);
+    for (sql, read) in [
+        (
+            "UPDATE event SET approval_id = NULL WHERE position = 3",
+            "action/a1",
+        ),
+        (
+            "UPDATE event SET action_id = 'a9' WHERE position = 2",
+            "approval/ap1",
+        ),
+    ] {
+        let copy = fixture();
+        std::fs::copy(&path, &copy).unwrap();
+        tamper(&copy, sql, None);
+        let log = open(&copy);
+        assert_eq!(
+            log.read_stream(&stream(read), 1, 10).unwrap_err(),
+            StorageError::Tampered,
+            "{sql}"
+        );
+        assert!(
+            matches!(log.verify_chain(), Err(StorageError::ChainBroken { .. })),
+            "{sql}"
+        );
+    }
+}
+
+#[test]
+fn type_and_stream_family_are_bounded() {
+    let path = fixture();
+    let mut log = open(&path);
+    let kind = |n: usize| format!("urn:ads:event:task.{}:1", "a".repeat(n));
+    // "urn:ads:event:task." is 19 bytes and ":1" two: 107 letters reach 128.
+    let at_limit = gate_event(&kind(107), "task/t1", 1, 1, serde_json::json!({}));
+    assert_eq!(at_limit.r#type.as_str().len(), 128);
+    log.append(&at_limit).unwrap();
+    assert_eq!(
+        log.append(&gate_event(
+            &kind(108),
+            "task/t1",
+            2,
+            2,
+            serde_json::json!({})
+        ))
+        .unwrap_err(),
+        StorageError::InvalidEvent
+    );
+    let family = |n: usize| format!("{}/x", "f".repeat(n));
+    log.append(&event(&family(32), 1, 3, serde_json::json!({})))
+        .unwrap();
+    assert_eq!(
+        log.append(&event(&family(33), 1, 4, serde_json::json!({})))
+            .unwrap_err(),
+        StorageError::InvalidEvent
+    );
+    assert_eq!(log.verify_chain(), Ok(2));
+}
+
+#[test]
+fn event_size_limit_is_inclusive_and_empty_reads_are_empty() {
+    let path = fixture();
+    let config = StorageConfig::from_toml_str("max_event_bytes = 64").unwrap();
+    let mut log = EventLog::open(&path, &config, keys("key-a", 1)).unwrap();
+    // The JSON around the text, {"t":""}, takes 8 bytes.
+    let sized = |n: usize, seq| {
+        event(
+            "task/t1",
+            seq,
+            seq,
+            serde_json::json!({ "t": "x".repeat(n) }),
+        )
+    };
+    log.append(&sized(56, 1)).unwrap();
+    assert_eq!(
+        log.append(&sized(57, 2)).unwrap_err(),
+        StorageError::TooLarge
+    );
+    assert_eq!(log.head(&stream("task/t1")), Ok(1));
+    assert!(
+        log.read_stream(&stream("task/t1"), 1, 0)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        log.read_stream(&stream("task/none"), 1, 10)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        log.read_stream(&stream("task/t1"), 2, 10)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn page_stops_at_the_byte_budget_and_always_makes_progress() {
+    let path = fixture();
+    let config =
+        StorageConfig::from_toml_str("max_event_bytes = 64\nread_page_max_bytes = 150").unwrap();
+    let mut log = EventLog::open(&path, &config, keys("key-a", 1)).unwrap();
+    // 50 bytes of JSON each, 66 of ciphertext: two fit in 150, three do not.
+    for n in 1..=5 {
+        log.append(&event(
+            "task/t1",
+            n,
+            n,
+            serde_json::json!({ "t": "y".repeat(42) }),
+        ))
+        .unwrap();
+    }
+    let seqs = |log: &EventLog, from| -> Vec<u64> {
+        log.read_stream(&stream("task/t1"), from, 100)
+            .unwrap()
+            .iter()
+            .map(|s| s.event.seq.get())
+            .collect()
+    };
+    assert_eq!(seqs(&log, 1), [1, 2]);
+    assert_eq!(seqs(&log, 3), [3, 4]);
+    assert_eq!(seqs(&log, 5), [5]);
+    drop(log);
+    // A budget smaller than one row still returns that row alone.
+    let tight =
+        StorageConfig::from_toml_str("max_event_bytes = 64\nread_page_max_bytes = 64").unwrap();
+    let log = EventLog::open(&path, &tight, keys("key-a", 1)).unwrap();
+    assert_eq!(seqs(&log, 1), [1]);
+    assert_eq!(seqs(&log, 2), [2]);
+}
+
+/// Version 1 file: `meta` only, marked by the product.
+fn version_one(path: &Path) {
+    let c = Connection::open(path).unwrap();
+    c.pragma_update(None, "journal_mode", "WAL").unwrap();
+    c.execute_batch(
+        "CREATE TABLE meta (key TEXT PRIMARY KEY, value BLOB NOT NULL) STRICT, WITHOUT ROWID",
+    )
+    .unwrap();
+    c.pragma_update(None, "application_id", APPLICATION_ID)
+        .unwrap();
+    c.pragma_update(None, "user_version", 1).unwrap();
+}
+
+#[test]
+fn concurrent_openers_of_a_version_one_file_both_succeed() {
+    for _ in 0..5 {
+        let path = fixture();
+        version_one(&path);
+        let barrier = std::sync::Barrier::new(2);
+        let results: Vec<_> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..2)
+                .map(|_| {
+                    let (barrier, path) = (&barrier, &path);
+                    scope.spawn(move || {
+                        barrier.wait();
+                        AuditStore::open(path, &StorageConfig::defaults()).map(drop)
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        assert_eq!(results, [Ok(()), Ok(())]);
+        let mut log = open(&path);
+        three(&mut log);
+        assert_eq!(log.verify_chain(), Ok(3));
+    }
+}
+
+/// The pre-release version 2 event table, kept only to prove such files are refused.
+const RETIRED_EVENT_TABLE: &str = "CREATE TABLE event (
+  position INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, type TEXT NOT NULL,
+  ts TEXT NOT NULL, stream TEXT NOT NULL, seq INTEGER NOT NULL, actor_kind TEXT NOT NULL,
+  actor_id TEXT NOT NULL, cause TEXT, data_class TEXT NOT NULL, key_id TEXT NOT NULL,
+  nonce BLOB NOT NULL, data_ct BLOB NOT NULL, prev_chain BLOB NOT NULL, chain BLOB NOT NULL,
+  UNIQUE (stream, seq)) STRICT";
+
+#[test]
+fn retired_version_two_and_meta_only_current_files_are_refused_unchanged() {
+    for (extra, version, expected) in [
+        (RETIRED_EVENT_TABLE, 2, StorageError::RetiredSchema),
+        ("", 2, StorageError::RetiredSchema),
+        ("", SCHEMA_VERSION, StorageError::UnsupportedSchema),
+    ] {
+        let path = fixture();
+        version_one(&path);
+        let c = Connection::open(&path).unwrap();
+        if !extra.is_empty() {
+            c.execute_batch(extra).unwrap();
+        }
+        c.pragma_update(None, "user_version", version).unwrap();
+        c.pragma_update(None, "wal_checkpoint", "TRUNCATE").unwrap();
+        drop(c);
+        let before = std::fs::read(&path).unwrap();
+        assert_eq!(
+            EventLog::open(&path, &StorageConfig::defaults(), keys("key-a", 1)).unwrap_err(),
+            expected,
+            "{version} {}",
+            extra.len()
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+}
+
+/// `action/a1`, `approval/ap1` and `task/t1`, one event each.
+fn gate_log(path: &Path) {
+    let mut log = open(path);
+    log.append(&gate_event(
+        "urn:ads:event:action.planned:1",
+        "action/a1",
+        1,
+        1,
+        serde_json::json!({ "action_id": "a1" }),
+    ))
+    .unwrap();
+    log.append(&gate_event(
+        "urn:ads:event:approval.requested:2",
+        "approval/ap1",
+        1,
+        2,
+        serde_json::json!({ "action_id": "a1", "approval_id": "ap1" }),
+    ))
+    .unwrap();
+    log.append(&event("task/t1", 1, 3, serde_json::json!({})))
+        .unwrap();
+}
+
+/// Plain INSERT, triggers intact: a copy of position 1 continuing the chain
+/// and the stream, with the given stream, type and clear ids.
+fn insert_copy(
+    c: &Connection,
+    stream_name: &str,
+    kind: &str,
+    action_id: Option<&str>,
+    approval_id: Option<&str>,
+) -> rusqlite::Result<usize> {
+    c.execute(
+        "INSERT INTO event SELECT (SELECT max(position) FROM event) + 1, format, \
+         printf('01J%023d', (SELECT max(position) FROM event) + 100), ?2, ts, ?1, \
+         coalesce((SELECT max(seq) FROM event WHERE stream = ?1), 0) + 1, actor_kind, \
+         actor_id, cause, data_class, ?3, ?4, key_id, nonce, data_ct, \
+         (SELECT chain FROM event ORDER BY position DESC LIMIT 1), chain \
+         FROM event WHERE position = 1",
+        rusqlite::params![stream_name, kind, action_id, approval_id],
+    )
+}
+
+#[test]
+fn database_binds_gate_ids_and_type_family_to_the_stream_family() {
+    let path = fixture();
+    gate_log(&path);
+    let c = Connection::open(&path).unwrap();
+    let planned = "urn:ads:event:action.planned:1";
+    let granted = "urn:ads:event:approval.granted:2";
+    let noted = "urn:ads:event:task.noted:1";
+    for (stream_name, kind, action_id, approval_id, what) in [
+        (
+            "approval/ap1",
+            granted,
+            Some("a1"),
+            None,
+            "approval id missing",
+        ),
+        (
+            "approval/ap1",
+            granted,
+            Some("a1"),
+            Some("ap2"),
+            "approval id of another stream",
+        ),
+        ("action/a1", planned, None, None, "action id missing"),
+        (
+            "task/x",
+            noted,
+            None,
+            Some("ap1"),
+            "approval id outside the gate",
+        ),
+        (
+            "task/x",
+            noted,
+            Some("a1"),
+            None,
+            "action id outside the gate",
+        ),
+        (
+            "task/x",
+            "urn:ads:event:action.started:1",
+            None,
+            None,
+            "action type on task",
+        ),
+        ("task/x", granted, None, None, "approval type on task"),
+        ("action/a1", noted, Some("a1"), None, "task type on action"),
+        (
+            "approval/ap1",
+            noted,
+            None,
+            Some("ap1"),
+            "task type on approval",
+        ),
+        (
+            "action/a1",
+            granted,
+            Some("a1"),
+            None,
+            "approval type on action",
+        ),
+        (
+            "approval/ap1",
+            planned,
+            Some("a1"),
+            Some("ap1"),
+            "action type on approval",
+        ),
+    ] {
+        refused(
+            insert_copy(&c, stream_name, kind, action_id, approval_id),
+            what,
+        );
+    }
+    // Controls: the same copy with consistent columns is taken by the database.
+    for (stream_name, kind, action_id, approval_id) in [
+        ("task/x", noted, None, None),
+        ("approval/ap1", granted, Some("a1"), Some("ap1")),
+        ("action/a1", planned, Some("a1"), None),
+    ] {
+        assert_eq!(
+            insert_copy(&c, stream_name, kind, action_id, approval_id).unwrap(),
+            1,
+            "{stream_name}"
+        );
+    }
+}
+
+#[test]
+fn verify_chain_reports_the_position_of_rows_it_cannot_link() {
+    // A row under a key id registered by the forger: the provider has no key.
+    let path = fixture();
+    let mut log = open(&path);
+    three(&mut log);
+    drop(log);
+    let c = Connection::open(&path).unwrap();
+    c.execute(
+        "INSERT INTO cipher_key VALUES ('zz', 'xchacha20poly1305', zeroblob(24), zeroblob(16))",
+        [],
+    )
+    .unwrap();
+    c.execute(
+        "INSERT INTO event SELECT 4, format, '01J00000000000000000000004', type, ts, stream, \
+         4, actor_kind, actor_id, NULL, data_class, action_id, approval_id, 'zz', nonce, \
+         data_ct, chain, randomblob(32) FROM event WHERE position = 3",
+        [],
+    )
+    .unwrap();
+    drop(c);
+    assert_eq!(
+        open(&path).verify_chain(),
+        Err(StorageError::ChainBroken { position: 4 })
+    );
+    // A row of a format this build does not know.
+    let path = fixture();
+    let mut log = open(&path);
+    three(&mut log);
+    drop(log);
+    let c = Connection::open(&path).unwrap();
+    c.execute(
+        "INSERT INTO event SELECT 4, 2, '01J00000000000000000000004', type, ts, stream, 4, \
+         actor_kind, actor_id, NULL, data_class, action_id, approval_id, key_id, nonce, \
+         data_ct, chain, chain FROM event WHERE position = 3",
+        [],
+    )
+    .unwrap();
+    drop(c);
+    assert_eq!(
+        open(&path).verify_chain(),
+        Err(StorageError::ChainBroken { position: 4 })
+    );
+}
+
+#[test]
+fn altered_format_and_lost_old_key() {
+    let path = fixture();
+    let mut log = open(&path);
+    three(&mut log);
+    drop(log);
+    let copy = fixture();
+    std::fs::copy(&path, &copy).unwrap();
+    tamper(
+        &copy,
+        "UPDATE event SET format = 2 WHERE position = 2",
+        None,
+    );
+    let log = open(&copy);
+    assert_eq!(
+        log.read_stream(&stream("task/t1"), 2, 1).unwrap_err(),
+        StorageError::UnsupportedSchema
+    );
+    assert_eq!(
+        log.verify_chain(),
+        Err(StorageError::ChainBroken { position: 2 })
+    );
+    // A provider that lost key-a: reading says so; the chain cannot vouch for row 1.
+    let lost = EventLog::open(&path, &StorageConfig::defaults(), keys("key-b", 3)).unwrap();
+    assert_eq!(
+        lost.read_stream(&stream("task/t1"), 1, 1).unwrap_err(),
+        StorageError::KeyUnavailable
+    );
+    assert_eq!(
+        lost.verify_chain(),
+        Err(StorageError::ChainBroken { position: 1 })
+    );
+}
+
+#[test]
+fn tampering_right_after_a_key_rotation_breaks_the_chain_there() {
+    let path = fixture();
+    let mut log = open(&path);
+    three(&mut log);
+    drop(log);
+    let rotated = || {
+        Box::new(Keys {
+            current: ("key-b", 3),
+            older: vec![("key-a", 1)],
+        })
+    };
+    let mut log = EventLog::open(&path, &StorageConfig::defaults(), rotated()).unwrap();
+    log.append(&event("task/t1", 4, 4, serde_json::json!({ "n": 4 })))
+        .unwrap();
+    log.append(&event("task/t1", 5, 5, serde_json::json!({ "n": 5 })))
+        .unwrap();
+    assert_eq!(log.verify_chain(), Ok(5));
+    drop(log);
+    tamper(
+        &path,
+        "UPDATE event SET ts = '2026-11-19T12:00:09Z' WHERE position = 4",
+        None,
+    );
+    let log = EventLog::open(&path, &StorageConfig::defaults(), rotated()).unwrap();
+    assert_eq!(
+        log.verify_chain(),
+        Err(StorageError::ChainBroken { position: 4 })
+    );
+}
+
+/// Provider whose `current()` hands out other key material from call `flip` on,
+/// while `by_id` stays the same: the material changes in the middle of a call.
+struct Drifting {
+    calls: std::sync::Arc<AtomicU64>,
+    flip: u64,
+}
+impl KeyProvider for Drifting {
+    fn current(&self) -> Result<(KeyId, SecretKey), CipherError> {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        let byte = if call >= self.flip { 9 } else { 1 };
+        Ok((KeyId::new("key-a")?, SecretKey::new(&[byte; 32])))
+    }
+    fn by_id(&self, id: &KeyId) -> Result<SecretKey, CipherError> {
+        match id.as_str() {
+            "key-a" => Ok(SecretKey::new(&[1; 32])),
+            _ => Err(CipherError::KeyUnavailable),
+        }
+    }
+}
+
+#[test]
+fn provider_changing_during_append_never_leaves_an_unreadable_row() {
+    for flip in 0..8 {
+        let path = fixture();
+        let calls = std::sync::Arc::new(AtomicU64::new(0));
+        let provider = Box::new(Drifting {
+            calls: calls.clone(),
+            flip,
+        });
+        let Ok(mut log) = EventLog::open(&path, &StorageConfig::defaults(), provider) else {
+            continue;
+        };
+        let opened = calls.load(Ordering::SeqCst);
+        for n in 1..=3 {
+            let e = event("task/t1", n, n, serde_json::json!({ "n": n }));
+            match log.append(&e) {
+                Ok(_) => {}
+                Err(error) => {
+                    assert_eq!(error, StorageError::WrongKey, "flip {flip}");
+                    break;
+                }
+            }
+        }
+        // Whatever was written reads back and links, wherever the flip landed.
+        let head = log.head(&stream("task/t1")).unwrap();
+        assert_eq!(
+            log.read_stream(&stream("task/t1"), 1, 10).unwrap().len() as u64,
+            head,
+            "flip {flip} after {opened}"
+        );
+        assert_eq!(log.verify_chain(), Ok(head), "flip {flip}");
+    }
+}
+
+#[test]
+fn read_stream_refuses_a_missing_seq_inside_the_page() {
+    let path = fixture();
+    let mut log = open(&path);
+    three(&mut log);
+    log.append(&event("task/t1", 4, 4, serde_json::json!({})))
+        .unwrap();
+    drop(log);
+    tamper(&path, "DELETE FROM event WHERE position = 2", None);
+    let log = open(&path);
+    assert_eq!(
+        log.read_stream(&stream("task/t1"), 1, 10).unwrap_err(),
+        StorageError::ChainBroken { position: 3 }
+    );
+    // Starting at the missing seq is refused too.
+    assert_eq!(
+        log.read_stream(&stream("task/t1"), 2, 10).unwrap_err(),
+        StorageError::ChainBroken { position: 3 }
+    );
+    // After the gap the rows still read.
+    assert_eq!(log.read_stream(&stream("task/t1"), 3, 10).unwrap().len(), 2);
 }

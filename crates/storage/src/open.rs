@@ -1,5 +1,9 @@
 use crate::{StorageConfig, StorageError, migrate};
-use rusqlite::{Connection, OpenFlags, config::DbConfig};
+use rusqlite::{
+    Connection, OpenFlags,
+    config::DbConfig,
+    hooks::{AuthAction, AuthContext, Authorization},
+};
 use std::{
     io::Read,
     path::{Path, PathBuf},
@@ -7,7 +11,7 @@ use std::{
 };
 
 pub const APPLICATION_ID: i64 = 0x41445331;
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 /// Owns the connection; raw SQL remains private to storage.
 pub struct AuditStore {
@@ -36,6 +40,9 @@ fn preflight(c: &Connection, config: &StorageConfig) -> Result<(), StorageError>
     }
     if version < 0 || (id == 0 && version != 0) || (id == APPLICATION_ID && version < 1) {
         return Err(StorageError::UnsupportedSchema);
+    }
+    if id == APPLICATION_ID {
+        migrate::readable(version)?;
     }
     let count: i64 = c.query_row("SELECT count(*) FROM sqlite_schema", [], |r| r.get(0))?;
     if id == 0 && count != 0 {
@@ -106,6 +113,9 @@ fn header(path: &Path) -> Result<Header, StorageError> {
     }
     if version < 0 || (id == 0 && version != 0) || (id == APPLICATION_ID && version < 1) {
         return Err(StorageError::UnsupportedSchema);
+    }
+    if id == APPLICATION_ID {
+        migrate::readable(version)?;
     }
     Ok(if id == APPLICATION_ID {
         Header::Product {
@@ -222,6 +232,42 @@ fn settle(path: &Path, config: &StorageConfig) -> Result<bool, StorageError> {
     }
 }
 
+/// Functions the product's statements, `CHECK`s and triggers call.
+const FUNCTIONS: [&str; 5] = ["coalesce", "length", "max", "substr", "zeroblob"];
+/// Pragmas the product reads back after migration (`verify_pragmas`).
+const PRAGMAS: [&str; 8] = [
+    "user_version",
+    "journal_mode",
+    "synchronous",
+    "foreign_keys",
+    "trusted_schema",
+    "cell_size_check",
+    "busy_timeout",
+    "application_id",
+];
+
+/// Statements the product connection may prepare once migrated: reads, appends,
+/// transactions, the listed functions and queries of the listed pragmas. Schema changes, ATTACH, VACUUM, savepoints, other functions,
+/// pragma writes, UPDATE and DELETE are denied even through the product's own
+/// connection.
+fn allowed(context: AuthContext<'_>) -> Authorization {
+    let listed = |list: &[&str], name: &str| list.iter().any(|n| n.eq_ignore_ascii_case(name));
+    match context.action {
+        AuthAction::Select
+        | AuthAction::Read { .. }
+        | AuthAction::Insert { .. }
+        | AuthAction::Transaction { .. } => Authorization::Allow,
+        AuthAction::Function { function_name } if listed(&FUNCTIONS, function_name) => {
+            Authorization::Allow
+        }
+        AuthAction::Pragma {
+            pragma_name,
+            pragma_value: None,
+        } if listed(&PRAGMAS, pragma_name) => Authorization::Allow,
+        _ => Authorization::Deny,
+    }
+}
+
 fn existing_flags() -> OpenFlags {
     OpenFlags::SQLITE_OPEN_READ_WRITE
 }
@@ -263,6 +309,7 @@ impl AuditStore {
             connection.pragma_update(None, name, value)?;
         }
         migrate::migrate(&mut connection)?;
+        connection.authorizer(Some(allowed))?;
         let store = Self { connection };
         store.verify_pragmas(config)?;
         Ok(store)
@@ -369,6 +416,63 @@ mod tests {
     }
 
     #[test]
+    fn product_connection_refuses_schema_changes_after_migration() {
+        let root = test_directory();
+        let path = root.join(format!("authorizer-{}.db", std::process::id()));
+        let config = StorageConfig::defaults();
+        let store = AuditStore::open(&path, &config).unwrap();
+        for sql in [
+            "DROP TRIGGER event_no_update",
+            "CREATE TRIGGER t BEFORE INSERT ON meta BEGIN SELECT 1; END",
+            "CREATE TABLE extra (x)",
+            "CREATE TEMP TABLE extra (x)",
+            "CREATE INDEX extra ON event(stream)",
+            "DROP TABLE meta",
+            "ALTER TABLE meta ADD COLUMN x",
+            "ATTACH DATABASE ':memory:' AS other",
+            "PRAGMA writable_schema = 1",
+            "PRAGMA journal_mode = DELETE",
+            "UPDATE meta SET value = value",
+            "DELETE FROM meta",
+            "REINDEX",
+            "ANALYZE",
+            "VACUUM",
+            "SELECT load_extension('x')",
+            "SELECT hex(1)",
+            "SAVEPOINT s",
+            "PRAGMA wal_checkpoint",
+            "PRAGMA optimize",
+        ] {
+            let error = store.connection.execute_batch(sql).unwrap_err();
+            assert_eq!(StorageError::from(error), StorageError::Denied, "{sql}");
+        }
+        let copy = root.join("vacuum-copy.db");
+        let error = store
+            .connection
+            .execute_batch(&format!("VACUUM INTO '{}'", copy.display()))
+            .unwrap_err();
+        assert_eq!(StorageError::from(error), StorageError::Denied);
+        assert!(!copy.exists());
+        // Reads, appends and pragma queries still work, and so does reopening.
+        store.verify_pragmas(&config).unwrap();
+        store
+            .connection
+            .execute("INSERT INTO meta VALUES ('k', x'01')", [])
+            .unwrap();
+        drop(store);
+        AuditStore::open(&path, &config).unwrap();
+        let triggers: i64 = Connection::open(&path)
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM sqlite_schema WHERE type = 'trigger'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(triggers, 6);
+    }
+
+    #[test]
     fn raw_header_checks_identity_before_sqlite() {
         let root = test_directory();
         let path = root.join(format!("header-{}.db", std::process::id()));
@@ -385,6 +489,8 @@ mod tests {
                 StorageError::SchemaTooNew,
             ),
             (APPLICATION_ID as i32, -1, StorageError::UnsupportedSchema),
+            (APPLICATION_ID as i32, 2, StorageError::RetiredSchema),
+            (0, 2, StorageError::UnsupportedSchema),
         ] {
             bytes[60..64].copy_from_slice(&version.to_be_bytes());
             bytes[68..72].copy_from_slice(&id.to_be_bytes());
