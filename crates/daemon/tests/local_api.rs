@@ -1312,6 +1312,47 @@ async fn unknown_session_on_close_releases_the_slot() {
     );
 }
 
+#[tokio::test]
+async fn ended_sessions_can_be_closed_and_return_their_slots() {
+    let f = fixture("max_sessions = 2", Arc::new(TestLauncher)).await;
+    let mut ws = authenticated(&f).await;
+    for (index, id) in ["first", "second"].into_iter().enumerate() {
+        call(&mut ws, "session.open", open_params(id)).await;
+        call(
+            &mut ws,
+            "events.subscribe",
+            json!({"stream": format!("session/{id}"), "after_seq": 0}),
+        )
+        .await;
+        assert_eq!(receive(&mut ws).await["seq"], 1);
+        f.backend.terminals()[index].exit(0);
+        assert_eq!(
+            receive(&mut ws).await["type"],
+            "urn:ads:event:session.ended:1"
+        );
+    }
+    assert_eq!(
+        call(&mut ws, "session.open", open_params("third")).await["error"]["code"],
+        -32003
+    );
+    assert_eq!(f.host.sessions().len(), 2);
+    for id in ["first", "second"] {
+        assert_eq!(
+            call(&mut ws, "session.close", json!({"session_id": id})).await["result"]["accepted"],
+            true
+        );
+    }
+    assert!(f.host.sessions().is_empty());
+    assert_eq!(
+        call(&mut ws, "session.close", json!({"session_id": "first"})).await["error"]["code"],
+        -32602
+    );
+    assert_eq!(
+        call(&mut ws, "session.open", open_params("third")).await["result"]["accepted"],
+        true
+    );
+}
+
 async fn assert_invalidated_session_closed(f: &Fixture, ws: &mut Socket) {
     bounded(async {
         while !f.backend.terminals()[0].was_killed() {

@@ -3,7 +3,7 @@ ui_base_url = "http://127.0.0.1:5173"
 # Vazia: deriva somente a origem da URL base. Lista explícita substitui a derivação.
 allowed_origins = []
 auth_timeout_ms = 5000
-# Limites por execução. Fechar no host libera a vaga. O histórico fechado tem limite separado.
+# Limites por execução. Fechar no host libera a vaga, inclusive de sessão já encerrada. O histórico fechado tem limite separado.
 max_sessions = 32
 max_write_bytes = 65536
 events_per_stream = 256

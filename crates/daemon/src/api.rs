@@ -350,7 +350,8 @@ impl Service {
         if session.invalidated && session.released {
             return Ok(());
         }
-        if session.ended || session.closing || session.released {
+        // Uma sessão encerrada segue no host com a vaga e possíveis filhos vivos até o fechamento.
+        if session.closing || session.released {
             return Err(ApiError::Invalid);
         }
         session.closing = true;

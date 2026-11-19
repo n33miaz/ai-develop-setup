@@ -67,7 +67,9 @@ Os inteiros de capacidade aceitam de 1 a 1048576 (`max_message_bytes`: mínimo
 1024); prazos aceitam de 1 a 300000 ms. Valores altos elevam o teto de memória.
 Quando há uma lacuna irrecuperável, o daemon invalida o stream e solicita o
 fechamento ao host. `session.close` continua aceito enquanto o registro da
-sessão invalidada estiver retido. Ao atingir o limite de registros fechados,
+sessão invalidada estiver retido. Uma sessão cujo processo já terminou continua
+no host, ocupando a vaga, até receber `session.close`; o fechamento encerra a
+árvore de processos que restar e devolve a vaga. Ao atingir o limite de registros fechados,
 o daemon descarta os mais antigos conforme novas sessões são fechadas.
 
 Uma execução conserva no máximo `2 × max_sessions × events_per_stream` eventos;
