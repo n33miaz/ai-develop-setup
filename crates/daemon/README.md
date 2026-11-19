@@ -21,27 +21,39 @@ inexistente e apelido de pasta fora da configuração recebem `-32602`.
    `where.exe` acha só `codex.cmd`; o executável real fica em
    `<prefixo do npm>\node_modules\@openai\codex\node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc\bin\codex.exe`
    (o prefixo aparece em `npm prefix -g`). Escreva o caminho já expandido:
-   `%VAR%`, `$VAR`, `~` e `..` são recusados. Salve um TOML fora do
-   repositório, por exemplo em `D:\ads-local\harnesses.toml`. Substitua os
-   caminhos abaixo pelos caminhos absolutos da sua máquina. Use uma pasta de
-   teste existente, sem nada importante, como destino do apelido `default`.
-   Se só tiver uma ferramenta instalada, omita a tabela da outra.
+   `%VAR%`, `$VAR`, `~`, `..` e nomes curtos como `NOME~1` são recusados.
+
+   Salve o TOML fora do repositório e dentro do seu perfil, por exemplo em
+   `C:\Users\voce\ads-local\harnesses.toml` (troque `C:\Users\voce` pela sua
+   pasta de perfil, escrita por extenso). Crie também, dentro do perfil, uma
+   pasta de teste vazia, sem nada importante, como destino do apelido
+   `default`. Se só tiver uma ferramenta instalada, omita a tabela da outra.
 
    ```toml
    [workdirs]
-   default = 'D:\ads-local\pasta-de-teste'
+   default = 'C:\Users\voce\ads-local\pasta-de-teste'
 
    [tools.claude]
-   program = 'D:\ferramentas\claude.exe'
+   program = 'C:\Users\voce\.local\bin\claude.exe'
 
    [tools.codex]
-   program = 'D:\ferramentas\codex.exe'
+   program = 'C:\Users\voce\AppData\Roaming\npm\node_modules\@openai\codex\node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc\bin\codex.exe'
    ```
 
-3. Na raiz, inicie o daemon com o caminho absoluto do TOML.
+   **O TOML, a pasta de trabalho e o programa precisam ser graváveis só por
+   você.** Não use a raiz de um disco de dados (como `D:\`) nem pastas
+   compartilhadas: no Windows elas costumam aceitar escrita de qualquer usuário
+   autenticado. Quem puder gravar ali pode trocar o programa ou os argumentos,
+   ou deixar na pasta de trabalho arquivos de instrução e configurações com
+   comandos automáticos que o agente lê e executa com a sua conta.
+
+3. Na raiz, compile o daemon e inicie o executável com o caminho absoluto do
+   TOML. Rodar o executável direto, em vez de `cargo run`, evita que as pastas
+   de compilação do repositório entrem no `PATH` que o agente herda.
 
    ```powershell
-   cargo run -p ads-daemon -j 2 -- --config 'D:\ads-local\harnesses.toml'
+   cargo build -p ads-daemon -j 2
+   .\target\debug\ads-daemon.exe --config 'C:\Users\voce\ads-local\harnesses.toml'
    ```
 
 4. Em um terceiro terminal, inicie a interface.
@@ -56,8 +68,13 @@ inexistente e apelido de pasta fora da configuração recebem `-32602`.
 
    Depois que o Vite confirmar a porta, abra no navegador a URL completa
    impressa pelo daemon
-   (`http://127.0.0.1:5173/#core=ws://127.0.0.1:<porta>&token=<token>`) e clique em **Abrir claude** ou **Abrir codex**.
-   O agente dentro do terminal pode editar arquivos conforme as permissões dele.
+   (`http://127.0.0.1:5173/#core=ws://127.0.0.1:<porta>&token=<token>`) e
+   clique em **Abrir claude** ou **Abrir codex**.
+
+O agente dentro do terminal edita arquivos e executa comandos conforme as
+permissões dele. Argumentos que desligam as confirmações ou a área isolada da
+ferramenta, somados ao controle do terminal pela API, dão a quem usa a interface
+acesso total à sua conta; não os coloque em `args` sem entender esse efeito.
 
 A saída padrão contém somente essa linha. O token de 32 bytes aleatórios vem do
 gerador do sistema e existe só em memória; o fragmento não faz parte do pedido
@@ -66,23 +83,33 @@ inválida, token errado ou prazo vencido encerram a conexão. `Host` e `Origin`
 inválidos recebem o mesmo HTTP 403 antes do upgrade; cabeçalhos repetidos,
 origem ausente e query string também são recusados.
 
-O arquivo de `--config` é opcional e deve ter caminho absoluto. As tabelas
-`[tools.claude]`, `[tools.codex]`, `[workdirs]` e `[env]` sobrepõem os
-[padrões das ferramentas](../../defaults/harnesses.toml). Sem arquivo, ambas
-ficam desligadas. As chaves da API na raiz do mesmo TOML sobrepõem os padrões
-do daemon listados abaixo. Reinicie o daemon para reler a configuração. A
-configuração inválida impede a partida e a mensagem omite o conteúdo do arquivo.
+O arquivo de `--config` é opcional. As tabelas `[tools.claude]`,
+`[tools.codex]`, `[workdirs]` e `[env]` sobrepõem os
+[padrões das ferramentas](../../defaults/harnesses.toml); `[env]` e
+`[workdirs]` valem para as duas. Sem arquivo, ambas ficam desligadas. As chaves
+da API na raiz do mesmo TOML sobrepõem os padrões do daemon listados abaixo.
+Reinicie o daemon para reler a configuração. A configuração inválida impede a
+partida e a mensagem omite o conteúdo do arquivo.
 O host usa o canal padrão do usuário, cuja identidade é conferida antes da conexão.
 `--host-config <arquivo>` permite selecionar outra configuração do host (inclusive
 um canal exclusivo para testes), com as mesmas validações de `HostConfig`.
+
+`--config` e `--host-config` aceitam só caminho absoluto literal de um arquivo
+comum de até 1 MiB (`startup::MAX_CONFIG_BYTES`, fixo porque protege a leitura do
+próprio arquivo de configuração). São recusados caminho relativo, de rede
+(`\servidor\...`), de dispositivo ou pipe (`\.\`, `\?\`), com variável, `~`,
+`..` ou nome curto, além de pastas.
+
+O ambiente do processo pai é lido uma vez, na partida, e filtrado na hora pela
+política `[env]`; o daemon guarda só o resultado, sem as variáveis negadas.
 
 ## Comandos, limites e recuperação
 
 `api::Launcher::prepare` recebe os parâmetros gerados de `session.open` (ferramenta,
 apelido de pasta, identificador e tamanho) e devolve `OpenParams` do ptyhost.
-O daemon confere que identificador e tamanho foram preservados. O ambiente pai
-é capturado na partida e cada adaptador aplica a política de ambiente antes de
-enviar os parâmetros ao host.
+O daemon confere que identificador e tamanho foram preservados. Cada adaptador
+aplica de novo a política de ambiente ao ambiente já filtrado antes de enviar
+os parâmetros ao host.
 Os tipos gerados validam todos os comandos e eventos contra os contratos.
 `session.write`, `session.resize` e `session.close` usam o cliente do host.
 `events.subscribe` envia eventos com `seq > after_seq`, seguidos dos novos,
@@ -220,9 +247,12 @@ cargo test -p ads-daemon -j 2
 ```
 
 O teste cria a configuração sob a pasta de artefatos do Cargo e usa um pipe exclusivo.
-Executa apenas `cmd.exe /d /c echo daemon-pty-client-ok`, com ambiente permitido
-filtrado pelo adaptador, verifica a saída pela API WebSocket e encerra o host de teste ao terminar. Não abre agentes nem
-shells interativos. Os demais testes usam `FakeBackend` e rodam também em Linux.
+Configura `claude` e `codex` com o programa `cmd.exe` e argumentos fixos
+`/d /c echo <ferramenta>-ok [%<chave>%] [%SystemRoot%]`, e o daemon recebe
+`ANTHROPIC_API_KEY` e `OPENAI_API_KEY` com um valor de teste. Pela API WebSocket,
+confere que a chave chega literal ao filho (`%...%` não expandido, ou seja, a
+variável não existe nele) e que `SystemRoot`, permitida, chega com o valor do
+pai; depois encerra o host de teste. Não abre agentes nem shells interativos. Os demais testes usam `FakeBackend` e rodam também em Linux.
 
 Para desfazer a integração, remova o consumidor da biblioteca; nenhuma sessão é
 migrada nem formato de armazenamento é alterado. A contiguidade de `seq`, os códigos
