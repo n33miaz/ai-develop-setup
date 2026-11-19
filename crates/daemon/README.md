@@ -2,22 +2,80 @@
 
 O executável serve a API local por WebSocket em `127.0.0.1`, com porta efêmera e
 autenticação por execução ([ADR 0020](../../docs/adr/0020-local-api-authentication.md)).
-**Nenhuma ferramenta real está ligada:** o `DisabledLauncher` recusa qualquer
-`harness` com `-32011` (`harness not configured`). Não há execução de arquivos,
-transporte remoto, persistência, retomada de sessões após reiniciar ou recarregar
-a interface, nem inicialização automática do ptyhost.
+Claude e Codex são abertos pelo host de terminais com programa, argumentos e
+pasta definidos no TOML do usuário. Ferramenta sem programa recebe
+`-32011` (`harness not configured`). Ferramenta desconhecida, programa ou pasta
+inexistente e apelido de pasta fora da configuração recebem `-32602`.
 
-## Desenvolvimento
+## Abrir Claude ou Codex no navegador
 
-Use três terminais, a partir da raiz do repositório:
+1. Na raiz do repositório, inicie o host de terminais em um terminal.
 
-```text
-cargo run -p ads-ptyhost -j 2
-cargo run -p ads-daemon -j 2
-```
+   ```powershell
+   cargo run -p ads-ptyhost -j 2
+   ```
 
-No terceiro terminal, entre em `ui` e execute `npm run dev`. Abra a URL exata
-impressa pelo daemon: `http://127.0.0.1:5173/#core=ws://127.0.0.1:<porta>&token=<token>`.
+2. Em outro terminal, use `where.exe claude.exe` e `where.exe codex.exe` para
+   localizar os executáveis instalados. O programa precisa ser um `.exe`; não
+   aponte para `claude.cmd` nem `codex.cmd`. Se o Codex foi instalado pelo npm,
+   `where.exe` acha só `codex.cmd`; o executável real fica em
+   `<prefixo do npm>\node_modules\@openai\codex\node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc\bin\codex.exe`
+   (o prefixo aparece em `npm prefix -g`). Escreva o caminho já expandido:
+   `%VAR%`, `$VAR`, `~`, `..` e nomes curtos como `NOME~1` são recusados.
+
+   Salve o TOML fora do repositório e dentro do seu perfil, por exemplo em
+   `C:\Users\voce\ads-local\harnesses.toml` (troque `C:\Users\voce` pela sua
+   pasta de perfil, escrita por extenso). Crie também, dentro do perfil, uma
+   pasta de teste vazia, sem nada importante, como destino do apelido
+   `default`. Se só tiver uma ferramenta instalada, omita a tabela da outra.
+
+   ```toml
+   [workdirs]
+   default = 'C:\Users\voce\ads-local\pasta-de-teste'
+
+   [tools.claude]
+   program = 'C:\Users\voce\.local\bin\claude.exe'
+
+   [tools.codex]
+   program = 'C:\Users\voce\AppData\Roaming\npm\node_modules\@openai\codex\node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc\bin\codex.exe'
+   ```
+
+   **O TOML, a pasta de trabalho e o programa precisam ser graváveis só por
+   você.** Não use a raiz de um disco de dados (como `D:\`) nem pastas
+   compartilhadas: no Windows elas costumam aceitar escrita de qualquer usuário
+   autenticado. Quem puder gravar ali pode trocar o programa ou os argumentos,
+   ou deixar na pasta de trabalho arquivos de instrução e configurações com
+   comandos automáticos que o agente lê e executa com a sua conta.
+
+3. Na raiz, compile o daemon e inicie o executável com o caminho absoluto do
+   TOML. Rodar o executável direto, em vez de `cargo run`, evita que as pastas
+   de compilação do repositório entrem no `PATH` que o agente herda.
+
+   ```powershell
+   cargo build -p ads-daemon -j 2
+   .\target\debug\ads-daemon.exe --config 'C:\Users\voce\ads-local\harnesses.toml'
+   ```
+
+4. Em um terceiro terminal, inicie a interface.
+
+   ```powershell
+   Set-Location ui
+   npm ci
+   $env:VITE_CORE_HARNESSES = 'claude,codex'
+   $env:VITE_CORE_WORKDIR = 'default'
+   npm run dev
+   ```
+
+   Depois que o Vite confirmar a porta, abra no navegador a URL completa
+   impressa pelo daemon
+   (`http://127.0.0.1:5173/#core=ws://127.0.0.1:<porta>&token=<token>`) e
+   clique em **Abrir claude** ou **Abrir codex**.
+
+O agente dentro do terminal edita arquivos e executa comandos conforme as
+permissões dele. Argumentos que desligam as confirmações ou a área isolada da
+ferramenta, somados ao controle do terminal pela API, dão a quem usa a interface
+acesso total à sua conta; não os coloque em `args` sem entender esse efeito.
+
 A saída padrão contém somente essa linha. O token de 32 bytes aleatórios vem do
 gerador do sistema e existe só em memória; o fragmento não faz parte do pedido
 HTTP. A interface envia `auth.hello` como primeira mensagem. Antes dela, mensagem
@@ -25,19 +83,33 @@ inválida, token errado ou prazo vencido encerram a conexão. `Host` e `Origin`
 inválidos recebem o mesmo HTTP 403 antes do upgrade; cabeçalhos repetidos,
 origem ausente e query string também são recusados.
 
-`cargo run -p ads-daemon -j 2 -- --config defaults/daemon.toml` usa explicitamente
-o arquivo de configuração. Outro TOML pode sobrepor só as chaves desejadas;
-chaves desconhecidas e valores inválidos são recusados sem reproduzir seu conteúdo.
+O arquivo de `--config` é opcional. As tabelas `[tools.claude]`,
+`[tools.codex]`, `[workdirs]` e `[env]` sobrepõem os
+[padrões das ferramentas](../../defaults/harnesses.toml); `[env]` e
+`[workdirs]` valem para as duas. Sem arquivo, ambas ficam desligadas. As chaves
+da API na raiz do mesmo TOML sobrepõem os padrões do daemon listados abaixo.
+Reinicie o daemon para reler a configuração. A configuração inválida impede a
+partida e a mensagem omite o conteúdo do arquivo.
 O host usa o canal padrão do usuário, cuja identidade é conferida antes da conexão.
 `--host-config <arquivo>` permite selecionar outra configuração do host (inclusive
 um canal exclusivo para testes), com as mesmas validações de `HostConfig`.
+
+`--config` e `--host-config` aceitam só caminho absoluto literal de um arquivo
+comum de até 1 MiB (`startup::MAX_CONFIG_BYTES`, fixo porque protege a leitura do
+próprio arquivo de configuração). São recusados caminho relativo, de rede
+(`\servidor\...`), de dispositivo ou pipe (`\.\`, `\?\`), com variável, `~`,
+`..` ou nome curto, além de pastas.
+
+O ambiente do processo pai é lido uma vez, na partida, e filtrado na hora pela
+política `[env]`; o daemon guarda só o resultado, sem as variáveis negadas.
 
 ## Comandos, limites e recuperação
 
 `api::Launcher::prepare` recebe os parâmetros gerados de `session.open` (ferramenta,
 apelido de pasta, identificador e tamanho) e devolve `OpenParams` do ptyhost.
-O daemon confere que identificador e tamanho foram preservados. Os testes fornecem
-um launcher para `FakeBackend`; o executável fornece somente `DisabledLauncher`.
+O daemon confere que identificador e tamanho foram preservados. Cada adaptador
+aplica de novo a política de ambiente ao ambiente já filtrado antes de enviar
+os parâmetros ao host.
 Os tipos gerados validam todos os comandos e eventos contra os contratos.
 `session.write`, `session.resize` e `session.close` usam o cliente do host.
 `events.subscribe` envia eventos com `seq > after_seq`, seguidos dos novos,
@@ -175,9 +247,12 @@ cargo test -p ads-daemon -j 2
 ```
 
 O teste cria a configuração sob a pasta de artefatos do Cargo e usa um pipe exclusivo.
-Executa apenas `cmd.exe /d /c echo daemon-pty-client-ok`, com ambiente permitido
-explícito, e encerra o processo de teste do host ao terminar. Não abre agentes nem
-shells interativos. Os demais testes usam `FakeBackend` e rodam também em Linux.
+Configura `claude` e `codex` com o programa `cmd.exe` e argumentos fixos
+`/d /c echo <ferramenta>-ok [%<chave>%] [%SystemRoot%]`, e o daemon recebe
+`ANTHROPIC_API_KEY` e `OPENAI_API_KEY` com um valor de teste. Pela API WebSocket,
+confere que a chave chega literal ao filho (`%...%` não expandido, ou seja, a
+variável não existe nele) e que `SystemRoot`, permitida, chega com o valor do
+pai; depois encerra o host de teste. Não abre agentes nem shells interativos. Os demais testes usam `FakeBackend` e rodam também em Linux.
 
 Para desfazer a integração, remova o consumidor da biblioteca; nenhuma sessão é
 migrada nem formato de armazenamento é alterado. A contiguidade de `seq`, os códigos
@@ -186,8 +261,8 @@ de erro e a saída do comando real são as evidências de funcionamento nos test
 ## Porta da interface em desenvolvimento
 
 Antes de abrir a URL, confira que a porta de `ui_base_url` pertence ao próprio
-usuário. Inicie o servidor da interface com porta fixa e `strictPort` (por exemplo,
-`npm run dev -- --host 127.0.0.1 --port 5173 --strictPort` na pasta `ui`).
+usuário. `npm run dev` na pasta `ui` já fixa a porta 5173 com `strictPort`
+(`ui/vite.config.ts`).
 Se a porta estiver ocupada, pare e investigue; não abra a URL nem aceite outra
 porta automaticamente. Configurar uma URL diferente não comprova sua propriedade.
 Outro usuário pode servir uma página nessa porta e ler o fragmento com o token.

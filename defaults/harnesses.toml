@@ -1,6 +1,7 @@
 # Parametros das ferramentas de linha de comando que o produto abre num terminal (P8). Lido pelos
-# adaptadores de ferramenta (`ads-adapter-claude`; embutido na compilacao como padrao). O arquivo do
-# usuario, com o caminho real de cada programa e as pastas, fica FORA do repositorio e sobrepoe este.
+# adaptadores de ferramenta (`ads-adapter-claude` e `ads-adapter-codex`; embutido na compilacao como
+# padrao). O arquivo do usuario, com o caminho real de cada programa e as pastas, fica FORA do
+# repositorio, e passado ao daemon por `--config` e sobrepoe este.
 #
 # O que NAO e parametro, porque vale sempre: quem pede a sessao escolhe so a ferramenta (pelo nome), o
 # apelido da pasta e o tamanho; nunca programa, argumento, variavel de ambiente nem pasta. O filho nao

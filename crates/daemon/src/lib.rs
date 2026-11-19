@@ -4,3 +4,5 @@ pub mod api;
 pub mod auth;
 pub mod events;
 pub mod pty_client;
+pub mod startup;
+pub mod tool_launcher;

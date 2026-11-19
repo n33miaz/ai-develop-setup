@@ -1,24 +1,68 @@
 #![cfg(windows)]
 
-use std::collections::BTreeMap;
+use ads_daemon::events::new_id;
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use futures_util::{SinkExt, StreamExt};
+use serde_json::{Value, json};
 use std::io::{BufRead, BufReader};
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
+use tokio::net::TcpStream;
+use tokio_tungstenite::{
+    WebSocketStream,
+    tungstenite::{Message, client::IntoClientRequest},
+};
 
-use ads_daemon::pty_client::{ClientConfig, Event, PtyClient};
-use ads_ptyhost::HostConfig;
-use ads_ptyhost::wire::{Notification, OpenParams, SessionId, SessionParams};
+type Socket = WebSocketStream<TcpStream>;
 
-struct HostProcess(Child);
-impl Drop for HostProcess {
+struct Process(Child);
+impl Drop for Process {
     fn drop(&mut self) {
         let _ = self.0.kill();
         let _ = self.0.wait();
     }
 }
 
+fn read_ready(process: &mut Process) -> String {
+    let stdout = process.0.stdout.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let result = BufReader::new(stdout).read_line(&mut line);
+        let _ = tx.send(result.map(|_| line));
+    });
+    rx.recv_timeout(Duration::from_secs(30))
+        .expect("process did not start")
+        .unwrap()
+}
+
+fn test_config(name: &str, contents: &str) -> std::path::PathBuf {
+    let path =
+        Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{name}-{}.toml", std::process::id()));
+    std::fs::write(&path, contents).unwrap();
+    path
+}
+
+async fn send(ws: &mut Socket, method: &str, mut params: Value) {
+    let id = new_id().unwrap();
+    params["_meta"] = json!({"idempotency_key": new_id().unwrap(), "origin": "local"});
+    let request = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+    ws.send(Message::Text(request.to_string().into()))
+        .await
+        .unwrap();
+    let reply = receive(ws).await;
+    assert_eq!(reply["id"], id);
+    assert_eq!(reply["result"]["accepted"], true, "{reply}");
+}
+
+async fn receive(ws: &mut Socket) -> Value {
+    let message = ws.next().await.unwrap().unwrap().into_text().unwrap();
+    serde_json::from_str(&message).unwrap()
+}
+
 #[tokio::test]
-async fn real_host_runs_a_noninteractive_echo_command() {
+async fn real_host_runs_configured_echo_through_the_api() {
     let binary = std::env::current_exe()
         .unwrap()
         .parent()
@@ -31,80 +75,111 @@ async fn real_host_runs_a_noninteractive_echo_command() {
         "build the host first: cargo build -p ads-ptyhost -j 2"
     );
     let endpoint = format!(r"\\.\pipe\ads-daemon-echo-{}", std::process::id());
-    let overrides = format!("channel_path = '{endpoint}'\n");
-    let config_path = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
-        .join(format!("daemon-echo-{}.toml", std::process::id()));
-    std::fs::write(&config_path, &overrides).unwrap();
-    let config = HostConfig::from_toml_str(&overrides).unwrap();
-    let mut process = HostProcess(
+    let host_config = test_config(
+        "daemon-echo-host",
+        &format!("channel_path = '{endpoint}'\n"),
+    );
+    let mut host = Process(
         Command::new(binary)
             .arg("--config")
-            .arg(config_path)
+            .arg(&host_config)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
             .spawn()
             .unwrap(),
     );
-    let stdout = process.0.stdout.take().unwrap();
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut line = String::new();
-        let result = BufReader::new(stdout).read_line(&mut line);
-        let _ = tx.send(result.map(|_| line));
+    assert!(read_ready(&mut host).contains("listening on"));
+
+    let cmd = Path::new(&std::env::var_os("SystemRoot").unwrap()).join("System32/cmd.exe");
+    let cwd = std::env::current_dir().unwrap();
+    // `%NAME%` stays literal when the variable is absent from the child.
+    let echo = |tool: &str, key: &str| json!({"program": cmd, "args": ["/d", "/c", format!("echo {tool}-ok [%{key}%] [%SystemRoot%]")]});
+    let config = json!({
+        "workdirs": {"workspace": cwd},
+        "tools": {"claude": echo("claude", "ANTHROPIC_API_KEY"), "codex": echo("codex", "OPENAI_API_KEY")}
     });
-    let ready = rx
-        .recv_timeout(Duration::from_secs(30))
-        .expect("host did not start")
-        .unwrap();
-    assert!(ready.contains("listening on"));
-    let mut client = PtyClient::connect(&config, ClientConfig::recommended(&config))
-        .await
-        .unwrap();
-    let session_id = SessionId::new("echo").unwrap();
-    let env = ["SystemRoot", "windir", "ComSpec", "PATH", "PATHEXT"]
-        .into_iter()
-        .filter_map(|key| std::env::var(key).ok().map(|value| (key.to_owned(), value)))
-        .collect::<BTreeMap<_, _>>();
-    client
-        .open(OpenParams {
-            session_id: session_id.clone(),
-            program: "cmd.exe".to_owned().try_into().unwrap(),
-            args: ["/d", "/c", "echo daemon-pty-client-ok"]
-                .into_iter()
-                .map(|s| s.to_owned().try_into().unwrap())
-                .collect(),
-            cwd: None,
-            env,
-            cols: 80.try_into().unwrap(),
-            rows: 24.try_into().unwrap(),
-        })
-        .await
-        .unwrap();
-    client.subscribe(session_id.clone(), Some(0)).await.unwrap();
-    let mut output = Vec::new();
-    let mut last_seq = 0;
+    let user_config = test_config("daemon-echo-user", &toml::to_string(&config).unwrap());
+    let mut daemon = Process(
+        Command::new(env!("CARGO_BIN_EXE_ads-daemon"))
+            .arg("--config")
+            .arg(user_config)
+            .arg("--host-config")
+            .arg(host_config)
+            // Reach the daemon but must not reach the tools.
+            .env("ANTHROPIC_API_KEY", "leaked-sentinel")
+            .env("OPENAI_API_KEY", "leaked-sentinel")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let line = read_ready(&mut daemon);
+    let (_, fragment) = line
+        .trim_end()
+        .split_once("#core=")
+        .expect("missing launch URL");
+    let (url, token) = fragment.split_once("&token=").unwrap();
+    let mut request = url.into_client_request().unwrap();
+    request
+        .headers_mut()
+        .insert("Origin", "http://127.0.0.1:5173".parse().unwrap());
     tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            match client.next().await.unwrap() {
-                Event::Output { header, bytes } => {
-                    assert_eq!(header.session_id, session_id);
-                    assert_eq!(header.seq.get(), last_seq + 1);
-                    last_seq += 1;
-                    output.extend(bytes);
-                }
-                Event::Notification(Notification::SessionExited(exited)) => {
-                    assert_eq!(exited.exit_code, Some(0));
-                    assert_eq!(exited.last_seq, last_seq);
-                    break;
-                }
-                other => panic!("unexpected event: {other:?}"),
-            }
+        let stream = TcpStream::connect(url.strip_prefix("ws://").unwrap())
+            .await
+            .unwrap();
+        let (mut ws, _) = tokio_tungstenite::client_async(request, stream)
+            .await
+            .unwrap();
+        send(&mut ws, "auth.hello", json!({"token": token})).await;
+        let system_root = std::env::var("SystemRoot").unwrap();
+        for (tool, key) in [("claude", "ANTHROPIC_API_KEY"), ("codex", "OPENAI_API_KEY")] {
+            let output = run_tool(&mut ws, tool).await;
+            assert!(output.contains(&format!("{tool}-ok")), "{output}");
+            assert!(output.contains(&format!("[%{key}%]")), "{output}");
+            assert!(!output.contains("leaked-sentinel"), "{output}");
+            // An allowed variable does arrive.
+            assert!(output.contains(&format!("[{system_root}]")), "{output}");
         }
     })
     .await
     .expect("echo did not exit");
-    assert!(String::from_utf8_lossy(&output).contains("daemon-pty-client-ok"));
-    client.close(SessionParams { session_id }).await.unwrap();
-    assert!(client.list().await.unwrap().sessions.is_empty());
+}
+
+async fn run_tool(ws: &mut Socket, tool: &str) -> String {
+    let stream = format!("session/{tool}");
+    send(
+        ws,
+        "events.subscribe",
+        json!({"stream": stream, "after_seq": 0}),
+    )
+    .await;
+    send(
+        ws,
+        "session.open",
+        json!({
+            "session_id": tool, "harness": tool, "workdir_alias": "workspace",
+            "cols": 120, "rows": 24
+        }),
+    )
+    .await;
+    let mut output = Vec::new();
+    loop {
+        let event = receive(ws).await;
+        match event["type"].as_str() {
+            Some("urn:ads:event:session.output:1") => {
+                output.extend(
+                    STANDARD
+                        .decode(event["data"]["payload"].as_str().unwrap())
+                        .unwrap(),
+                );
+            }
+            Some("urn:ads:event:session.ended:1") => {
+                assert_eq!(event["data"]["exit_code"], 0);
+                break;
+            }
+            Some("urn:ads:event:session.created:1") => {}
+            _ => panic!("unexpected event"),
+        }
+    }
+    String::from_utf8_lossy(&output).into_owned()
 }

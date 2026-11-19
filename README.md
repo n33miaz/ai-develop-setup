@@ -29,14 +29,38 @@ reinicie o servidor ou reconstrua a interface para trocar a lista. Nenhum token
 deve entrar nessa variável. No modo ao vivo, a lista e o terminal são reconstruídos
 dos eventos desses streams, sem dados de exemplo.
 
-Quando o daemon estiver servindo a API local, configure `VITE_CORE_HARNESSES=claude`
-(ou identificadores separados por vírgula) e abra a URL impressa por ele. O padrão
-recomendado é vazio, sem botões de abertura. `VITE_CORE_WORKDIR` seleciona o apelido
-de pasta do daemon (padrão recomendado `default`); nunca informe um caminho.
-Clique em **Abrir claude**: a interface gera o identificador da sessão, assina seu
-stream e envia `session.open`. Ferramenta e pasta precisam existir na configuração
-do daemon. Recusas aparecem como aviso traduzido. A sessão recebe foco ao abrir;
-digitação e colagem enviam `session.write`, em blocos ordenados de até 65.536 bytes.
+Para abrir Claude ou Codex pelo navegador no Windows:
+
+1. Na raiz, inicie o host com `cargo run -p ads-ptyhost -j 2`.
+2. Localize os executáveis com `where.exe claude.exe` e `where.exe codex.exe`
+   (com o Codex instalado pelo npm, veja no README do daemon onde fica o
+   `codex.exe`; não use os arquivos `.cmd`). Salve os caminhos absolutos em
+   `[tools.claude]` e `[tools.codex]` num TOML fora do repositório e dentro do
+   seu perfil, como `C:\Users\voce\ads-local\harnesses.toml`. Em `[workdirs]`,
+   dê o apelido `default` a uma pasta de teste do perfil, sem nada importante.
+   O TOML, a pasta de trabalho e o programa precisam ser graváveis só por você;
+   nunca use a raiz de um disco de dados nem pasta compartilhada. Veja o
+   exemplo completo no
+   [README do daemon](crates/daemon/README.md#abrir-claude-ou-codex-no-navegador).
+3. Em outro terminal, na raiz, rode `cargo build -p ads-daemon -j 2` e
+   `.\target\debug\ads-daemon.exe --config 'C:\Users\voce\ads-local\harnesses.toml'`,
+   com o caminho absoluto do seu arquivo.
+4. Em `ui/`, rode `npm ci`, defina `$env:VITE_CORE_HARNESSES = 'claude,codex'`
+   e execute `npm run dev`.
+   Depois que o Vite confirmar a porta, abra a URL completa impressa pelo daemon
+   (`http://127.0.0.1:5173/#core=...`) e clique em **Abrir claude** ou
+   **Abrir codex**.
+
+O agente dentro do terminal edita arquivos e executa comandos conforme as
+permissões dele. Argumentos que desligam as confirmações ou a área isolada da
+ferramenta, somados ao controle do terminal pela API, dão a quem usa a interface
+acesso total à sua conta.
+`VITE_CORE_HARNESSES` aceita identificadores separados por vírgula. O padrão vazio
+oculta os botões de abertura. `VITE_CORE_WORKDIR` seleciona o apelido de pasta
+do daemon, com padrão `default`. Ao abrir, a interface assina o stream e envia
+`session.open`. Recusas aparecem como aviso traduzido. A sessão recebe foco
+ao abrir, e a digitação e a colagem enviam `session.write` em blocos ordenados
+de até 65.536 bytes.
 O tamanho ajustado envia `session.resize`; `VITE_CORE_RESIZE_DEBOUNCE_MS` define a
 espera após o último ajuste (padrão recomendado 150 ms, zero desliga a espera).
 Essas variáveis são lidas ao iniciar o Vite ou construir a interface; reinicie ou

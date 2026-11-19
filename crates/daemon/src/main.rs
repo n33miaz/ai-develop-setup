@@ -1,30 +1,11 @@
 //! Inicialização do daemon local.
 
-use ads_daemon::api::{ApiConfig, ApiError, DisabledLauncher, LocalApi};
+use ads_daemon::api::{ApiError, LocalApi};
 use ads_daemon::pty_client::{ClientConfig, PtyClient};
-use ads_ptyhost::HostConfig;
+use ads_daemon::startup::load_config;
+use ads_daemon::tool_launcher::ToolLauncher;
 use std::process::ExitCode;
 use std::sync::Arc;
-
-fn load_config(
-    mut args: impl Iterator<Item = String>,
-) -> Result<(ApiConfig, HostConfig), ApiError> {
-    let mut host = HostConfig::defaults();
-    let mut overrides = String::new();
-    while let Some(arg) = args.next() {
-        match (arg.as_str(), args.next()) {
-            ("--config", Some(path)) => {
-                overrides = std::fs::read_to_string(path).map_err(|_| ApiError::Invalid)?
-            }
-            ("--host-config", Some(path)) => {
-                let text = std::fs::read_to_string(path).map_err(|_| ApiError::Invalid)?;
-                host = HostConfig::from_toml_str(&text).map_err(|_| ApiError::Invalid)?;
-            }
-            _ => return Err(ApiError::Invalid),
-        }
-    }
-    Ok((ApiConfig::from_toml_str(&overrides)?, host))
-}
 
 fn print_launch_url(url: &mut String, out: &mut impl std::io::Write) -> std::io::Result<()> {
     use zeroize::Zeroize;
@@ -35,8 +16,14 @@ fn print_launch_url(url: &mut String, out: &mut impl std::io::Write) -> std::io:
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
-    let result = async {
-        let (config, host_config) = load_config(std::env::args().skip(1))?;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let (config, host_config, tools) = load_config(std::env::args().skip(1))?;
+        let launcher = ToolLauncher::from_toml_str(
+            &tools,
+            ads_adapter_claude::process_env(),
+            ads_adapter_claude::DiskProbe,
+            ads_adapter_codex::DiskProbe,
+        )?;
         let host = tokio::time::timeout(
             std::time::Duration::from_millis(config.host_timeout_ms),
             PtyClient::connect(&host_config, ClientConfig::recommended(&host_config)),
@@ -44,10 +31,10 @@ async fn main() -> ExitCode {
         .await
         .map_err(|_| ApiError::Unavailable)?
         .map_err(|_| ApiError::Unavailable)?;
-        let api = LocalApi::bind(config, host, Arc::new(DisabledLauncher)).await?;
+        let api = LocalApi::bind(config, host, Arc::new(launcher)).await?;
         let mut url = zeroize::Zeroizing::new(api.launch_url()?);
         print_launch_url(&mut url, &mut std::io::stdout()).map_err(|_| ApiError::Unavailable)?;
-        api.run().await
+        Ok(api.run().await?)
     }
     .await;
     match result {
@@ -62,13 +49,6 @@ async fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn arguments_are_closed() {
-        assert!(load_config(std::iter::empty()).is_ok());
-        for arg in ["--unknown", "--config"] {
-            assert!(load_config([arg.to_owned()].into_iter()).is_err());
-        }
-    }
     #[test]
     fn printed_url_is_one_line_and_erased_even_when_output_fails() {
         let original = "http://localhost:5173/#core=ws://127.0.0.1:1234&token=credential-sentinel";
