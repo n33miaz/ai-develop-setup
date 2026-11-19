@@ -48,9 +48,7 @@ pub(crate) fn image(path: &Path, limit: usize) -> Result<Vec<u8>, StorageError> 
     if !(512..=65536).contains(&page) || !page.is_power_of_two() {
         return Err(StorageError::Corrupt);
     }
-    let mut wal_path = path.as_os_str().to_os_string();
-    wal_path.push("-wal");
-    let wal = match read(Path::new(&wal_path), limit) {
+    let wal = match read(&wal_path(path), limit) {
         Ok(wal) => wal,
         Err(StorageError::CantOpen) => Vec::new(),
         Err(error) => return Err(error),
@@ -64,10 +62,14 @@ pub(crate) fn image(path: &Path, limit: usize) -> Result<Vec<u8>, StorageError> 
     Ok(image)
 }
 
-fn overlay(image: &mut Vec<u8>, wal: &[u8], page: usize, limit: usize) -> Result<(), StorageError> {
-    if wal.len() < 32 {
-        return Ok(());
-    }
+fn wal_path(path: &Path) -> std::path::PathBuf {
+    let mut wal = path.as_os_str().to_os_string();
+    wal.push("-wal");
+    wal.into()
+}
+
+/// Validates the 32-byte WAL header; returns checksum byte order and seed.
+fn wal_header(wal: &[u8], page: usize) -> Result<(bool, [u32; 2]), StorageError> {
     let magic = word(wal);
     if ![0x377f0682, 0x377f0683].contains(&magic)
         || word(&wal[4..]) != 3_007_000
@@ -76,10 +78,68 @@ fn overlay(image: &mut Vec<u8>, wal: &[u8], page: usize, limit: usize) -> Result
         return Err(StorageError::Corrupt);
     }
     let big = magic == 0x377f0683;
-    let mut sum = checksum(&wal[..24], [0, 0], big);
+    let sum = checksum(&wal[..24], [0, 0], big);
     if sum != [word(&wal[24..]), word(&wal[28..])] {
         return Err(StorageError::Corrupt);
     }
+    Ok((big, sum))
+}
+
+fn fill(reader: &mut impl Read, buffer: &mut [u8]) -> Result<bool, StorageError> {
+    match reader.read_exact(buffer) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Product files skip the image, but SQLite silently discards a WAL with a
+/// damaged header, and every frame after the first invalid one. Refuse when
+/// that would drop a commit made after the transaction holding the break.
+pub(crate) fn check_product_wal(path: &Path, page: usize) -> Result<(), StorageError> {
+    let file = match File::open(wal_path(path)) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    let mut reader = std::io::BufReader::new(file);
+    let mut header = [0; 32];
+    if !fill(&mut reader, &mut header)? {
+        return Ok(());
+    }
+    let (big, mut sum) = wal_header(&header, page)?;
+    let mut frame = vec![0; 24 + page];
+    let mut broken = false;
+    let mut broken_commit = false;
+    while fill(&mut reader, &mut frame)? {
+        // Frames of an older generation carry other salts and are expected.
+        if frame[8..16] != header[16..24] {
+            broken = true;
+            continue;
+        }
+        if !broken {
+            let next = checksum(&frame[24..], checksum(&frame[..8], sum, big), big);
+            if word(&frame) != 0 && next == [word(&frame[16..]), word(&frame[20..])] {
+                sum = next;
+                continue;
+            }
+            broken = true;
+        }
+        if word(&frame[4..]) != 0 {
+            if broken_commit {
+                return Err(StorageError::Corrupt);
+            }
+            broken_commit = true;
+        }
+    }
+    Ok(())
+}
+
+fn overlay(image: &mut Vec<u8>, wal: &[u8], page: usize, limit: usize) -> Result<(), StorageError> {
+    if wal.len() < 32 {
+        return Ok(());
+    }
+    let (big, mut sum) = wal_header(wal, page)?;
     let mut frames = Vec::new();
     let mut committed = None;
     for frame in wal[32..].chunks_exact(24 + page) {
