@@ -4,6 +4,7 @@ pub mod budget;
 pub mod child_env;
 pub mod gate;
 pub mod routing;
+pub mod tool_launch;
 
 /// Package name as declared in the manifest.
 pub const fn crate_name() -> &'static str {
