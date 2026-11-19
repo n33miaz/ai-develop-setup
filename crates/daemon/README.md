@@ -129,7 +129,7 @@ Padrões em [defaults/daemon.toml](../../defaults/daemon.toml), aplicados ao ini
 | `idempotency_keys` | 1024 | Chaves aceitas retidas em FIFO; aumente para ampliar a janela de deduplicação. |
 | `command_queue` | 64 | Pedidos esperando o host; aumente para mais concorrência. |
 | `max_connections` | 32 | Conexões autenticadas simultâneas; excedentes são fechadas ao autenticar. |
-| `max_pending_auth` | 32 | Conexões pendentes, inclusive sem handshake; separadas das autenticadas. Com a fila cheia, a pendente mais antiga é descartada para a nova entrar. |
+| `max_pending_auth` | 32 | Tarefas de conexões ainda sem autenticar, inclusive as que estão sendo expulsas; separadas das autenticadas. Com a fila cheia, a mais antiga que ainda não fez upgrade é expulsa e a nova entra quando a vaga volta; se todas já fizeram upgrade, a nova é recusada. |
 | `accept_retry_ms` | 50 | Espera após erro de aceitação TCP; reduz tentativas sob falta de recursos. |
 | `max_message_bytes` | 131072 | Limite de mensagem e quadro WebSocket recebido; reduzir pode impedir escritas grandes. |
 | `send_timeout_ms` | 5000 | Prazo por envio; cliente lento é desconectado. |
@@ -143,18 +143,25 @@ Os inteiros de capacidade aceitam de 1 a 1048576 (`max_message_bytes`: mínimo
 Quando há uma lacuna irrecuperável, o daemon invalida o stream e solicita o
 fechamento ao host. Recusa do host (fora `UnknownSession`) ou prazo esgotado
 repetem o pedido até `close_retries` vezes, com aviso no erro padrão sem
-conteúdo; esgotadas as tentativas, `events.subscribe` desse stream recebe
-`-32013` (`session close pending`) até um `session.close` confirmado.
-`session.close` continua aceito enquanto o registro da
-sessão invalidada estiver retido. Se o fechamento de um `open` que falhou
-também falhar, o registro fica, invalidado, na mesma fila de novas tentativas.
+conteúdo. Quem já assinava o stream não recebe nada enquanto as tentativas
+correm; o resultado final chega com o id da assinatura: `-32013` (`session close
+pending`) se as tentativas se esgotarem, `-32004` se o host confirmar. Só essa
+assinatura termina. Um `events.subscribe` novo desse stream recebe `-32004`
+durante as tentativas e `-32013` depois delas, até um `session.close` confirmado.
+`session.close` continua aceito enquanto o registro da sessão invalidada estiver
+retido. Cada tentativa vale só para a instância da sessão que a gerou e é
+descartada quando a vaga é devolvida. Se um `open` falhar depois de o host abrir o
+terminal, o fechamento vai para a mesma fila, com prazo próprio por tentativa;
+o registro e a vaga ficam até o host confirmar, e então o id volta a ser aceito.
 `UnknownSession` no fechamento libera a vaga e grava `ended` com `reason: "error"`. Uma sessão cujo processo já terminou continua
 no host, ocupando a vaga, até receber `session.close`; o fechamento encerra a
 árvore de processos que restar e devolve a vaga. Ao atingir o limite de registros fechados,
 o daemon descarta os mais antigos conforme novas sessões são fechadas. O stream
-descartado vira lápide: quem ainda o assina recebe `-32004` com o id da
-assinatura, que é encerrada sem derrubar a conexão, e o mesmo `session_id` é
-recusado com `-32012` enquanto a lápide existir (`retired_sessions`).
+descartado vira lápide e o mesmo `session_id` é recusado com `-32012` enquanto
+ela existir (`retired_sessions`). Cada assinatura guarda a geração do stream que
+assinou: se ele for podado, mesmo depois de a lápide expirar e o id voltar a ser
+usado, ela recebe `-32004` com o seu id e termina sem derrubar a conexão, sem
+nunca entregar eventos da nova sessão.
 
 Uma execução conserva no máximo `2 × max_sessions × events_per_stream` eventos;
 o tamanho de cada saída também é limitado pelo quadro do cliente do host.
@@ -179,7 +186,7 @@ sem encerrar o serviço. Falha do canal ou prazo do host encerra
 o daemon; as sessões continuam sob responsabilidade do ptyhost.
 Eventos são consumidos também durante chamadas ao host; a fila limitada aplica
 contrapressão ao canal, e o anel limitado recusa assinantes lentos. Falha depois
-de abrir uma sessão dispara seu fechamento no host antes de liberar o id.
+de abrir uma sessão agenda seu fechamento no host antes de liberar o id.
 Lacuna na sequência ou recusa da reassinatura do host invalida somente o stream
 afetado, que passa a recusar replay até reiniciar; os demais continuam disponíveis.
 Reiniciar não adota sessões antigas nesta implementação. Para desfazer, pare o daemon e volte

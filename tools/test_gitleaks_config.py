@@ -86,6 +86,8 @@ class GitleaksBinaryTest(unittest.TestCase):
 
     def test_websocket_sample_exception_keeps_other_secrets_on_the_same_line(self):
         files = {"handshake.txt": f"Sec-WebSocket-Key: {RFC_SAMPLE}\napi_key = \"{SYNTHETIC}\" Sec-WebSocket-Key: {RFC_SAMPLE}\n"}
+        # Control: without the exception the default rules flag the WebSocket sample itself.
+        self.assertIn(("handshake.txt", RFC_SAMPLE), self.scan_with_defaults_only(files))
         self.assertEqual(self.scan(files, CONFIG), [("handshake.txt", SYNTHETIC)])
 
 

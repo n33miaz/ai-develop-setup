@@ -28,11 +28,35 @@ pub fn new_id() -> Result<String, ApiError> {
     String::from_utf8(encoded.to_vec()).map_err(|_| ApiError::Unavailable)
 }
 
+/// Fechamento de uma sessão cujo stream foi invalidado.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Closing {
+    /// O daemon ainda tenta fechar a sessão no host; a entrega fica suspensa.
+    Pending,
+    /// As tentativas se esgotaram; falta um `session.close` confirmado.
+    Failed,
+    /// O host confirmou o fechamento.
+    Closed,
+}
+
+/// O que uma assinatura existente faz com o estado atual do seu stream.
+#[derive(Debug, PartialEq)]
+pub enum Poll {
+    /// Eventos novos e a geração do stream, que a assinatura passa a seguir.
+    Events(Vec<Value>, Option<u64>),
+    /// Nada a entregar por ora.
+    Wait,
+    /// Só esta assinatura termina, com este erro.
+    End(ApiError),
+    /// O cursor saiu da janela retida; a conexão fecha.
+    Fatal(ApiError),
+}
+
 #[derive(Default)]
 struct Stream {
+    generation: u64,
     last: u64,
-    invalid: bool,
-    close_failed: bool,
+    invalid: Option<Closing>,
     retired: bool,
     events: VecDeque<Value>,
 }
@@ -42,6 +66,7 @@ pub struct EventLog {
     capacity: usize,
     retired: VecDeque<String>,
     retired_capacity: usize,
+    generations: u64,
     changed: watch::Sender<()>,
 }
 
@@ -62,19 +87,24 @@ impl EventLog {
             capacity,
             retired: VecDeque::new(),
             retired_capacity,
+            generations: 0,
             changed,
         }
     }
 
     #[cfg(test)]
     pub(crate) fn exhaust_sequence(&mut self, session: &str) {
-        self.streams.insert(
-            format!("session/{session}"),
+        self.stream(format!("session/{session}")).last = u64::MAX;
+    }
+    fn stream(&mut self, name: String) -> &mut Stream {
+        let generations = &mut self.generations;
+        self.streams.entry(name).or_insert_with(|| {
+            *generations += 1;
             Stream {
-                last: u64::MAX,
+                generation: *generations,
                 ..Stream::default()
-            },
-        );
+            }
+        })
     }
     pub(crate) fn remove(&mut self, session: &str) {
         self.streams.remove(&format!("session/{session}"));
@@ -83,7 +113,7 @@ impl EventLog {
     /// Replaces a pruned stream with a tombstone: its subscribers are told and the id cannot be reopened.
     pub fn retire(&mut self, session: &str) {
         let name = format!("session/{session}");
-        let stream = self.streams.entry(name.clone()).or_default();
+        let stream = self.stream(name.clone());
         stream.events.clear();
         if !stream.retired {
             stream.retired = true;
@@ -99,17 +129,14 @@ impl EventLog {
     pub fn is_retired(&self, stream: &str) -> bool {
         self.streams.get(stream).is_some_and(|s| s.retired)
     }
-    pub(crate) fn invalidate(&mut self, session: &str) {
+    /// Generation of the current incarnation of a stream; a reused id always gets a new one.
+    pub fn generation(&self, stream: &str) -> Option<u64> {
+        self.streams.get(stream).map(|s| s.generation)
+    }
+    pub fn invalidate(&mut self, session: &str, closing: Closing) {
         if let Some(stream) = self.streams.get_mut(&format!("session/{session}")) {
             stream.events.clear();
-            stream.invalid = true;
-        }
-        self.changed.send_replace(());
-    }
-    /// Marks an invalidated stream whose automatic close was given up; subscribers learn a close is still needed.
-    pub(crate) fn set_close_failed(&mut self, session: &str, failed: bool) {
-        if let Some(stream) = self.streams.get_mut(&format!("session/{session}")) {
-            stream.close_failed = failed;
+            stream.invalid = Some(closing);
         }
         self.changed.send_replace(());
     }
@@ -146,16 +173,18 @@ impl EventLog {
                 "cause": cause, "data_class": "private", "data": data
             }),
         )?;
-        let entry = self.streams.entry(stream).or_default();
+        let capacity = self.capacity;
+        let entry = self.stream(stream);
         entry.last = seq;
         entry.events.push_back(event);
-        while entry.events.len() > self.capacity {
+        while entry.events.len() > capacity {
             entry.events.pop_front();
         }
         self.changed.send_replace(());
         Ok(())
     }
 
+    /// Validates a new subscription; an invalidated or pruned stream refuses it.
     pub fn after(&self, stream: &str, after: u64) -> Result<Vec<Value>, ApiError> {
         let Some(entry) = self.streams.get(stream) else {
             // A interface pode assinar antes de session.open.
@@ -165,12 +194,16 @@ impl EventLog {
                 Err(ApiError::Replay)
             };
         };
-        if entry.close_failed {
-            return Err(ApiError::ClosePending);
+        match entry.invalid {
+            Some(Closing::Failed) => return Err(ApiError::ClosePending),
+            Some(_) => return Err(ApiError::Replay),
+            None if entry.retired => return Err(ApiError::Replay),
+            None => (),
         }
-        if entry.invalid || entry.retired {
-            return Err(ApiError::Replay);
-        }
+        Self::since(entry, after)
+    }
+
+    fn since(entry: &Stream, after: u64) -> Result<Vec<Value>, ApiError> {
         let oldest = entry
             .events
             .front()
@@ -185,5 +218,29 @@ impl EventLog {
             .filter(|e| e["seq"].as_u64().unwrap_or(0) > after)
             .cloned()
             .collect())
+    }
+
+    /// Next step of a subscription bound to `generation` (absent when it began before the stream existed).
+    pub fn poll(&self, stream: &str, after: u64, generation: Option<u64>) -> Poll {
+        let Some(entry) = self.streams.get(stream) else {
+            // Sem a lápide, a geração guardada ainda prova que o stream assinado acabou.
+            return match (generation, after) {
+                (Some(_), _) => Poll::End(ApiError::Replay),
+                (None, 0) => Poll::Events(vec![], None),
+                (None, _) => Poll::Fatal(ApiError::Replay),
+            };
+        };
+        if entry.retired || generation.is_some_and(|g| g != entry.generation) {
+            return Poll::End(ApiError::Replay);
+        }
+        match entry.invalid {
+            Some(Closing::Pending) => Poll::Wait,
+            Some(Closing::Failed) => Poll::End(ApiError::ClosePending),
+            Some(Closing::Closed) => Poll::End(ApiError::Replay),
+            None => match Self::since(entry, after) {
+                Ok(events) => Poll::Events(events, Some(entry.generation)),
+                Err(error) => Poll::Fatal(error),
+            },
+        }
     }
 }
