@@ -1,19 +1,6 @@
 #!/usr/bin/env bash
 # Hook commit-msg. Ative uma vez por clone: git config core.hooksPath .githooks
-#
-# Antes de tudo, valida o arquivo de parâmetros com o próprio checador (`--check-config`): configuração inválida
-# sai com 2, mesmo com `commits.enabled = false`. Com a configuração válida e a checagem desligada, sai com 0 sem
-# ler nem alterar a mensagem. Com a checagem ligada:
-#
-# 1. Acrescenta `Co-authored-by` a partir da variável de ambiente ADS_AI_AUTHOR:
-#      claude | codex  -> usa `coauthor.<valor>` de defaults/devflow.toml
-#      vazio           -> nenhum coautor neste commit
-#    Só age com ai_attribution = "executor". Se já existir um Co-authored-by, não duplica (e o checador decide).
-# 2. Acrescenta `Signed-off-by` do autor quando faltar (commits.signoff_autoadd).
-# 3. Valida a mensagem e o nome da branch atual com .github/scripts/check-commits.sh (as mesmas regras do CI).
-#    Em HEAD destacado (rebase, por exemplo) não há branch e só a mensagem é conferida.
-#
-# Exemplo (PowerShell):  $env:ADS_AI_AUTHOR = "claude"; git commit -m "feat(core): add event envelope"
+# Valida a configuração antes de alterar a mensagem. O checador também aplica as regras no CI.
 set -u
 
 msg_file="${1:?uso: commit-msg <arquivo-da-mensagem>}"
@@ -41,7 +28,19 @@ fi
 # 1. Coautor
 ai="$(cfg_str ai_attribution executor)"
 who="$(printf '%s' "${ADS_AI_AUTHOR:-}" | tr '[:upper:]' '[:lower:]')"
-if [ "$ai" = "executor" ] && [ -n "$who" ]; then
+if [ "$ai" = "agent-author" ] && [ -n "$who" ]; then
+  case "$who" in
+    claude|codex) ;;
+    *) echo "commit-msg: ADS_AI_AUTHOR inválida (use claude ou codex)." >&2; exit 1 ;;
+  esac
+  agent="$(cfg_str "agent.$who")"
+  committer="$(git var GIT_COMMITTER_IDENT 2>/dev/null | sed -E 's/ [0-9]+ [+-][0-9]{4}$//')"
+  if [ "$ident" != "$agent" ] || [ "$committer" != "$agent" ]; then
+    echo "commit-msg: autor e committer devem ser agent.$who. Use bash tools/commit-as-agent.sh $who '<assunto>'." >&2
+    exit 1
+  fi
+  co="$(cfg_str coauthor.owner)"
+elif [ "$ai" = "executor" ] && [ -n "$who" ]; then
   if ! [[ "$who" =~ ^[a-z0-9_-]+$ ]]; then
     echo "commit-msg: ADS_AI_AUTHOR inválida (use claude, codex ou deixe vazia)." >&2
     exit 1
@@ -51,7 +50,9 @@ if [ "$ai" = "executor" ] && [ -n "$who" ]; then
     echo "commit-msg: ADS_AI_AUTHOR=\"$who\" não tem entrada coauthor.$who em devflow.toml." >&2
     exit 1
   fi
-  git interpret-trailers --in-place --if-exists doNothing --trailer "Co-authored-by: $co" "$msg_file"
+fi
+if [ -n "${co:-}" ]; then
+  git interpret-trailers --in-place --if-exists doNothing --trailer "Co-authored-by: $co" "$msg_file" || exit $?
 fi
 
 # 2. Sign-off

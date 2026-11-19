@@ -12,6 +12,11 @@ hook="$root/.githooks/commit-msg"
 tmp="$root/.test-tmp/check-commits"
 mkdir -p "$tmp" || exit 2
 
+agent_cfg="$root/defaults/devflow.toml"
+legacy_cfg="$tmp/executor.toml"
+sed 's/^ai_attribution = .*/ai_attribution = "executor"/' "$agent_cfg" > "$legacy_cfg" || exit 2
+export ADS_DEVFLOW_TOML="$legacy_cfg"
+
 author='12345+usuario@users.noreply.github.com'
 other='usuario@example.org'
 sob="Signed-off-by: Fulano <$author>"
@@ -40,7 +45,7 @@ expect_fail() { # <nome> [e-mail do autor]
 
 expect_rc() { # <código esperado> <descrição> <mensagem> [toml]: confere o código de saída exato
   local rc=0
-  ADS_DEVFLOW_TOML="${4:-$root/defaults/devflow.toml}" bash "$checker" --message "$tmp/$3.txt" --author "$author" > "$tmp/out.txt" 2>&1 || rc=$?
+  ADS_DEVFLOW_TOML="${4:-$legacy_cfg}" bash "$checker" --message "$tmp/$3.txt" --author "$author" > "$tmp/out.txt" 2>&1 || rc=$?
   if [ "$rc" -eq "$1" ]; then
     passed=$((passed + 1)); echo "ok    sai com $1: $2"
   else
@@ -156,19 +161,19 @@ expect_rc 1 "código de tarefa (t12) no assunto" f-codigo-tarefa-curto
 expect_rc 1 "código de etapa (e1) no assunto" f-codigo-etapa
 expect_rc 1 "código de fase (f0) no assunto" f-codigo-fase
 # sem diferenciar maiúsculas: com a regra de minúsculas desligada, a maiúscula não escapa
-sed -e 's/^commits.subject_lowercase = .*/commits.subject_lowercase = false/' "$root/defaults/devflow.toml" > "$tmp/livre2.toml"
+sed -e 's/^commits.subject_lowercase = .*/commits.subject_lowercase = false/' "$legacy_cfg" > "$tmp/livre2.toml"
 msg f-termo-maiusculo "fix(core): close gate Review Findings\n\n$sob\n"
 msg f-codigo-maiusculo "fix(core): close AD-17 and M1\n\n$sob\n"
 expect_rc 1 "termo de processo em maiúsculas" f-termo-maiusculo "$tmp/livre2.toml"
 expect_rc 1 "código interno em maiúsculas" f-codigo-maiusculo "$tmp/livre2.toml"
 # as listas vêm do arquivo: vazias desligam; chave ausente cai no padrão embutido
-sed -e 's/^commits.process_terms = .*/commits.process_terms = []/' -e 's/^commits.internal_code_patterns = .*/commits.internal_code_patterns = []/' "$root/defaults/devflow.toml" > "$tmp/sem-texto.toml"
+sed -e 's/^commits.process_terms = .*/commits.process_terms = []/' -e 's/^commits.internal_code_patterns = .*/commits.internal_code_patterns = []/' "$legacy_cfg" > "$tmp/sem-texto.toml"
 expect_rc 0 "process_terms vazia desliga os termos" f-termo-findings "$tmp/sem-texto.toml"
 expect_rc 0 "internal_code_patterns vazia desliga os códigos" f-codigo-marco "$tmp/sem-texto.toml"
-sed -e '/^commits.process_terms = /d' -e '/^commits.internal_code_patterns = /d' "$root/defaults/devflow.toml" > "$tmp/sem-chave.toml"
+sed -e '/^commits.process_terms = /d' -e '/^commits.internal_code_patterns = /d' "$legacy_cfg" > "$tmp/sem-chave.toml"
 expect_rc 1 "sem a chave, os termos do padrão embutido valem" f-termo-rodada "$tmp/sem-chave.toml"
 expect_rc 1 "sem a chave, os códigos do padrão embutido valem" f-codigo-cartao "$tmp/sem-chave.toml"
-sed -e 's/^commits.process_terms = .*/commits.process_terms = ["sprint"]/' "$root/defaults/devflow.toml" > "$tmp/outro-termo.toml"
+sed -e 's/^commits.process_terms = .*/commits.process_terms = ["sprint"]/' "$legacy_cfg" > "$tmp/outro-termo.toml"
 msg f-termo-sprint "feat(ui): finish sprint screens\n\n$sob\n"
 expect_rc 1 "termo vindo do arquivo" f-termo-sprint "$tmp/outro-termo.toml"
 expect_rc 0 "termo fora da lista do arquivo passa" f-termo-rodada "$tmp/outro-termo.toml"
@@ -194,19 +199,19 @@ expect_branch 1 "feature/9-m1-contracts"
 expect_branch 1 "feature/20-T-012-gaps"
 
 # ---- Parâmetros: o arquivo de configuração manda (P8)
-sed -e 's/^ai_attribution = .*/ai_attribution = "none"/' "$root/defaults/devflow.toml" > "$tmp/none.toml"
+sed -e 's/^ai_attribution = .*/ai_attribution = "none"/' "$legacy_cfg" > "$tmp/none.toml"
 if ADS_DEVFLOW_TOML="$tmp/none.toml" bash "$checker" --message "$tmp/p-claude.txt" --author "$author" > /dev/null 2>&1; then
   failed=$((failed + 1)); echo "FALHA ai_attribution=none deveria barrar coautor"
 else
   passed=$((passed + 1)); echo "ok    reprova: coautor com ai_attribution=none"
 fi
-sed -e 's/^commits.enabled = .*/commits.enabled = false/' "$root/defaults/devflow.toml" > "$tmp/off.toml"
+sed -e 's/^commits.enabled = .*/commits.enabled = false/' "$legacy_cfg" > "$tmp/off.toml"
 if ADS_DEVFLOW_TOML="$tmp/off.toml" bash "$checker" --message "$tmp/f-tipo.txt" --author "$author" > /dev/null 2>&1; then
   passed=$((passed + 1)); echo "ok    passa: commits.enabled=false desliga a checagem"
 else
   failed=$((failed + 1)); echo "FALHA commits.enabled=false deveria desligar"
 fi
-sed -e 's/^commits.subject_max = .*/commits.subject_max = 20/' "$root/defaults/devflow.toml" > "$tmp/curto.toml"
+sed -e 's/^commits.subject_max = .*/commits.subject_max = 20/' "$legacy_cfg" > "$tmp/curto.toml"
 if ADS_DEVFLOW_TOML="$tmp/curto.toml" bash "$checker" --message "$tmp/p-basico.txt" --author "$author" > /dev/null 2>&1; then
   failed=$((failed + 1)); echo "FALHA subject_max=20 deveria reprovar"
 else
@@ -218,14 +223,14 @@ else
   passed=$((passed + 1)); echo "ok    reprova: configuração ausente falha fechado"
 fi
 
-sed -e 's/^commits.subject_lowercase = .*/commits.subject_lowercase = false/' "$root/defaults/devflow.toml" > "$tmp/livre.toml"
+sed -e 's/^commits.subject_lowercase = .*/commits.subject_lowercase = false/' "$legacy_cfg" > "$tmp/livre.toml"
 expect_rc 0 "subject_lowercase=false aceita maiúscula no meio" f-maiuscula-meio "$tmp/livre.toml"
 expect_rc 0 "subject_lowercase=false aceita maiúscula no começo" f-maiuscula "$tmp/livre.toml"
 expect_rc 1 "subject_lowercase=false não solta o tipo" f-tipo-maiusculo "$tmp/livre.toml"
 
 # ---- Configuração inválida: sai com 2 antes de analisar a mensagem (que aqui é válida)
 bad_cfg() { # <descrição> <expressão sed sobre o devflow.toml padrão>
-  sed -e "$2" "$root/defaults/devflow.toml" > "$tmp/bad.toml"
+  sed -e "$2" "$legacy_cfg" > "$tmp/bad.toml"
   expect_rc 2 "configuração: $1" p-basico "$tmp/bad.toml"
 }
 bad_cfg "subject_max com texto" 's/^commits.subject_max = .*/commits.subject_max = "invalid"/'
@@ -258,22 +263,23 @@ bad_cfg "process_terms com espaço" 's/^commits.process_terms = .*/commits.proce
 bad_cfg "process_terms não é lista" 's/^commits.process_terms = .*/commits.process_terms = "round"/'
 bad_cfg "internal_code_patterns com regex que não compila" "s/^commits.internal_code_patterns = .*/commits.internal_code_patterns = ['[a-z']/"
 # o erro de configuração vence o desligamento e a mensagem ruim
-sed -e 's/^commits.enabled = .*/commits.enabled = false/' -e 's/^commits.subject_max = .*/commits.subject_max = "invalid"/' "$root/defaults/devflow.toml" > "$tmp/bad.toml"
+sed -e 's/^commits.enabled = .*/commits.enabled = false/' -e 's/^commits.subject_max = .*/commits.subject_max = "invalid"/' "$legacy_cfg" > "$tmp/bad.toml"
 expect_rc 2 "configuração: inválida mesmo com commits.enabled=false" f-tipo "$tmp/bad.toml"
-sed -e 's/^signature.mode = .*/signature.mode = "strict"/' "$root/defaults/devflow.toml" > "$tmp/bad.toml"
+sed -e 's/^signature.mode = .*/signature.mode = "strict"/' "$legacy_cfg" > "$tmp/bad.toml"
 expect_rc 2 "configuração: inválida vence mensagem fora do padrão" f-tipo "$tmp/bad.toml"
 # chave ausente continua caindo no padrão embutido; listas opcionais podem ficar vazias
 printf 'commits.subject_max = 50\n' > "$tmp/parcial.toml"
 expect_rc 0 "configuração parcial usa os padrões" p-basico "$tmp/parcial.toml"
 expect_rc 1 "configuração parcial mantém a regra de minúsculas" f-maiuscula-meio "$tmp/parcial.toml"
-sed -e 's/^commits.blocked_patterns = .*/commits.blocked_patterns = []/' -e 's/^coauthors.allowed = .*/coauthors.allowed = []/' "$root/defaults/devflow.toml" > "$tmp/vazias.toml"
+sed -e 's/^commits.blocked_patterns = .*/commits.blocked_patterns = []/' -e 's/^coauthors.allowed = .*/coauthors.allowed = []/' "$legacy_cfg" > "$tmp/vazias.toml"
 expect_rc 0 "listas opcionais vazias são aceitas" p-basico "$tmp/vazias.toml"
 expect_rc 1 "coautor fora de lista vazia é recusado" p-claude "$tmp/vazias.toml"
 
 # ---- Hook (precisa do git instalado, não de repositório)
 hook_run() { # <nome> <ADS_AI_AUTHOR> [toml]: roda o hook sobre o arquivo <nome>.txt
-  GIT_AUTHOR_NAME="Fulano" GIT_AUTHOR_EMAIL="$author" GIT_COMMITTER_NAME="Fulano" GIT_COMMITTER_EMAIL="$author" \
-    ADS_AI_AUTHOR="$2" ADS_DEVFLOW_TOML="${3:-$root/defaults/devflow.toml}" bash "$hook" "$tmp/$1.txt" > "$tmp/out.txt" 2>&1
+  GIT_AUTHOR_NAME="${4:-Fulano}" GIT_AUTHOR_EMAIL="${5:-$author}" \
+    GIT_COMMITTER_NAME="${4:-Fulano}" GIT_COMMITTER_EMAIL="${6:-${5:-$author}}" \
+    ADS_AI_AUTHOR="$2" ADS_DEVFLOW_TOML="${3:-$legacy_cfg}" bash "$hook" "$tmp/$1.txt" > "$tmp/out.txt" 2>&1
 }
 hook_ok() { passed=$((passed + 1)); echo "ok    $1"; }
 hook_bad() { failed=$((failed + 1)); echo "FALHA $1"; sed 's/^/        /' "$tmp/out.txt"; }
@@ -315,7 +321,7 @@ if hook_run h8 claude && grep -q '^Co-authored-by' "$tmp/h8.txt"; then
 else hook_bad "hook comentários"; fi
 
 msg h9 "feat(core): add thing\n"
-sed -e 's/^commits.subject_max = .*/commits.subject_max = "invalid"/' "$root/defaults/devflow.toml" > "$tmp/bad.toml"
+sed -e 's/^commits.subject_max = .*/commits.subject_max = "invalid"/' "$legacy_cfg" > "$tmp/bad.toml"
 if hook_run h9 claude "$tmp/bad.toml"; then hook_bad "hook deveria recusar configuração inválida"; else hook_ok "hook: recusa commit com configuração inválida"; fi
 
 # ---- Hook com a checagem desligada: a configuração é validada mesmo assim, e a mensagem não é lida nem alterada
@@ -332,9 +338,9 @@ hook_off() { # <código esperado> <descrição> <nome> <toml>: código de saída
 }
 msg h10 "Feat: Bad subject
 "
-sed -e 's/^commits.enabled = .*/commits.enabled = false/' -e 's/^commits.subject_max = .*/commits.subject_max = "invalid"/' "$root/defaults/devflow.toml" > "$tmp/bad-off.toml"
+sed -e 's/^commits.enabled = .*/commits.enabled = false/' -e 's/^commits.subject_max = .*/commits.subject_max = "invalid"/' "$legacy_cfg" > "$tmp/bad-off.toml"
 hook_off 2 "configuração inválida com commits.enabled=false" h10 "$tmp/bad-off.toml"
-sed -e 's/^commits.enabled = .*/commits.enabled = "false"/' "$root/defaults/devflow.toml" > "$tmp/bad-off.toml"
+sed -e 's/^commits.enabled = .*/commits.enabled = "false"/' "$legacy_cfg" > "$tmp/bad-off.toml"
 hook_off 2 "commits.enabled entre aspas não desliga a checagem" h10 "$tmp/bad-off.toml"
 hook_off 0 "configuração válida com commits.enabled=false" h10 "$tmp/off.toml"
 
@@ -348,10 +354,64 @@ check_config() { # <código esperado> <descrição> <toml>
     failed=$((failed + 1)); echo "FALHA --check-config esperava saída $1 e veio $rc: $2"; sed 's/^/        /' "$tmp/out.txt"
   fi
 }
-check_config 0 "configuração padrão" "$root/defaults/devflow.toml"
+check_config 0 "configuração padrão" "$agent_cfg"
 check_config 0 "configuração válida com a checagem desligada" "$tmp/off.toml"
 check_config 2 "configuração inválida" "$tmp/bad.toml"
 check_config 2 "configuração ausente" "$tmp/nao-existe.toml"
+
+# ---- Autoria de agente
+cfg="$agent_cfg"
+. "$here/lib-devflow.sh"
+agent="$(cfg_str agent.codex)"
+agent_email="$(identity_email "$agent")"
+owner="$(cfg_str coauthor.owner)"
+owner_email="$(identity_email "$owner")"
+subject="feat(core): add thing"
+
+msg a-valid "$subject\n\nSigned-off-by: $agent\nCo-authored-by: $owner\n"
+msg a-missing "$subject\n\nSigned-off-by: $agent\n"
+msg a-wrong-coauthor "$subject\n\nSigned-off-by: $agent\nCo-authored-by: Claude <noreply@anthropic.com>\n"
+msg a-owner "$subject\n\nSigned-off-by: $owner\n"
+msg a-owner-coauthor "$subject\n\nSigned-off-by: $owner\nCo-authored-by: $owner\n"
+ADS_DEVFLOW_TOML="$agent_cfg" expect_pass a-valid "$agent_email"
+ADS_DEVFLOW_TOML="$agent_cfg" expect_fail a-missing "$agent_email"
+ADS_DEVFLOW_TOML="$agent_cfg" expect_fail a-wrong-coauthor "$agent_email"
+ADS_DEVFLOW_TOML="$agent_cfg" expect_fail p-basico "$author"
+ADS_DEVFLOW_TOML="$agent_cfg" expect_pass a-owner "$owner_email"
+ADS_DEVFLOW_TOML="$agent_cfg" expect_fail a-owner-coauthor "$owner_email"
+
+msg ha-valid "$subject\n"
+if hook_run ha-valid codex "$agent_cfg" "${agent% <*}" "$agent_email" &&
+   grep -Fxq "Co-authored-by: $owner" "$tmp/ha-valid.txt" &&
+   grep -Fxq "Signed-off-by: $agent" "$tmp/ha-valid.txt"; then
+  hook_ok "hook: acrescenta coautoria do mantenedor e DCO do agente"
+else hook_bad "hook: autoria de agente válida"; fi
+
+msg ha-owner "$subject\n"
+if hook_run ha-owner "" "$agent_cfg" "${owner% <*}" "$owner_email" &&
+   ! grep -qi '^Co-authored-by:' "$tmp/ha-owner.txt"; then
+  hook_ok "hook: aceita commit do mantenedor sem coautor"
+else hook_bad "hook: autoria do mantenedor"; fi
+
+hook_expect_rc() {
+  local expected="$1" description="$2" rc=0
+  shift 2
+  hook_run "$@" || rc=$?
+  if [ "$rc" -eq "$expected" ]; then
+    hook_ok "$description"
+  else
+    hook_bad "$description (esperava $expected, veio $rc)"
+  fi
+}
+hook_expect_rc 0 "hook: aceita trailer do mantenedor já presente" a-valid "" "$agent_cfg" "${agent% <*}" "$agent_email"
+hook_expect_rc 1 "hook: exige coautor em commit de agente" a-missing "" "$agent_cfg" "${agent% <*}" "$agent_email"
+hook_expect_rc 1 "hook: recusa outro agente como coautor" a-wrong-coauthor codex "$agent_cfg" "${agent% <*}" "$agent_email"
+hook_expect_rc 1 "hook: recusa autor desconhecido" p-basico "" "$agent_cfg"
+hook_expect_rc 1 "hook: recusa autor diferente de agent.codex" ha-valid codex "$agent_cfg"
+hook_expect_rc 1 "hook: recusa committer diferente de agent.codex" ha-valid codex "$agent_cfg" "${agent% <*}" "$agent_email" "$owner_email"
+
+sed '/^agent.codex = /d' "$agent_cfg" > "$tmp/missing-agent.toml"
+check_config 2 "agent-author exige identidade do agente" "$tmp/missing-agent.toml"
 
 echo
 echo "Resultado: $passed passaram, $failed falharam."

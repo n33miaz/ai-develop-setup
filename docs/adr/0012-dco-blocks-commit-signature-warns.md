@@ -9,9 +9,9 @@ Três mecanismos diferentes estavam em jogo: a linha DCO, a assinatura criptogr�
 "(a) DCO e formato bloqueiam já; assinatura só avisa até a chave existir".
 
 ## Consequências
-- O job `commits` bloqueia por formato, tamanho, ausência de corpo, trailers fora da lista, falta de `Signed-off-by` e e-mail de autor diferente do endereço privado do provedor.
+- O job `commits` bloqueia por formato, tamanho, ausência de corpo, trailers fora da lista, falta de `Signed-off-by` e e-mail de autor fora do padrão noreply do GitHub.
 - A conferência de assinatura roda sobre os commits do PR e só emite aviso.
-- O `Signed-off-by` posto por um agente vale como atestado do mantenedor por instrução permanente, registrada no guia de contribuição.
+- O `Signed-off-by` usa a identidade do autor, inclusive no modo de autoria de agente da [ADR 0024](0024-agent-authored-commits.md).
 
 ## Condição de reversão
 A assinatura passa a bloquear quando a chave estiver configurada e dez PRs seguidos passarem sem aviso.

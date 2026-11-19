@@ -27,3 +27,4 @@ Uma decisão por arquivo. Número nunca é reutilizado; decisão substituída ga
 | [0021](0021-storage-atomic-file-and-cipher.md) | 0021. Atomic storage file and authenticated column encryption |
 | [0022](0022-account-profile-folders-and-automatic-switching.md) | 0022. Account profile folders and automatic account switching (substitui em parte a 0010) |
 | [0023](0023-remote-session-encryption.md) | 0023. Remote session encryption (proposta) |
+| [0024](0024-agent-authored-commits.md) | 0024. Autoria de commits por agentes (substitui em parte a 0011) |

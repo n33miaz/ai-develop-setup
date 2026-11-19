@@ -12,7 +12,7 @@ O restante deste documento descreve o fluxo do mantenedor e dos agentes que trab
 
 | Branch | Modo expresso (agora) | Modo completo (depois) |
 |---|---|---|
-| `develop` | É a produção. PR obrigatório, check `ci-ok` verde, junção por rebase (automática), sem exigir branch atualizada, sem force-push nem exclusão; o papel de administrador do repositório tem exceção, reservada ao mantenedor | igual |
+| `develop` | É a produção. PR obrigatório, check `ci-ok` verde, junção com merge commit no fluxo de autoria de agente, sem exigir branch atualizada, sem force-push nem exclusão; o papel de administrador do repositório tem exceção, reservada ao mantenedor | igual |
 | `homolog` | Existe, sob a mesma proteção da `develop`, e fica sem uso | Recebe PR da `develop` |
 | `main` | Existe, sob a mesma proteção da `develop`, e fica sem uso | Recebe PR da `homolog` |
 
@@ -89,21 +89,21 @@ Todas essas regras e seus valores ficam em `defaults/devflow.toml` e são aplica
 
 O mesmo script confere o texto público (ver "Texto público" abaixo) no assunto de cada commit e no nome da branch: recusa, por palavra inteira e sem diferenciar maiúsculas, os termos de processo de `commits.process_terms` e os códigos internos de organização de `commits.internal_code_patterns`, as duas listas em `defaults/devflow.toml`. No CI o nome da branch é o do PR; no hook, o da branch atual (em HEAD destacado não há o que conferir). No assunto o hífen une a palavra (`round-trip` passa); no nome da branch ele separa.
 
-### DCO e instrução permanente aos agentes
+### DCO
 
-Cada commit leva `Signed-off-by`, atestando o [Developer Certificate of Origin 1.1](https://developercertificate.org/). **O mantenedor deu instrução permanente: agentes de IA que commitam por ordem dele assinam o `Signed-off-by` em nome do mantenedor**, como parte do trabalho dirigido e revisado por ele. O hook acrescenta a linha com a identidade git configurada.
+Cada commit leva `Signed-off-by`, atestando o [Developer Certificate of Origin 1.1](https://developercertificate.org/). O hook acrescenta o trailer com a identidade do autor do commit.
 
-### Coautor de IA
+### Autoria de agente
 
-O hook acrescenta o `Co-authored-by` a partir da variável de ambiente `ADS_AI_AUTHOR`:
+O modo padrão `agent-author` registra a conta do agente como autora e committer e inclui o mantenedor como coautor. Com o hook ligado e os arquivos em stage, execute:
 
-| Valor | Efeito |
-|---|---|
-| `claude` | acrescenta o coautor definido em `coauthor.claude` |
-| `codex` | acrescenta o coautor definido em `coauthor.codex` |
-| vazio ou ausente | nenhum coautor neste commit |
+```bash
+bash tools/commit-as-agent.sh codex "feat(core): add event envelope"
+```
 
-Regras: um coautor por commit, quem escreveu a maior parte, alternando conforme quem trabalhou. A linha de atribuição que o Codex injeta por conta própria é barrada. Para parar de atribuir no futuro, troque `ai_attribution` para `"none"` em `defaults/devflow.toml`; o histórico não é reescrito.
+Escolha `claude` ou `codex` conforme quem escreveu a maior parte. O script lê `agent.*` de `defaults/devflow.toml` e o hook acrescenta o trailer a partir de `coauthor.owner`. Para um commit do mantenedor, use o Git diretamente com `ADS_AI_AUTHOR` vazia ou ausente.
+
+Para voltar à autoria do mantenedor com coautoria do agente, mude `ai_attribution` para `"executor"` e informe o agente em `ADS_AI_AUTHOR`. Para desativar a coautoria, use `"none"`.
 
 ### Ligar o hook e testar
 
@@ -114,8 +114,8 @@ bash .github/scripts/check-commits.test.sh
 
 ## Pull requests
 
-- Título descritivo, na mesma regra do título da issue (em geral o mesmo). Como a junção é por rebase, os commits entram um a um e o título do PR não vira commit: o padrão de commit vale só para os commits. Descrição em português: o que mudou, por que, como testar, checklist P1 a P8 e `Closes #n`.
-- Junção por rebase, com auto-merge ligado, depois do check `ci-ok` verde. Apague a branch após a junção.
+- Título descritivo, na mesma regra do título da issue (em geral o mesmo). O padrão de mensagem vale para os commits da branch. Descrição em português: o que mudou, por que, como testar, checklist P1 a P8 e `Closes #n`.
+- No fluxo de autoria de agente, use merge commit depois do check `ci-ok` verde para preservar os commits e suas identidades. Apague a branch após a junção.
 - Antes de juntar, confira o `ci-ok` da execução mais recente do commit exato.
 
 ## Módulos de segurança

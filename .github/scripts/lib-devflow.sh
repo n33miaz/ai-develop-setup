@@ -21,3 +21,9 @@ cfg_str() {
 cfg_arr() {
   cfg_raw "$1" | grep -oE "\"[^\"]*\"|'[^']*'" | sed -E 's/^.(.*).$/\1/'
 }
+
+identity_email() {
+  local email_part='^([^<>]+) <([^[:space:]<>@]+@[^[:space:]<>@]+)>$'
+  [[ "$1" =~ $email_part ]] || return 1
+  printf '%s' "${BASH_REMATCH[2]}"
+}
