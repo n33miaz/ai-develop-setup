@@ -694,6 +694,10 @@ mod tests {
         other.format = 2;
         assert_eq!(open(&other).unwrap_err(), StorageError::UnsupportedSchema);
         assert!(!chain_ok(&other));
+        // The format is authenticated too, not only checked before decrypting.
+        let ct = copy(&sealed).take_ciphertext().unwrap();
+        let decrypted = other.associated(|f| cipher::decrypt(&TwoKeys(1), &AssociatedData(f), &ct));
+        assert_eq!(decrypted.unwrap_err(), CipherError::Authentication);
     }
 
     #[test]
