@@ -1,6 +1,10 @@
 use crate::{StorageConfig, StorageError, migrate};
 use rusqlite::{Connection, OpenFlags};
-use std::{io::Read, path::Path, time::Duration};
+use std::{
+    io::Read,
+    path::{Path, PathBuf},
+    time::{Duration, Instant},
+};
 
 pub const APPLICATION_ID: i64 = 0x41445331;
 pub const SCHEMA_VERSION: i64 = 1;
@@ -81,14 +85,21 @@ fn harden(c: &Connection, config: &StorageConfig) -> Result<(), StorageError> {
     Ok(())
 }
 
-fn header(path: &Path) -> Result<bool, StorageError> {
+#[derive(Debug, PartialEq, Eq)]
+enum Header {
+    Empty,
+    Unmarked,
+    Product,
+}
+
+fn header(path: &Path) -> Result<Header, StorageError> {
     let mut file = std::fs::File::open(path).map_err(StorageError::from)?;
     let meta = file.metadata().map_err(StorageError::from)?;
     if !meta.is_file() {
         return Err(StorageError::CantOpen);
     }
     if meta.len() == 0 {
-        return Ok(false);
+        return Ok(Header::Empty);
     }
     let mut bytes = [0; 100];
     file.read_exact(&mut bytes).map_err(|error| {
@@ -123,7 +134,92 @@ fn header(path: &Path) -> Result<bool, StorageError> {
     {
         return Err(StorageError::UnsupportedSchema);
     }
-    Ok(true)
+    Ok(if id == APPLICATION_ID {
+        Header::Product
+    } else {
+        Header::Unmarked
+    })
+}
+
+fn sibling(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(suffix);
+    name.into()
+}
+
+fn present(path: &Path) -> Result<bool, StorageError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Files SQLite would replay or delete on open: any rollback journal, or a
+/// WAL beside an empty or missing main file.
+fn residue(path: &Path) -> Result<bool, StorageError> {
+    let empty = match std::fs::metadata(path) {
+        Ok(meta) => meta.is_file() && meta.len() == 0,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+        Err(e) => return Err(e.into()),
+    };
+    Ok(present(&sibling(path, "-journal"))? || (empty && present(&sibling(path, "-wal"))?))
+}
+
+fn stamp(path: &Path) -> Option<(u64, Option<std::time::SystemTime>)> {
+    std::fs::metadata(path)
+        .ok()
+        .map(|meta| (meta.len(), meta.modified().ok()))
+}
+
+/// Returns whether the main file exists. Only unmarked files get the private
+/// in-memory image; product files are inspected by the write connection.
+fn inspect(path: &Path, config: &StorageConfig) -> Result<bool, StorageError> {
+    match std::fs::metadata(path) {
+        Ok(meta) => {
+            if !meta.is_file() {
+                return Err(StorageError::CantOpen);
+            }
+            if header(path)? == Header::Unmarked {
+                let image = crate::snapshot::image(path, config.inspection_max_bytes)?;
+                let mut read = Connection::open_in_memory()?;
+                harden(&read, config)?;
+                read.deserialize_read_exact(
+                    rusqlite::MAIN_DB,
+                    image.as_slice(),
+                    image.len(),
+                    true,
+                )?;
+                preflight(&read, config)?;
+            }
+            Ok(true)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Waits up to the busy timeout for a concurrent creator's journal to clear;
+/// leftovers that remain refuse as `Corrupt` before SQLite can touch them.
+fn settle(path: &Path, config: &StorageConfig) -> Result<bool, StorageError> {
+    let deadline = Instant::now() + Duration::from_millis(config.busy_timeout_ms.into());
+    loop {
+        let mut outcome = Err(StorageError::Corrupt);
+        let mut stable = false;
+        if !residue(path)? {
+            let before = stamp(path);
+            outcome = inspect(path, config);
+            if residue(path)? {
+                outcome = Err(StorageError::Corrupt);
+            } else {
+                stable = outcome.is_ok() || stamp(path) == before;
+            }
+        }
+        if stable || Instant::now() >= deadline {
+            return outcome;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 fn existing_flags() -> OpenFlags {
@@ -141,28 +237,7 @@ impl AuditStore {
         config: &StorageConfig,
         after: impl FnOnce(),
     ) -> Result<Self, StorageError> {
-        let exists = match std::fs::metadata(path) {
-            Ok(meta) => {
-                if !meta.is_file() {
-                    return Err(StorageError::CantOpen);
-                }
-                if header(path)? {
-                    let image = crate::snapshot::image(path, config.inspection_max_bytes)?;
-                    let mut read = Connection::open_in_memory()?;
-                    harden(&read, config)?;
-                    read.deserialize_read_exact(
-                        rusqlite::MAIN_DB,
-                        image.as_slice(),
-                        image.len(),
-                        true,
-                    )?;
-                    preflight(&read, config)?;
-                }
-                true
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
-            Err(e) => return Err(e.into()),
-        };
+        let exists = settle(path, config)?;
         after();
         let flags = if exists {
             existing_flags()
@@ -208,6 +283,12 @@ impl AuditStore {
             if integer(&self.connection, name)? != expected {
                 return Err(StorageError::PragmaMismatch);
             }
+        }
+        if !self
+            .connection
+            .db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DEFENSIVE)?
+        {
+            return Err(StorageError::PragmaMismatch);
         }
         Ok(())
     }
@@ -262,6 +343,23 @@ mod tests {
         let store = AuditStore { connection };
         assert_eq!(
             store.verify_pragmas(&StorageConfig::defaults()),
+            Err(StorageError::PragmaMismatch)
+        );
+    }
+
+    #[test]
+    fn defensive_mode_is_read_back() {
+        let root = test_directory();
+        let path = root.join(format!("defensive-{}.db", std::process::id()));
+        let config = StorageConfig::defaults();
+        let store = AuditStore::open(&path, &config).unwrap();
+        store.verify_pragmas(&config).unwrap();
+        store
+            .connection
+            .set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DEFENSIVE, false)
+            .unwrap();
+        assert_eq!(
+            store.verify_pragmas(&config),
             Err(StorageError::PragmaMismatch)
         );
     }
