@@ -1,6 +1,6 @@
 # 0011. Single AI co-author per commit
 
-Status: aceita em 14/11/2026
+Status: substituída em parte pela [ADR 0024](0024-agent-authored-commits.md).
 
 ## Contexto
 Os commits levam atribuição de IA, sem corpo descritivo. Mais de um agente pode trabalhar na mesma entrega, e uma das ferramentas pode inserir a própria linha de atribuição por conta própria.

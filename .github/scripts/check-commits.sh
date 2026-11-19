@@ -120,7 +120,20 @@ cfg_check_list() { # <chave> <0 = pode ser vazia; 1 = precisa de item> <regex de
 validate_config() {
   cfg_check_enum profile express full
   cfg_check_bool workflow.issue_per_task
-  cfg_check_enum ai_attribution executor none
+  cfg_check_enum ai_attribution executor agent-author none
+  local key raw email identity_re='^"[^"]+"$' emails=""
+  for key in coauthor.owner agent.claude agent.codex; do
+    cfg_has "$key" || [ "$(cfg_str ai_attribution executor)" = agent-author ] || continue
+    raw="$(cfg_raw "$key")"
+    if ! [[ "$raw" =~ $identity_re ]] || ! email="$(identity_email "$(cfg_str "$key")")"; then
+      cfg_fail "$key" 'esperado "Nome <e-mail>".'
+    elif in_list "$email" "$emails"; then
+      cfg_fail "$key" "o e-mail precisa identificar uma conta distinta."
+    else
+      emails="$emails"$'
+'"$email"
+    fi
+  done
   cfg_check_list coauthors.allowed 0 '^[^[:space:]<>@]+@[^[:space:]<>@]+$'
   cfg_check_int commits.max_coauthors 0 99
   cfg_check_bool commits.enabled
@@ -141,8 +154,6 @@ validate_config() {
     exit 2
   fi
 }
-validate_config
-[ "${1:-}" = "--check-config" ] && exit 0
 
 errors=0
 report() { # <rótulo> <texto>
@@ -192,6 +203,9 @@ in_list() { # <item> <lista, um por linha>: sem diferença de maiúscula
   done <<< "$2"
   return 1
 }
+
+validate_config
+[ "${1:-}" = "--check-config" ] && exit 0
 
 # check_message <arquivo> <e-mail do autor> <rótulo> <1 = ignorar linhas que começam com #>
 check_message() {
@@ -329,6 +343,24 @@ check_message() {
         report "$label" "coautor com e-mail fora da lista permitida."
       fi
     done
+  fi
+
+  if [ "$ai" = "agent-author" ]; then
+    local owner agents
+    owner="$(identity_email "$(cfg_str coauthor.owner)")"
+    agents="$(identity_email "$(cfg_str agent.claude)")"$'
+'"$(identity_email "$(cfg_str agent.codex)")"
+    if in_list "$author" "$agents"; then
+      if [ "${#co_emails[@]}" -ne 1 ] || ! in_list "${co_emails[0]:-}" "$owner"; then
+        report "$label" "commit de agente exige exatamente um Co-authored-by do mantenedor."
+      fi
+    elif in_list "$author" "$owner"; then
+      if [ "${#co_emails[@]}" -ne 0 ]; then
+        report "$label" "commit do mantenedor não pode ter coautor no modo agent-author."
+      fi
+    else
+      report "$label" "autor fora das contas configuradas em agent.* e coauthor.owner."
+    fi
   fi
 
   # Autor
