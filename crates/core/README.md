@@ -2,6 +2,14 @@
 
 Política do produto (tarefas, aprovações, escopo, roteamento e orçamento), sem rede, banco nem PTY.
 
+## Orçamento e roteamento
+
+O [orçamento](src/budget.rs) avalia os quatro tetos do pacote contra o livro-caixa reconciliado da tarefa e o tempo decorrido passado pelo chamador. Conta uma tentativa por linha, inclusive falhas, e soma apenas USD faturável. Para a cota, soma a maior variação positiva entre as janelas de cada linha. Janelas sem par antes/depois e quedas de percentual contribuem zero. O padrão de aviso é 80%, configurável em [budget.toml](../../defaults/budget.toml). Atingir qualquer teto retorna as dimensões atingidas e a razão de cancelamento `budget`.
+
+O [roteador](src/routing.rs) interpreta [routing.toml](../../defaults/routing.toml). Recebe tipo, tamanho e sensibilidade da tarefa, um catálogo com os modelos e esforços aceitos e as observações de cota do vínculo atual de cada ferramenta e provedor. Usa a primeira regra compatível, a ordem das faixas, o menor `rank` e depois a ordem lexicográfica dos identificadores e campos da rota. Cada candidato deve permitir explicitamente a classe da tarefa. A observação recente mais nova prevalece, com maior percentual em empate. Sem candidato elegível, a proposta fica vazia.
+
+`shadow` é o padrão e a escolha manual configurada continua em vigor. `manual` só registra essa escolha, `propose` acrescenta a proposta e `auto` explícito retorna os dados da decisão calculada. O fallback em `shadow` e `propose` descreve a alternativa simulada. Quem integra o núcleo fornece o instante e os metadados do envelope e é responsável por publicar os eventos e aplicar decisões.
+
 ## Ambiente do processo filho (`src/child_env.rs`)
 
 Política pura do ambiente que um processo de ferramenta recebe: só passam os nomes da lista permitida que o processo pai tem, escritos como a lista os escreve, mais os valores que o produto define (`TERM`, `COLORTERM`). Nome em `allow` ou em `set` que casa com um padrão negado (`NOME`, `PREFIXO*`, `*SUFIXO`, `*TRECHO*`, sem diferença de maiúsculas) recusa a política na carga; o filtro confere de novo e o descarta. Nomes repetidos (pela regra de caixa), nomes com `=`, `*` ou controle e valores de `set` com NUL ou controle também recusam. Os erros dizem a lista e a posição, nunca o texto recusado. Padrões de nome não reconhecem um segredo sob um nome qualquer: a garantia é que nada de nome reconhecidamente sensível passa e que o que passa está todo em `allow`. Os padrões ficam em [`defaults/harnesses.toml`](../../defaults/harnesses.toml) (`[env]`): a camada do usuário substitui `allow` e `set` e só acrescenta a `deny`. A comparação com `allow` ignora maiúsculas no Windows (`NameCase::Insensitive`); com dois nomes do pai que só diferem na caixa, vale o escrito igual à lista, senão o menor. O núcleo não lê o ambiente: quem chama o passa como dado.

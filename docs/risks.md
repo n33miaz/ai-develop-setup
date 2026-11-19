@@ -33,7 +33,7 @@ Estado da mitigação, em cada risco:
 | [Isolamento falso entre perfis do Codex](#isolamento-falso-entre-perfis-do-codex) | mantenedor e adaptador Codex | ausente; teste na máquina pendente |
 | [Pasta de perfil lida ou alterada pelo produto](#pasta-de-perfil-lida-ou-alterada-pelo-produto) | núcleo (ligação ao perfil) e coletores | decidida, não implementada |
 | [Chave passa na frente do login do perfil](#chave-passa-na-frente-do-login-do-perfil) | adaptadores de ferramenta | parcial: filtro do ambiente do pai |
-| [Gasto de IA sem teto](#gasto-de-ia-sem-teto) | núcleo (orçamento) | ausente |
+| [Gasto de IA sem teto](#gasto-de-ia-sem-teto) | núcleo (orçamento) | parcial |
 | [Texto de ferramenta tratado como instrução](#texto-de-ferramenta-tratado-como-instrução) | núcleo e adaptadores | só regra escrita |
 | [Instruções de agente sobrepostas ou ignoradas](#instruções-de-agente-sobrepostas-ou-ignoradas) | mantenedor | parcial |
 | [Segredo ou dado pessoal no repositório público](#segredo-ou-dado-pessoal-no-repositório-público) | mantenedor e CI | parcial |
@@ -225,10 +225,10 @@ Estado da mitigação, em cada risco:
 - **Descrição.** Tarefas ou tentativas repetidas consomem cota ou custo sem limite.
 - **Impacto.** Custo inesperado ou cota esgotada.
 - **Dono.** Núcleo (orçamento e roteamento).
-- **Teto.** Não definido.
-- **Mitigação existente.** Ausente. Os Schemas `record.usage_event`, `event.usage.*`, `event.task.cancelled` (que prevê cancelamento por teto de custo) e `event.routing.fallback` existem.
-- **Plano B.** Não definido.
-- **O que falta.** Limites de gasto e de tentativas, coleta de uso, roteador.
+- **Teto.** USD faturável, percentual de cota, turnos e tempo definidos no pacote de cada tarefa.
+- **Mitigação existente.** O núcleo avalia o consumo observado e calcula uma rota alternativa quando há cota. Veja os parâmetros e a interpretação das medições no [README do núcleo](../crates/core/README.md#orçamento-e-roteamento).
+- **Plano B.** Manter a rota manual em observação. Sem alternativa elegível, a proposta fica vazia.
+- **O que falta.** Coletar uso e aplicar a decisão de parada entre tentativas. Até essa integração, a avaliação no núcleo não interrompe o gasto.
 
 ### Texto de ferramenta tratado como instrução
 

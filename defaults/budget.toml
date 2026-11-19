@@ -1,0 +1,3 @@
+# Percentual de qualquer teto que aciona aviso. No teto, a decisão passa a parar.
+# O pacote da tarefa fornece os quatro tetos obrigatórios.
+warn_at_pct = 80.0

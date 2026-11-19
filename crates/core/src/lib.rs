@@ -1,7 +1,9 @@
 //! Policy: tasks, approvals, scope, routing and budget.
 
+pub mod budget;
 pub mod child_env;
 pub mod gate;
+pub mod routing;
 pub mod tool_launch;
 
 /// Package name as declared in the manifest.
