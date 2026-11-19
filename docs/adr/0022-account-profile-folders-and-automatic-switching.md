@@ -43,7 +43,7 @@ A regra C1 continua proibindo ler, copiar, mover, registrar em log ou alterar o 
 
 ## Consequências
 
-- O código atual veta isso de propósito e continua correto até a implementação: `defaults/harnesses.toml` nega `CLAUDE_*` e `CODEX_*`, `crates/core/src/child_env.rs` descarta nomes negados mesmo em `env.set`, e o [README do adaptador Claude](../../crates/adapters/claude/README.md) diz que `CLAUDE_CONFIG_DIR` não passa. A implementação acrescenta a ligação ao perfil depois do filtro, sem afrouxar `env.deny`, e atualiza esses textos no mesmo PR.
+- O código atual veta isso de propósito e continua correto até a implementação: `defaults/harnesses.toml` nega `CLAUDE_*` e `CODEX_*`, `crates/core/src/child_env.rs` descarta nomes negados mesmo em `env.set`, e o [README do núcleo](../../crates/core/README.md#abertura-de-ferramentas) documenta o filtro das variáveis que redirecionam o login. A implementação acrescenta a ligação ao perfil depois do filtro, sem afrouxar `env.deny`, e atualiza esses textos no mesmo PR.
 - A descrição do Schema `urn:ads:event:routing.fallback:1` diz "Nunca troca de conta". O Schema não muda aqui; a troca de conta ganha evento próprio e campos de conta numa versão nova dos contratos de roteamento, no PR de contratos que vier com a implementação. Até lá, a ADR e a descrição do Schema divergem neste ponto, e vale esta ADR.
 - Os contratos `record.usage_event` e os de roteamento já usam `account_alias`, que nunca é credencial nem e-mail; o mesmo apelido identifica o perfil.
 - Um teste com duas pastas de perfil e uma variável de chave envenenada no processo pai prova que só a pasta escolhida chega ao filho e que nenhuma variável de chave passa.

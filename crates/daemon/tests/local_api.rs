@@ -1511,23 +1511,13 @@ async fn exit_before_close_reply_is_reported_as_requested_termination() {
 
 struct FakeProbe;
 
-impl ads_adapter_claude::Probe for FakeProbe {
+impl ads_core::tool_launch::Probe for FakeProbe {
     fn is_file(&self, path: &str) -> bool {
         matches!(path, r"C:\tools\claude.exe" | r"C:\tools\codex.exe")
     }
 
     fn is_dir(&self, path: &str) -> bool {
         path == r"C:\workspace"
-    }
-}
-
-impl ads_adapter_codex::Probe for FakeProbe {
-    fn is_file(&self, path: &str) -> bool {
-        ads_adapter_claude::Probe::is_file(self, path)
-    }
-
-    fn is_dir(&self, path: &str) -> bool {
-        ads_adapter_claude::Probe::is_dir(self, path)
     }
 }
 
