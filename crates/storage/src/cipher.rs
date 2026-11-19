@@ -14,6 +14,7 @@ const CHECK_DOMAIN: &[u8] = b"urn:ads:cipher:key-check:1";
 /// HKDF-Expand `info` labels: the provider key only feeds this derivation.
 const AEAD_SUBKEY: &[u8] = b"urn:ads:cipher:subkey:aead:1";
 const CHAIN_SUBKEY: &[u8] = b"urn:ads:cipher:subkey:chain:1";
+const CHECK_SUBKEY: &[u8] = b"urn:ads:cipher:subkey:key-check:1";
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -66,8 +67,9 @@ impl fmt::Debug for KeyId {
     }
 }
 
-/// HKDF-Expand (RFC 5869) of one 32-byte block. The provider key is already
-/// uniformly random, so it serves as the pseudorandom key without Extract.
+/// HKDF-Expand (RFC 5869) of one 32-byte block. `KeyProvider` keys must be
+/// uniformly random, so the provider key serves as the pseudorandom key without
+/// Extract. The HMAC state holding the key is not zeroed by the dependency.
 fn subkey(master: &SecretKey, info: &[u8]) -> Zeroizing<[u8; 32]> {
     let mut mac =
         <HmacSha256 as Mac>::new_from_slice(&**master.0).expect("HMAC accepts a key of any length");
@@ -101,9 +103,21 @@ impl fmt::Debug for ChainKey {
     }
 }
 
+impl ChainKey {
+    /// Chain key derived from `key`.
+    pub fn derive(key: &SecretKey) -> Self {
+        Self(subkey(key, CHAIN_SUBKEY))
+    }
+}
+
 /// Chain key of the provider key registered under `id`.
 pub fn chain_key(keys: &dyn KeyProvider, id: &KeyId) -> Result<ChainKey, CipherError> {
-    Ok(ChainKey(subkey(&keys.by_id(id)?, CHAIN_SUBKEY)))
+    Ok(ChainKey::derive(&keys.by_id(id)?))
+}
+
+/// Constant-time comparison of two keys' material.
+pub fn same_key(a: &SecretKey, b: &SecretKey) -> bool {
+    bool::from(a.0[..].ct_eq(&b.0[..]))
 }
 
 /// Whether `current()` and `by_id` of the same id hand out the same key material.
@@ -111,9 +125,12 @@ pub fn chain_key(keys: &dyn KeyProvider, id: &KeyId) -> Result<ChainKey, CipherE
 pub fn provider_is_consistent(keys: &dyn KeyProvider) -> Result<bool, CipherError> {
     let (id, current) = keys.current()?;
     let stored = keys.by_id(&id)?;
-    Ok(bool::from(current.0[..].ct_eq(&stored.0[..])))
+    Ok(same_key(&current, &stored))
 }
 
+/// Source of column keys. Every key must be 32 bytes from a cryptographic random
+/// generator (uniform, 256 bits): derivation skips the HKDF Extract step, so a key
+/// made from a password or other non-uniform material is not acceptable.
 pub trait KeyProvider {
     fn current(&self) -> Result<(KeyId, SecretKey), CipherError>;
     fn by_id(&self, id: &KeyId) -> Result<SecretKey, CipherError>;
@@ -166,16 +183,24 @@ fn nonce() -> Result<[u8; 24], CipherError> {
     getrandom::fill(&mut value).map_err(|_| CipherError::Random)?;
     Ok(value)
 }
-fn seal(
-    keys: &dyn KeyProvider,
+/// Subkey of the AEAD for `domain`: data and key check never share one.
+fn aead_label(domain: &[u8]) -> &'static [u8] {
+    if domain == CHECK_DOMAIN {
+        CHECK_SUBKEY
+    } else {
+        AEAD_SUBKEY
+    }
+}
+fn seal_with(
+    key_id: &KeyId,
+    key: &SecretKey,
     domain: &[u8],
     aad: &AssociatedData<'_>,
     plaintext: &[u8],
 ) -> Result<Ciphertext, CipherError> {
-    let (key_id, key) = keys.current()?;
     let nonce = nonce()?;
-    let encoded = encode(domain, &key_id, aad);
-    let cipher = XChaCha20Poly1305::new((&*subkey(&key, AEAD_SUBKEY)).into());
+    let encoded = encode(domain, key_id, aad);
+    let cipher = XChaCha20Poly1305::new((&*subkey(key, aead_label(domain))).into());
     let bytes = cipher
         .encrypt(
             (&nonce).into(),
@@ -186,20 +211,19 @@ fn seal(
         )
         .map_err(|_| CipherError::Encryption)?;
     Ok(Ciphertext {
-        key_id,
+        key_id: KeyId::new(key_id.as_str())?,
         nonce,
         bytes,
     })
 }
-fn unseal(
-    keys: &dyn KeyProvider,
+fn unseal_with(
+    key: &SecretKey,
     domain: &[u8],
     aad: &AssociatedData<'_>,
     ciphertext: &Ciphertext,
 ) -> Result<Zeroizing<Vec<u8>>, CipherError> {
-    let key = keys.by_id(&ciphertext.key_id)?;
     let encoded = encode(domain, &ciphertext.key_id, aad);
-    XChaCha20Poly1305::new((&*subkey(&key, AEAD_SUBKEY)).into())
+    XChaCha20Poly1305::new((&*subkey(key, aead_label(domain))).into())
         .decrypt(
             (&ciphertext.nonce).into(),
             Payload {
@@ -215,20 +239,38 @@ pub fn encrypt(
     aad: &AssociatedData<'_>,
     plaintext: &[u8],
 ) -> Result<Ciphertext, CipherError> {
-    seal(keys, DATA_DOMAIN, aad, plaintext)
+    let (key_id, key) = keys.current()?;
+    seal_with(&key_id, &key, DATA_DOMAIN, aad, plaintext)
+}
+/// `encrypt` with key material the caller already fetched once.
+pub fn encrypt_with(
+    key_id: &KeyId,
+    key: &SecretKey,
+    aad: &AssociatedData<'_>,
+    plaintext: &[u8],
+) -> Result<Ciphertext, CipherError> {
+    seal_with(key_id, key, DATA_DOMAIN, aad, plaintext)
 }
 pub fn decrypt(
     keys: &dyn KeyProvider,
     aad: &AssociatedData<'_>,
     ciphertext: &Ciphertext,
 ) -> Result<Zeroizing<Vec<u8>>, CipherError> {
-    unseal(keys, DATA_DOMAIN, aad, ciphertext)
+    let key = keys.by_id(&ciphertext.key_id)?;
+    unseal_with(&key, DATA_DOMAIN, aad, ciphertext)
 }
 pub fn key_check(keys: &dyn KeyProvider) -> Result<Ciphertext, CipherError> {
-    seal(keys, CHECK_DOMAIN, &AssociatedData(&[]), &[])
+    let (key_id, key) = keys.current()?;
+    key_check_with(&key_id, &key)
+}
+pub fn key_check_with(key_id: &KeyId, key: &SecretKey) -> Result<Ciphertext, CipherError> {
+    seal_with(key_id, key, CHECK_DOMAIN, &AssociatedData(&[]), &[])
 }
 pub fn verify_key_check(keys: &dyn KeyProvider, check: &Ciphertext) -> Result<(), CipherError> {
-    let result = unseal(keys, CHECK_DOMAIN, &AssociatedData(&[]), check)?;
+    verify_key_check_with(&keys.by_id(&check.key_id)?, check)
+}
+pub fn verify_key_check_with(key: &SecretKey, check: &Ciphertext) -> Result<(), CipherError> {
+    let result = unseal_with(key, CHECK_DOMAIN, &AssociatedData(&[]), check)?;
     if result.is_empty() {
         Ok(())
     } else {
@@ -362,11 +404,25 @@ mod tests {
         assert_ne!(*aead, *chain);
         assert_ne!(*aead, [42; 32]);
         assert_ne!(*chain, [42; 32]);
-        // RFC 5869 Expand of one block: HMAC(prk, info || 0x01).
-        let mut mac = <HmacSha256 as Mac>::new_from_slice(&[42; 32]).unwrap();
-        mac.update(CHAIN_SUBKEY);
-        mac.update(&[1]);
-        assert_eq!(&*chain, mac.finalize().into_bytes().as_slice());
+        let check = subkey(&master, CHECK_SUBKEY);
+        assert_ne!(*check, *aead);
+        assert_ne!(*check, *chain);
+        // RFC 5869, appendix A.1: the first 32 bytes of OKM from the published PRK.
+        // https://www.rfc-editor.org/rfc/rfc5869#appendix-A.1
+        let hex = |text: &str| -> Vec<u8> {
+            (0..text.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&text[i..i + 2], 16).unwrap())
+                .collect()
+        };
+        let prk: [u8; 32] = hex("077709362c2e32df0ddc3f0dc47bba6390b6c73bb50f9c3122ec844ad7c2b3e5")
+            .try_into()
+            .unwrap();
+        let okm = subkey(&SecretKey::new(&prk), &hex("f0f1f2f3f4f5f6f7f8f9"));
+        assert_eq!(
+            okm.to_vec(),
+            hex("3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf")
+        );
         // The AEAD runs under the derived key, never the provider key itself.
         let keys = MemoryKeys::new(42);
         let ct = encrypt(&keys, &AssociatedData(&[]), b"x").unwrap();

@@ -232,19 +232,38 @@ fn settle(path: &Path, config: &StorageConfig) -> Result<bool, StorageError> {
     }
 }
 
+/// Functions the product's statements, `CHECK`s and triggers call.
+const FUNCTIONS: [&str; 5] = ["coalesce", "length", "max", "substr", "zeroblob"];
+/// Pragmas the product reads back after migration (`verify_pragmas`).
+const PRAGMAS: [&str; 8] = [
+    "user_version",
+    "journal_mode",
+    "synchronous",
+    "foreign_keys",
+    "trusted_schema",
+    "cell_size_check",
+    "busy_timeout",
+    "application_id",
+];
+
 /// Statements the product connection may prepare once migrated: reads, appends,
-/// transactions and pragma queries. Schema changes, ATTACH, pragma writes,
-/// UPDATE and DELETE are denied even through the product's own connection.
+/// transactions, the listed functions and queries of the listed pragmas. Schema changes, ATTACH, VACUUM, savepoints, other functions,
+/// pragma writes, UPDATE and DELETE are denied even through the product's own
+/// connection.
 fn allowed(context: AuthContext<'_>) -> Authorization {
+    let listed = |list: &[&str], name: &str| list.iter().any(|n| n.eq_ignore_ascii_case(name));
     match context.action {
         AuthAction::Select
         | AuthAction::Read { .. }
         | AuthAction::Insert { .. }
-        | AuthAction::Function { .. }
-        | AuthAction::Transaction { .. }
-        | AuthAction::Pragma {
-            pragma_value: None, ..
-        } => Authorization::Allow,
+        | AuthAction::Transaction { .. } => Authorization::Allow,
+        AuthAction::Function { function_name } if listed(&FUNCTIONS, function_name) => {
+            Authorization::Allow
+        }
+        AuthAction::Pragma {
+            pragma_name,
+            pragma_value: None,
+        } if listed(&PRAGMAS, pragma_name) => Authorization::Allow,
         _ => Authorization::Deny,
     }
 }
@@ -417,10 +436,23 @@ mod tests {
             "DELETE FROM meta",
             "REINDEX",
             "ANALYZE",
+            "VACUUM",
+            "SELECT load_extension('x')",
+            "SELECT hex(1)",
+            "SAVEPOINT s",
+            "PRAGMA wal_checkpoint",
+            "PRAGMA optimize",
         ] {
             let error = store.connection.execute_batch(sql).unwrap_err();
             assert_eq!(StorageError::from(error), StorageError::Denied, "{sql}");
         }
+        let copy = root.join("vacuum-copy.db");
+        let error = store
+            .connection
+            .execute_batch(&format!("VACUUM INTO '{}'", copy.display()))
+            .unwrap_err();
+        assert_eq!(StorageError::from(error), StorageError::Denied);
+        assert!(!copy.exists());
         // Reads, appends and pragma queries still work, and so does reopening.
         store.verify_pragmas(&config).unwrap();
         store

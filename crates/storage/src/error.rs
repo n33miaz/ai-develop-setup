@@ -48,6 +48,17 @@ impl From<rusqlite::Error> for StorageError {
     fn from(value: rusqlite::Error) -> Self {
         use rusqlite::{Error, ErrorCode};
         match value {
+            // A denied function is reported as a generic error with this message.
+            Error::SqliteFailure(e, Some(message))
+                if e.code == ErrorCode::Unknown && message.starts_with("not authorized") =>
+            {
+                Self::Denied
+            }
+            Error::SqlInputError { error, msg, .. }
+                if error.code == ErrorCode::Unknown && msg.starts_with("not authorized") =>
+            {
+                Self::Denied
+            }
             Error::SqliteFailure(e, _) => match e.code {
                 ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked => Self::Busy,
                 ErrorCode::DatabaseCorrupt | ErrorCode::NotADatabase => Self::Corrupt,
@@ -128,5 +139,16 @@ mod tests {
             StorageError::from(rusqlite::Error::QueryReturnedNoRows),
             StorageError::UnsupportedSchema
         );
+        let denied = |message: &str| {
+            StorageError::from(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(1),
+                Some(message.to_owned()),
+            ))
+        };
+        assert_eq!(
+            denied("not authorized to use function: hex"),
+            StorageError::Denied
+        );
+        assert_eq!(denied("no such table: x"), StorageError::Io);
     }
 }

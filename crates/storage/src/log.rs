@@ -1,7 +1,7 @@
 //! Append-only event log: encrypted `data`, authenticated clear columns, keyed chain.
 use crate::{
     AuditStore, StorageConfig, StorageError,
-    cipher::{self, AssociatedData, ChainKey, Ciphertext, KeyId, KeyProvider},
+    cipher::{self, AssociatedData, ChainKey, Ciphertext, KeyId, KeyProvider, SecretKey},
 };
 use ads_contracts::{
     CommonActorV1, CommonActorV1Kind, CommonDataClassV1, CommonIdV1, CommonTimestampV1,
@@ -270,12 +270,8 @@ impl std::fmt::Debug for EventLog {
     }
 }
 
-/// Confirms the provider's key for `id` matches the one registered with it.
-fn check_registered(
-    tx: &rusqlite::Connection,
-    keys: &dyn KeyProvider,
-    id: &KeyId,
-) -> Result<bool, StorageError> {
+/// The `key_check` registered for `id`, if any.
+fn registered(tx: &rusqlite::Connection, id: &KeyId) -> Result<Option<Ciphertext>, StorageError> {
     let stored: Option<(Vec<u8>, Vec<u8>)> = tx
         .query_row(
             "SELECT check_nonce, key_check FROM cipher_key WHERE key_id = ?1",
@@ -284,21 +280,38 @@ fn check_registered(
         )
         .optional()?;
     let Some((nonce, bytes)) = stored else {
-        return Ok(false);
+        return Ok(None);
     };
-    let check = Ciphertext {
+    Ok(Some(Ciphertext {
         key_id: KeyId::new(id.as_str())?,
         nonce: nonce
             .as_slice()
             .try_into()
             .map_err(|_| StorageError::Corrupt)?,
         bytes,
-    };
-    match cipher::verify_key_check(keys, &check) {
-        Ok(()) => Ok(true),
+    }))
+}
+
+fn matches_check(key: &SecretKey, check: &Ciphertext) -> Result<(), StorageError> {
+    match cipher::verify_key_check_with(key, check) {
+        Ok(()) => Ok(()),
         Err(cipher::CipherError::Authentication) => Err(StorageError::WrongKey),
         Err(error) => Err(error.into()),
     }
+}
+
+/// Confirms the provider's key for `id` matches the one registered with it.
+/// `WrongKey` or `KeyUnavailable` here may also mean a forged `cipher_key` row.
+fn check_registered(
+    tx: &rusqlite::Connection,
+    keys: &dyn KeyProvider,
+    id: &KeyId,
+) -> Result<bool, StorageError> {
+    let Some(check) = registered(tx, id)? else {
+        return Ok(false);
+    };
+    matches_check(&keys.by_id(id)?, &check)?;
+    Ok(true)
 }
 
 /// Refuses a provider whose `current()` and `by_id` disagree on the same id.
@@ -368,8 +381,16 @@ impl EventLog {
             return Err(StorageError::TooLarge);
         }
         let seq = i64::try_from(event.seq.get()).map_err(|_| StorageError::InvalidEvent)?;
-        let keys = &*self.keys;
-        consistent(keys)?;
+        // One fetch of the key material, used for the key check, the cipher and
+        // the chain alike, so a provider that changes mid-append cannot split them.
+        let (key_id, key) = {
+            let (id, current) = self.keys.current()?;
+            let key = self.keys.by_id(&id)?;
+            if !cipher::same_key(&current, &key) {
+                return Err(StorageError::WrongKey);
+            }
+            (id, key)
+        };
         let tx = self
             .store
             .connection
@@ -377,7 +398,7 @@ impl EventLog {
         if seq != head_in(&tx, stream)? + 1 {
             return Err(StorageError::Conflict);
         }
-        let key_id = register_current(&tx, keys)?;
+        register(&tx, &key_id, &key)?;
         let last: Option<(i64, Vec<u8>)> = tx
             .query_row(
                 "SELECT position, chain FROM event ORDER BY position DESC LIMIT 1",
@@ -409,14 +430,12 @@ impl EventLog {
             prev_chain,
             chain: Vec::new(),
         };
-        let sealed =
-            row.associated(|fields| cipher::encrypt(keys, &AssociatedData(fields), &data))?;
-        if sealed.key_id != key_id {
-            return Err(StorageError::Cipher);
-        }
+        let sealed = row.associated(|fields| {
+            cipher::encrypt_with(&key_id, &key, &AssociatedData(fields), &data)
+        })?;
         row.nonce = sealed.nonce.to_vec();
         row.data_ct = sealed.bytes;
-        let chain_key = cipher::chain_key(keys, &key_id)?;
+        let chain_key = ChainKey::derive(&key);
         row.chain = row.chained(|fields| chain_key.mac(fields)).to_vec();
         tx.execute(
             &format!(
@@ -450,7 +469,8 @@ impl EventLog {
 
     /// Events from `from_seq` on, decrypted one row at a time. The page stops at
     /// `limit` (capped by `read_page_limit`) or before the row whose ciphertext
-    /// would pass `read_page_max_bytes`; the first row always fits.
+    /// would pass `read_page_max_bytes`; the first row always fits. A `seq` missing
+    /// inside the page is `ChainBroken` at the row after the gap.
     pub fn read_stream(
         &self,
         stream: &EventEnvelopeV1Stream,
@@ -470,6 +490,7 @@ impl EventLog {
             let mut rows = statement.query(params![stream.as_str(), from, limit])?;
             let mut checked = HashSet::new();
             let mut used = 0usize;
+            let mut expected = from.max(1);
             while let Some(r) = rows.next()? {
                 // Checked before the row is copied into Rust or decrypted; SQLite
                 // itself has already stepped onto it.
@@ -491,6 +512,12 @@ impl EventLog {
                     cipher::decrypt(&*self.keys, &AssociatedData(fields), &ciphertext)
                 })?;
                 drop(ciphertext);
+                if row.seq != expected {
+                    return Err(StorageError::ChainBroken {
+                        position: row.position,
+                    });
+                }
+                expected += 1;
                 events.push(StoredEvent {
                     position: Position(row.position),
                     event: row.envelope(&data)?,
@@ -502,9 +529,11 @@ impl EventLog {
     }
 
     /// Walks the whole log; returns the row count or the first row whose link breaks.
-    /// The chain is an HMAC under a key derived from each row's provider key, so a
-    /// missing old key is `KeyUnavailable`. It does not decrypt `data`, and it cannot
-    /// see a cut tail or an older copy of the whole file.
+    /// The chain is an HMAC under a key derived from each row's provider key. A row
+    /// out of sequence, of unknown format, or whose key the provider does not serve
+    /// or does not match its `key_check` is `ChainBroken` at that row: it cannot be
+    /// told apart from a forged one, so old keys must stay in the vault. It does not
+    /// decrypt `data`, and it cannot see a cut tail or an older copy of the file.
     pub fn verify_chain(&self) -> Result<u64, StorageError> {
         let tx = self.store.connection.unchecked_transaction()?;
         let mut statement = tx.prepare(&format!(
@@ -516,24 +545,21 @@ impl EventLog {
         let mut count: i64 = 0;
         while let Some(r) = rows.next()? {
             let row = Row::from_sql(r)?;
-            row.known_format()?;
             count += 1;
+            let broken = StorageError::ChainBroken {
+                position: row.position,
+            };
+            // Sequence and format first: neither needs a key.
+            if row.position != count || row.prev_chain != previous || row.format != ROW_FORMAT {
+                return Err(broken);
+            }
             if !chain_keys.contains_key(&row.key_id) {
-                let id = KeyId::new(&row.key_id).map_err(|_| StorageError::Corrupt)?;
-                if !check_registered(&tx, &*self.keys, &id)? {
-                    return Err(StorageError::Corrupt);
-                }
-                let key = cipher::chain_key(&*self.keys, &id)?;
+                let key = self.chain_key_of(&tx, &row.key_id)?.ok_or(broken)?;
                 chain_keys.insert(row.key_id.clone(), key);
             }
             let key = &chain_keys[&row.key_id];
-            if row.position != count
-                || row.prev_chain != previous
-                || !row.chained(|fields| key.verify(fields, &row.chain))
-            {
-                return Err(StorageError::ChainBroken {
-                    position: row.position,
-                });
+            if !row.chained(|fields| key.verify(fields, &row.chain)) {
+                return Err(broken);
             }
             previous = row.chain;
         }
@@ -541,20 +567,47 @@ impl EventLog {
     }
 }
 
-/// Registers the current key's check on first use, inside the append transaction.
-fn register_current(tx: &Transaction<'_>, keys: &dyn KeyProvider) -> Result<KeyId, StorageError> {
-    let (id, _) = keys.current()?;
-    if !check_registered(tx, keys, &id)? {
-        let check = cipher::key_check(keys)?;
-        if check.key_id != id {
-            return Err(StorageError::Cipher);
+impl EventLog {
+    /// Chain key for `key_id`, or `None` when the id is malformed, unregistered,
+    /// unknown to the provider or registered with other key material.
+    fn chain_key_of(
+        &self,
+        tx: &rusqlite::Connection,
+        key_id: &str,
+    ) -> Result<Option<ChainKey>, StorageError> {
+        let Ok(id) = KeyId::new(key_id) else {
+            return Ok(None);
+        };
+        let Some(check) = registered(tx, &id)? else {
+            return Ok(None);
+        };
+        let key = match self.keys.by_id(&id) {
+            Ok(key) => key,
+            Err(cipher::CipherError::KeyUnavailable) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        match matches_check(&key, &check) {
+            Ok(()) => Ok(Some(ChainKey::derive(&key))),
+            Err(StorageError::WrongKey) => Ok(None),
+            Err(error) => Err(error),
         }
-        tx.execute(
-            "INSERT INTO cipher_key (key_id, cipher, check_nonce, key_check) VALUES (?1, ?2, ?3, ?4)",
-            params![id.as_str(), CIPHER, check.nonce.to_vec(), check.bytes],
-        )?;
     }
-    Ok(id)
+}
+
+/// Registers the key's check on first use, inside the append transaction, or
+/// confirms the key matches the one already registered.
+fn register(tx: &Transaction<'_>, id: &KeyId, key: &SecretKey) -> Result<(), StorageError> {
+    match registered(tx, id)? {
+        Some(check) => matches_check(key, &check),
+        None => {
+            let check = cipher::key_check_with(id, key)?;
+            tx.execute(
+                "INSERT INTO cipher_key (key_id, cipher, check_nonce, key_check) VALUES (?1, ?2, ?3, ?4)",
+                params![id.as_str(), CIPHER, check.nonce.to_vec(), check.bytes],
+            )?;
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]

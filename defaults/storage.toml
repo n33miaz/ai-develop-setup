@@ -23,8 +23,9 @@ max_event_bytes = 1048576
 # do último seq recebido.
 read_page_limit = 500
 # Teto, em bytes de texto cifrado, do que uma leitura de stream decifra de uma
-# vez: recomendado 8 MiB. Aceita de max_event_bytes a 256 MiB, para um evento do
-# maior tamanho permitido sempre caber; a página para antes do evento que passaria
-# do teto (o primeiro sempre entra), e quem lê continua do último seq recebido.
-# O pico de memória da leitura fica perto deste teto mais um evento.
+# vez: recomendado 8 MiB. Aceita de max_event_bytes a 256 MiB. A página para
+# antes do evento que passaria do teto (o primeiro sempre entra, mesmo maior), e
+# quem lê continua do último seq recebido. O teto conta texto cifrado, não
+# memória: os eventos devolvidos ficam como JSON interpretado, que pode ocupar
+# várias vezes mais (estimativa, não medida: até 10 a 20 vezes).
 read_page_max_bytes = 8388608

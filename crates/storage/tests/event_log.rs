@@ -1186,3 +1186,321 @@ fn retired_version_two_and_meta_only_current_files_are_refused_unchanged() {
         assert_eq!(std::fs::read(&path).unwrap(), before);
     }
 }
+
+/// `action/a1`, `approval/ap1` and `task/t1`, one event each.
+fn gate_log(path: &Path) {
+    let mut log = open(path);
+    log.append(&gate_event(
+        "urn:ads:event:action.planned:1",
+        "action/a1",
+        1,
+        1,
+        serde_json::json!({ "action_id": "a1" }),
+    ))
+    .unwrap();
+    log.append(&gate_event(
+        "urn:ads:event:approval.requested:2",
+        "approval/ap1",
+        1,
+        2,
+        serde_json::json!({ "action_id": "a1", "approval_id": "ap1" }),
+    ))
+    .unwrap();
+    log.append(&event("task/t1", 1, 3, serde_json::json!({})))
+        .unwrap();
+}
+
+/// Plain INSERT, triggers intact: a copy of position 1 continuing the chain
+/// and the stream, with the given stream, type and clear ids.
+fn insert_copy(
+    c: &Connection,
+    stream_name: &str,
+    kind: &str,
+    action_id: Option<&str>,
+    approval_id: Option<&str>,
+) -> rusqlite::Result<usize> {
+    c.execute(
+        "INSERT INTO event SELECT (SELECT max(position) FROM event) + 1, format, \
+         printf('01J%023d', (SELECT max(position) FROM event) + 100), ?2, ts, ?1, \
+         coalesce((SELECT max(seq) FROM event WHERE stream = ?1), 0) + 1, actor_kind, \
+         actor_id, cause, data_class, ?3, ?4, key_id, nonce, data_ct, \
+         (SELECT chain FROM event ORDER BY position DESC LIMIT 1), chain \
+         FROM event WHERE position = 1",
+        rusqlite::params![stream_name, kind, action_id, approval_id],
+    )
+}
+
+#[test]
+fn database_binds_gate_ids_and_type_family_to_the_stream_family() {
+    let path = fixture();
+    gate_log(&path);
+    let c = Connection::open(&path).unwrap();
+    let planned = "urn:ads:event:action.planned:1";
+    let granted = "urn:ads:event:approval.granted:2";
+    let noted = "urn:ads:event:task.noted:1";
+    for (stream_name, kind, action_id, approval_id, what) in [
+        (
+            "approval/ap1",
+            granted,
+            Some("a1"),
+            None,
+            "approval id missing",
+        ),
+        (
+            "approval/ap1",
+            granted,
+            Some("a1"),
+            Some("ap2"),
+            "approval id of another stream",
+        ),
+        ("action/a1", planned, None, None, "action id missing"),
+        (
+            "task/x",
+            noted,
+            None,
+            Some("ap1"),
+            "approval id outside the gate",
+        ),
+        (
+            "task/x",
+            noted,
+            Some("a1"),
+            None,
+            "action id outside the gate",
+        ),
+        (
+            "task/x",
+            "urn:ads:event:action.started:1",
+            None,
+            None,
+            "action type on task",
+        ),
+        ("task/x", granted, None, None, "approval type on task"),
+        ("action/a1", noted, Some("a1"), None, "task type on action"),
+        (
+            "approval/ap1",
+            noted,
+            None,
+            Some("ap1"),
+            "task type on approval",
+        ),
+        (
+            "action/a1",
+            granted,
+            Some("a1"),
+            None,
+            "approval type on action",
+        ),
+        (
+            "approval/ap1",
+            planned,
+            Some("a1"),
+            Some("ap1"),
+            "action type on approval",
+        ),
+    ] {
+        refused(
+            insert_copy(&c, stream_name, kind, action_id, approval_id),
+            what,
+        );
+    }
+    // Controls: the same copy with consistent columns is taken by the database.
+    for (stream_name, kind, action_id, approval_id) in [
+        ("task/x", noted, None, None),
+        ("approval/ap1", granted, Some("a1"), Some("ap1")),
+        ("action/a1", planned, Some("a1"), None),
+    ] {
+        assert_eq!(
+            insert_copy(&c, stream_name, kind, action_id, approval_id).unwrap(),
+            1,
+            "{stream_name}"
+        );
+    }
+}
+
+#[test]
+fn verify_chain_reports_the_position_of_rows_it_cannot_link() {
+    // A row under a key id registered by the forger: the provider has no key.
+    let path = fixture();
+    let mut log = open(&path);
+    three(&mut log);
+    drop(log);
+    let c = Connection::open(&path).unwrap();
+    c.execute(
+        "INSERT INTO cipher_key VALUES ('zz', 'xchacha20poly1305', zeroblob(24), zeroblob(16))",
+        [],
+    )
+    .unwrap();
+    c.execute(
+        "INSERT INTO event SELECT 4, format, '01J00000000000000000000004', type, ts, stream, \
+         4, actor_kind, actor_id, NULL, data_class, action_id, approval_id, 'zz', nonce, \
+         data_ct, chain, randomblob(32) FROM event WHERE position = 3",
+        [],
+    )
+    .unwrap();
+    drop(c);
+    assert_eq!(
+        open(&path).verify_chain(),
+        Err(StorageError::ChainBroken { position: 4 })
+    );
+    // A row of a format this build does not know.
+    let path = fixture();
+    let mut log = open(&path);
+    three(&mut log);
+    drop(log);
+    let c = Connection::open(&path).unwrap();
+    c.execute(
+        "INSERT INTO event SELECT 4, 2, '01J00000000000000000000004', type, ts, stream, 4, \
+         actor_kind, actor_id, NULL, data_class, action_id, approval_id, key_id, nonce, \
+         data_ct, chain, chain FROM event WHERE position = 3",
+        [],
+    )
+    .unwrap();
+    drop(c);
+    assert_eq!(
+        open(&path).verify_chain(),
+        Err(StorageError::ChainBroken { position: 4 })
+    );
+}
+
+#[test]
+fn altered_format_and_lost_old_key() {
+    let path = fixture();
+    let mut log = open(&path);
+    three(&mut log);
+    drop(log);
+    let copy = fixture();
+    std::fs::copy(&path, &copy).unwrap();
+    tamper(
+        &copy,
+        "UPDATE event SET format = 2 WHERE position = 2",
+        None,
+    );
+    let log = open(&copy);
+    assert_eq!(
+        log.read_stream(&stream("task/t1"), 2, 1).unwrap_err(),
+        StorageError::UnsupportedSchema
+    );
+    assert_eq!(
+        log.verify_chain(),
+        Err(StorageError::ChainBroken { position: 2 })
+    );
+    // A provider that lost key-a: reading says so; the chain cannot vouch for row 1.
+    let lost = EventLog::open(&path, &StorageConfig::defaults(), keys("key-b", 3)).unwrap();
+    assert_eq!(
+        lost.read_stream(&stream("task/t1"), 1, 1).unwrap_err(),
+        StorageError::KeyUnavailable
+    );
+    assert_eq!(
+        lost.verify_chain(),
+        Err(StorageError::ChainBroken { position: 1 })
+    );
+}
+
+#[test]
+fn tampering_right_after_a_key_rotation_breaks_the_chain_there() {
+    let path = fixture();
+    let mut log = open(&path);
+    three(&mut log);
+    drop(log);
+    let rotated = || {
+        Box::new(Keys {
+            current: ("key-b", 3),
+            older: vec![("key-a", 1)],
+        })
+    };
+    let mut log = EventLog::open(&path, &StorageConfig::defaults(), rotated()).unwrap();
+    log.append(&event("task/t1", 4, 4, serde_json::json!({ "n": 4 })))
+        .unwrap();
+    log.append(&event("task/t1", 5, 5, serde_json::json!({ "n": 5 })))
+        .unwrap();
+    assert_eq!(log.verify_chain(), Ok(5));
+    drop(log);
+    tamper(
+        &path,
+        "UPDATE event SET ts = '2026-11-19T12:00:09Z' WHERE position = 4",
+        None,
+    );
+    let log = EventLog::open(&path, &StorageConfig::defaults(), rotated()).unwrap();
+    assert_eq!(
+        log.verify_chain(),
+        Err(StorageError::ChainBroken { position: 4 })
+    );
+}
+
+/// Provider whose `current()` hands out other key material from call `flip` on,
+/// while `by_id` stays the same: the material changes in the middle of a call.
+struct Drifting {
+    calls: std::sync::Arc<AtomicU64>,
+    flip: u64,
+}
+impl KeyProvider for Drifting {
+    fn current(&self) -> Result<(KeyId, SecretKey), CipherError> {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        let byte = if call >= self.flip { 9 } else { 1 };
+        Ok((KeyId::new("key-a")?, SecretKey::new(&[byte; 32])))
+    }
+    fn by_id(&self, id: &KeyId) -> Result<SecretKey, CipherError> {
+        match id.as_str() {
+            "key-a" => Ok(SecretKey::new(&[1; 32])),
+            _ => Err(CipherError::KeyUnavailable),
+        }
+    }
+}
+
+#[test]
+fn provider_changing_during_append_never_leaves_an_unreadable_row() {
+    for flip in 0..8 {
+        let path = fixture();
+        let calls = std::sync::Arc::new(AtomicU64::new(0));
+        let provider = Box::new(Drifting {
+            calls: calls.clone(),
+            flip,
+        });
+        let Ok(mut log) = EventLog::open(&path, &StorageConfig::defaults(), provider) else {
+            continue;
+        };
+        let opened = calls.load(Ordering::SeqCst);
+        for n in 1..=3 {
+            let e = event("task/t1", n, n, serde_json::json!({ "n": n }));
+            match log.append(&e) {
+                Ok(_) => {}
+                Err(error) => {
+                    assert_eq!(error, StorageError::WrongKey, "flip {flip}");
+                    break;
+                }
+            }
+        }
+        // Whatever was written reads back and links, wherever the flip landed.
+        let head = log.head(&stream("task/t1")).unwrap();
+        assert_eq!(
+            log.read_stream(&stream("task/t1"), 1, 10).unwrap().len() as u64,
+            head,
+            "flip {flip} after {opened}"
+        );
+        assert_eq!(log.verify_chain(), Ok(head), "flip {flip}");
+    }
+}
+
+#[test]
+fn read_stream_refuses_a_missing_seq_inside_the_page() {
+    let path = fixture();
+    let mut log = open(&path);
+    three(&mut log);
+    log.append(&event("task/t1", 4, 4, serde_json::json!({})))
+        .unwrap();
+    drop(log);
+    tamper(&path, "DELETE FROM event WHERE position = 2", None);
+    let log = open(&path);
+    assert_eq!(
+        log.read_stream(&stream("task/t1"), 1, 10).unwrap_err(),
+        StorageError::ChainBroken { position: 3 }
+    );
+    // Starting at the missing seq is refused too.
+    assert_eq!(
+        log.read_stream(&stream("task/t1"), 2, 10).unwrap_err(),
+        StorageError::ChainBroken { position: 3 }
+    );
+    // After the gap the rows still read.
+    assert_eq!(log.read_stream(&stream("task/t1"), 3, 10).unwrap().len(), 2);
+}

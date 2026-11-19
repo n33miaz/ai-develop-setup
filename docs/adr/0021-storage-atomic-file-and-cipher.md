@@ -95,8 +95,11 @@ Modo de cifra e journal só aceitam os formatos implementados; alternativas pede
 migração. `max_event_bytes` (padrão 1 MiB, 64 bytes a 16 MiB) limita o `data` serializado
 de um evento; `read_page_limit` (padrão 500, 1 a 10000) limita quantos eventos
 uma leitura decifra, e `read_page_max_bytes` (padrão 8 MiB, de `max_event_bytes`
-a 256 MiB) limita o texto cifrado de uma página, que é decifrada linha a linha:
-o pico de memória de uma leitura fica perto desse teto mais um evento. A cifra usa XChaCha20-Poly1305 com nonce do sistema de 24 bytes, AAD
+a 256 MiB) limita o texto cifrado de uma página, que é decifrada linha a linha.
+O teto conta texto cifrado, não memória: cada evento devolvido fica como JSON
+interpretado (`serde_json::Map`), que pode ocupar várias vezes o tamanho do texto
+(estimativa sem medição: até 10 a 20 vezes num `data` de arrays de números), e o
+SQLite já leu a linha que passa do teto antes de a página parar. A cifra usa XChaCha20-Poly1305 com nonce do sistema de 24 bytes, AAD
 com campos ordenados prefixados por tamanho e domínio versionado. O provedor de
 chaves é injetado; chave não implementa Debug, Display ou Clone. O armazenamento
 próprio da chave é `Box<Zeroizing<[u8; 32]>>`: movimentos transferem o ponteiro,
@@ -104,7 +107,10 @@ sem copiar o array por valor. O construtor recebe `&[u8; 32]` e copia para a alo
 continua responsável por apagar a origem. O texto decifrado retorna em
 `Zeroizing<Vec<u8>>`. Esses buffers são zerados no descarte normal; isso não
 promete apagar cópias externas, registradores, swap, dumps ou memória após abort.
-O estado interno da cifra usa a feature `zeroize` da dependência.
+O estado interno da cifra usa a feature `zeroize` da dependência. O estado do
+HMAC (`hmac 0.12`), que guarda a chave combinada com os blocos de preenchimento
+durante a derivação e o cálculo da cadeia, e o resultado intermediário dele na
+pilha não são zerados.
 
 ## Log de eventos (esquema versão 3)
 
@@ -137,20 +143,37 @@ de `position` nem por data.
 (uso único da licença), que entram com a ponte. Saem do `data` dos eventos
 `action.*` e `approval.*`; o id da família tem de ser o do stream
 (`contracts/README.md`, stream e entidade) e o tipo, da mesma família do stream.
-Fora dessas famílias ficam nulos. `CHECK` no esquema repete o vínculo com o
-stream, e a leitura confere de novo contra o `data` decifrado.
+Fora dessas famílias ficam nulos. `CHECK` no esquema repete as três regras:
+id da família igual ao do stream, ids nulos fora de `action/` e `approval/`, e
+tipo `action.*` ou `approval.*` só no stream da mesma família (e só ele lá).
+Assim uma linha inserida sem chave também não ocupa, fora do stream da ação ou
+da aprovação, a vaga que os índices da ponte vão vigiar. A leitura confere de
+novo os ids contra o `data` decifrado.
 
 Cadeia com chave. `chain` é HMAC-SHA256 do rótulo `urn:ads:storage:chain-row`,
 do `format`, do `prev_chain` e de todas as colunas, texto cifrado incluso. A chave
 do provedor só alimenta derivação: por HKDF-Expand (RFC 5869, um bloco, a chave
-já é uniforme e dispensa o Extract), com rótulos distintos, saem a chave da cifra
-(`urn:ads:cipher:subkey:aead:1`) e a da cadeia (`urn:ads:cipher:subkey:chain:1`).
-Nenhuma chave serve a duas finalidades. Cada linha usa a chave da cadeia derivada
-da chave da própria linha, então `verify_chain` precisa do provedor e devolve
-`KeyUnavailable` se ele não tiver mais a chave de alguma linha. A comparação do
-HMAC é em tempo constante. A abertura e cada `append` recusam com `WrongKey` um
-provedor cujo `current()` e `by_id` do mesmo identificador divergem, antes de
-gravar.
+tem de ser uniforme, o que o contrato de `KeyProvider` exige: 32 bytes de gerador
+aleatório criptográfico, nunca derivados de senha; por isso dispensa o Extract),
+com rótulos distintos, saem três chaves: a da cifra dos dados
+(`urn:ads:cipher:subkey:aead:1`), a do `key_check`
+(`urn:ads:cipher:subkey:key-check:1`) e a da cadeia
+(`urn:ads:cipher:subkey:chain:1`). A chave do provedor só serve à derivação, e
+cada chave derivada a uma finalidade. O teste confere a derivação com o vetor
+A.1 da RFC 5869. Cada linha usa a chave da cadeia derivada da chave da própria
+linha, então `verify_chain` precisa do provedor. Ela confere `position`,
+`prev_chain` e `format` antes de pedir chave; linha fora de sequência, de formato
+desconhecido, de `key_id` que o provedor não entrega ou cujo `key_check` não
+confere sai como `ChainBroken` naquela posição, porque não se distingue de linha
+forjada: chaves antigas têm de ficar no cofre. A comparação do HMAC é em tempo
+constante. `append` busca a chave uma vez (`current()` e `by_id` do mesmo id,
+que têm de coincidir, senão `WrongKey`) e usa esse mesmo material no
+`key_check`, na cifra e na cadeia; a abertura também recusa provedor incoerente.
+`WrongKey` ou `KeyUnavailable` ao abrir ou ao ler também podem indicar uma
+linha de `cipher_key` forjada (o gatilho só barra id repetido), por exemplo o
+próximo `key_id` do cofre registrado de antemão com `key_check` errado, o que
+trava a troca de chave; a âncora no cofre deve guardar também os `key_id`
+válidos.
 
 O que a cadeia detecta, sem decifrar `data`: alteração de qualquer coluna,
 remoção no meio, reordenação, troca de texto cifrado entre linhas e linha

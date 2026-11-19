@@ -36,7 +36,11 @@ CREATE TABLE event (
   chain BLOB NOT NULL CHECK (length(chain) = 32),
   UNIQUE (stream, seq),
   CHECK (substr(stream, 1, 7) <> 'action/' OR stream IS 'action/' || action_id),
-  CHECK (substr(stream, 1, 9) <> 'approval/' OR stream IS 'approval/' || approval_id)
+  CHECK (substr(stream, 1, 9) <> 'approval/' OR stream IS 'approval/' || approval_id),
+  CHECK (substr(stream, 1, 7) = 'action/' OR substr(stream, 1, 9) = 'approval/'
+         OR (action_id IS NULL AND approval_id IS NULL)),
+  CHECK ((substr(type, 1, 21) = 'urn:ads:event:action.') = (substr(stream, 1, 7) = 'action/')),
+  CHECK ((substr(type, 1, 23) = 'urn:ads:event:approval.') = (substr(stream, 1, 9) = 'approval/'))
 ) STRICT;
 CREATE TRIGGER cipher_key_no_update BEFORE UPDATE ON cipher_key
 BEGIN SELECT RAISE(ABORT, 'append-only'); END;
