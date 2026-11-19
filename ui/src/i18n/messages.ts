@@ -8,6 +8,7 @@ export const ptBR = {
   'app.title': 'ai-develop-setup',
   'skip.toTerminal': 'Pular para o terminal',
   'notice.wip': 'Em construção. Esta tela mostra dados de exemplo locais; nada aqui vem do núcleo.',
+  'pwa.update': 'Uma atualização está disponível. Recarregue para aplicá-la.',
   'nav.menu': 'Menu',
   'nav.label': 'Tarefas e sessões',
   'tasks.heading': 'Caixa de tarefas',
@@ -59,6 +60,7 @@ export const en: Record<MessageKey, string> = {
   'notice.wip':
     'Under construction. This screen shows local sample data; nothing here comes from the core.',
   'nav.menu': 'Menu',
+  'pwa.update': 'An update is available. Reload to apply it.',
   'nav.label': 'Tasks and sessions',
   'tasks.heading': 'Task inbox',
   'tasks.empty': 'No tasks.',

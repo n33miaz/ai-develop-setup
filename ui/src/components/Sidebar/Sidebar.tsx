@@ -5,6 +5,7 @@ import styles from './Sidebar.module.css'
 interface SidebarProps {
   id: string
   open: boolean
+  hidden?: boolean
   tasks: readonly TaskView[]
   sessions: readonly SessionView[]
   selectedSessionId: string | null
@@ -31,6 +32,7 @@ const SESSION_ACTIVITY: Record<SessionActivity, MessageKey> = {
 export function Sidebar({
   id,
   open,
+  hidden,
   tasks,
   sessions,
   selectedSessionId,
@@ -38,7 +40,13 @@ export function Sidebar({
 }: SidebarProps) {
   const t = useT()
   return (
-    <nav id={id} className={styles.sidebar} data-open={open} aria-label={t('nav.label')}>
+    <nav
+      hidden={hidden}
+      id={id}
+      className={styles.sidebar}
+      data-open={open}
+      aria-label={t('nav.label')}
+    >
       <section className={styles.section} aria-labelledby={`${id}-tasks`}>
         <h2 id={`${id}-tasks`}>{t('tasks.heading')}</h2>
         {tasks.length === 0 ? (
