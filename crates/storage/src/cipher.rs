@@ -3,11 +3,19 @@ use chacha20poly1305::{
     XChaCha20Poly1305,
     aead::{Aead, KeyInit, Payload},
 };
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
 use std::fmt;
+use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
 
 const DATA_DOMAIN: &[u8] = b"urn:ads:cipher:column:1";
 const CHECK_DOMAIN: &[u8] = b"urn:ads:cipher:key-check:1";
+/// HKDF-Expand `info` labels: the provider key only feeds this derivation.
+const AEAD_SUBKEY: &[u8] = b"urn:ads:cipher:subkey:aead:1";
+const CHAIN_SUBKEY: &[u8] = b"urn:ads:cipher:subkey:chain:1";
+
+type HmacSha256 = Hmac<Sha256>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CipherError {
@@ -56,6 +64,54 @@ impl fmt::Debug for KeyId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("KeyId { .. }")
     }
+}
+
+/// HKDF-Expand (RFC 5869) of one 32-byte block. The provider key is already
+/// uniformly random, so it serves as the pseudorandom key without Extract.
+fn subkey(master: &SecretKey, info: &[u8]) -> Zeroizing<[u8; 32]> {
+    let mut mac =
+        <HmacSha256 as Mac>::new_from_slice(&**master.0).expect("HMAC accepts a key of any length");
+    mac.update(info);
+    mac.update(&[1]);
+    let mut out = Zeroizing::new([0; 32]);
+    out.copy_from_slice(&mac.finalize().into_bytes());
+    out
+}
+
+/// Key of the row chain, derived from one provider key; never the AEAD key.
+pub struct ChainKey(Zeroizing<[u8; 32]>);
+impl ChainKey {
+    /// HMAC-SHA256 of the length-prefixed `fields`.
+    pub fn mac(&self, fields: &[Option<&[u8]>]) -> [u8; 32] {
+        let mut input = Vec::new();
+        encode_fields(&mut input, fields);
+        let mut mac = <HmacSha256 as Mac>::new_from_slice(&*self.0)
+            .expect("HMAC accepts a key of any length");
+        mac.update(&input);
+        mac.finalize().into_bytes().into()
+    }
+    /// Constant-time comparison of `expected` with the MAC of `fields`.
+    pub fn verify(&self, fields: &[Option<&[u8]>], expected: &[u8]) -> bool {
+        bool::from(self.mac(fields)[..].ct_eq(expected))
+    }
+}
+impl fmt::Debug for ChainKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ChainKey { .. }")
+    }
+}
+
+/// Chain key of the provider key registered under `id`.
+pub fn chain_key(keys: &dyn KeyProvider, id: &KeyId) -> Result<ChainKey, CipherError> {
+    Ok(ChainKey(subkey(&keys.by_id(id)?, CHAIN_SUBKEY)))
+}
+
+/// Whether `current()` and `by_id` of the same id hand out the same key material.
+/// A provider that disagrees would write rows its own `by_id` can never read.
+pub fn provider_is_consistent(keys: &dyn KeyProvider) -> Result<bool, CipherError> {
+    let (id, current) = keys.current()?;
+    let stored = keys.by_id(&id)?;
+    Ok(bool::from(current.0[..].ct_eq(&stored.0[..])))
 }
 
 pub trait KeyProvider {
@@ -119,7 +175,7 @@ fn seal(
     let (key_id, key) = keys.current()?;
     let nonce = nonce()?;
     let encoded = encode(domain, &key_id, aad);
-    let cipher = XChaCha20Poly1305::new((&**key.0).into());
+    let cipher = XChaCha20Poly1305::new((&*subkey(&key, AEAD_SUBKEY)).into());
     let bytes = cipher
         .encrypt(
             (&nonce).into(),
@@ -143,7 +199,7 @@ fn unseal(
 ) -> Result<Zeroizing<Vec<u8>>, CipherError> {
     let key = keys.by_id(&ciphertext.key_id)?;
     let encoded = encode(domain, &ciphertext.key_id, aad);
-    XChaCha20Poly1305::new((&**key.0).into())
+    XChaCha20Poly1305::new((&*subkey(&key, AEAD_SUBKEY)).into())
         .decrypt(
             (&ciphertext.nonce).into(),
             Payload {
@@ -299,6 +355,47 @@ mod tests {
     }
 
     #[test]
+    fn provider_key_only_feeds_separate_derived_keys() {
+        let master = SecretKey::new(&[42; 32]);
+        let aead = subkey(&master, AEAD_SUBKEY);
+        let chain = subkey(&master, CHAIN_SUBKEY);
+        assert_ne!(*aead, *chain);
+        assert_ne!(*aead, [42; 32]);
+        assert_ne!(*chain, [42; 32]);
+        // RFC 5869 Expand of one block: HMAC(prk, info || 0x01).
+        let mut mac = <HmacSha256 as Mac>::new_from_slice(&[42; 32]).unwrap();
+        mac.update(CHAIN_SUBKEY);
+        mac.update(&[1]);
+        assert_eq!(&*chain, mac.finalize().into_bytes().as_slice());
+        // The AEAD runs under the derived key, never the provider key itself.
+        let keys = MemoryKeys::new(42);
+        let ct = encrypt(&keys, &AssociatedData(&[]), b"x").unwrap();
+        let raw = XChaCha20Poly1305::new((&[42u8; 32]).into());
+        let encoded = encode(DATA_DOMAIN, &keys.id, &AssociatedData(&[]));
+        let payload = Payload {
+            msg: &ct.bytes,
+            aad: &encoded,
+        };
+        assert!(raw.decrypt((&ct.nonce).into(), payload).is_err());
+    }
+
+    struct Split;
+    impl KeyProvider for Split {
+        fn current(&self) -> Result<(KeyId, SecretKey), CipherError> {
+            Ok((KeyId::new("test-key")?, SecretKey::new(&[1; 32])))
+        }
+        fn by_id(&self, _: &KeyId) -> Result<SecretKey, CipherError> {
+            Ok(SecretKey::new(&[2; 32]))
+        }
+    }
+
+    #[test]
+    fn provider_consistency_compares_current_with_by_id() {
+        assert_eq!(provider_is_consistent(&MemoryKeys::new(7)), Ok(true));
+        assert_eq!(provider_is_consistent(&Split), Ok(false));
+    }
+
+    #[test]
     fn hundred_thousand_system_nonces_are_distinct() {
         let mut seen = HashSet::with_capacity(100_000);
         for _ in 0..100_000 {
@@ -377,7 +474,9 @@ mod tests {
             crate::StorageError::ForeignApplication,
             crate::StorageError::SchemaTooNew,
             crate::StorageError::UnsupportedSchema,
+            crate::StorageError::RetiredSchema,
             crate::StorageError::PragmaMismatch,
+            crate::StorageError::Denied,
             crate::StorageError::Conflict,
             crate::StorageError::WrongKey,
             crate::StorageError::KeyUnavailable,

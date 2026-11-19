@@ -15,7 +15,8 @@ Usar SQLite embutido via `rusqlite`, sem features padrão, com `bundled`. Tudo q
 participa de uma invariante ficará em `audit.db`; `state.db` será uma projeção
 reconstruível. Métricas independentes podem manter arquivo próprio. Esta proposta
 diverge da divisão literal do ADR 0004 para preservar atomicidade das invariantes.
-O esquema versão 1 tem só `meta`; a versão 2 acrescenta o log de eventos (abaixo).
+O esquema versão 1 tem só `meta`; a versão 3 acrescenta o log de eventos (abaixo);
+a versão 2 está aposentada.
 
 `synchronous = FULL` é fixo, sem alternativa de configuração. WAL, foreign keys,
 trusted schema desligado, cell size check, timeout, application id (`0x41445331`),
@@ -89,7 +90,9 @@ do produto não tem esse teto, porque o log de auditoria só cresce.
 Modo de cifra e journal só aceitam os formatos implementados; alternativas pedem
 migração. `max_event_bytes` (padrão 1 MiB, 64 bytes a 16 MiB) limita o `data` serializado
 de um evento; `read_page_limit` (padrão 500, 1 a 10000) limita quantos eventos
-uma leitura decifra. A cifra usa XChaCha20-Poly1305 com nonce do sistema de 24 bytes, AAD
+uma leitura decifra, e `read_page_max_bytes` (padrão 8 MiB, de `max_event_bytes`
+a 256 MiB) limita o texto cifrado de uma página, que é decifrada linha a linha:
+o pico de memória de uma leitura fica perto desse teto mais um evento. A cifra usa XChaCha20-Poly1305 com nonce do sistema de 24 bytes, AAD
 com campos ordenados prefixados por tamanho e domínio versionado. O provedor de
 chaves é injetado; chave não implementa Debug, Display ou Clone. O armazenamento
 próprio da chave é `Box<Zeroizing<[u8; 32]>>`: movimentos transferem o ponteiro,
@@ -99,26 +102,78 @@ continua responsável por apagar a origem. O texto decifrado retorna em
 promete apagar cópias externas, registradores, swap, dumps ou memória após abort.
 O estado interno da cifra usa a feature `zeroize` da dependência.
 
-## Log de eventos (esquema versão 2)
+## Log de eventos (esquema versão 3)
 
-A versão 2 só acrescenta objetos: `cipher_key` (identificador, cifra e
-`key_check`, nunca a chave) e `event` (um envelope por linha, `data` cifrado).
-Banco versão 1 é migrado na abertura depois de conferir que o esquema dele é
-exatamente o da versão 1; a migração roda numa transação `IMMEDIATE` e repete a
-conferência dentro dela. A abertura compara o `sqlite_schema` inteiro, inclusive
-índices automáticos e `sqlite_sequence`, com o que os scripts da versão do
-arquivo produzem num banco em memória.
+A versão 3 só acrescenta objetos à versão 1: `cipher_key` (identificador, cifra
+e `key_check`, nunca a chave) e `event` (um envelope por linha, `data` cifrado).
+Banco versão 1 é migrado na abertura. A migração roda numa transação `IMMEDIATE`
+e, dentro dela, compara o esquema do arquivo com o da versão dele para qualquer
+versão, inclusive a atual: outro processo pode ter migrado ou alterado o arquivo
+entre a inspeção e o lock. A abertura compara o `sqlite_schema` inteiro,
+inclusive índices automáticos e `sqlite_sequence`, com o que os scripts da versão
+do arquivo produzem num banco em memória.
 
-Os dados associados de cada linha são um rótulo de versão e todas as colunas em
-claro, inclusive `position` e `prev_chain`; a cadeia (`chain`, SHA-256) cobre
-`prev_chain` e todas as colunas, texto cifrado incluso, e por isso é conferida
-sem chave. Gatilhos recusam UPDATE, DELETE, substituição de linha (o
-`INSERT OR REPLACE` do SQLite apaga sem disparar o gatilho de DELETE), salto ou
-repetição de `seq` por stream e `position` ou `prev_chain` fora da sequência.
+A versão 2 foi o mesmo log num formato anterior ao primeiro produtor e fica
+aposentada: a abertura a recusa com `RetiredSchema`, pelo cabeçalho, antes de o
+SQLite tocar o arquivo. Migrar não é possível sem perder garantias: a abertura não
+recebe chave, e as linhas da versão 2 só passariam ao formato novo decifradas,
+cifradas de novo e reencadeadas com a chave; descartá-las exigiria apagar
+tabelas numa migração que só acrescenta. Nenhum produtor gravou na versão 2,
+então só arquivos de teste a usam.
+
+Formato da linha. Cada linha leva `format` (hoje 1). Os dados associados são o
+rótulo `urn:ads:storage:event-row`, o `format` e todas as colunas em claro,
+inclusive `position`, `action_id`, `approval_id` e `prev_chain`; o `key_id` a
+cifra acrescenta sozinha. A leitura recusa formato desconhecido antes de decifrar.
+Uma coluna em claro nova entra como `format` 2, com a sua lista de campos, sem
+mudar o significado das linhas 1: não há dois formatos distinguidos por limite
+de `position` nem por data.
+
+`action_id` e `approval_id` ficam em claro para os índices únicos do portão
+(uso único da licença), que entram com a ponte. Saem do `data` dos eventos
+`action.*` e `approval.*`; o id da família tem de ser o do stream
+(`contracts/README.md`, stream e entidade) e o tipo, da mesma família do stream.
+Fora dessas famílias ficam nulos. `CHECK` no esquema repete o vínculo com o
+stream, e a leitura confere de novo contra o `data` decifrado.
+
+Cadeia com chave. `chain` é HMAC-SHA256 do rótulo `urn:ads:storage:chain-row`,
+do `format`, do `prev_chain` e de todas as colunas, texto cifrado incluso. A chave
+do provedor só alimenta derivação: por HKDF-Expand (RFC 5869, um bloco, a chave
+já é uniforme e dispensa o Extract), com rótulos distintos, saem a chave da cifra
+(`urn:ads:cipher:subkey:aead:1`) e a da cadeia (`urn:ads:cipher:subkey:chain:1`).
+Nenhuma chave serve a duas finalidades. Cada linha usa a chave da cadeia derivada
+da chave da própria linha, então `verify_chain` precisa do provedor e devolve
+`KeyUnavailable` se ele não tiver mais a chave de alguma linha. A comparação do
+HMAC é em tempo constante. A abertura e cada `append` recusam com `WrongKey` um
+provedor cujo `current()` e `by_id` do mesmo identificador divergem, antes de
+gravar.
+
+O que a cadeia detecta, sem decifrar `data`: alteração de qualquer coluna,
+remoção no meio, reordenação, troca de texto cifrado entre linhas e linha
+acrescentada por quem não tem a chave, inclusive por um `INSERT` simples que passa
+pelos gatilhos. O que não detecta: corte do fim do log e volta de uma cópia
+anterior do arquivo inteiro (não há âncora fora do arquivo nem gênese própria de
+cada banco); linhas escritas por quem tem a chave, inclusive com uma chave antiga
+que o provedor ainda entrega. A âncora planejada é o último `position` e `chain`
+guardados no cofre a cada `append` do portão e conferidos ao abrir.
+
+Gatilhos recusam UPDATE, DELETE, substituição de linha (o `INSERT OR REPLACE`,
+o `REPLACE INTO` e o UPSERT do SQLite apagariam sem disparar o gatilho de DELETE),
+salto ou repetição de `seq` por stream, inclusive com `OR IGNORE`, e `position`
+ou `prev_chain` fora da sequência. Depois da migração, um autorizador do SQLite
+na conexão do produto só permite leitura, `INSERT`, transação, função e consulta
+de pragma; DDL, `ATTACH`, pragma com valor, UPDATE e DELETE recusam com `Denied`.
+Ele não protege de outra conexão aberta no mesmo arquivo. Limites das colunas em
+claro: `type` até 128 bytes, família do stream até 32 (o id já tem até 64 pelo
+contrato), conferidos no `append` e no esquema.
+
 `append` lê o último `seq` do stream dentro de `BEGIN IMMEDIATE` e só grava se o
 evento trouxer o seguinte: de duas conexões disputando o mesmo `seq`, uma entra e
-a outra recebe `Conflict`. Invariantes do portão e ligação com o daemon ficam para
-entregas seguintes.
+a outra recebe `Conflict` (ler `head` e remontar). `Busy` é o lock além de
+`busy_timeout_ms` (repetir o mesmo evento); `Constraint` é recusa do banco (não
+repetir igual). `verify_chain` é chamada pela composição ao iniciar e em
+intervalos; a abertura não a chama, porque o custo cresce com o log. Invariantes
+do portão e ligação com o daemon ficam para entregas seguintes.
 
 ## Riscos, demonstração e reversão
 
@@ -139,10 +194,10 @@ por usuário e a trava de instância pertencem à composição futura. Backup e
 restauração completa ainda dependem do log. Para reverter a proposta de arquivo,
 criar migração explícita com backup e demonstração de atomicidade; nunca reduzir
 user_version nem dividir invariantes entre arquivos WAL. As tabelas futuras devem
-incrementar a versão a partir da versão 2, só acrescentando objetos. Gatilhos
-não protegem de quem escreve no arquivo: ele pode removê-los, alterar linhas e
-recalcular a cadeia, e o corte do fim do log não deixa rastro sem uma âncora fora
-do arquivo.
+incrementar a versão a partir da versão 3, só acrescentando objetos. Gatilhos
+não protegem de quem escreve no arquivo: ele pode removê-los e alterar linhas,
+mas sem a chave não recalcula a cadeia; o corte do fim do log e a volta de uma
+cópia antiga não deixam rastro sem uma âncora fora do arquivo.
 
 ## Condição de reversão
 

@@ -15,7 +15,11 @@ pub enum StorageError {
     ForeignApplication,
     SchemaTooNew,
     UnsupportedSchema,
+    /// Written by a pre-release format no build reads any more; move the file aside.
+    RetiredSchema,
     PragmaMismatch,
+    /// The product connection refused a statement outside its allow-list.
+    Denied,
     /// The event's `seq` is not the next one of its stream.
     Conflict,
     /// A key with this id was registered with different key material.
@@ -48,6 +52,7 @@ impl From<rusqlite::Error> for StorageError {
                 ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked => Self::Busy,
                 ErrorCode::DatabaseCorrupt | ErrorCode::NotADatabase => Self::Corrupt,
                 ErrorCode::ConstraintViolation => Self::Constraint,
+                ErrorCode::AuthorizationForStatementDenied => Self::Denied,
                 ErrorCode::ReadOnly => Self::ReadOnly,
                 ErrorCode::PermissionDenied => Self::Permission,
                 ErrorCode::CannotOpen => Self::CantOpen,
@@ -98,6 +103,7 @@ mod tests {
             (13, StorageError::Full),
             (5, StorageError::Busy),
             (11, StorageError::Corrupt),
+            (23, StorageError::Denied),
         ] {
             assert_eq!(
                 StorageError::from(rusqlite::Error::SqliteFailure(
