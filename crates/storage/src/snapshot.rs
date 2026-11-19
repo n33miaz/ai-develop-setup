@@ -48,9 +48,7 @@ pub(crate) fn image(path: &Path, limit: usize) -> Result<Vec<u8>, StorageError> 
     if !(512..=65536).contains(&page) || !page.is_power_of_two() {
         return Err(StorageError::Corrupt);
     }
-    let mut wal_path = path.as_os_str().to_os_string();
-    wal_path.push("-wal");
-    let wal = match read(Path::new(&wal_path), limit) {
+    let wal = match read(&wal_path(path), limit) {
         Ok(wal) => wal,
         Err(StorageError::CantOpen) => Vec::new(),
         Err(error) => return Err(error),
@@ -64,10 +62,14 @@ pub(crate) fn image(path: &Path, limit: usize) -> Result<Vec<u8>, StorageError> 
     Ok(image)
 }
 
-fn overlay(image: &mut Vec<u8>, wal: &[u8], page: usize, limit: usize) -> Result<(), StorageError> {
-    if wal.len() < 32 {
-        return Ok(());
-    }
+fn wal_path(path: &Path) -> std::path::PathBuf {
+    let mut wal = path.as_os_str().to_os_string();
+    wal.push("-wal");
+    wal.into()
+}
+
+/// Validates the 32-byte WAL header; returns checksum byte order and seed.
+fn wal_header(wal: &[u8], page: usize) -> Result<(bool, [u32; 2]), StorageError> {
     let magic = word(wal);
     if ![0x377f0682, 0x377f0683].contains(&magic)
         || word(&wal[4..]) != 3_007_000
@@ -76,10 +78,33 @@ fn overlay(image: &mut Vec<u8>, wal: &[u8], page: usize, limit: usize) -> Result
         return Err(StorageError::Corrupt);
     }
     let big = magic == 0x377f0683;
-    let mut sum = checksum(&wal[..24], [0, 0], big);
+    let sum = checksum(&wal[..24], [0, 0], big);
     if sum != [word(&wal[24..]), word(&wal[28..])] {
         return Err(StorageError::Corrupt);
     }
+    Ok((big, sum))
+}
+
+/// Product files skip the image, but SQLite would silently discard a WAL whose
+/// header is damaged, losing committed frames; refuse that before it opens.
+pub(crate) fn check_wal_header(path: &Path, page: usize) -> Result<(), StorageError> {
+    let mut header = Vec::with_capacity(32);
+    match File::open(wal_path(path)) {
+        Ok(file) => file.take(32).read_to_end(&mut header)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if header.len() == 32 {
+        wal_header(&header, page)?;
+    }
+    Ok(())
+}
+
+fn overlay(image: &mut Vec<u8>, wal: &[u8], page: usize, limit: usize) -> Result<(), StorageError> {
+    if wal.len() < 32 {
+        return Ok(());
+    }
+    let (big, mut sum) = wal_header(wal, page)?;
     let mut frames = Vec::new();
     let mut committed = None;
     for frame in wal[32..].chunks_exact(24 + page) {

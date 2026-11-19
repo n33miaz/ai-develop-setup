@@ -564,6 +564,36 @@ fn wal_with_wrong_magic_or_version_is_refused() {
 }
 
 #[test]
+fn product_wal_with_damaged_header_is_refused() {
+    let source = fixture();
+    drop(AuditStore::open(&source, &StorageConfig::defaults()).unwrap());
+    let c = Connection::open(&source).unwrap();
+    c.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
+    c.execute("INSERT INTO meta VALUES ('pending', x'01')", [])
+        .unwrap();
+    let main = std::fs::read(&source).unwrap();
+    let wal = std::fs::read(sibling(&source, "-wal")).unwrap();
+    drop(c);
+    let mut magic = wal.clone();
+    magic[3] = if wal[3] & 1 == 1 { 0x85 } else { 0x84 };
+    reseal(&mut magic);
+    let mut version = wal.clone();
+    version[4..8].copy_from_slice(&3_007_001u32.to_be_bytes());
+    reseal(&mut version);
+    let mut page = wal.clone();
+    page[8..12].copy_from_slice(&(word(&wal[8..]) * 2).to_be_bytes());
+    let mut checksum = wal.clone();
+    checksum[24] ^= 1;
+    for wal in [magic, version, page, checksum] {
+        refused(
+            &write_pair(&main, &wal),
+            &immediate(),
+            StorageError::Corrupt,
+        );
+    }
+}
+
+#[test]
 fn product_file_larger_than_inspection_limit_opens() {
     let path = fixture();
     drop(AuditStore::open(&path, &StorageConfig::defaults()).unwrap());

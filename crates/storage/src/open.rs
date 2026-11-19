@@ -89,7 +89,7 @@ fn harden(c: &Connection, config: &StorageConfig) -> Result<(), StorageError> {
 enum Header {
     Empty,
     Unmarked,
-    Product,
+    Product { page: usize },
 }
 
 fn header(path: &Path) -> Result<Header, StorageError> {
@@ -135,7 +135,9 @@ fn header(path: &Path) -> Result<Header, StorageError> {
         return Err(StorageError::UnsupportedSchema);
     }
     Ok(if id == APPLICATION_ID {
-        Header::Product
+        Header::Product {
+            page: page as usize,
+        }
     } else {
         Header::Unmarked
     })
@@ -180,7 +182,11 @@ fn inspect(path: &Path, config: &StorageConfig) -> Result<bool, StorageError> {
             if !meta.is_file() {
                 return Err(StorageError::CantOpen);
             }
-            if header(path)? == Header::Unmarked {
+            let kind = header(path)?;
+            if let Header::Product { page } = kind {
+                crate::snapshot::check_wal_header(path, page)?;
+            }
+            if kind == Header::Unmarked {
                 let image = crate::snapshot::image(path, config.inspection_max_bytes)?;
                 let mut read = Connection::open_in_memory()?;
                 harden(&read, config)?;

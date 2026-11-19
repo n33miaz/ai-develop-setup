@@ -36,7 +36,9 @@ feature `serialize` de `rusqlite`, entrega a imagem a uma conexão SQLite soment
 leitura em memória. O modo de journal é ajustado somente na cópia. Isso permite
 conferir esquemas estrangeiros com `application_id=0` e tabelas presentes apenas
 no WAL, sem alterar `-shm`. Arquivo já marcado pelo produto não passa pela imagem:
-a inspeção roda numa transação de leitura consistente na conexão de escrita, com
+dele só se confere o cabeçalho de 32 bytes do `-wal` (magic, versão, página e
+checksum), porque o SQLite descartaria em silêncio um WAL com cabeçalho danificado
+e os quadros confirmados nele; a inspeção roda numa transação de leitura consistente na conexão de escrita, com
 custo que não depende de copiar o banco, e a verificação de integridade roda uma
 vez. Nesse caso a recusa pode criar e remover `-wal` e `-shm`, atualizar o índice
 `-shm` e transferir quadros já confirmados para o arquivo principal ao fechar;
