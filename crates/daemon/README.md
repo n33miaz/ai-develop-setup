@@ -51,7 +51,7 @@ inexistente e apelido de pasta fora da configuração recebem `-32602`.
    npm ci
    $env:VITE_CORE_HARNESSES = 'claude,codex'
    $env:VITE_CORE_WORKDIR = 'default'
-   npm run dev -- --host localhost --port 5173 --strictPort
+   npm run dev
    ```
 
    Depois que o Vite confirmar a porta, abra no navegador a URL completa
@@ -228,8 +228,8 @@ de erro e a saída do comando real são as evidências de funcionamento nos test
 ## Porta da interface em desenvolvimento
 
 Antes de abrir a URL, confira que a porta de `ui_base_url` pertence ao próprio
-usuário. Inicie o servidor da interface com porta fixa e `strictPort` (por exemplo,
-`npm run dev -- --host localhost --port 5173 --strictPort` na pasta `ui`).
+usuário. `npm run dev` na pasta `ui` já fixa a porta 5173 com `strictPort`
+(`ui/vite.config.ts`).
 Se a porta estiver ocupada, pare e investigue; não abra a URL nem aceite outra
 porta automaticamente. Configurar uma URL diferente não comprova sua propriedade.
 Outro usuário pode servir uma página nessa porta e ler o fragmento com o token.

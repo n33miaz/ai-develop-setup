@@ -43,7 +43,7 @@ Para abrir Claude ou Codex pelo navegador no Windows:
    `cargo run -p ads-daemon -j 2 -- --config 'D:\ads-local\harnesses.toml'`,
    com o caminho absoluto do seu arquivo.
 4. Em `ui/`, rode `npm ci`, defina `$env:VITE_CORE_HARNESSES = 'claude,codex'`
-   e execute `npm run dev -- --host localhost --port 5173 --strictPort`.
+   e execute `npm run dev`.
    Depois que o Vite confirmar a porta, abra a URL completa impressa pelo daemon
    e clique em **Abrir claude** ou **Abrir codex**.
 
