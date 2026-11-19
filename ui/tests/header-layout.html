@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Header layout test</title>
+  </head>
+  <body>
+    <pre id="result">Running</pre>
+    <script type="module">
+      const result = document.querySelector('#result')
+
+      async function check(width) {
+        const frame = document.createElement('iframe')
+        frame.title = `Viewport at ${width}px`
+        frame.width = width
+        frame.height = 900
+        frame.style.border = '0'
+        frame.src = '../'
+        document.body.append(frame)
+
+        const deadline = performance.now() + 5000
+        let header
+        while (!(header = frame.contentDocument.querySelector('header'))) {
+          if (performance.now() > deadline) throw new Error(`Header missing at ${width}px`)
+          await new Promise(requestAnimationFrame)
+        }
+
+        const doc = header.ownerDocument
+        const bounds = header.getBoundingClientRect()
+        if (doc.documentElement.clientWidth !== width) {
+          throw new Error(`Unexpected viewport width for ${width}px`)
+        }
+        if (header.scrollWidth > header.clientWidth || doc.documentElement.scrollWidth > width) {
+          throw new Error(`Horizontal overflow at ${width}px`)
+        }
+        for (const element of header.querySelectorAll('*')) {
+          if (!element.getClientRects().length) continue
+          const rect = element.getBoundingClientRect()
+          if (rect.left < bounds.left || rect.right > bounds.right) {
+            throw new Error(`Header element outside its container at ${width}px`)
+          }
+        }
+        const label = header.querySelector('[role="status"] span:last-child')
+        const hidden = label && frame.contentWindow.getComputedStyle(label).display === 'none'
+        if (!label || hidden !== width < 480) {
+          throw new Error(`Unexpected connection label visibility at ${width}px`)
+        }
+        return `${width}px passed`
+      }
+
+      try {
+        result.textContent = (await Promise.all([320, 390, 430, 768].map(check))).join('\n')
+        result.dataset.status = 'passed'
+      } catch (error) {
+        result.textContent = error.message
+        result.dataset.status = 'failed'
+      }
+    </script>
+  </body>
+</html>

@@ -38,3 +38,9 @@
 .text {
   color: var(--text);
 }
+
+@media (width < 30rem) {
+  .text {
+    display: none;
+  }
+}
