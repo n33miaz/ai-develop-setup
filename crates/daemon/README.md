@@ -133,8 +133,8 @@ Padrões em [defaults/daemon.toml](../../defaults/daemon.toml), aplicados ao ini
 | `accept_retry_ms` | 50 | Espera após erro de aceitação TCP; reduz tentativas sob falta de recursos. |
 | `max_message_bytes` | 131072 | Limite de mensagem e quadro WebSocket recebido; reduzir pode impedir escritas grandes. |
 | `send_timeout_ms` | 5000 | Prazo por envio; cliente lento é desconectado. |
-| `host_timeout_ms` | 10000 | Prazo por comando no host e na conexão inicial; falha encerra o serviço para evitar repetir efeito incerto. No fechamento automático, o prazo esgotado conta como tentativa falha, sem encerrar o serviço. |
-| `retired_sessions` | 1024 | Ids de sessões podadas que não podem ser reabertos nesta execução; acima do limite, o mais antigo volta a ser aceito. |
+| `host_timeout_ms` | 10000 | Prazo único por comando no host e na conexão inicial; falha encerra o serviço para evitar repetir efeito incerto. Duas exceções não encerram: no fechamento automático o prazo esgotado conta como tentativa falha, e na preparação depois de um `session.open` confirmado ele responde `-32014` (`session setup timed out`), guarda o registro e agenda o fechamento. |
+| `retired_sessions` | 1024 | Ids de sessões podadas que não podem ser reabertos nesta execução (acima do limite, o mais antigo volta a ser aceito) e, em separado, streams assinados antes do `session.open` (acima do limite, a espera mais antiga termina com `-32004`). |
 | `close_retries` | 3 | Tentativas do fechamento automático de sessão invalidada ou de `open` que falhou; esgotadas, a assinatura do stream recebe `-32013`. |
 | `close_retry_ms` | 1000 | Espera entre tentativas do fechamento automático. |
 
@@ -158,12 +158,17 @@ no host, ocupando a vaga, até receber `session.close`; o fechamento encerra a
 árvore de processos que restar e devolve a vaga. Ao atingir o limite de registros fechados,
 o daemon descarta os mais antigos conforme novas sessões são fechadas. O stream
 descartado vira lápide e o mesmo `session_id` é recusado com `-32012` enquanto
-ela existir (`retired_sessions`). Cada assinatura guarda a geração do stream que
-assinou: se ele for podado, mesmo depois de a lápide expirar e o id voltar a ser
-usado, ela recebe `-32004` com o seu id e termina sem derrubar a conexão, sem
-nunca entregar eventos da nova sessão.
+ela existir (`retired_sessions`). Cada assinatura fica presa à encarnação do
+stream que assinou; quem assina antes do `session.open` fica presa à que o open
+preencher. Se ela for podada, removida ou tiver o fechamento resolvido, mesmo
+depois de a lápide expirar e o id voltar a ser usado, a assinatura recebe o
+primeiro resultado final com o seu id (`-32013` se as tentativas se esgotaram,
+`-32004` nos demais casos) e termina sem derrubar a conexão, sem nunca entregar
+eventos de outra sessão. Uma invalidação no meio de um lote suspende os quadros
+seguintes. Assinaturas novas são validadas pelo estado atual.
 
-Uma execução conserva no máximo `2 × max_sessions × events_per_stream` eventos;
+Uma execução conserva no máximo `2 × max_sessions × events_per_stream` eventos
+(um stream que sai do log, mesmo ainda assinado, descarta os seus);
 o tamanho de cada saída também é limitado pelo quadro do cliente do host.
 Assinaturas por conexão são limitadas a `max_sessions`. Filas, conexões e chaves
 também têm limites separados. Seq e offset recomeçam ao reiniciar.

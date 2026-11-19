@@ -1,5 +1,5 @@
 use ads_contracts::CommandSessionOpenV1Params;
-use ads_daemon::api::{ApiConfig, ApiError, DisabledLauncher, Launcher, LocalApi};
+use ads_daemon::api::{ApiConfig, ApiError, DisabledLauncher, Launcher, LocalApi, TestHooks};
 use ads_daemon::auth::Token;
 use ads_daemon::events::{EventLog, Poll, new_id};
 use ads_daemon::pty_client::{ClientConfig, PtyClient};
@@ -32,6 +32,7 @@ struct Fixture {
     token: String,
     backend: Arc<FakeBackend>,
     host: Arc<PtyHost>,
+    hooks: Arc<TestHooks>,
     api: tokio::task::JoinHandle<Result<(), ApiError>>,
     peer: tokio::task::JoinHandle<()>,
 }
@@ -88,6 +89,7 @@ async fn fixture_with_host(
         token,
         backend,
         host,
+        hooks: api.test_hooks(),
         api: tokio::spawn(api.run()),
         peer,
     }
@@ -1023,6 +1025,7 @@ async fn scripted_fixture(
         refusals.iter().copied().collect();
     let peer = tokio::spawn(async move {
         let mut dropped = false;
+        let mut held = false;
         let mut subscriptions = 0;
         while let Ok(Some(wire::Frame::Json(payload))) = wire::read_frame(&mut far, 131072).await {
             let request = wire::Request::parse(&payload).unwrap();
@@ -1049,6 +1052,11 @@ async fn scripted_fixture(
                 *left = left.saturating_sub(1);
                 refuse
             });
+            if method == "subscribe" && target == "host-hold-subscribe" && !held {
+                // The host opened the terminal but never answers the subscription.
+                held = true;
+                continue;
+            }
             if method == "close" && target.ends_with("drop-close") && !dropped {
                 // The first close never gets a reply, as if the host stalled on it.
                 dropped = true;
@@ -1233,6 +1241,7 @@ async fn scripted_fixture(
             token,
             backend,
             host,
+            hooks: api.test_hooks(),
             api: tokio::spawn(api.run()),
             peer,
         },
@@ -2084,34 +2093,46 @@ async fn stale_automatic_close_never_reaches_a_reopened_id() {
 }
 
 #[test]
-fn subscription_follows_only_its_generation_after_the_tombstone_expires() {
+fn subscription_keeps_its_incarnation_after_the_tombstone_expires() {
     let mut log = EventLog::new(4, 1);
-    let created = json!({"session_id": "a", "cols": 80, "rows": 24});
-    log.append("a", "resized", created.clone(), None).unwrap();
-    let first = log.generation("session/a");
-    assert!(first.is_some());
-    // The subscriber is held elsewhere while two prunes push out the first tombstone.
+    let data = json!({"session_id": "a", "cols": 80, "rows": 24});
+    log.append("a", "resized", data.clone(), None).unwrap();
+    let advanced = log.subscribe("session/a", 1).unwrap();
+    let from_start = log.subscribe("session/a", 0).unwrap();
+    // The subscribers are held elsewhere while two prunes push out the first tombstone.
     log.retire("a");
     log.retire("b");
     assert!(!log.is_retired("session/a"));
-    log.append("a", "resized", created, None).unwrap();
-    assert_ne!(log.generation("session/a"), first);
-    for after in [0, 1] {
-        assert_eq!(
-            log.poll("session/a", after, first),
-            Poll::End(ApiError::Replay),
-            "cursor {after}"
-        );
+    log.append("a", "resized", data, None).unwrap();
+    for stream in [&advanced, &from_start] {
+        assert_eq!(stream.poll(0), Poll::End(ApiError::Replay));
+        assert_eq!(stream.poll(1), Poll::End(ApiError::Replay));
     }
-    // A subscription made before any stream existed follows the first one it meets.
-    assert!(matches!(
-        log.poll("session/a", 0, None),
-        Poll::Events(events, Some(_)) if events.len() == 1
-    ));
-    assert_eq!(
-        log.poll("session/gone", 0, first),
-        Poll::End(ApiError::Replay)
-    );
+    // A subscription made before the open follows the incarnation the open fills, and only that one.
+    let early = log.subscribe("session/c", 0).unwrap();
+    log.append(
+        "c",
+        "resized",
+        json!({"session_id": "c", "cols": 80, "rows": 24}),
+        None,
+    )
+    .unwrap();
+    assert!(matches!(early.poll(0), Poll::Events(events) if events.len() == 1));
+}
+
+#[test]
+fn first_final_result_wins_for_existing_subscribers_only() {
+    let mut log = EventLog::new(4, 4);
+    let data = json!({"session_id": "a", "cols": 80, "rows": 24});
+    log.append("a", "resized", data, None).unwrap();
+    let stream = log.subscribe("session/a", 0).unwrap();
+    log.invalidate("a", ads_daemon::events::Closing::Pending);
+    assert_eq!(stream.poll(0), Poll::Wait);
+    log.invalidate("a", ads_daemon::events::Closing::Failed);
+    log.invalidate("a", ads_daemon::events::Closing::Closed);
+    // The subscriber keeps the exhausted result; a new subscription sees the current state.
+    assert_eq!(stream.poll(0), Poll::End(ApiError::ClosePending));
+    assert_eq!(log.subscribe("session/a", 0).unwrap_err(), ApiError::Replay);
 }
 
 #[tokio::test]
@@ -2155,4 +2176,200 @@ async fn upgraded_connections_keep_their_pending_slot() {
         .await
         .unwrap();
     third.close(None).await.unwrap();
+}
+
+async fn wait_until(mut ready: impl FnMut() -> bool) {
+    bounded(async {
+        while !ready() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn subscribe_without_host_reply_keeps_the_record_and_schedules_the_close() {
+    let (f, calls) = scripted_fixture(
+        "max_sessions = 1\nhost_timeout_ms = 200\nclose_retry_ms = 20",
+        "host-hold-subscribe",
+        ads_ptyhost::wire::ErrorCode::InternalError,
+        0,
+        &[],
+    )
+    .await;
+    let mut ws = authenticated(&f).await;
+    assert_eq!(
+        call(&mut ws, "session.open", open_params("session")).await["error"]["code"],
+        -32014
+    );
+    assert!(!f.api.is_finished());
+    wait_until(|| f.backend.terminals()[0].was_killed()).await;
+    assert!(f.host.sessions().is_empty());
+    assert_eq!(
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|c| *c == "close")
+            .count(),
+        1
+    );
+    assert_eq!(
+        call(&mut ws, "session.open", open_params("session")).await["result"]["accepted"],
+        true
+    );
+}
+
+#[tokio::test]
+async fn early_subscriber_held_across_reuse_never_follows_the_new_session() {
+    let f = fixture(
+        "max_sessions = 2\nretired_sessions = 2",
+        Arc::new(TestLauncher),
+    )
+    .await;
+    let mut watcher = authenticated(&f).await;
+    let mut control = authenticated(&f).await;
+    // The watcher subscribes before the open and is then held before it delivers anything.
+    let early = command(
+        "events.subscribe",
+        json!({"stream": "session/a", "after_seq": 0}),
+    );
+    transmit(&mut watcher, &early).await;
+    assert_eq!(receive(&mut watcher).await["result"]["accepted"], true);
+    assert_eq!(
+        call(
+            &mut watcher,
+            "events.subscribe",
+            json!({"stream": "session/later", "after_seq": 0})
+        )
+        .await["result"]["accepted"],
+        true
+    );
+    f.hooks.before_delivery.hold();
+    // While it is held, "a" opens, closes, is pruned and its tombstone expires before the id is opened again.
+    for id in ["a", "b", "c", "d", "e"] {
+        call(&mut control, "session.open", open_params(id)).await;
+        call(&mut control, "session.close", json!({"session_id": id})).await;
+    }
+    assert_eq!(
+        call(&mut control, "session.open", open_params("a")).await["result"]["accepted"],
+        true
+    );
+    f.hooks.before_delivery.release();
+    let ended = receive(&mut watcher).await;
+    assert_eq!(ended["id"], early["id"]);
+    assert_eq!(ended["error"]["code"], -32004);
+    call(&mut control, "session.close", json!({"session_id": "a"})).await;
+    call(&mut control, "session.open", open_params("later")).await;
+    let created = receive(&mut watcher).await;
+    assert_eq!(created["stream"], "session/later");
+    assert_eq!(created["type"], "urn:ads:event:session.created:1");
+}
+
+#[tokio::test]
+async fn delayed_subscriber_gets_the_exhausted_close_after_a_manual_close() {
+    let (f, calls) = scripted_fixture(
+        "max_sessions = 1\nclose_retries = 3\nclose_retry_ms = 20",
+        "gap-output",
+        ads_ptyhost::wire::ErrorCode::InternalError,
+        0,
+        &[("close", 3)],
+    )
+    .await;
+    let mut control = authenticated(&f).await;
+    let mut watcher = authenticated(&f).await;
+    call(&mut control, "session.open", open_params("session")).await;
+    f.hooks.before_delivery.hold();
+    let subscription = command(
+        "events.subscribe",
+        json!({"stream": "session/session", "after_seq": 0}),
+    );
+    transmit(&mut watcher, &subscription).await;
+    assert_eq!(receive(&mut watcher).await["result"]["accepted"], true);
+    call(
+        &mut control,
+        "session.write",
+        json!({"session_id": "session", "data": "YQ=="}),
+    )
+    .await;
+    wait_until(|| {
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|c| *c == "close")
+            .count()
+            == 3
+    })
+    .await;
+    // Wait for the exhausted state, then close by hand before the subscriber reads anything.
+    bounded(async {
+        while call(
+            &mut control,
+            "events.subscribe",
+            json!({"stream": "session/session", "after_seq": 0}),
+        )
+        .await["error"]["code"]
+            != -32013
+        {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    assert_eq!(
+        call(
+            &mut control,
+            "session.close",
+            json!({"session_id": "session"})
+        )
+        .await["result"]["accepted"],
+        true
+    );
+    assert_eq!(
+        call(
+            &mut control,
+            "events.subscribe",
+            json!({"stream": "session/session", "after_seq": 0})
+        )
+        .await["error"]["code"],
+        -32004
+    );
+    f.hooks.before_delivery.release();
+    let notice = receive(&mut watcher).await;
+    assert_eq!(notice["id"], subscription["id"]);
+    assert_eq!(notice["error"]["code"], -32013);
+}
+
+#[tokio::test]
+async fn connection_is_not_evicted_after_its_upgrade_response() {
+    let f = fixture(
+        "max_pending_auth = 1\nauth_timeout_ms = 60000",
+        Arc::new(TestLauncher),
+    )
+    .await;
+    // The client already has its 101; the server side is held right after the upgrade.
+    f.hooks.after_upgrade.hold();
+    let mut legit = connect(&f, Some("http://127.0.0.1:5173"), None)
+        .await
+        .unwrap();
+    let mut raw = TcpStream::connect(("127.0.0.1", f.port)).await.unwrap();
+    assert_eof(&mut raw).await;
+    f.hooks.after_upgrade.release();
+    assert_eq!(
+        call(&mut legit, "auth.hello", json!({"token": f.token})).await["result"]["accepted"],
+        true
+    );
+}
+
+#[tokio::test]
+async fn sequential_admissions_keep_the_eviction_queue_small() {
+    let f = fixture("max_pending_auth = 4", Arc::new(TestLauncher)).await;
+    for _ in 0..40 {
+        let mut ws = authenticated(&f).await;
+        ws.close(None).await.unwrap();
+    }
+    let (live, peak, waiting) = f.hooks.pending();
+    assert!(live <= 1, "{live}");
+    assert_eq!(peak, 1);
+    assert!(waiting <= 2, "{waiting}");
 }

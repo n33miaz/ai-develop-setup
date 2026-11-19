@@ -16,7 +16,8 @@ accept_retry_ms = 50
 max_message_bytes = 131072
 send_timeout_ms = 5000
 host_timeout_ms = 10000
-# Ids de sessões podadas que não podem ser reabertos nesta execução; acima disso o mais antigo volta a valer.
+# Limite de lápides (ids podados que não podem ser reabertos nesta execução; acima disso o mais antigo volta a valer)
+# e, em separado, de streams assinados antes do session.open à espera da sessão.
 retired_sessions = 1024
 # Fechamento automático de sessão invalidada: tentativas e espera entre elas; esgotadas, a assinatura recebe -32013.
 close_retries = 3
