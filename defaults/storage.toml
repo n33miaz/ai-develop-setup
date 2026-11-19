@@ -14,3 +14,11 @@ journal_mode = "wal"
 # pelo produto: recomendado 64 MiB. Aceita 512 bytes a 1 GiB; exceder recusa
 # com Full, sem tocar o banco. Arquivo do produto não passa pela imagem.
 inspection_max_bytes = 67108864
+# Teto do `data` de um evento, medido em bytes do JSON serializado antes da
+# cifra: recomendado 1 MiB. Aceita 64 bytes a 16 MiB; maior recusa com TooLarge
+# sem escrever. Evento grande demais pede outro lugar (anexo), não teto maior.
+max_event_bytes = 1048576
+# Máximo de eventos que uma leitura de stream decifra de uma vez: recomendado
+# 500. Aceita 1 a 10000; pedido maior devolve só este tanto, e quem lê continua
+# do último seq recebido.
+read_page_limit = 500

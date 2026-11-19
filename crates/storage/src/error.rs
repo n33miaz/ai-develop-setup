@@ -16,6 +16,20 @@ pub enum StorageError {
     SchemaTooNew,
     UnsupportedSchema,
     PragmaMismatch,
+    /// The event's `seq` is not the next one of its stream.
+    Conflict,
+    /// A key with this id was registered with different key material.
+    WrongKey,
+    KeyUnavailable,
+    /// Ciphertext, nonce or an authenticated clear column was altered.
+    Tampered,
+    TooLarge,
+    InvalidEvent,
+    Cipher,
+    /// First row whose chain link does not match; carries only its position.
+    ChainBroken {
+        position: i64,
+    },
 }
 
 impl fmt::Display for StorageError {
@@ -45,6 +59,17 @@ impl From<rusqlite::Error> for StorageError {
             | Error::InvalidColumnType(..)
             | Error::IntegralValueOutOfRange(..) => Self::UnsupportedSchema,
             _ => Self::Io,
+        }
+    }
+}
+
+impl From<crate::cipher::CipherError> for StorageError {
+    fn from(value: crate::cipher::CipherError) -> Self {
+        use crate::cipher::CipherError;
+        match value {
+            CipherError::KeyUnavailable | CipherError::InvalidKeyId => Self::KeyUnavailable,
+            CipherError::Authentication => Self::Tampered,
+            CipherError::Random | CipherError::Encryption => Self::Cipher,
         }
     }
 }
