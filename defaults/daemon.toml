@@ -1,5 +1,5 @@
 # Origens exatas da interface; sem curingas. Trocar exige reconectar a interface.
-ui_base_url = "http://localhost:5173"
+ui_base_url = "http://127.0.0.1:5173"
 # Vazia: deriva somente a origem da URL base. Lista explícita substitui a derivação.
 allowed_origins = []
 auth_timeout_ms = 5000

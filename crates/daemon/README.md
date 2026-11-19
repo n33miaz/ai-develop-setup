@@ -17,7 +17,7 @@ cargo run -p ads-daemon -j 2
 ```
 
 No terceiro terminal, entre em `ui` e execute `npm run dev`. Abra a URL exata
-impressa pelo daemon: `http://localhost:5173/#core=ws://127.0.0.1:<porta>&token=<token>`.
+impressa pelo daemon: `http://127.0.0.1:5173/#core=ws://127.0.0.1:<porta>&token=<token>`.
 A saída padrão contém somente essa linha. O token de 32 bytes aleatórios vem do
 gerador do sistema e existe só em memória; o fragmento não faz parte do pedido
 HTTP. A interface envia `auth.hello` como primeira mensagem. Antes dela, mensagem
@@ -48,8 +48,8 @@ Padrões em [defaults/daemon.toml](../../defaults/daemon.toml), aplicados ao ini
 
 | Chave | Padrão | Efeito e alternativa |
 |---|---|---|
-| `ui_base_url` | `http://localhost:5173` | URL HTTP da interface em localhost, 127.0.0.1 ou [::1], sem caminho, query ou fragmento; substitua pela interface cuja porta foi verificada. |
-| `allowed_origins` | `[]` (deriva `http://localhost:5173`) | Vazia deriva somente a origem de `ui_base_url`; lista explícita substitui a derivação, sem curingas ou caminhos. |
+| `ui_base_url` | `http://127.0.0.1:5173` | URL HTTP da interface em localhost, 127.0.0.1 ou [::1], sem caminho, query ou fragmento; substitua pela interface cuja porta foi verificada. |
+| `allowed_origins` | `[]` (deriva `http://127.0.0.1:5173`) | Vazia deriva somente a origem de `ui_base_url`; lista explícita substitui a derivação, sem curingas ou caminhos. |
 | `auth_timeout_ms` | 5000 | Prazo total único do upgrade e da primeira mensagem; reduza para limitar conexões ociosas. |
 | `max_sessions` | 32 | Sessões ainda mantidas no host e, em separado, históricos de sessões fechadas. Aumentar permite mais sessões e usa mais memória. |
 | `max_write_bytes` | 65536 | Bytes decodificados por escrita; pode diminuir, nunca exceder o contrato. |
@@ -185,7 +185,7 @@ de erro e a saída do comando real são as evidências de funcionamento nos test
 
 Antes de abrir a URL, confira que a porta de `ui_base_url` pertence ao próprio
 usuário. Inicie o servidor da interface com porta fixa e `strictPort` (por exemplo,
-`npm run dev -- --host localhost --port 5173 --strictPort` na pasta `ui`).
+`npm run dev -- --host 127.0.0.1 --port 5173 --strictPort` na pasta `ui`).
 Se a porta estiver ocupada, pare e investigue; não abra a URL nem aceite outra
 porta automaticamente. Configurar uma URL diferente não comprova sua propriedade.
 Outro usuário pode servir uma página nessa porta e ler o fragmento com o token.

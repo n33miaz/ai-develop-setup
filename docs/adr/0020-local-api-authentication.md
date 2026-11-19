@@ -18,10 +18,10 @@ Proposta:
 1. **Endereço.** O núcleo escuta só em `127.0.0.1`, numa porta efêmera escolhida pelo sistema a cada execução. Nunca em `0.0.0.0`, `::` ou interface de rede.
 2. **`Host` e `Origin`.** No pedido de upgrade do WebSocket, o núcleo confere:
    - `Host` igual a `127.0.0.1:<porta>` ou `localhost:<porta>` (barra DNS rebinding);
-   - `Origin` presente e numa lista permitida exata, sem curinga. Padrão de desenvolvimento: `http://localhost:5173`. A origem da casca Tauri no Windows entra na lista quando for verificada na casca real.
+   - `Origin` presente e numa lista permitida exata, sem curinga. Padrão de desenvolvimento: `http://127.0.0.1:5173`, o mesmo endereço em que o Vite escuta. A origem da casca Tauri no Windows entra na lista quando for verificada na casca real.
    Qualquer falha responde `403` e fecha, sem dizer qual conferência falhou.
 3. **Token por execução.** A cada partida o núcleo gera um token de 32 bytes (256 bits; o mínimo aceitável é 128) de um gerador criptográfico do sistema, codificado em base64url sem preenchimento (43 caracteres). O token só existe na memória do núcleo.
-4. **Entrega pelo fragmento.** O núcleo imprime uma única linha com a URL da interface e o token no fragmento: `http://localhost:5173/#core=ws://127.0.0.1:<porta>&token=<token>`. O fragmento não sai do navegador em pedido HTTP nenhum, nem vai para o `Referer`. A interface lê o fragmento, guarda o token só na sessão da aba e limpa a URL.
+4. **Entrega pelo fragmento.** O núcleo imprime uma única linha com a URL da interface e o token no fragmento: `http://127.0.0.1:5173/#core=ws://127.0.0.1:<porta>&token=<token>`. O fragmento não sai do navegador em pedido HTTP nenhum, nem vai para o `Referer`. A interface lê o fragmento, guarda o token só na sessão da aba e limpa a URL.
 5. **Primeira mensagem.** A interface manda o token como primeira mensagem do WebSocket, no comando `auth.hello` (contrato `urn:ads:command:auth.hello:1`). Nunca em query string, cabeçalho de URL ou subprotocolo, que acabam em log e em histórico.
 6. **Conferência.** O núcleo compara o token em tempo constante. Antes de um `auth.hello` válido nenhum outro comando é aceito; token errado, mensagem que não é `auth.hello` ou falta dele dentro do prazo (padrão 5 s) fecham a conexão. Nenhuma resposta diz se o token estava perto de certo.
 7. **Origem remota recusada.** Todo comando que chega pela API local com `_meta.origin = "remote"` é recusado, mesmo autenticado: comando remoto só entra pelo transporte remoto, assinado (ADR 0008).
