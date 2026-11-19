@@ -25,3 +25,5 @@ Uma decisão por arquivo. Número nunca é reutilizado; decisão substituída ga
 | [0019](0019-descriptive-issue-and-pr-titles.md) | 0019. Descriptive issue and pull request titles |
 | [0020](0020-local-api-authentication.md) | 0020. Local API authentication (proposta) |
 | [0021](0021-storage-atomic-file-and-cipher.md) | 0021. Atomic storage file and authenticated column encryption |
+| [0022](0022-account-profile-folders-and-automatic-switching.md) | 0022. Account profile folders and automatic account switching (substitui em parte a 0010) |
+| [0023](0023-remote-session-encryption.md) | 0023. Remote session encryption (proposta) |

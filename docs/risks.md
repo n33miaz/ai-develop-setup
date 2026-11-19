@@ -26,7 +26,13 @@ Estado da mitigação, em cada risco:
 | [Atualização ruim instalada](#atualização-ruim-instalada) | lançador | decidida, não implementada |
 | [Elevação de privilégio](#elevação-de-privilégio) | auxiliar de elevação | decidida, não implementada |
 | [Exposição pelo transporte remoto](#exposição-pelo-transporte-remoto) | relé e sessão cifrada | decidida, não implementada |
-| [Suspensão de conta por uso automatizado de CLI](#suspensão-de-conta-por-uso-automatizado-de-cli) | adaptadores | decidida, não implementada |
+| [Cliente remoto adulterado pelo Worker](#cliente-remoto-adulterado-pelo-worker) | relé e interface remota | ausente (proposta na ADR 0023) |
+| [Comando remoto repetido ou de aparelho indevido](#comando-remoto-repetido-ou-de-aparelho-indevido) | núcleo e sessão cifrada | decidida (proposta), não implementada |
+| [Suspensão de conta por uso automatizado de CLI](#suspensão-de-conta-por-uso-automatizado-de-cli) | adaptadores e política de troca de conta | decidida, não implementada |
+| [Login sem chave do Console desfaz os perfis do Claude](#login-sem-chave-do-console-desfaz-os-perfis-do-claude) | mantenedor e adaptador Claude | só regra escrita |
+| [Isolamento falso entre perfis do Codex](#isolamento-falso-entre-perfis-do-codex) | mantenedor e adaptador Codex | ausente; teste na máquina pendente |
+| [Pasta de perfil lida ou alterada pelo produto](#pasta-de-perfil-lida-ou-alterada-pelo-produto) | núcleo (ligação ao perfil) e coletores | decidida, não implementada |
+| [Chave passa na frente do login do perfil](#chave-passa-na-frente-do-login-do-perfil) | adaptadores de ferramenta | parcial: filtro do ambiente do pai |
 | [Gasto de IA sem teto](#gasto-de-ia-sem-teto) | núcleo (orçamento) | ausente |
 | [Texto de ferramenta tratado como instrução](#texto-de-ferramenta-tratado-como-instrução) | núcleo e adaptadores | só regra escrita |
 | [Instruções de agente sobrepostas ou ignoradas](#instruções-de-agente-sobrepostas-ou-ignoradas) | mantenedor | parcial |
@@ -175,15 +181,35 @@ Estado da mitigação, em cada risco:
 - **Plano B.** Trocar de transporte (condição de reversão da ADR 0008).
 - **O que falta.** Relé e sessão cifrada são esqueletos.
 
+### Cliente remoto adulterado pelo Worker
+
+- **Descrição.** O Worker que serve a PWA (ADR 0008) é comprometido, por exemplo pela conta do provedor, e entrega ao celular um JavaScript adulterado.
+- **Impacto.** O cliente adulterado lê o que decifra e assina comandos em nome do aparelho; a cifra de ponta a ponta não protege contra quem entrega o código do cliente.
+- **Dono.** Relé e interface remota.
+- **Teto.** `remote.transport = none` por padrão (ADR 0008). Não definido com o remoto ligado.
+- **Mitigação existente.** Ausente. A [ADR 0023](adr/0023-remote-session-encryption.md) (proposta) registra o risco.
+- **Plano B.** Desligar o transporte remoto e revogar todos os aparelhos no PC.
+- **O que falta.** PWA instalada e fixada por versão, com conferência de integridade do pacote; confirmação no PC para ação destrutiva vinda do remoto; proteção da conta do Worker (segundo fator) no roteiro de instalação.
+
+### Comando remoto repetido ou de aparelho indevido
+
+- **Descrição.** Um comando assinado é reenviado, um QR de pareamento é fotografado, ou um aparelho roubado continua inscrito.
+- **Impacto.** Comando executado de novo ou por quem não devia, num terminal do usuário.
+- **Dono.** Núcleo (conferência de assinatura e inscrição) e sessão cifrada ([`crates/e2e`](../crates/e2e/README.md)).
+- **Teto.** Validade proposta de 5 minutos para o código de pareamento e de 60 segundos para o comando; número máximo de aparelhos configurável ([ADR 0023](adr/0023-remote-session-encryption.md), proposta).
+- **Mitigação existente (decidida, não implementada).** O Schema `command.request` já exige `device_id`, assinatura, `nonce`, `counter` e `expires_at` para origem remota; a ADR 0023 propõe código de uso único confirmado no PC, passkey conferida pelo núcleo dentro do canal e revogação no PC.
+- **Plano B.** Revogar o aparelho; desligar o transporte remoto.
+- **O que falta.** Biblioteca, uso por WASM e conta do Worker aguardam decisão do mantenedor; persistência do contador antes de executar; vetores de teste comuns ao PC e ao celular.
+
 ### Suspensão de conta por uso automatizado de CLI
 
-- **Descrição.** Uso automatizado de uma CLI de IA fora dos termos do fornecedor.
+- **Descrição.** Uso automatizado de uma CLI de IA fora dos termos do fornecedor, inclusive troca automática entre contas de assinatura.
 - **Impacto.** Conta do usuário suspensa.
-- **Dono.** Adaptadores de ferramenta.
-- **Teto.** `adapters.agy.headless = false` por padrão, decidido na ADR 0010; rotação automática de contas proibida.
-- **Mitigação existente (decidida, não implementada).** [ADR 0010](adr/0010-api-key-for-automation-agy-headless-on-demand.md): automação pela chave de API, modo sem interface só depois de aceite registrado.
-- **Plano B.** Retirar a CLI do produto (condição de reversão da ADR 0010).
-- **O que falta.** Adaptadores são esqueletos; o parâmetro ainda não existe em `defaults/`.
+- **Dono.** Adaptadores de ferramenta e política de troca de conta.
+- **Teto.** `adapters.agy.headless = false` por padrão, decidido na ADR 0010. Troca de conta: `switch = "propose"` por padrão (o mantenedor confirma cada troca) até o isolamento por perfil estar validado; Antigravity fixo em manual ([ADR 0022](adr/0022-account-profile-folders-and-automatic-switching.md)).
+- **Mitigação existente (decidida, não implementada).** [ADR 0010](adr/0010-api-key-for-automation-agy-headless-on-demand.md): automação pela chave de API, modo sem interface só depois de aceite registrado. [ADR 0022](adr/0022-account-profile-folders-and-automatic-switching.md): troca só entre pastas de perfil em que o mantenedor fez o login, nunca no meio da sessão. O FAQ do Antigravity declara a rotação automática fora dos termos; Claude Code e Codex documentam várias contas por pasta, sem dizer se a troca automática entre elas é aceita.
+- **Plano B.** Voltar a troca para manual em todas as ferramentas (condição de reversão da ADR 0022); retirar a CLI do produto (condição de reversão da ADR 0010).
+- **O que falta.** Adaptadores são esqueletos; os parâmetros `adapters.agy.headless`, `switch` e `switch_at_pct` ainda não existem em `defaults/`. Os termos atuais de Claude e Codex sobre troca automática entre contas não foram conferidos.
 
 ### Gasto de IA sem teto
 
@@ -204,6 +230,50 @@ Estado da mitigação, em cada risco:
 - **Mitigação existente.** Só regra: o [AGENTS.md](../AGENTS.md) diz que esse texto é dado; o Schema `record.task-packet` diz que permissões vêm da configuração do usuário, não do pacote; toda ação destrutiva passa pelo portão.
 - **Plano B.** O portão de ações limita o dano em arquivos.
 - **O que falta.** Nada no código separa instrução de dado além do portão.
+
+## Contas por pasta de perfil
+
+Riscos da troca de conta por pasta de perfil ([ADR 0022](adr/0022-account-profile-folders-and-automatic-switching.md)). Nenhum código de perfil existe ainda; o adaptador atual nega `CLAUDE_*` e `CODEX_*` no ambiente do filho.
+
+### Login sem chave do Console desfaz os perfis do Claude
+
+- **Descrição.** Num perfil do Claude Code, alguém escolhe o login do Console sem criar chave. A documentação oficial diz que esse login fica fora da pasta de configuração e desfaz todos os logins claude.ai da máquina.
+- **Impacto.** Todos os perfis do Claude perdem o login de uma vez; a troca de conta para.
+- **Dono.** Mantenedor (preparo dos perfis) e adaptador Claude (observação do status).
+- **Teto.** Não se aplica.
+- **Mitigação existente.** Só regra: o roteiro de preparo dos perfis proíbe esse login.
+- **Plano B.** Refazer o login claude.ai de cada perfil, pela própria ferramenta.
+- **O que falta.** A sonda de status (`claude auth status`, campo `authMethod`) acusar perfil fora do método esperado e bloquear a troca para ele.
+
+### Isolamento falso entre perfis do Codex
+
+- **Descrição.** Com o login no chaveiro do sistema, dois valores de `CODEX_HOME` podem usar a mesma entrada; a documentação oficial não diz qual é o padrão de `cli_auth_credentials_store` nem se a entrada do chaveiro depende de `CODEX_HOME`.
+- **Impacto.** Dois perfis na mesma conta sem ninguém perceber, ou o login de um perfil sobrescrevendo o de outro.
+- **Dono.** Mantenedor (teste na máquina) e adaptador Codex.
+- **Teto.** Não se aplica.
+- **Mitigação existente.** Ausente. A ADR 0022 só dá o isolamento como confirmado com `cli_auth_credentials_store = "file"` em cada perfil e depois do teste na máquina.
+- **Plano B.** Troca de conta do Codex só manual; se o isolamento por pasta não funcionar, a ADR 0022 é revista.
+- **O que falta.** O teste de isolamento na máquina do mantenedor; a sonda conferir pelo `codex login status` que cada perfil está no método esperado. Com `file`, `auth.json` fica em texto na pasta do perfil, protegido só pelas permissões da pasta do usuário.
+
+### Pasta de perfil lida ou alterada pelo produto
+
+- **Descrição.** Um coletor de uso ou outro módulo abre arquivo de credencial dentro da pasta do perfil, ou o caminho do perfil chega ao filho por herança ou por `env.set`.
+- **Impacto.** Quebra da regra C1; credencial exposta.
+- **Dono.** Núcleo (ligação ao perfil) e coletores de uso.
+- **Teto.** Lista de subpastas permitidas por ferramenta.
+- **Mitigação existente (decidida, não implementada).** A variável de pasta é constante do adaptador, injetada depois do filtro de ambiente; `CLAUDE_*` e `CODEX_*` continuam em `env.deny`; coletores só leem subpastas permitidas.
+- **Plano B.** Remover a ligação ao perfil (condição de reversão da ADR 0022).
+- **O que falta.** O tipo de ligação ao perfil no núcleo; teste de arquivo sentinela nos coletores; teste com duas pastas de perfil e variável de chave envenenada no processo pai.
+
+### Chave passa na frente do login do perfil
+
+- **Descrição.** Uma variável de chave (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`) ou um `apiKeyHelper` tem precedência sobre o login da pasta, e a sessão roda em outra conta ou é cobrada por uso.
+- **Impacto.** Consumo na conta errada ou custo por chave não previsto.
+- **Dono.** Adaptadores de ferramenta.
+- **Teto.** Não definido.
+- **Mitigação existente (parcial).** O filtro do núcleo barra essas variáveis do processo pai ([credencial de CLI](#credencial-de-cli-de-ia-vaza-para-o-processo-filho)).
+- **Plano B.** Não abrir sessão no perfil cujo status mostra método diferente do esperado.
+- **O que falta.** Configurações gravadas dentro do perfil são da ferramenta e o produto não as lê; só a sonda de status (`authMethod`) pode acusar o problema.
 
 ## Repositório e processo
 
