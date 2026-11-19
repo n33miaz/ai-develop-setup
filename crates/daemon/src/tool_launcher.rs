@@ -24,10 +24,22 @@ impl<C, X> ToolLauncher<C, X> {
     ) -> Result<Self, String> {
         let case = NameCase::host();
         Ok(Self {
-            claude: claude::ClaudeConfig::from_toml_str(overrides, case)
-                .map_err(|error| format!("invalid claude configuration: {error}"))?,
-            codex: codex::CodexConfig::from_toml_str(overrides, case)
-                .map_err(|error| format!("invalid codex configuration: {error}"))?,
+            claude: claude::ClaudeConfig::from_toml_str(overrides, case).map_err(|error| {
+                let error = match error {
+                    // The daemon passes a rebuilt subset of the user's file: its line numbers
+                    // would point to the wrong place.
+                    claude::ConfigError::Toml { .. } => claude::ConfigError::Toml { line: None },
+                    other => other,
+                };
+                format!("invalid claude configuration: {error}")
+            })?,
+            codex: codex::CodexConfig::from_toml_str(overrides, case).map_err(|error| {
+                let error = match error {
+                    codex::ConfigError::Toml { .. } => codex::ConfigError::Toml { line: None },
+                    other => other,
+                };
+                format!("invalid codex configuration: {error}")
+            })?,
             parent_env,
             claude_probe,
             codex_probe,

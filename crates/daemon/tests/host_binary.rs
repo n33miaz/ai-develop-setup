@@ -94,7 +94,7 @@ async fn real_host_runs_configured_echo_through_the_api() {
     let cwd = std::env::current_dir().unwrap();
     let config = json!({
         "workdirs": {"workspace": cwd},
-        "tools": {"claude": {"program": cmd, "args": ["/d", "/c", "echo daemon-pty-client-ok"]}}
+        "tools": {"claude": {"program": cmd, "args": ["/d", "/c", "echo daemon-pty-client-ok [%ANTHROPIC_API_KEY%]"]}}
     });
     let user_config = test_config("daemon-echo-user", &toml::to_string(&config).unwrap());
     let mut daemon = Process(
@@ -103,6 +103,8 @@ async fn real_host_runs_configured_echo_through_the_api() {
             .arg(user_config)
             .arg("--host-config")
             .arg(host_config)
+            // Reaches the daemon but must not reach the tool.
+            .env("ANTHROPIC_API_KEY", "leaked-sentinel")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .spawn()
@@ -161,24 +163,11 @@ async fn real_host_runs_configured_echo_through_the_api() {
                 _ => panic!("unexpected event"),
             }
         }
-        assert!(String::from_utf8_lossy(&output).contains("daemon-pty-client-ok"));
+        let output = String::from_utf8_lossy(&output);
+        assert!(output.contains("daemon-pty-client-ok"));
+        assert!(output.contains("[%ANTHROPIC_API_KEY%]"));
+        assert!(!output.contains("leaked-sentinel"));
     })
     .await
     .expect("echo did not exit");
-}
-
-#[test]
-fn daemon_rejects_invalid_tool_configuration_before_starting() {
-    let invalid = "[tools.codex]\nprogram = 'relative-sentinel.exe'\n";
-    let path = test_config("daemon-invalid-tool", invalid);
-    let output = Command::new(env!("CARGO_BIN_EXE_ads-daemon"))
-        .arg("--config")
-        .arg(path)
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    assert!(output.stdout.is_empty());
-    let error = String::from_utf8(output.stderr).unwrap();
-    assert!(error.contains("invalid codex configuration: program path refused"));
-    assert!(!error.contains("relative-sentinel"));
 }

@@ -32,7 +32,14 @@ fn load_config(
         }
     }
     let mut api: toml::Table =
-        toml::from_str(&overrides).map_err(|_| "invalid user configuration TOML")?;
+        toml::from_str(&overrides).map_err(|error: toml::de::Error| match error.span() {
+            // Only the position: the parser message could quote the file.
+            Some(span) => format!(
+                "invalid user configuration TOML at line {}",
+                overrides[..span.start].matches('\n').count() + 1
+            ),
+            None => "invalid user configuration TOML".to_owned(),
+        })?;
     let mut tools = toml::Table::new();
     for name in ["env", "workdirs", "tools"] {
         if let Some(value) = api.remove(name) {
@@ -105,6 +112,41 @@ mod tests {
             load_config(["--config".to_owned(), "relative.toml".to_owned()].into_iter())
                 .unwrap_err(),
             "--config requires an absolute path"
+        );
+    }
+    fn user_file(name: &str, contents: &str) -> String {
+        let path = std::env::temp_dir().join(format!("{name}-{}.toml", std::process::id()));
+        std::fs::write(&path, contents).unwrap();
+        path.to_str().unwrap().to_owned()
+    }
+    #[test]
+    fn user_file_is_split_between_api_and_tools() {
+        let path = user_file(
+            "ads-daemon-split",
+            "max_sessions = 3\n[workdirs]\ndefault = 'C:/w'\n[tools.codex]\nargs = ['x']\n",
+        );
+        let (api, _, tools) = load_config(["--config".to_owned(), path].into_iter()).unwrap();
+        assert_eq!(api.max_sessions, 3);
+        let tools: toml::Table = toml::from_str(&tools).unwrap();
+        assert_eq!(
+            tools.keys().collect::<Vec<_>>(),
+            ["tools", "workdirs"].iter().collect::<Vec<_>>()
+        );
+    }
+    #[test]
+    fn unknown_tool_and_bad_toml_are_refused_without_quoting_the_file() {
+        let path = user_file(
+            "ads-daemon-unknown",
+            "[tools.sentinel-tool]\nprogram = ''\n",
+        );
+        assert_eq!(
+            load_config(["--config".to_owned(), path].into_iter()).unwrap_err(),
+            "unknown tool in user configuration"
+        );
+        let path = user_file("ads-daemon-bad", "max_sessions = 1\nsentinel = = 'x'\n");
+        assert_eq!(
+            load_config(["--config".to_owned(), path].into_iter()).unwrap_err(),
+            "invalid user configuration TOML at line 2"
         );
     }
     #[test]
