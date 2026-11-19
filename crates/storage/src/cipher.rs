@@ -433,6 +433,16 @@ mod tests {
             aad: &encoded,
         };
         assert!(raw.decrypt((&ct.nonce).into(), payload).is_err());
+        // The key check runs under its own subkey, not the data one.
+        let check = key_check(&keys).unwrap();
+        let data_key = XChaCha20Poly1305::new((&*subkey(&master, AEAD_SUBKEY)).into());
+        let encoded = encode(CHECK_DOMAIN, &keys.id, &AssociatedData(&[]));
+        let payload = Payload {
+            msg: &check.bytes,
+            aad: &encoded,
+        };
+        assert!(data_key.decrypt((&check.nonce).into(), payload).is_err());
+        verify_key_check(&keys, &check).unwrap();
     }
 
     struct Split;
