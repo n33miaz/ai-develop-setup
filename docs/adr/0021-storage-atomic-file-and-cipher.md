@@ -24,8 +24,12 @@ abertura procura arquivos que ele desfaria ou apagaria sozinho: qualquer
 `-journal` ao lado do banco (seria revertido sobre o arquivo principal) e `-wal`
 ao lado de um principal vazio ou ausente (SQLite apaga esse WAL e inicia um banco
 novo). Enquanto existirem, a abertura espera até `busy_timeout_ms`, porque a
-criação concorrente tem uma janela curta com `-journal`; se continuarem, recusa
-com `Corrupt` sem alterar a pasta, e `busy_timeout_ms = 0` recusa na hora.
+criação concorrente tem uma janela curta com `-journal`. Se continuarem parados
+até o prazo, recusa com `Corrupt` sem alterar a pasta; se ainda estiverem mudando,
+ou com `busy_timeout_ms = 0` (que recusa na hora e não distingue criação em
+andamento de sobra), recusa com `Busy`. Somada ao timeout do SQLite, a espera
+total pode chegar a cerca de duas vezes `busy_timeout_ms`. O reparo de um
+`-journal` sobrando está no README do crate.
 Arquivos existentes passam por inspeção do cabeçalho de 100 bytes pela biblioteca
 padrão. Arquivo ainda não marcado (`application_id=0`) segue para uma imagem
 privada em memória, sem criar auxiliares WAL nos originais. A imagem combina o
@@ -35,14 +39,20 @@ de outra geração não entram na imagem. A API segura `deserialize_read_exact`,
 feature `serialize` de `rusqlite`, entrega a imagem a uma conexão SQLite somente
 leitura em memória. O modo de journal é ajustado somente na cópia. Isso permite
 conferir esquemas estrangeiros com `application_id=0` e tabelas presentes apenas
-no WAL, sem alterar `-shm`. Arquivo já marcado pelo produto não passa pela imagem:
-dele só se confere o cabeçalho de 32 bytes do `-wal` (magic, versão, página e
-checksum), porque o SQLite descartaria em silêncio um WAL com cabeçalho danificado
-e os quadros confirmados nele; a inspeção roda numa transação de leitura consistente na conexão de escrita, com
-custo que não depende de copiar o banco, e a verificação de integridade roda uma
-vez. Nesse caso a recusa pode criar e remover `-wal` e `-shm`, atualizar o índice
-`-shm` e transferir quadros já confirmados para o arquivo principal ao fechar;
-o conteúdo lógico não muda. Para o arquivo não marcado, a mesma transação repete
+no WAL, sem alterar `-shm`. Arquivo já marcado pelo produto não passa pela imagem.
+Dele se lê o `-wal` em fluxo, um quadro por vez: o cabeçalho (magic, versão,
+página e checksum) é conferido, porque o SQLite descartaria em silêncio um WAL
+com cabeçalho danificado; e a abertura recusa com `Corrupt` quando, depois do
+primeiro quadro inválido, há um commit com o salt atual além do commit da
+transação que contém a quebra. O SQLite para no primeiro quadro inválido e
+perderia esses commits já confirmados. Quebra só na última transação é queda
+comum e abre normalmente. Em seguida a inspeção roda numa transação de leitura
+consistente na conexão de escrita, com custo que não depende de copiar o banco, e
+a verificação de integridade roda uma vez. Com `-wal` pendente, a conexão abre
+com `SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE`, desligado só depois que a inspeção passa:
+a recusa não transfere os quadros recusados para o arquivo principal, e os bytes
+do banco e do `-wal` ficam iguais. A recusa pode deixar um `-shm` criado e, sem
+`-wal` pendente, criar e remover `-wal` e `-shm`. Para o arquivo não marcado, a mesma transação repete
 a inspeção depois da imagem. As conexões recebem `trusted_schema=OFF`,
 `cell_size_check=ON` e `DEFENSIVE` antes de consultar o esquema. Arquivo
 existente abre sem permissão de criação; arquivo vazio pode ser inicializado. O
