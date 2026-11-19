@@ -74,7 +74,11 @@ Conferência em 16/11/2026 por `cargo info` e API oficial do crates.io:
 é recente (11/11), escolha literal da anterior solicitada. `libsqlite3-sys 0.40.0`
 é MIT; o SQLite embutido é domínio público e requer revisão dos avisos no pacote.
 `chacha20poly1305 0.11.0`, `zeroize 1.9.1` e `getrandom 0.4.3` oferecem MIT ou
-Apache-2.0. Nenhuma exceção de licença nova é autorizada.
+Apache-2.0. Em 19/11/2026, para a cadeia com chave: `hmac 0.12.1` (MIT ou
+Apache-2.0), nova, e `subtle 2.6.1` (BSD-3-Clause), já no workspace e agora
+dependência direta; a feature `hooks` de `rusqlite`, para o autorizador, não
+acrescenta crate. `cargo deny check` passa. Nenhuma exceção de licença nova é
+autorizada.
 `pkg-config` e `vcpkg` são dependências de compilação de `libsqlite3-sys`,
 puxadas pelos padrões transitivos de `rusqlite` fora de wasm; ficam inertes com
 `bundled`, que compila o SQLite incluído. Não são dependências de execução.
@@ -156,6 +160,11 @@ anterior do arquivo inteiro (não há âncora fora do arquivo nem gênese própr
 cada banco); linhas escritas por quem tem a chave, inclusive com uma chave antiga
 que o provedor ainda entrega. A âncora planejada é o último `position` e `chain`
 guardados no cofre a cada `append` do portão e conferidos ao abrir.
+Detectar não é impedir: um `INSERT` simples sem chave é aceito pelo banco e só
+`verify_chain` e `read_stream` o recusam depois. Com os índices únicos do
+portão, uma linha assim pode ocupar a vaga de uma licença (um `action.started`
+forjado) e bloquear a verdadeira: negação, não uso duplo. A ponte deve conferir
+o HMAC da linha com que colidiu antes de confiar no conflito do índice.
 
 Gatilhos recusam UPDATE, DELETE, substituição de linha (o `INSERT OR REPLACE`,
 o `REPLACE INTO` e o UPSERT do SQLite apagariam sem disparar o gatilho de DELETE),

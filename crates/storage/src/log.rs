@@ -471,7 +471,8 @@ impl EventLog {
             let mut checked = HashSet::new();
             let mut used = 0usize;
             while let Some(r) = rows.next()? {
-                // Read before the blob itself, so a page never loads the row past it.
+                // Checked before the row is copied into Rust or decrypted; SQLite
+                // itself has already stepped onto it.
                 let size: i64 = r.get(SIZE_COLUMN)?;
                 let size = usize::try_from(size).map_err(|_| StorageError::Corrupt)?;
                 if !events.is_empty() && used.saturating_add(size) > budget {
