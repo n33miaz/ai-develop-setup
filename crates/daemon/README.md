@@ -2,22 +2,56 @@
 
 O executável serve a API local por WebSocket em `127.0.0.1`, com porta efêmera e
 autenticação por execução ([ADR 0020](../../docs/adr/0020-local-api-authentication.md)).
-**Nenhuma ferramenta real está ligada:** o `DisabledLauncher` recusa qualquer
-`harness` com `-32011` (`harness not configured`). Não há execução de arquivos,
-transporte remoto, persistência, retomada de sessões após reiniciar ou recarregar
-a interface, nem inicialização automática do ptyhost.
+Claude e Codex são abertos pelo host de terminais com programa, argumentos e
+pasta definidos no TOML do usuário. Ferramenta sem programa recebe
+`-32011` (`harness not configured`), e ferramenta desconhecida recebe `-32602`.
 
-## Desenvolvimento
+## Abrir Claude ou Codex no navegador
 
-Use três terminais, a partir da raiz do repositório:
+1. Na raiz do repositório, inicie o host de terminais em um terminal.
 
-```text
-cargo run -p ads-ptyhost -j 2
-cargo run -p ads-daemon -j 2
-```
+   ```powershell
+   cargo run -p ads-ptyhost -j 2
+   ```
 
-No terceiro terminal, entre em `ui` e execute `npm run dev`. Abra a URL exata
-impressa pelo daemon: `http://localhost:5173/#core=ws://127.0.0.1:<porta>&token=<token>`.
+2. Em outro terminal, use `where.exe claude.exe` e `where.exe codex.exe` para
+   localizar os executáveis instalados. Salve um TOML fora do repositório, por
+   exemplo em `D:\ads-local\harnesses.toml`. Substitua os caminhos abaixo pelos
+   caminhos absolutos da sua máquina. Use uma pasta de teste existente como
+   destino do apelido `default`. Se só tiver uma ferramenta instalada, omita
+   a tabela da outra.
+
+   ```toml
+   [workdirs]
+   default = 'D:\ads-local\pasta-de-teste'
+
+   [tools.claude]
+   program = 'D:\ferramentas\claude.exe'
+
+   [tools.codex]
+   program = 'D:\ferramentas\codex.exe'
+   ```
+
+3. Na raiz, inicie o daemon com o caminho absoluto do TOML.
+
+   ```powershell
+   cargo run -p ads-daemon -j 2 -- --config 'D:\ads-local\harnesses.toml'
+   ```
+
+4. Em um terceiro terminal, inicie a interface.
+
+   ```powershell
+   Set-Location ui
+   npm ci
+   $env:VITE_CORE_HARNESSES = 'claude,codex'
+   $env:VITE_CORE_WORKDIR = 'default'
+   npm run dev -- --host localhost --port 5173 --strictPort
+   ```
+
+   Depois que o Vite confirmar a porta, abra no navegador a URL completa
+   impressa pelo daemon e clique em **Abrir claude** ou **Abrir codex**.
+   O agente dentro do terminal pode editar arquivos conforme as permissões dele.
+
 A saída padrão contém somente essa linha. O token de 32 bytes aleatórios vem do
 gerador do sistema e existe só em memória; o fragmento não faz parte do pedido
 HTTP. A interface envia `auth.hello` como primeira mensagem. Antes dela, mensagem
@@ -25,9 +59,12 @@ inválida, token errado ou prazo vencido encerram a conexão. `Host` e `Origin`
 inválidos recebem o mesmo HTTP 403 antes do upgrade; cabeçalhos repetidos,
 origem ausente e query string também são recusados.
 
-`cargo run -p ads-daemon -j 2 -- --config defaults/daemon.toml` usa explicitamente
-o arquivo de configuração. Outro TOML pode sobrepor só as chaves desejadas;
-chaves desconhecidas e valores inválidos são recusados sem reproduzir seu conteúdo.
+O arquivo de `--config` é opcional e deve ter caminho absoluto. As tabelas
+`[tools.claude]`, `[tools.codex]`, `[workdirs]` e `[env]` sobrepõem os
+[padrões das ferramentas](../../defaults/harnesses.toml). Sem arquivo, ambas
+ficam desligadas. As chaves da API na raiz do mesmo TOML sobrepõem os padrões
+do daemon listados abaixo. Reinicie o daemon para reler a configuração. A
+configuração inválida impede a partida e a mensagem omite o conteúdo do arquivo.
 O host usa o canal padrão do usuário, cuja identidade é conferida antes da conexão.
 `--host-config <arquivo>` permite selecionar outra configuração do host (inclusive
 um canal exclusivo para testes), com as mesmas validações de `HostConfig`.
@@ -36,8 +73,9 @@ um canal exclusivo para testes), com as mesmas validações de `HostConfig`.
 
 `api::Launcher::prepare` recebe os parâmetros gerados de `session.open` (ferramenta,
 apelido de pasta, identificador e tamanho) e devolve `OpenParams` do ptyhost.
-O daemon confere que identificador e tamanho foram preservados. Os testes fornecem
-um launcher para `FakeBackend`; o executável fornece somente `DisabledLauncher`.
+O daemon confere que identificador e tamanho foram preservados. O ambiente pai
+é capturado na partida e cada adaptador aplica a política de ambiente antes de
+enviar os parâmetros ao host.
 Os tipos gerados validam todos os comandos e eventos contra os contratos.
 `session.write`, `session.resize` e `session.close` usam o cliente do host.
 `events.subscribe` envia eventos com `seq > after_seq`, seguidos dos novos,
@@ -174,7 +212,7 @@ cargo test -p ads-daemon -j 2
 
 O teste cria a configuração sob a pasta de artefatos do Cargo e usa um pipe exclusivo.
 Executa apenas `cmd.exe /d /c echo daemon-pty-client-ok`, com ambiente permitido
-explícito, e encerra o processo de teste do host ao terminar. Não abre agentes nem
+filtrado pelo adaptador, verifica a saída pela API WebSocket e encerra o host de teste ao terminar. Não abre agentes nem
 shells interativos. Os demais testes usam `FakeBackend` e rodam também em Linux.
 
 Para desfazer a integração, remova o consumidor da biblioteca; nenhuma sessão é

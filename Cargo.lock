@@ -86,7 +86,10 @@ dependencies = [
 name = "ads-daemon"
 version = "0.0.0"
 dependencies = [
+ "ads-adapter-claude",
+ "ads-adapter-codex",
  "ads-contracts",
+ "ads-core",
  "ads-ptyhost",
  "base64 0.23.1",
  "futures-util",
