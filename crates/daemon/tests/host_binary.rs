@@ -92,9 +92,11 @@ async fn real_host_runs_configured_echo_through_the_api() {
 
     let cmd = Path::new(&std::env::var_os("SystemRoot").unwrap()).join("System32/cmd.exe");
     let cwd = std::env::current_dir().unwrap();
+    // `%NAME%` stays literal when the variable is absent from the child.
+    let echo = |tool: &str, key: &str| json!({"program": cmd, "args": ["/d", "/c", format!("echo {tool}-ok [%{key}%] [%SystemRoot%]")]});
     let config = json!({
         "workdirs": {"workspace": cwd},
-        "tools": {"claude": {"program": cmd, "args": ["/d", "/c", "echo daemon-pty-client-ok [%ANTHROPIC_API_KEY%]"]}}
+        "tools": {"claude": echo("claude", "ANTHROPIC_API_KEY"), "codex": echo("codex", "OPENAI_API_KEY")}
     });
     let user_config = test_config("daemon-echo-user", &toml::to_string(&config).unwrap());
     let mut daemon = Process(
@@ -103,8 +105,9 @@ async fn real_host_runs_configured_echo_through_the_api() {
             .arg(user_config)
             .arg("--host-config")
             .arg(host_config)
-            // Reaches the daemon but must not reach the tool.
+            // Reach the daemon but must not reach the tools.
             .env("ANTHROPIC_API_KEY", "leaked-sentinel")
+            .env("OPENAI_API_KEY", "leaked-sentinel")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .spawn()
@@ -128,46 +131,55 @@ async fn real_host_runs_configured_echo_through_the_api() {
             .await
             .unwrap();
         send(&mut ws, "auth.hello", json!({"token": token})).await;
-        send(
-            &mut ws,
-            "events.subscribe",
-            json!({"stream": "session/echo", "after_seq": 0}),
-        )
-        .await;
-        send(
-            &mut ws,
-            "session.open",
-            json!({
-                "session_id": "echo", "harness": "claude", "workdir_alias": "workspace",
-                "cols": 80, "rows": 24
-            }),
-        )
-        .await;
-
-        let mut output = Vec::new();
-        loop {
-            let event = receive(&mut ws).await;
-            match event["type"].as_str() {
-                Some("urn:ads:event:session.output:1") => {
-                    output.extend(
-                        STANDARD
-                            .decode(event["data"]["payload"].as_str().unwrap())
-                            .unwrap(),
-                    );
-                }
-                Some("urn:ads:event:session.ended:1") => {
-                    assert_eq!(event["data"]["exit_code"], 0);
-                    break;
-                }
-                Some("urn:ads:event:session.created:1") => {}
-                _ => panic!("unexpected event"),
-            }
+        let system_root = std::env::var("SystemRoot").unwrap();
+        for (tool, key) in [("claude", "ANTHROPIC_API_KEY"), ("codex", "OPENAI_API_KEY")] {
+            let output = run_tool(&mut ws, tool).await;
+            assert!(output.contains(&format!("{tool}-ok")), "{output}");
+            assert!(output.contains(&format!("[%{key}%]")), "{output}");
+            assert!(!output.contains("leaked-sentinel"), "{output}");
+            // An allowed variable does arrive.
+            assert!(output.contains(&format!("[{system_root}]")), "{output}");
         }
-        let output = String::from_utf8_lossy(&output);
-        assert!(output.contains("daemon-pty-client-ok"));
-        assert!(output.contains("[%ANTHROPIC_API_KEY%]"));
-        assert!(!output.contains("leaked-sentinel"));
     })
     .await
     .expect("echo did not exit");
+}
+
+async fn run_tool(ws: &mut Socket, tool: &str) -> String {
+    let stream = format!("session/{tool}");
+    send(
+        ws,
+        "events.subscribe",
+        json!({"stream": stream, "after_seq": 0}),
+    )
+    .await;
+    send(
+        ws,
+        "session.open",
+        json!({
+            "session_id": tool, "harness": tool, "workdir_alias": "workspace",
+            "cols": 120, "rows": 24
+        }),
+    )
+    .await;
+    let mut output = Vec::new();
+    loop {
+        let event = receive(ws).await;
+        match event["type"].as_str() {
+            Some("urn:ads:event:session.output:1") => {
+                output.extend(
+                    STANDARD
+                        .decode(event["data"]["payload"].as_str().unwrap())
+                        .unwrap(),
+                );
+            }
+            Some("urn:ads:event:session.ended:1") => {
+                assert_eq!(event["data"]["exit_code"], 0);
+                break;
+            }
+            Some("urn:ads:event:session.created:1") => {}
+            _ => panic!("unexpected event"),
+        }
+    }
+    String::from_utf8_lossy(&output).into_owned()
 }
