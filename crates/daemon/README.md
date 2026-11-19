@@ -129,20 +129,32 @@ Padrões em [defaults/daemon.toml](../../defaults/daemon.toml), aplicados ao ini
 | `idempotency_keys` | 1024 | Chaves aceitas retidas em FIFO; aumente para ampliar a janela de deduplicação. |
 | `command_queue` | 64 | Pedidos esperando o host; aumente para mais concorrência. |
 | `max_connections` | 32 | Conexões autenticadas simultâneas; excedentes são fechadas ao autenticar. |
-| `max_pending_auth` | 32 | Conexões pendentes, inclusive sem handshake; separadas das autenticadas. |
+| `max_pending_auth` | 32 | Conexões pendentes, inclusive sem handshake; separadas das autenticadas. Com a fila cheia, a pendente mais antiga é descartada para a nova entrar. |
 | `accept_retry_ms` | 50 | Espera após erro de aceitação TCP; reduz tentativas sob falta de recursos. |
 | `max_message_bytes` | 131072 | Limite de mensagem e quadro WebSocket recebido; reduzir pode impedir escritas grandes. |
 | `send_timeout_ms` | 5000 | Prazo por envio; cliente lento é desconectado. |
-| `host_timeout_ms` | 10000 | Prazo por comando no host e na conexão inicial; falha encerra o serviço para evitar repetir efeito incerto. |
+| `host_timeout_ms` | 10000 | Prazo por comando no host e na conexão inicial; falha encerra o serviço para evitar repetir efeito incerto. No fechamento automático, o prazo esgotado conta como tentativa falha, sem encerrar o serviço. |
+| `retired_sessions` | 1024 | Ids de sessões podadas que não podem ser reabertos nesta execução; acima do limite, o mais antigo volta a ser aceito. |
+| `close_retries` | 3 | Tentativas do fechamento automático de sessão invalidada ou de `open` que falhou; esgotadas, a assinatura do stream recebe `-32013`. |
+| `close_retry_ms` | 1000 | Espera entre tentativas do fechamento automático. |
 
 Os inteiros de capacidade aceitam de 1 a 1048576 (`max_message_bytes`: mínimo
 1024); prazos aceitam de 1 a 300000 ms. Valores altos elevam o teto de memória.
 Quando há uma lacuna irrecuperável, o daemon invalida o stream e solicita o
-fechamento ao host. `session.close` continua aceito enquanto o registro da
-sessão invalidada estiver retido. Uma sessão cujo processo já terminou continua
+fechamento ao host. Recusa do host (fora `UnknownSession`) ou prazo esgotado
+repetem o pedido até `close_retries` vezes, com aviso no erro padrão sem
+conteúdo; esgotadas as tentativas, `events.subscribe` desse stream recebe
+`-32013` (`session close pending`) até um `session.close` confirmado.
+`session.close` continua aceito enquanto o registro da
+sessão invalidada estiver retido. Se o fechamento de um `open` que falhou
+também falhar, o registro fica, invalidado, na mesma fila de novas tentativas.
+`UnknownSession` no fechamento libera a vaga e grava `ended` com `reason: "error"`. Uma sessão cujo processo já terminou continua
 no host, ocupando a vaga, até receber `session.close`; o fechamento encerra a
 árvore de processos que restar e devolve a vaga. Ao atingir o limite de registros fechados,
-o daemon descarta os mais antigos conforme novas sessões são fechadas.
+o daemon descarta os mais antigos conforme novas sessões são fechadas. O stream
+descartado vira lápide: quem ainda o assina recebe `-32004` com o id da
+assinatura, que é encerrada sem derrubar a conexão, e o mesmo `session_id` é
+recusado com `-32012` enquanto a lápide existir (`retired_sessions`).
 
 Uma execução conserva no máximo `2 × max_sessions × events_per_stream` eventos;
 o tamanho de cada saída também é limitado pelo quadro do cliente do host.

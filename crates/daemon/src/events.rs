@@ -32,12 +32,16 @@ pub fn new_id() -> Result<String, ApiError> {
 struct Stream {
     last: u64,
     invalid: bool,
+    close_failed: bool,
+    retired: bool,
     events: VecDeque<Value>,
 }
 
 pub struct EventLog {
     streams: HashMap<String, Stream>,
     capacity: usize,
+    retired: VecDeque<String>,
+    retired_capacity: usize,
     changed: watch::Sender<()>,
 }
 
@@ -50,11 +54,14 @@ impl fmt::Debug for EventLog {
 }
 
 impl EventLog {
-    pub fn new(capacity: usize) -> Self {
+    /// `retired_capacity` bounds the tombstones that keep pruned session ids from being reused.
+    pub fn new(capacity: usize, retired_capacity: usize) -> Self {
         let (changed, _) = watch::channel(());
         Self {
             streams: HashMap::new(),
             capacity,
+            retired: VecDeque::new(),
+            retired_capacity,
             changed,
         }
     }
@@ -71,11 +78,38 @@ impl EventLog {
     }
     pub(crate) fn remove(&mut self, session: &str) {
         self.streams.remove(&format!("session/{session}"));
+        self.changed.send_replace(());
+    }
+    /// Replaces a pruned stream with a tombstone: its subscribers are told and the id cannot be reopened.
+    pub fn retire(&mut self, session: &str) {
+        let name = format!("session/{session}");
+        let stream = self.streams.entry(name.clone()).or_default();
+        stream.events.clear();
+        if !stream.retired {
+            stream.retired = true;
+            self.retired.push_back(name);
+        }
+        while self.retired.len() > self.retired_capacity {
+            if let Some(expired) = self.retired.pop_front() {
+                self.streams.remove(&expired);
+            }
+        }
+        self.changed.send_replace(());
+    }
+    pub fn is_retired(&self, stream: &str) -> bool {
+        self.streams.get(stream).is_some_and(|s| s.retired)
     }
     pub(crate) fn invalidate(&mut self, session: &str) {
         if let Some(stream) = self.streams.get_mut(&format!("session/{session}")) {
             stream.events.clear();
             stream.invalid = true;
+        }
+        self.changed.send_replace(());
+    }
+    /// Marks an invalidated stream whose automatic close was given up; subscribers learn a close is still needed.
+    pub(crate) fn set_close_failed(&mut self, session: &str, failed: bool) {
+        if let Some(stream) = self.streams.get_mut(&format!("session/{session}")) {
+            stream.close_failed = failed;
         }
         self.changed.send_replace(());
     }
@@ -131,7 +165,10 @@ impl EventLog {
                 Err(ApiError::Replay)
             };
         };
-        if entry.invalid {
+        if entry.close_failed {
+            return Err(ApiError::ClosePending);
+        }
+        if entry.invalid || entry.retired {
             return Err(ApiError::Replay);
         }
         let oldest = entry

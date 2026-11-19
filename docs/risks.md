@@ -131,8 +131,9 @@ Estado da mitigação, em cada risco:
 - **Impacto.** Novas conexões da interface podem falhar. As conexões já autenticadas têm vagas próprias.
 - **Dono.** Daemon (API local).
 - **Teto.** O padrão de `max_pending_auth` é 32 vagas, com o prazo de `auth_timeout_ms` por conexão, incluindo o handshake.
-- **Mitigação existente.** O padrão de 32 exige mais sockets simultâneos para ocupar toda a fila, ao custo de manter até 32 conexões pendentes e suas tarefas em memória.
-- **Plano B.** Ajustar `max_pending_auth` em `defaults/daemon.toml` ou na configuração local e reiniciar o daemon. Uma conta local ainda pode ocupar todas as vagas.
+- **Mitigação existente.** O padrão de 32 exige mais sockets simultâneos para ocupar toda a fila, ao custo de manter até 32 conexões pendentes e suas tarefas em memória. Com a fila cheia, a conexão pendente mais antiga é descartada e a nova entra: segurar as vagas exige abrir sockets sem parar, e a interface entra assim que conecta. Um teste abre 32 pendentes e confere que a 33ª autentica e a mais antiga cai (`crates/daemon/tests/local_api.rs`).
+- **Plano B.** Ajustar `max_pending_auth` em `defaults/daemon.toml` ou na configuração local e reiniciar o daemon.
+- **O que falta.** Quem renova sockets mais rápido do que a interface completa o `auth.hello` ainda pode derrubar a conexão dela antes de autenticar; não há limite por endereço nem por conta, porque em loopback todas as contas chegam de `127.0.0.1`. A saída é a mesma do risco anterior: o daemon servir a interface ou a casca Tauri entregar o token por canal só do usuário.
 
 ## Estado local
 
