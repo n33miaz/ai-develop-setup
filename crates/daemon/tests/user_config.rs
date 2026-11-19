@@ -46,6 +46,13 @@ fn invalid_user_configuration_stops_the_daemon_without_quoting_it() {
 
     let error = refused("daemon-unknown-key", "[tools.claude]\nsentinel = 'x'\n");
     assert!(error.contains("invalid claude configuration: invalid harness parameters"));
+
+    // The tools see a rebuilt part of the file: a line number would point elsewhere.
+    let error = refused(
+        "daemon-bad-folder",
+        "max_sessions = 3\n\n[workdirs]\nsentinel = 5\n",
+    );
+    assert!(error.ends_with("invalid claude configuration: invalid harness parameters\n"));
 }
 
 #[test]
