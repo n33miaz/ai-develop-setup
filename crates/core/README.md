@@ -39,6 +39,30 @@ A ferramenta opera com as permissões do processo, inclusive fora da pasta
 escolhida. O login fica a cargo da própria ferramenta, em seu local padrão. As
 variáveis de ambiente que redirecionam esse login são filtradas.
 
+### O que a abertura garante
+
+- Quem pede a sessão escolhe só a ferramenta (pelo nome), o apelido da pasta e o
+  tamanho. Programa, argumentos, ambiente e pasta vêm da configuração; o contrato
+  do pedido recusa esses campos.
+- Programa: caminho absoluto e literal, sem caminho relativo, variável, `~`, `..`,
+  caminho de rede nem nome curto do Windows, e precisa existir quando a sessão abre.
+- Pasta: o apelido precisa estar em `[workdirs]` (comparação exata) e a pasta
+  precisa existir. A pasta vai sempre preenchida, para o processo dos terminais
+  nunca cair na pasta atual dele.
+- Ambiente: exatamente os nomes de `env.allow` que o processo pai tem, mais os
+  valores de `env.set`. Nome em `allow` ou em `set` que casa com `env.deny` recusa
+  a configuração; a camada do usuário só acrescenta padrões a `deny`.
+
+### O que a abertura não garante
+
+- Um padrão de nome não reconhece um segredo guardado sob um nome comum
+  (`MEU_VALOR=<token>`): tudo o que passa está em `env.allow`, revisável num
+  lugar só.
+- O que a ferramenta faz depois de aberta: o agente lê e edita arquivos conforme
+  as permissões dele, na pasta escolhida e fora dela.
+- Que o programa seja o certo: confere-se que o arquivo existe, não quem o
+  assinou. O arquivo pode sumir entre a conferência e a abertura.
+
 ## Portão de ações destrutivas (`src/gate/`)
 
 Nenhuma ação sobre o sistema de arquivos é executada sem passar por aqui. O portão não toca o disco: recebe o plano como dado e responde se, e como o quê, ele pode rodar. Os tipos só se encaixam de um jeito: o pedido só vira plano pela normalização, o veredito só sai de `classify`, a ação só nasce de um veredito (a de um veredito negado já nasce no estado final) e a licença de execução só sai de uma ação cujo hash do plano e cuja aprovação conferem. O que o portão escreve (eventos e o registro do plano) segue os contratos de [`contracts/`](../../contracts/README.md#portão-de-ações), e o estado de uma ação se reconstrói só desses eventos.
