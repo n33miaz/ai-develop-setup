@@ -136,7 +136,7 @@ Estado da mitigação, em cada risco:
 - **Descrição.** Banco local corrompido ou apagado.
 - **Impacto.** Perda de auditoria, métricas e estado das tarefas.
 - **Dono.** Armazenamento.
-- **Mitigação existente.** A abertura confere o arquivo antes de tocá-lo e recusa arquivo estranho, mais novo, truncado ou corrompido sem alterá-lo; `synchronous = FULL`; tudo o que participa de uma invariante fica num arquivo só ([ADR 0021](adr/0021-storage-atomic-file-and-cipher.md), proposta). Testes em `crates/storage/tests/open.rs`.
+- **Mitigação existente.** A abertura confere o arquivo antes de tocá-lo e recusa arquivo estranho, mais novo, truncado ou corrompido sem alterar o conteúdo, e recusa `-journal` ou `-wal` sobrando que o SQLite desfaria ou apagaria; `synchronous = FULL`; tudo o que participa de uma invariante fica num arquivo só ([ADR 0021](adr/0021-storage-atomic-file-and-cipher.md), proposta). Testes em `crates/storage/tests/open.rs`.
 - **Teto.** `inspection_max_bytes` e `integrity_check_on_open` em [`defaults/storage.toml`](../defaults/storage.toml).
 - **Plano B.** Não definido. A [ADR 0004](adr/0004-local-sqlite-no-cloud-database.md) cita backup local com restauração testada como condição de reversão, sem mecanismo.
 - **O que falta.** Backup e restauração testada (P5), auditoria só-anexo encadeada, trava de instância e pasta por usuário (a ADR 0021 as deixa para a composição).

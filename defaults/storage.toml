@@ -1,5 +1,6 @@
 # Camada sobreposta em tempo de abertura; mudanças valem ao reabrir.
 # Padrão recomendado: 5 s; intervalo permitido: 0..=60000 ms.
+# Também limita a espera por -journal ou -wal sobrando ao abrir; 0 recusa na hora.
 busy_timeout_ms = 5000
 # Verificação completa antes de migrar; desligar reduz o custo de abertura.
 integrity_check_on_open = true
@@ -7,6 +8,7 @@ integrity_check_on_open = true
 encryption = "column"
 cipher = "xchacha20poly1305"
 journal_mode = "wal"
-# Teto por arquivo e imagem de inspeção em memória: recomendado 64 MiB.
-# Aceita 512 bytes a 1 GiB; exceder recusa com Full, sem tocar o banco.
+# Teto da imagem de inspeção em memória, usada só em arquivo ainda não marcado
+# pelo produto: recomendado 64 MiB. Aceita 512 bytes a 1 GiB; exceder recusa
+# com Full, sem tocar o banco. Arquivo do produto não passa pela imagem.
 inspection_max_bytes = 67108864

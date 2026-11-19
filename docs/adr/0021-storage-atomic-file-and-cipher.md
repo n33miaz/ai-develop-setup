@@ -18,23 +18,35 @@ diverge da divisão literal do ADR 0004 para preservar atomicidade das invariant
 Não existem tabelas de eventos nesta entrega: somente `meta`, esquema versão 1.
 
 `synchronous = FULL` é fixo, sem alternativa de configuração. WAL, foreign keys,
-trusted schema desligado, cell size check, timeout, application id (`0x41445331`)
-e versão são conferidos por leitura. Arquivos existentes passam por inspeção
-do cabeçalho de 100 bytes pela biblioteca padrão antes de chamar SQLite, seguida
-por uma imagem privada em memória, sem criar auxiliares WAL nos originais.
-A imagem combina o arquivo principal com quadros WAL confirmados, validando
-cabeçalho, salts e checksums antes de aplicar os quadros até o último commit.
-Caudas incompletas ou de outra geração não entram na imagem. A API segura
-`deserialize_read_exact`, da feature `serialize` de `rusqlite`, entrega a imagem
-a uma conexão SQLite somente leitura em memória. O modo de journal é ajustado
-somente na cópia. Isso permite conferir também esquemas estrangeiros com
-`application_id=0` e tabelas presentes apenas no WAL, sem alterar `-shm`.
-A segunda inspeção usa uma transação de leitura consistente na conexão de escrita.
-As conexões recebem `trusted_schema=OFF`, `cell_size_check=ON` e `DEFENSIVE` antes
-de consultar o esquema. Arquivo existente abre sem permissão de criação; arquivo
-vazio pode ser inicializado. O conjunto completo de objetos do esquema é conferido
-antes de qualquer mudança persistente. Esquema desconhecido, identidade estrangeira
-e corrupção recusam abertura sem migrar.
+trusted schema desligado, cell size check, timeout, application id (`0x41445331`),
+`DEFENSIVE` e versão são conferidos por leitura. Antes de chamar SQLite, a
+abertura procura arquivos que ele desfaria ou apagaria sozinho: qualquer
+`-journal` ao lado do banco (seria revertido sobre o arquivo principal) e `-wal`
+ao lado de um principal vazio ou ausente (SQLite apaga esse WAL e inicia um banco
+novo). Enquanto existirem, a abertura espera até `busy_timeout_ms`, porque a
+criação concorrente tem uma janela curta com `-journal`; se continuarem, recusa
+com `Corrupt` sem alterar a pasta, e `busy_timeout_ms = 0` recusa na hora.
+Arquivos existentes passam por inspeção do cabeçalho de 100 bytes pela biblioteca
+padrão. Arquivo ainda não marcado (`application_id=0`) segue para uma imagem
+privada em memória, sem criar auxiliares WAL nos originais. A imagem combina o
+arquivo principal com quadros WAL confirmados, validando cabeçalho, salts e
+checksums antes de aplicar os quadros até o último commit. Caudas incompletas ou
+de outra geração não entram na imagem. A API segura `deserialize_read_exact`, da
+feature `serialize` de `rusqlite`, entrega a imagem a uma conexão SQLite somente
+leitura em memória. O modo de journal é ajustado somente na cópia. Isso permite
+conferir esquemas estrangeiros com `application_id=0` e tabelas presentes apenas
+no WAL, sem alterar `-shm`. Arquivo já marcado pelo produto não passa pela imagem:
+a inspeção roda numa transação de leitura consistente na conexão de escrita, com
+custo que não depende de copiar o banco, e a verificação de integridade roda uma
+vez. Nesse caso a recusa pode criar e remover `-wal` e `-shm`, atualizar o índice
+`-shm` e transferir quadros já confirmados para o arquivo principal ao fechar;
+o conteúdo lógico não muda. Para o arquivo não marcado, a mesma transação repete
+a inspeção depois da imagem. As conexões recebem `trusted_schema=OFF`,
+`cell_size_check=ON` e `DEFENSIVE` antes de consultar o esquema. Arquivo
+existente abre sem permissão de criação; arquivo vazio pode ser inicializado. O
+conjunto completo de objetos do esquema é conferido antes de qualquer mudança
+persistente. Esquema desconhecido, identidade estrangeira e corrupção recusam
+abertura sem migrar.
 
 O portão continua no núcleo. A futura ponte com `Journal` pertence ao `ads-daemon`;
 storage não dependerá do núcleo nem do executor, inclusive em testes. Abertura
@@ -54,11 +66,13 @@ puxadas pelos padrões transitivos de `rusqlite` fora de wasm; ficam inertes com
 `bundled`, que compila o SQLite incluído. Não são dependências de execução.
 
 `defaults/storage.toml` é a fonte dos padrões, com sobreposição validada ao abrir.
-`inspection_max_bytes` limita cada arquivo lido e a imagem final: padrão de
-64 MiB, intervalo de 512 bytes a 1 GiB. Exceder o teto retorna `Full` sem escrita;
-aumentar a chave permite abrir arquivos maiores. O pico inclui banco, WAL e a
-cópia interna do SQLite, além dos descritores dos quadros. Falta de memória nas
-reservas controladas também retorna `Full`.
+`inspection_max_bytes` limita cada arquivo lido e a imagem final de arquivos ainda
+não marcados: padrão de 64 MiB, intervalo de 512 bytes a 1 GiB. Exceder o teto
+retorna `Full` sem escrita; aumentar a chave permite abrir arquivos maiores. O
+pico inclui banco, WAL e a cópia interna do SQLite, além dos descritores dos
+quadros. Falta de memória nas reservas controladas também retorna `Full`. Arquivo
+do produto não tem esse teto, porque o log de auditoria só cresce.
+`busy_timeout_ms` também limita a espera por `-journal` ou `-wal` sobrando.
 Modo de cifra e journal só aceitam os formatos implementados; alternativas pedem
 migração. Limites de eventos e paginação serão introduzidos junto das APIs que os
 consumirem. A cifra usa XChaCha20-Poly1305 com nonce do sistema de 24 bytes, AAD
@@ -76,8 +90,14 @@ O estado interno da cifra usa a feature `zeroize` da dependência.
 Responsável: mantenedor do armazenamento. FULL custa sincronização em cada commit;
 timeout tem teto de 60 segundos e falha por categoria sem SQL, caminho ou payload.
 A conferência completa de integridade pode ser desligada para reduzir abertura.
-Testes demonstram preservação, recusas sem mudança e autenticação da cifra. Tempo
-de abertura e falhas por categoria serão medidos quando a composição existir.
+Testes demonstram preservação, recusas sem mudança e autenticação da cifra. A
+medida de abertura fica no teste ignorado `open_time_of_large_product_file`
+(`cargo test -p ads-storage --release -- --ignored --nocapture`, tamanho em
+`ADS_STORAGE_PROBE_MIB`). Em 19/11/2026, compilação release no Windows, um arquivo
+do produto de 60 MiB abria em 412 ms com integridade e 89 ms sem ela quando
+passava pela imagem; sem a imagem, 198 ms e 4 ms. Um de 200 MiB, antes recusado
+com `Full` no padrão, abre em cerca de 0,6 s com integridade e 3 ms sem ela.
+Falhas por categoria serão medidas quando a composição existir.
 
 Não há garantia contra troca concorrente do caminho por outro processo; a pasta
 por usuário e a trava de instância pertencem à composição futura. Backup e
