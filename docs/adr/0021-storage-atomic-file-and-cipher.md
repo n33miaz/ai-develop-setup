@@ -61,9 +61,10 @@ persistente. Esquema desconhecido, identidade estrangeira e corrupção recusam
 abertura sem migrar.
 
 O portão continua no núcleo. A futura ponte com `Journal` pertence ao `ads-daemon`;
-storage não dependerá do núcleo nem do executor, inclusive em testes. Abertura
-ainda não conecta cifra ao banco nem autoriza execução. A composição futura
-exigirá chave do cofre antes de persistir dados sensíveis.
+storage não dependerá do núcleo nem do executor, inclusive em testes.
+`AuditStore::open` não recebe chave; `EventLog` liga a cifra ao log de eventos, e
+nada no armazenamento autoriza execução. A composição futura exigirá chave do
+cofre antes de persistir dados sensíveis.
 
 ## Dependências e parâmetros
 

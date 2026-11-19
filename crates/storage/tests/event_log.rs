@@ -390,7 +390,7 @@ fn verify_chain_points_to_first_altered_or_missing_row() {
 
 #[test]
 fn racing_connections_on_same_seq_let_exactly_one_in() {
-    for round in 0..10u64 {
+    for attempt in 0..10u64 {
         let path = fixture();
         let mut first = open(&path);
         first
@@ -409,7 +409,7 @@ fn racing_connections_on_same_seq_let_exactly_one_in() {
                             "task/race",
                             2,
                             10 + index as u64,
-                            serde_json::json!({ "round": round }),
+                            serde_json::json!({ "attempt": attempt }),
                         );
                         barrier.wait();
                         log.append(&e).map(|p| p.get())
