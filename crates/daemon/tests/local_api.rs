@@ -1589,7 +1589,9 @@ args = ['codex-arg']
 
 #[tokio::test]
 async fn unconfigured_and_unknown_tools_are_refused_before_spawning() {
-    let launcher = ToolLauncher::from_toml_str("", vec![], FakeProbe, FakeProbe).unwrap();
+    let launcher =
+        ToolLauncher::from_toml_str("", Vec::<(String, String)>::new(), FakeProbe, FakeProbe)
+            .unwrap();
     let f = fixture("", Arc::new(launcher)).await;
     let mut ws = authenticated(&f).await;
     for (harness, code) in [("claude", -32011), ("codex", -32011), ("unknown", -32602)] {

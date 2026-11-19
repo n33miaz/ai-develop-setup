@@ -1,65 +1,12 @@
 //! Inicialização do daemon local.
 
-use ads_daemon::api::{ApiConfig, ApiError, LocalApi};
+use ads_daemon::api::{ApiError, LocalApi};
 use ads_daemon::pty_client::{ClientConfig, PtyClient};
+use ads_daemon::startup::load_config;
 use ads_daemon::tool_launcher::ToolLauncher;
-use ads_ptyhost::HostConfig;
-use std::path::Path;
 use std::process::ExitCode;
 use std::sync::Arc;
 
-fn load_config(
-    mut args: impl Iterator<Item = String>,
-) -> Result<(ApiConfig, HostConfig, String), String> {
-    let mut host = HostConfig::defaults();
-    let mut overrides = String::new();
-    while let Some(arg) = args.next() {
-        match (arg.as_str(), args.next()) {
-            ("--config", Some(path)) => {
-                if !Path::new(&path).is_absolute() {
-                    return Err("--config requires an absolute path".into());
-                }
-                overrides =
-                    std::fs::read_to_string(path).map_err(|_| "cannot read user configuration")?;
-            }
-            ("--host-config", Some(path)) => {
-                let text =
-                    std::fs::read_to_string(path).map_err(|_| "cannot read host configuration")?;
-                host =
-                    HostConfig::from_toml_str(&text).map_err(|_| "invalid host configuration")?;
-            }
-            _ => return Err("invalid daemon arguments".into()),
-        }
-    }
-    let mut api: toml::Table =
-        toml::from_str(&overrides).map_err(|error: toml::de::Error| match error.span() {
-            // Only the position: the parser message could quote the file.
-            Some(span) => format!(
-                "invalid user configuration TOML at line {}",
-                overrides[..span.start].matches('\n').count() + 1
-            ),
-            None => "invalid user configuration TOML".to_owned(),
-        })?;
-    let mut tools = toml::Table::new();
-    for name in ["env", "workdirs", "tools"] {
-        if let Some(value) = api.remove(name) {
-            tools.insert(name.to_owned(), value);
-        }
-    }
-    if let Some(toml::Value::Table(entries)) = tools.get("tools")
-        && entries.keys().any(|name| {
-            !matches!(
-                name.as_str(),
-                ads_adapter_claude::HARNESS_ID | ads_adapter_codex::HARNESS_ID
-            )
-        })
-    {
-        return Err("unknown tool in user configuration".into());
-    }
-    let api =
-        ApiConfig::from_toml_str(&api.to_string()).map_err(|_| "invalid daemon configuration")?;
-    Ok((api, host, tools.to_string()))
-}
 fn print_launch_url(url: &mut String, out: &mut impl std::io::Write) -> std::io::Result<()> {
     use zeroize::Zeroize;
     let result = writeln!(out, "{url}").and_then(|()| out.flush());
@@ -102,53 +49,6 @@ async fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn arguments_are_closed() {
-        assert!(load_config(std::iter::empty()).is_ok());
-        for arg in ["--unknown", "--config"] {
-            assert!(load_config([arg.to_owned()].into_iter()).is_err());
-        }
-        assert_eq!(
-            load_config(["--config".to_owned(), "relative.toml".to_owned()].into_iter())
-                .unwrap_err(),
-            "--config requires an absolute path"
-        );
-    }
-    fn user_file(name: &str, contents: &str) -> String {
-        let path = std::env::temp_dir().join(format!("{name}-{}.toml", std::process::id()));
-        std::fs::write(&path, contents).unwrap();
-        path.to_str().unwrap().to_owned()
-    }
-    #[test]
-    fn user_file_is_split_between_api_and_tools() {
-        let path = user_file(
-            "ads-daemon-split",
-            "max_sessions = 3\n[workdirs]\ndefault = 'C:/w'\n[tools.codex]\nargs = ['x']\n",
-        );
-        let (api, _, tools) = load_config(["--config".to_owned(), path].into_iter()).unwrap();
-        assert_eq!(api.max_sessions, 3);
-        let tools: toml::Table = toml::from_str(&tools).unwrap();
-        assert_eq!(
-            tools.keys().collect::<Vec<_>>(),
-            ["tools", "workdirs"].iter().collect::<Vec<_>>()
-        );
-    }
-    #[test]
-    fn unknown_tool_and_bad_toml_are_refused_without_quoting_the_file() {
-        let path = user_file(
-            "ads-daemon-unknown",
-            "[tools.sentinel-tool]\nprogram = ''\n",
-        );
-        assert_eq!(
-            load_config(["--config".to_owned(), path].into_iter()).unwrap_err(),
-            "unknown tool in user configuration"
-        );
-        let path = user_file("ads-daemon-bad", "max_sessions = 1\nsentinel = = 'x'\n");
-        assert_eq!(
-            load_config(["--config".to_owned(), path].into_iter()).unwrap_err(),
-            "invalid user configuration TOML at line 2"
-        );
-    }
     #[test]
     fn printed_url_is_one_line_and_erased_even_when_output_fails() {
         let original = "http://localhost:5173/#core=ws://127.0.0.1:1234&token=credential-sentinel";
