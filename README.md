@@ -32,10 +32,13 @@ dos eventos desses streams, sem dados de exemplo.
 Para abrir Claude ou Codex pelo navegador no Windows:
 
 1. Na raiz, inicie o host com `cargo run -p ads-ptyhost -j 2`.
-2. Localize os executáveis com `where.exe claude.exe` e `where.exe codex.exe`.
-   Salve os caminhos absolutos em `[tools.claude]` e `[tools.codex]` num TOML
-   fora do repositório. Em `[workdirs]`, dê o apelido `default` a uma pasta
-   de teste existente. Veja o exemplo completo no [README do daemon](crates/daemon/README.md#abrir-claude-ou-codex-no-navegador).
+2. Localize os executáveis com `where.exe claude.exe` e `where.exe codex.exe`
+   (com o Codex instalado pelo npm, veja no README do daemon onde fica o
+   `codex.exe`; não use os arquivos `.cmd`). Salve os caminhos absolutos em
+   `[tools.claude]` e `[tools.codex]` num TOML fora do repositório. Em
+   `[workdirs]`, dê o apelido `default` a uma pasta de teste existente, sem
+   nada importante. Veja o exemplo completo no
+   [README do daemon](crates/daemon/README.md#abrir-claude-ou-codex-no-navegador).
 3. Em outro terminal, na raiz, rode
    `cargo run -p ads-daemon -j 2 -- --config 'D:\ads-local\harnesses.toml'`,
    com o caminho absoluto do seu arquivo.

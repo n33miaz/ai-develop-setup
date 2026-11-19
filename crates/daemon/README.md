@@ -4,7 +4,8 @@ O executável serve a API local por WebSocket em `127.0.0.1`, com porta efêmera
 autenticação por execução ([ADR 0020](../../docs/adr/0020-local-api-authentication.md)).
 Claude e Codex são abertos pelo host de terminais com programa, argumentos e
 pasta definidos no TOML do usuário. Ferramenta sem programa recebe
-`-32011` (`harness not configured`), e ferramenta desconhecida recebe `-32602`.
+`-32011` (`harness not configured`). Ferramenta desconhecida, programa ou pasta
+inexistente e apelido de pasta fora da configuração recebem `-32602`.
 
 ## Abrir Claude ou Codex no navegador
 
@@ -15,11 +16,16 @@ pasta definidos no TOML do usuário. Ferramenta sem programa recebe
    ```
 
 2. Em outro terminal, use `where.exe claude.exe` e `where.exe codex.exe` para
-   localizar os executáveis instalados. Salve um TOML fora do repositório, por
-   exemplo em `D:\ads-local\harnesses.toml`. Substitua os caminhos abaixo pelos
-   caminhos absolutos da sua máquina. Use uma pasta de teste existente como
-   destino do apelido `default`. Se só tiver uma ferramenta instalada, omita
-   a tabela da outra.
+   localizar os executáveis instalados. O programa precisa ser um `.exe`; não
+   aponte para `claude.cmd` nem `codex.cmd`. Se o Codex foi instalado pelo npm,
+   `where.exe` acha só `codex.cmd`; o executável real fica em
+   `<prefixo do npm>\node_modules\@openai\codex\node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc\bin\codex.exe`
+   (o prefixo aparece em `npm prefix -g`). Escreva o caminho já expandido:
+   `%VAR%`, `$VAR`, `~` e `..` são recusados. Salve um TOML fora do
+   repositório, por exemplo em `D:\ads-local\harnesses.toml`. Substitua os
+   caminhos abaixo pelos caminhos absolutos da sua máquina. Use uma pasta de
+   teste existente, sem nada importante, como destino do apelido `default`.
+   Se só tiver uma ferramenta instalada, omita a tabela da outra.
 
    ```toml
    [workdirs]
