@@ -663,11 +663,19 @@ fn interface_origin_is_derived_and_overridable() {
         .launch_url(&custom.ui_base_url, 42);
     assert!(url.starts_with("http://localhost:8271/#core=ws://127.0.0.1:42&token="));
     let explicit = ApiConfig::from_toml_str(
-        "ui_base_url = 'https://localhost:8271'\nallowed_origins = ['https://localhost:9000']",
+        "ui_base_url = 'http://localhost:8271'\nallowed_origins = ['https://localhost:9000']",
     )
     .unwrap();
     assert_eq!(explicit.allowed_origins, ["https://localhost:9000"]);
+    for host in ["localhost", "127.0.0.1", "[::1]"] {
+        assert!(ApiConfig::from_toml_str(&format!("ui_base_url = 'http://{host}:5173'")).is_ok());
+    }
     for value in [
+        "https://localhost:5173",
+        "http://192.0.2.1:5173",
+        "http://localhost.example:5173",
+        "http://127.0.0.2:5173",
+        "http://[::2]:5173",
         "null",
         "http://localhost:5173/path",
         "http://localhost:5173/#token=x",
@@ -676,6 +684,11 @@ fn interface_origin_is_derived_and_overridable() {
     ] {
         assert!(ApiConfig::from_toml_str(&format!("ui_base_url = '{value}'")).is_err());
     }
+}
+
+#[test]
+fn pending_auth_default_allows_thirty_two_connections() {
+    assert_eq!(ApiConfig::from_toml_str("").unwrap().max_pending_auth, 32);
 }
 
 #[tokio::test]
@@ -899,6 +912,7 @@ async fn refusing_fixture(
     let error_text = Arc::new(std::sync::Mutex::new(String::new()));
     let peer_error = error_text.clone();
     let (near, mut far) = tokio::io::duplex(4096);
+    let peer_host = host.clone();
     let peer = tokio::spawn(async move {
         let mut refused = false;
         let mut subscriptions = 0;
@@ -944,6 +958,25 @@ async fn refusing_fixture(
                     _ => ResultBody::Empty(wire::Empty {}),
                 })
             };
+            if outcome.is_ok() && (target.starts_with("gap-") || target == "recover") {
+                match &request.call {
+                    Call::Open(params) => {
+                        peer_host
+                            .open(
+                                &params.session_id,
+                                &ads_ptyhost::SpawnSpec {
+                                    program: params.program.clone().into(),
+                                    ..Default::default()
+                                },
+                            )
+                            .unwrap();
+                    }
+                    Call::Close(params) => {
+                        peer_host.close(&params.session_id).await.unwrap();
+                    }
+                    _ => (),
+                }
+            }
             if let Call::Close(params) = &request.call
                 && target == "exit-before-close-response"
             {
@@ -1119,7 +1152,7 @@ async fn every_host_refusal_returns_its_code_and_service_survives() {
                 _ => result,
             };
             assert_eq!(result["error"]["code"], code.number(), "{target}: {code:?}");
-            if target == "close" {
+            if target == "close" && code != UnknownSession {
                 assert_eq!(
                     call(&mut ws, "session.close", json!({"session_id": "session"})).await["result"]
                         ["accepted"],
@@ -1233,9 +1266,45 @@ async fn fake_backend_existing_session_and_full_host_do_not_stop_service() {
 }
 
 #[tokio::test]
+async fn unknown_session_on_close_releases_the_slot() {
+    use ads_ptyhost::wire::ErrorCode::UnknownSession;
+    let (f, _) = refusing_fixture("max_sessions = 1", "close", UnknownSession, 0).await;
+    let mut ws = authenticated(&f).await;
+    assert_eq!(
+        call(&mut ws, "session.open", open_params("session")).await["result"]["accepted"],
+        true
+    );
+    assert_eq!(
+        call(&mut ws, "session.close", json!({"session_id": "session"})).await["error"]["code"],
+        UnknownSession.number()
+    );
+    assert_eq!(
+        call(&mut ws, "session.open", open_params("replacement")).await["result"]["accepted"],
+        true
+    );
+}
+
+async fn assert_invalidated_session_closed(f: &Fixture, ws: &mut Socket) {
+    bounded(async {
+        while !f.backend.terminals()[0].was_killed() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    assert_eq!(
+        call(ws, "session.close", json!({"session_id": "session"})).await["result"]["accepted"],
+        true
+    );
+    assert_eq!(
+        call(ws, "session.open", open_params("replacement")).await["result"]["accepted"],
+        true
+    );
+}
+
+#[tokio::test]
 async fn failed_host_resubscribe_invalidates_only_the_affected_stream() {
     let (f, _) = refusing_fixture(
-        "",
+        "max_sessions = 1",
         "recover",
         ads_ptyhost::wire::ErrorCode::ReplayEvicted,
         0,
@@ -1269,6 +1338,7 @@ async fn failed_host_resubscribe_invalidates_only_the_affected_stream() {
         .await["result"]["accepted"],
         true
     );
+    assert_invalidated_session_closed(&f, &mut ws).await;
     assert!(!f.api.is_finished());
 }
 
@@ -1301,8 +1371,13 @@ async fn host_timeout_ends_the_service_after_an_uncertain_command() {
 #[tokio::test]
 async fn host_event_gaps_refuse_replay_without_stopping_the_service() {
     for target in ["gap-output", "gap-exit", "gap-close"] {
-        let (f, _) =
-            refusing_fixture("", target, ads_ptyhost::wire::ErrorCode::InternalError, 0).await;
+        let (f, _) = refusing_fixture(
+            "max_sessions = 1",
+            target,
+            ads_ptyhost::wire::ErrorCode::InternalError,
+            0,
+        )
+        .await;
         let mut ws = authenticated(&f).await;
         call(&mut ws, "session.open", open_params("session")).await;
         assert_eq!(
@@ -1328,6 +1403,7 @@ async fn host_event_gaps_refuse_replay_without_stopping_the_service() {
             call(&mut ws, "unknown", json!({})).await["error"]["code"],
             -32601
         );
+        assert_invalidated_session_closed(&f, &mut ws).await;
         assert!(!f.api.is_finished());
     }
 }

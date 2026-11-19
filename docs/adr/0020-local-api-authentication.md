@@ -53,7 +53,7 @@ Parâmetros (P8): a lista de origens permitidas e o prazo do `auth.hello` ficam 
 
 A porta da interface também pertence à máquina, não ao usuário. Se outra conta
 ocupar essa porta antes, a página servida por ela recebe o fragmento e pode usar
-o token. `ui_base_url` em `defaults/daemon.toml` parametriza a URL impressa; por
+o token. `ui_base_url` em `defaults/daemon.toml` parametriza a URL impressa e aceita somente HTTP com host em loopback. Por
 padrão a lista de origens deriva somente dessa URL. Isso reduz a lista permitida,
 mas não comprova quem serve a página.
 

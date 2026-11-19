@@ -48,16 +48,16 @@ Padrões em [defaults/daemon.toml](../../defaults/daemon.toml), aplicados ao ini
 
 | Chave | Padrão | Efeito e alternativa |
 |---|---|---|
-| `ui_base_url` | `http://localhost:5173` | URL base da interface, sem caminho, query ou fragmento; substitua pela interface cuja porta foi verificada. |
+| `ui_base_url` | `http://localhost:5173` | URL HTTP da interface em localhost, 127.0.0.1 ou [::1], sem caminho, query ou fragmento; substitua pela interface cuja porta foi verificada. |
 | `allowed_origins` | `[]` (deriva `http://localhost:5173`) | Vazia deriva somente a origem de `ui_base_url`; lista explícita substitui a derivação, sem curingas ou caminhos. |
 | `auth_timeout_ms` | 5000 | Prazo total único do upgrade e da primeira mensagem; reduza para limitar conexões ociosas. |
-| `max_sessions` | 32 | Total de streams por execução, incluindo encerrados; aumente para mais sessões, com maior teto de memória. |
+| `max_sessions` | 32 | Sessões ainda mantidas no host e, em separado, históricos de sessões fechadas. Aumentar permite mais sessões e usa mais memória. |
 | `max_write_bytes` | 65536 | Bytes decodificados por escrita; pode diminuir, nunca exceder o contrato. |
 | `events_per_stream` | 256 | Eventos retidos por stream; aumente para ampliar o replay. |
 | `idempotency_keys` | 1024 | Chaves aceitas retidas em FIFO; aumente para ampliar a janela de deduplicação. |
 | `command_queue` | 64 | Pedidos esperando o host; aumente para mais concorrência. |
 | `max_connections` | 32 | Conexões autenticadas simultâneas; excedentes são fechadas ao autenticar. |
-| `max_pending_auth` | 4 | Conexões pendentes, inclusive sem handshake; separadas das autenticadas. |
+| `max_pending_auth` | 32 | Conexões pendentes, inclusive sem handshake; separadas das autenticadas. |
 | `accept_retry_ms` | 50 | Espera após erro de aceitação TCP; reduz tentativas sob falta de recursos. |
 | `max_message_bytes` | 131072 | Limite de mensagem e quadro WebSocket recebido; reduzir pode impedir escritas grandes. |
 | `send_timeout_ms` | 5000 | Prazo por envio; cliente lento é desconectado. |
@@ -65,7 +65,12 @@ Padrões em [defaults/daemon.toml](../../defaults/daemon.toml), aplicados ao ini
 
 Os inteiros de capacidade aceitam de 1 a 1048576 (`max_message_bytes`: mínimo
 1024); prazos aceitam de 1 a 300000 ms. Valores altos elevam o teto de memória.
-Uma execução conserva no máximo `max_sessions × events_per_stream` eventos;
+Quando há uma lacuna irrecuperável, o daemon invalida o stream e solicita o
+fechamento ao host. `session.close` continua aceito enquanto o registro da
+sessão invalidada estiver retido. Ao atingir o limite de registros fechados,
+o daemon descarta os mais antigos conforme novas sessões são fechadas.
+
+Uma execução conserva no máximo `2 × max_sessions × events_per_stream` eventos;
 o tamanho de cada saída também é limitado pelo quadro do cliente do host.
 Assinaturas por conexão são limitadas a `max_sessions`. Filas, conexões e chaves
 também têm limites separados. Seq e offset recomeçam ao reiniciar.

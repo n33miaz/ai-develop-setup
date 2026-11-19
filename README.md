@@ -12,7 +12,9 @@ Em construção, sem versão publicada. Já existem os contratos e os tipos gera
 
 ## Interface e conexão local
 
-Em `ui/`, execute `npm ci` e `npm run dev`. Sem credenciais, a interface mantém
+Em `ui/`, execute `npm ci` e `npm run dev`. O Vite escuta em `127.0.0.1:5173`
+no desenvolvimento e na prévia. Se a porta estiver ocupada, o Vite para em vez
+de pular para outra. Sem credenciais, a interface mantém
 os exemplos locais. A URL entregue pelo núcleo contém `#core=ws://127.0.0.1:<porta>&token=<token>`;
 a interface remove o fragmento, guarda as credenciais apenas no `sessionStorage`
 da aba e autentica com `auth.hello` antes de enviar comandos. Recarregar a aba

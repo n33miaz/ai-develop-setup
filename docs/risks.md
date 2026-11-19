@@ -115,9 +115,18 @@ Estado da mitigação, em cada risco:
 - **Impacto.** Controle das sessões do usuário, mesmo com a API escutando só em loopback.
 - **Dono.** Daemon (entrega do token) e interface (servidor de desenvolvimento).
 - **Teto.** Um token por execução; o alcance fica nas sessões dessa execução. Não há teto de dano dentro de um terminal autorizado, portanto não abrir a URL sem verificar a propriedade da porta.
-- **Mitigação existente.** `ui_base_url` parametrizável em `defaults/daemon.toml`; `allowed_origins` vazio deriva somente a origem dessa URL. Em desenvolvimento, usar porta fixa e `strictPort` e só abrir depois de conferir que o processo que escuta é do próprio usuário. Configuração e igualdade exata das origens têm testes; a propriedade da porta da interface ainda depende da conferência manual.
+- **Mitigação existente.** `ui_base_url` parametrizável em `defaults/daemon.toml`; `allowed_origins` vazio deriva somente a origem dessa URL. O Vite usa porta fixa e `strictPort` no desenvolvimento e na prévia. Só abrir depois de conferir que o processo que escuta é do próprio usuário. Configuração e igualdade exata das origens têm testes; a propriedade da porta da interface ainda depende da conferência manual.
 - **Plano B.** Não abrir a URL quando a propriedade não puder ser confirmada; parar o daemon para invalidar o token e reiniciá-lo depois de resolver a ocupação da porta.
 - **O que falta.** O daemon servir a interface na sua porta efêmera ou a casca Tauri entregar o token por canal do usuário, conforme o [limite conhecido da ADR 0020](adr/0020-local-api-authentication.md#limite-conhecido). O teste com duas contas no Windows ainda falta.
+
+### Outra conta ocupa vagas de autenticação pendente
+
+- **Descrição.** Outra conta local pode manter conexões TCP abertas e renová-las para ocupar as vagas pendentes.
+- **Impacto.** Novas conexões da interface podem falhar. As conexões já autenticadas têm vagas próprias.
+- **Dono.** Daemon (API local).
+- **Teto.** O padrão de `max_pending_auth` é 32 vagas, com o prazo de `auth_timeout_ms` por conexão, incluindo o handshake.
+- **Mitigação existente.** O padrão de 32 exige mais sockets simultâneos para ocupar toda a fila, ao custo de manter até 32 conexões pendentes e suas tarefas em memória.
+- **Plano B.** Ajustar `max_pending_auth` em `defaults/daemon.toml` ou na configuração local e reiniciar o daemon. Uma conta local ainda pode ocupar todas as vagas.
 
 ## Estado local
 

@@ -5,14 +5,21 @@ title = "ai-develop-setup gitleaks"
 useDefault = true
 
 # Exceções explícitas e mínimas. Qualquer outra entra por PR, com o motivo aqui e na issue.
-# Uma tabela só, no formato que a versão do gitleaks usada no CI entende; caminhos e expressões valem como "ou".
 # 1. O modelo de variáveis, que tem só nomes e nenhum valor real (AGENTS.md).
 # 2. A chave de idempotência de um comando: é um ULID (identificador ordenável, não segredo), e a regra genérica de
-#    chave de API casa com os exemplos sintéticos dos contratos pelo nome do campo. A expressão olha a linha inteira.
+#    chave de API casa com os exemplos sintéticos dos contratos pelo nome do campo. A expressão olha somente o trecho detectado pela regra.
 # 3. A chave de exemplo do handshake WebSocket da RFC 6455 (base64 de "the sample nonce"), pública, usada em testes
 #    que montam o pedido HTTP à mão. Só esse valor exato é aceito.
 [allowlist]
-description = "modelo de variáveis sem valores, chave de idempotência em formato ULID e chave de exemplo da RFC 6455"
+description = "modelo de variáveis sem valores e chave de exemplo da RFC 6455"
 paths = ['''(^|/)\.env\.example$''']
-regexTarget = "line"
-regexes = ['''"idempotency_key":\s*"[0-9A-HJKMNP-TV-Z]{26}"''', '''Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==''']
+regexTarget = "secret"
+regexes = ['''^dGhlIHNhbXBsZSBub25jZQ==$''']
+
+[[rules]]
+id = "generic-api-key"
+
+[rules.allowlist]
+description = "chave de idempotência em formato ULID"
+regexTarget = "match"
+regexes = ['''(?:^|[^\w.-])idempotency_key":\s*"[0-9A-HJKMNP-TV-Z]{26}"''']
