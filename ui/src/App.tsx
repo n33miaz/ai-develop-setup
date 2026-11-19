@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react'
 
 import {
   decodeBase64,
@@ -22,6 +30,7 @@ import { sampleEvents, sampleOutput, type SampleEvents } from './sample/data'
 import type { ThemePreference } from './theme/theme'
 import { useTheme } from './theme/useTheme'
 import type { SessionEvent } from './api'
+import { UpdateNotice } from './pwa/UpdateNotice'
 
 const NO_STREAMS: readonly string[] = []
 
@@ -32,6 +41,19 @@ const THEME_LABEL: Record<ThemePreference, MessageKey> = {
 }
 
 const TERMINAL_ID = 'terminal'
+const COMPACT_QUERY = '(width < 48rem)'
+
+function subscribeCompact(onChange: () => void) {
+  const media = window.matchMedia(COMPACT_QUERY)
+  media.addEventListener('change', onChange)
+  return () => {
+    media.removeEventListener('change', onChange)
+  }
+}
+
+function isCompact() {
+  return window.matchMedia(COMPACT_QUERY).matches
+}
 
 interface AppProps {
   client: CoreClient
@@ -65,6 +87,7 @@ export function App({
   const sidebarId = useId()
   const connection = useConnectionState(client)
   const { preference, cycle } = useTheme()
+  const compact = useSyncExternalStore(subscribeCompact, isCompact)
   const [menuOpen, setMenuOpen] = useState(false)
 
   const [warning, setWarning] = useState(false)
@@ -250,16 +273,19 @@ export function App({
       {warning && <p role="alert">{t('session.commandFailed')}</p>}
 
       <p className={styles.notice}>{t(live ? 'notice.live' : 'notice.wip')}</p>
+      <UpdateNotice className={styles.notice} />
       <div className={styles.body}>
         <Sidebar
           id={sidebarId}
           open={menuOpen}
+          hidden={compact && !menuOpen}
           tasks={tasks}
           sessions={sessions}
           selectedSessionId={sessionId ?? null}
           onSelectSession={(id) => {
             setChosenSessionId(id)
             setMenuOpen(false)
+            if (compact) document.getElementById(TERMINAL_ID)?.focus()
           }}
         />
         <main id={TERMINAL_ID} className={styles.main} tabIndex={-1}>

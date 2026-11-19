@@ -62,6 +62,23 @@ desenvolvimento, sem compilação dinâmica no navegador nem alteração de CSP.
 Replay desde zero aceita o início do histórico ainda retido; depois disso,
 uma lacuna na sequência encerra a conexão. Eventos repetidos são ignorados.
 
+## Instalar a interface como aplicativo
+
+Em `ui/`, execute `npm ci`, `npm run build` e `npm run preview` para
+testar a instalação no PC. Abra o endereço local informado pelo Vite. Para servir
+o aplicativo em outro endereço, publique `ui/dist/` em um servidor estático
+HTTPS, incluindo o manifesto, os ícones e o service worker.
+
+- No PC, abra a interface em um navegador compatível e use **Instalar
+  aplicativo** na barra de endereço ou no menu do navegador.
+- No Android, abra o endereço HTTPS no Chrome e use a opção para instalar ou
+  adicionar à tela inicial. No iPhone, abra no Safari e toque em
+  **Compartilhar** e **Adicionar à Tela de Início**.
+
+Ao receber o aviso de atualização, recarregue a página. O acesso remoto ao
+núcleo ainda não existe. No celular, uma interface servida por HTTPS pode
+ser instalada e aberta no modo de exemplo.
+
 ## Licença
 
 Código aberto à vista, direitos reservados: o código pode ser lido, estudado e avaliado, mas usar, copiar, modificar ou distribuir exige licença comercial escrita. Não é software livre nem open source. Texto completo, com a versão em português que prevalece, em [LICENSE](LICENSE).

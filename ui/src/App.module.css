@@ -60,6 +60,8 @@
 }
 
 .body {
+  position: relative;
+  min-width: 0;
   display: flex;
   flex: 1 0 auto;
   flex-direction: column;
@@ -71,6 +73,17 @@
   flex-direction: column;
   min-width: 0;
   padding: 1rem;
+}
+
+@media (width < 48rem) {
+  .main {
+    padding: 0;
+  }
+
+  .button {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
 }
 
 @media (min-width: 48rem) {
