@@ -15,7 +15,7 @@ Usar SQLite embutido via `rusqlite`, sem features padrão, com `bundled`. Tudo q
 participa de uma invariante ficará em `audit.db`; `state.db` será uma projeção
 reconstruível. Métricas independentes podem manter arquivo próprio. Esta proposta
 diverge da divisão literal do ADR 0004 para preservar atomicidade das invariantes.
-Não existem tabelas de eventos nesta entrega: somente `meta`, esquema versão 1.
+O esquema versão 1 tem só `meta`; a versão 2 acrescenta o log de eventos (abaixo).
 
 `synchronous = FULL` é fixo, sem alternativa de configuração. WAL, foreign keys,
 trusted schema desligado, cell size check, timeout, application id (`0x41445331`),
@@ -86,8 +86,9 @@ quadros. Falta de memória nas reservas controladas também retorna `Full`. Arqu
 do produto não tem esse teto, porque o log de auditoria só cresce.
 `busy_timeout_ms` também limita a espera por `-journal` ou `-wal` sobrando.
 Modo de cifra e journal só aceitam os formatos implementados; alternativas pedem
-migração. Limites de eventos e paginação serão introduzidos junto das APIs que os
-consumirem. A cifra usa XChaCha20-Poly1305 com nonce do sistema de 24 bytes, AAD
+migração. `max_event_bytes` (padrão 1 MiB, 64 bytes a 16 MiB) limita o `data` serializado
+de um evento; `read_page_limit` (padrão 500, 1 a 10000) limita quantos eventos
+uma leitura decifra. A cifra usa XChaCha20-Poly1305 com nonce do sistema de 24 bytes, AAD
 com campos ordenados prefixados por tamanho e domínio versionado. O provedor de
 chaves é injetado; chave não implementa Debug, Display ou Clone. O armazenamento
 próprio da chave é `Box<Zeroizing<[u8; 32]>>`: movimentos transferem o ponteiro,
@@ -96,6 +97,27 @@ continua responsável por apagar a origem. O texto decifrado retorna em
 `Zeroizing<Vec<u8>>`. Esses buffers são zerados no descarte normal; isso não
 promete apagar cópias externas, registradores, swap, dumps ou memória após abort.
 O estado interno da cifra usa a feature `zeroize` da dependência.
+
+## Log de eventos (esquema versão 2)
+
+A versão 2 só acrescenta objetos: `cipher_key` (identificador, cifra e
+`key_check`, nunca a chave) e `event` (um envelope por linha, `data` cifrado).
+Banco versão 1 é migrado na abertura depois de conferir que o esquema dele é
+exatamente o da versão 1; a migração roda numa transação `IMMEDIATE` e repete a
+conferência dentro dela. A abertura compara o `sqlite_schema` inteiro, inclusive
+índices automáticos e `sqlite_sequence`, com o que os scripts da versão do
+arquivo produzem num banco em memória.
+
+Os dados associados de cada linha são um rótulo de versão e todas as colunas em
+claro, inclusive `position` e `prev_chain`; a cadeia (`chain`, SHA-256) cobre
+`prev_chain` e todas as colunas, texto cifrado incluso, e por isso é conferida
+sem chave. Gatilhos recusam UPDATE, DELETE, substituição de linha (o
+`INSERT OR REPLACE` do SQLite apaga sem disparar o gatilho de DELETE), salto ou
+repetição de `seq` por stream e `position` ou `prev_chain` fora da sequência.
+`append` lê o último `seq` do stream dentro de `BEGIN IMMEDIATE` e só grava se o
+evento trouxer o seguinte: de duas conexões disputando o mesmo `seq`, uma entra e
+a outra recebe `Conflict`. Invariantes do portão e ligação com o daemon ficam para
+entregas seguintes.
 
 ## Riscos, demonstração e reversão
 
@@ -116,7 +138,10 @@ por usuário e a trava de instância pertencem à composição futura. Backup e
 restauração completa ainda dependem do log. Para reverter a proposta de arquivo,
 criar migração explícita com backup e demonstração de atomicidade; nunca reduzir
 user_version nem dividir invariantes entre arquivos WAL. As tabelas futuras devem
-incrementar a versão a partir da versão 1 que contém apenas `meta`.
+incrementar a versão a partir da versão 2, só acrescentando objetos. Gatilhos
+não protegem de quem escreve no arquivo: ele pode removê-los, alterar linhas e
+recalcular a cadeia, e o corte do fim do log não deixa rastro sem uma âncora fora
+do arquivo.
 
 ## Condição de reversão
 

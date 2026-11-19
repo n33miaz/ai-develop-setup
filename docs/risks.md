@@ -21,7 +21,7 @@ Estado da mitigação, em cada risco:
 | [Outro usuário da máquina alcança as sessões](#outro-usuário-da-máquina-alcança-as-sessões) | host de terminais e daemon | implementada e testada no Windows; teste com duas contas ausente |
 | [Credencial de CLI de IA vaza para o processo filho](#credencial-de-cli-de-ia-vaza-para-o-processo-filho) | adaptadores de ferramenta e host | parcial |
 | [Página ou programa local comanda os terminais](#página-ou-programa-local-comanda-os-terminais) | daemon (API local) | decidida (proposta); só o lado da interface implementado |
-| [Dado sensível em claro no disco](#dado-sensível-em-claro-no-disco) | armazenamento | parcial: cifra implementada e testada, ainda não ligada ao banco |
+| [Dado sensível em claro no disco](#dado-sensível-em-claro-no-disco) | armazenamento | parcial: `data` dos eventos cifrado no banco e testado; chave ainda fora do cofre |
 | [Perda do estado local](#perda-do-estado-local) | armazenamento | parcial: abertura recusa arquivo corrompido sem alterá-lo; backup ausente |
 | [Atualização ruim instalada](#atualização-ruim-instalada) | lançador | decidida, não implementada |
 | [Elevação de privilégio](#elevação-de-privilégio) | auxiliar de elevação | decidida, não implementada |
@@ -71,7 +71,7 @@ Estado da mitigação, em cada risco:
 - **Teto.** Não definido.
 - **Mitigação existente.** Dentro de um processo, nem a ação nem a licença podem ser copiadas e o `replay` recusa log com `action.started` repetido ([máquina de estados](../crates/core/README.md#máquina-de-estados)); o executor exige que o diário registre o consumo antes de tudo e lembra as licenças recebidas (`E_FS_PERMIT_REUSED`); a pasta da ação na quarentena é criada de forma exclusiva ([entrada do executor](../crates/adapters/fs/README.md#entrada)).
 - **Plano B.** A quarentena deixa marca no disco que recusa a repetição.
-- **O que falta.** Não há diário persistente: entre reinícios, com a quarentena desligada, nada impede a segunda execução. A gravação atômica de `action.started` é dever do armazenamento, que ainda não existe.
+- **O que falta.** Não há diário persistente: entre reinícios, com a quarentena desligada, nada impede a segunda execução. A gravação atômica de `action.started` é dever do armazenamento: o log de eventos já grava só-anexo, com `seq` conferido por stream, mas ainda não confere as invariantes do portão (uso único da licença) nem está ligado ao executor.
 
 ## Terminais
 
@@ -142,19 +142,19 @@ Estado da mitigação, em cada risco:
 - **Impacto.** Quem lê o disco lê o trabalho do usuário.
 - **Dono.** Armazenamento ([`crates/storage`](../crates/storage/README.md)) e cofre ([`crates/adapters/vault`](../crates/adapters/vault/README.md)).
 - **Teto.** Não se aplica.
-- **Mitigação existente.** [ADR 0005](adr/0005-column-level-encryption.md): cifra autenticada por coluna, chave no cofre do sistema. A cifra (XChaCha20-Poly1305, com dados associados autenticados) está implementada e testada em `crates/storage/src/cipher.rs`, inclusive recusa de chave e de dados associados trocados e diagnóstico sem chave nem texto ([ADR 0021](adr/0021-storage-atomic-file-and-cipher.md), proposta). Hoje nada sensível é gravado: o anel de replay fica só em memória e o cliente do daemon não persiste saída nem tem telemetria ([daemon](../crates/daemon/README.md)).
+- **Mitigação existente.** [ADR 0005](adr/0005-column-level-encryption.md): cifra autenticada por coluna, chave no cofre do sistema. A cifra (XChaCha20-Poly1305, com dados associados autenticados) está implementada e testada em `crates/storage/src/cipher.rs`, inclusive recusa de chave e de dados associados trocados e diagnóstico sem chave nem texto ([ADR 0021](adr/0021-storage-atomic-file-and-cipher.md), proposta). O log de eventos (`crates/storage/src/log.rs`) grava o `data` de todo evento cifrado, com as colunas em claro da linha como dados associados; o teste da ADR 0005 procura uma frase sentinela no banco, no `-wal` e no `-shm`, reabre e recusa chave errada (`crates/storage/tests/event_log.rs`). Hoje nada sensível chega ao log: nenhum produtor está ligado a ele, o anel de replay fica só em memória e o cliente do daemon não persiste saída nem tem telemetria ([daemon](../crates/daemon/README.md)).
 - **Plano B.** Banco inteiro cifrado (condição de reversão da ADR 0005).
-- **O que falta.** A cifra ainda não está ligada ao banco, que só tem a tabela `meta`; a chave ainda não vem do cofre, que é esqueleto. O teste da ADR 0005 com o banco (gravar, reabrir, recusar chave errada, frase sentinela ausente do arquivo) ainda não existe.
+- **O que falta.** A chave ainda não vem do cofre, que é esqueleto; sem cofre, só os testes injetam chave. Ficam em claro, por decisão da ADR 0005, `id`, `type`, `ts`, `stream`, `seq`, autor, `cause` e classe do dado: revelam o ritmo de uso e os nomes dos streams.
 
 ### Perda do estado local
 
 - **Descrição.** Banco local corrompido ou apagado.
 - **Impacto.** Perda de auditoria, métricas e estado das tarefas.
 - **Dono.** Armazenamento.
-- **Mitigação existente.** A abertura confere o arquivo antes de tocá-lo e recusa arquivo estranho, mais novo, truncado ou corrompido sem alterar os bytes do banco nem do `-wal`, recusa `-journal` ou `-wal` sobrando que o SQLite desfaria ou apagaria e recusa WAL do produto em que o SQLite descartaria commits confirmados ([reparo manual](../crates/storage/README.md#reparo-de--journal-sobrando)); `synchronous = FULL`; tudo o que participa de uma invariante fica num arquivo só ([ADR 0021](adr/0021-storage-atomic-file-and-cipher.md), proposta). Testes em `crates/storage/tests/open.rs`.
-- **Teto.** `inspection_max_bytes` e `integrity_check_on_open` em [`defaults/storage.toml`](../defaults/storage.toml).
+- **Mitigação existente.** A abertura confere o arquivo antes de tocá-lo e recusa arquivo estranho, mais novo, truncado ou corrompido sem alterar os bytes do banco nem do `-wal`, recusa `-journal` ou `-wal` sobrando que o SQLite desfaria ou apagaria e recusa WAL do produto em que o SQLite descartaria commits confirmados ([reparo manual](../crates/storage/README.md#reparo-de--journal-sobrando)); `synchronous = FULL`; tudo o que participa de uma invariante fica num arquivo só ([ADR 0021](adr/0021-storage-atomic-file-and-cipher.md), proposta). Testes em `crates/storage/tests/open.rs`. O log de eventos é só-anexo e encadeado: gatilhos recusam UPDATE, DELETE, substituição e salto de `seq` por stream, e `verify_chain` aponta a primeira linha alterada ou faltando (`crates/storage/tests/event_log.rs`).
+- **Teto.** `inspection_max_bytes`, `integrity_check_on_open`, `max_event_bytes` e `read_page_limit` em [`defaults/storage.toml`](../defaults/storage.toml).
 - **Plano B.** Não definido. A [ADR 0004](adr/0004-local-sqlite-no-cloud-database.md) cita backup local com restauração testada como condição de reversão, sem mecanismo.
-- **O que falta.** Backup e restauração testada (P5), auditoria só-anexo encadeada, trava de instância e pasta por usuário (a ADR 0021 as deixa para a composição).
+- **O que falta.** Backup e restauração testada (P5), trava de instância e pasta por usuário (a ADR 0021 as deixa para a composição). Quem escreve no arquivo pode remover os gatilhos e recalcular a cadeia desde a linha alterada, e cortar o fim do log não deixa rastro: a cadeia não tem âncora fora do arquivo. A abertura recusa esquema com gatilho removido ou alterado, mas não um esquema restaurado depois da adulteração.
 
 ## Atualização e privilégio
 
