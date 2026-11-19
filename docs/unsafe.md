@@ -6,7 +6,7 @@ Exceção prevista, ainda não usada: `ads-adapter-vault` vai precisar de chamad
 
 | Crate | Blocos `unsafe` | Motivo |
 |---|---|---|
-| `ads-ptyhost` | 27 | chamadas da API do Windows, listadas abaixo |
+| `ads-ptyhost` | 30 | chamadas da API do Windows, listadas abaixo |
 | `ads-adapter-fs` | 4 | chamadas da API do Windows para abrir, mover e apagar por identificador aberto, listadas abaixo; no Linux as mesmas operações vêm do `rustix`, sem `unsafe` |
 | `ads-storage` | 0 | SQLite e cifra pelas APIs seguras das dependências; herda `forbid` |
 | demais | 0 | nenhum |
