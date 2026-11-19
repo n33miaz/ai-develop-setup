@@ -8,6 +8,8 @@ pub struct StorageConfig {
     pub(crate) busy_timeout_ms: u32,
     pub(crate) inspection_max_bytes: usize,
     pub(crate) integrity_check_on_open: bool,
+    pub(crate) max_event_bytes: usize,
+    pub(crate) read_page_limit: u32,
 }
 
 #[derive(Deserialize)]
@@ -16,6 +18,8 @@ struct Layer {
     busy_timeout_ms: Option<u32>,
     inspection_max_bytes: Option<usize>,
     integrity_check_on_open: Option<bool>,
+    max_event_bytes: Option<usize>,
+    read_page_limit: Option<u32>,
     encryption: Option<String>,
     cipher: Option<String>,
     journal_mode: Option<String>,
@@ -55,6 +59,16 @@ impl StorageConfig {
                 .integrity_check_on_open
                 .or(base.integrity_check_on_open)
                 .ok_or(StorageError::Configuration)?,
+            max_event_bytes: over
+                .max_event_bytes
+                .or(base.max_event_bytes)
+                .filter(|n| (64..=16_777_216).contains(n))
+                .ok_or(StorageError::Configuration)?,
+            read_page_limit: over
+                .read_page_limit
+                .or(base.read_page_limit)
+                .filter(|n| (1..=10_000).contains(n))
+                .ok_or(StorageError::Configuration)?,
         })
     }
 
@@ -63,6 +77,12 @@ impl StorageConfig {
     }
     pub fn integrity_check_on_open(&self) -> bool {
         self.integrity_check_on_open
+    }
+    pub fn max_event_bytes(&self) -> usize {
+        self.max_event_bytes
+    }
+    pub fn read_page_limit(&self) -> u32 {
+        self.read_page_limit
     }
 }
 
@@ -74,6 +94,17 @@ mod tests {
         let base = StorageConfig::defaults();
         let over = StorageConfig::from_toml_str("busy_timeout_ms = 17").unwrap();
         assert_eq!(over.busy_timeout_ms(), 17);
+        assert_eq!(base.max_event_bytes(), 1_048_576);
+        assert_eq!(base.read_page_limit(), 500);
+        let over_log = StorageConfig::from_toml_str(
+            "max_event_bytes = 64
+read_page_limit = 1",
+        )
+        .unwrap();
+        assert_eq!(
+            (over_log.max_event_bytes(), over_log.read_page_limit()),
+            (64, 1)
+        );
         assert_eq!(
             over.integrity_check_on_open(),
             base.integrity_check_on_open()
@@ -83,6 +114,10 @@ mod tests {
             "inspection_max_bytes = 511",
             "inspection_max_bytes = 1073741825",
             "busy_timeout_ms = 60001",
+            "max_event_bytes = 63",
+            "max_event_bytes = 16777217",
+            "read_page_limit = 0",
+            "read_page_limit = 10001",
             "synchronous = 'normal'",
             "encryption = 'none'",
             "cipher = 'other'",

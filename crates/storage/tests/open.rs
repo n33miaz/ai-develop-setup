@@ -73,13 +73,13 @@ fn reopen_preserves_meta_and_reads_every_pragma() {
         .unwrap();
     assert_eq!(value, [1, 2, 3]);
     let tables: Vec<String> = connection
-        .prepare("SELECT name FROM sqlite_schema WHERE type='table'")
+        .prepare("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name")
         .unwrap()
         .query_map([], |r| r.get(0))
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap();
-    assert_eq!(tables, ["meta"]);
+    assert_eq!(tables, ["cipher_key", "event", "meta", "sqlite_sequence"]);
 }
 
 #[test]
@@ -206,7 +206,11 @@ fn header_identity_and_format_refusals_preserve_directory() {
         (0, 1, StorageError::UnsupportedSchema),
         (APPLICATION_ID, -1, StorageError::UnsupportedSchema),
         (APPLICATION_ID, 0, StorageError::UnsupportedSchema),
-        (APPLICATION_ID, 2, StorageError::SchemaTooNew),
+        (
+            APPLICATION_ID,
+            SCHEMA_VERSION + 1,
+            StorageError::SchemaTooNew,
+        ),
         (99, 0, StorageError::ForeignApplication),
         (0, 0, StorageError::ForeignApplication),
     ] {

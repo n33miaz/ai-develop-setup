@@ -7,7 +7,7 @@ use std::{
 };
 
 pub const APPLICATION_ID: i64 = 0x41445331;
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 /// Owns the connection; raw SQL remains private to storage.
 pub struct AuditStore {
@@ -34,39 +34,15 @@ fn preflight(c: &Connection, config: &StorageConfig) -> Result<(), StorageError>
     if version > SCHEMA_VERSION {
         return Err(StorageError::SchemaTooNew);
     }
-    if version < 0
-        || (id == 0 && version != 0)
-        || (id == APPLICATION_ID && version != SCHEMA_VERSION)
-    {
+    if version < 0 || (id == 0 && version != 0) || (id == APPLICATION_ID && version < 1) {
         return Err(StorageError::UnsupportedSchema);
     }
     let count: i64 = c.query_row("SELECT count(*) FROM sqlite_schema", [], |r| r.get(0))?;
     if id == 0 && count != 0 {
         return Err(StorageError::ForeignApplication);
     }
-    if id == APPLICATION_ID {
-        let mut statement =
-            c.prepare("SELECT type, name, tbl_name, sql FROM sqlite_schema ORDER BY type, name")?;
-        let rows = statement
-            .query_map([], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, String>(3)?,
-                ))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        if rows
-            != vec![(
-                "table".into(),
-                "meta".into(),
-                "meta".into(),
-                migrate::META_SQL.into(),
-            )]
-        {
-            return Err(StorageError::UnsupportedSchema);
-        }
+    if id == APPLICATION_ID && migrate::schema(c)? != migrate::expected_schema(version)? {
+        return Err(StorageError::UnsupportedSchema);
     }
     if config.integrity_check_on_open {
         let result: String = c.pragma_query_value(None, "integrity_check", |r| r.get(0))?;
@@ -128,10 +104,7 @@ fn header(path: &Path) -> Result<Header, StorageError> {
     if version > SCHEMA_VERSION {
         return Err(StorageError::SchemaTooNew);
     }
-    if version < 0
-        || (id == 0 && version != 0)
-        || (id == APPLICATION_ID && version != SCHEMA_VERSION)
-    {
+    if version < 0 || (id == 0 && version != 0) || (id == APPLICATION_ID && version < 1) {
         return Err(StorageError::UnsupportedSchema);
     }
     Ok(if id == APPLICATION_ID {
@@ -406,7 +379,11 @@ mod tests {
         bytes[19] = 2;
         for (id, version, expected) in [
             (99i32, 0i32, StorageError::ForeignApplication),
-            (APPLICATION_ID as i32, 2, StorageError::SchemaTooNew),
+            (
+                APPLICATION_ID as i32,
+                SCHEMA_VERSION as i32 + 1,
+                StorageError::SchemaTooNew,
+            ),
             (APPLICATION_ID as i32, -1, StorageError::UnsupportedSchema),
         ] {
             bytes[60..64].copy_from_slice(&version.to_be_bytes());

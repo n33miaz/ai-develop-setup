@@ -4,11 +4,13 @@ pub mod cipher;
 
 pub mod config;
 pub mod error;
+pub mod log;
 mod migrate;
 pub mod open;
 mod snapshot;
 pub use config::StorageConfig;
 pub use error::StorageError;
+pub use log::{EventLog, Position, StoredEvent};
 pub use open::AuditStore;
 
 /// Package name as declared in the manifest.

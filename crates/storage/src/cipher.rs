@@ -88,17 +88,21 @@ fn field(out: &mut Vec<u8>, bytes: &[u8]) {
     out.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
     out.extend_from_slice(bytes);
 }
+/// Length-prefixed list where None and an empty field differ; shared with the chain hash.
+pub(crate) fn encode_fields(out: &mut Vec<u8>, items: &[Option<&[u8]>]) {
+    out.extend_from_slice(&(items.len() as u64).to_be_bytes());
+    for item in items {
+        out.push(u8::from(item.is_some()));
+        if let Some(bytes) = item {
+            field(out, bytes);
+        }
+    }
+}
 fn encode(domain: &[u8], id: &KeyId, aad: &AssociatedData<'_>) -> Vec<u8> {
     let mut out = Vec::new();
     field(&mut out, domain);
     field(&mut out, id.as_str().as_bytes());
-    out.extend_from_slice(&(aad.0.len() as u64).to_be_bytes());
-    for item in aad.0 {
-        out.push(u8::from(item.is_some()));
-        if let Some(bytes) = item {
-            field(&mut out, bytes);
-        }
-    }
+    encode_fields(&mut out, aad.0);
     out
 }
 fn nonce() -> Result<[u8; 24], CipherError> {
@@ -374,6 +378,14 @@ mod tests {
             crate::StorageError::SchemaTooNew,
             crate::StorageError::UnsupportedSchema,
             crate::StorageError::PragmaMismatch,
+            crate::StorageError::Conflict,
+            crate::StorageError::WrongKey,
+            crate::StorageError::KeyUnavailable,
+            crate::StorageError::Tampered,
+            crate::StorageError::TooLarge,
+            crate::StorageError::InvalidEvent,
+            crate::StorageError::Cipher,
+            crate::StorageError::ChainBroken { position: 7 },
         ] {
             output.push_str(&format!("{error} {error:?}"));
         }
