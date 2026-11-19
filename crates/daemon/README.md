@@ -55,7 +55,8 @@ inexistente e apelido de pasta fora da configuração recebem `-32602`.
    ```
 
    Depois que o Vite confirmar a porta, abra no navegador a URL completa
-   impressa pelo daemon e clique em **Abrir claude** ou **Abrir codex**.
+   impressa pelo daemon
+   (`http://127.0.0.1:5173/#core=ws://127.0.0.1:<porta>&token=<token>`) e clique em **Abrir claude** ou **Abrir codex**.
    O agente dentro do terminal pode editar arquivos conforme as permissões dele.
 
 A saída padrão contém somente essa linha. O token de 32 bytes aleatórios vem do
@@ -92,8 +93,8 @@ Padrões em [defaults/daemon.toml](../../defaults/daemon.toml), aplicados ao ini
 
 | Chave | Padrão | Efeito e alternativa |
 |---|---|---|
-| `ui_base_url` | `http://localhost:5173` | URL HTTP da interface em localhost, 127.0.0.1 ou [::1], sem caminho, query ou fragmento; substitua pela interface cuja porta foi verificada. |
-| `allowed_origins` | `[]` (deriva `http://localhost:5173`) | Vazia deriva somente a origem de `ui_base_url`; lista explícita substitui a derivação, sem curingas ou caminhos. |
+| `ui_base_url` | `http://127.0.0.1:5173` | URL HTTP da interface em localhost, 127.0.0.1 ou [::1], sem caminho, query ou fragmento; substitua pela interface cuja porta foi verificada. |
+| `allowed_origins` | `[]` (deriva `http://127.0.0.1:5173`) | Vazia deriva somente a origem de `ui_base_url`; lista explícita substitui a derivação, sem curingas ou caminhos. |
 | `auth_timeout_ms` | 5000 | Prazo total único do upgrade e da primeira mensagem; reduza para limitar conexões ociosas. |
 | `max_sessions` | 32 | Sessões ainda mantidas no host e, em separado, históricos de sessões fechadas. Aumentar permite mais sessões e usa mais memória. |
 | `max_write_bytes` | 65536 | Bytes decodificados por escrita; pode diminuir, nunca exceder o contrato. |
@@ -111,7 +112,9 @@ Os inteiros de capacidade aceitam de 1 a 1048576 (`max_message_bytes`: mínimo
 1024); prazos aceitam de 1 a 300000 ms. Valores altos elevam o teto de memória.
 Quando há uma lacuna irrecuperável, o daemon invalida o stream e solicita o
 fechamento ao host. `session.close` continua aceito enquanto o registro da
-sessão invalidada estiver retido. Ao atingir o limite de registros fechados,
+sessão invalidada estiver retido. Uma sessão cujo processo já terminou continua
+no host, ocupando a vaga, até receber `session.close`; o fechamento encerra a
+árvore de processos que restar e devolve a vaga. Ao atingir o limite de registros fechados,
 o daemon descarta os mais antigos conforme novas sessões são fechadas.
 
 Uma execução conserva no máximo `2 × max_sessions × events_per_stream` eventos;

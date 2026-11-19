@@ -119,7 +119,7 @@ async fn real_host_runs_configured_echo_through_the_api() {
     let mut request = url.into_client_request().unwrap();
     request
         .headers_mut()
-        .insert("Origin", "http://localhost:5173".parse().unwrap());
+        .insert("Origin", "http://127.0.0.1:5173".parse().unwrap());
     tokio::time::timeout(Duration::from_secs(30), async {
         let stream = TcpStream::connect(url.strip_prefix("ws://").unwrap())
             .await
