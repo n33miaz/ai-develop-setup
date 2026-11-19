@@ -17,7 +17,7 @@ cargo run -p ads-daemon -j 2
 ```
 
 No terceiro terminal, entre em `ui` e execute `npm run dev`. Abra a URL exata
-impressa pelo daemon: `http://localhost:5173/#core=ws://127.0.0.1:<porta>&token=<token>`.
+impressa pelo daemon: `http://127.0.0.1:5173/#core=ws://127.0.0.1:<porta>&token=<token>`.
 A saída padrão contém somente essa linha. O token de 32 bytes aleatórios vem do
 gerador do sistema e existe só em memória; o fragmento não faz parte do pedido
 HTTP. A interface envia `auth.hello` como primeira mensagem. Antes dela, mensagem
@@ -48,16 +48,16 @@ Padrões em [defaults/daemon.toml](../../defaults/daemon.toml), aplicados ao ini
 
 | Chave | Padrão | Efeito e alternativa |
 |---|---|---|
-| `ui_base_url` | `http://localhost:5173` | URL base da interface, sem caminho, query ou fragmento; substitua pela interface cuja porta foi verificada. |
-| `allowed_origins` | `[]` (deriva `http://localhost:5173`) | Vazia deriva somente a origem de `ui_base_url`; lista explícita substitui a derivação, sem curingas ou caminhos. |
+| `ui_base_url` | `http://127.0.0.1:5173` | URL HTTP da interface em localhost, 127.0.0.1 ou [::1], sem caminho, query ou fragmento; substitua pela interface cuja porta foi verificada. |
+| `allowed_origins` | `[]` (deriva `http://127.0.0.1:5173`) | Vazia deriva somente a origem de `ui_base_url`; lista explícita substitui a derivação, sem curingas ou caminhos. |
 | `auth_timeout_ms` | 5000 | Prazo total único do upgrade e da primeira mensagem; reduza para limitar conexões ociosas. |
-| `max_sessions` | 32 | Total de streams por execução, incluindo encerrados; aumente para mais sessões, com maior teto de memória. |
+| `max_sessions` | 32 | Sessões ainda mantidas no host e, em separado, históricos de sessões fechadas. Aumentar permite mais sessões e usa mais memória. |
 | `max_write_bytes` | 65536 | Bytes decodificados por escrita; pode diminuir, nunca exceder o contrato. |
 | `events_per_stream` | 256 | Eventos retidos por stream; aumente para ampliar o replay. |
 | `idempotency_keys` | 1024 | Chaves aceitas retidas em FIFO; aumente para ampliar a janela de deduplicação. |
 | `command_queue` | 64 | Pedidos esperando o host; aumente para mais concorrência. |
 | `max_connections` | 32 | Conexões autenticadas simultâneas; excedentes são fechadas ao autenticar. |
-| `max_pending_auth` | 4 | Conexões pendentes, inclusive sem handshake; separadas das autenticadas. |
+| `max_pending_auth` | 32 | Conexões pendentes, inclusive sem handshake; separadas das autenticadas. |
 | `accept_retry_ms` | 50 | Espera após erro de aceitação TCP; reduz tentativas sob falta de recursos. |
 | `max_message_bytes` | 131072 | Limite de mensagem e quadro WebSocket recebido; reduzir pode impedir escritas grandes. |
 | `send_timeout_ms` | 5000 | Prazo por envio; cliente lento é desconectado. |
@@ -65,7 +65,14 @@ Padrões em [defaults/daemon.toml](../../defaults/daemon.toml), aplicados ao ini
 
 Os inteiros de capacidade aceitam de 1 a 1048576 (`max_message_bytes`: mínimo
 1024); prazos aceitam de 1 a 300000 ms. Valores altos elevam o teto de memória.
-Uma execução conserva no máximo `max_sessions × events_per_stream` eventos;
+Quando há uma lacuna irrecuperável, o daemon invalida o stream e solicita o
+fechamento ao host. `session.close` continua aceito enquanto o registro da
+sessão invalidada estiver retido. Uma sessão cujo processo já terminou continua
+no host, ocupando a vaga, até receber `session.close`; o fechamento encerra a
+árvore de processos que restar e devolve a vaga. Ao atingir o limite de registros fechados,
+o daemon descarta os mais antigos conforme novas sessões são fechadas.
+
+Uma execução conserva no máximo `2 × max_sessions × events_per_stream` eventos;
 o tamanho de cada saída também é limitado pelo quadro do cliente do host.
 Assinaturas por conexão são limitadas a `max_sessions`. Filas, conexões e chaves
 também têm limites separados. Seq e offset recomeçam ao reiniciar.
@@ -180,7 +187,7 @@ de erro e a saída do comando real são as evidências de funcionamento nos test
 
 Antes de abrir a URL, confira que a porta de `ui_base_url` pertence ao próprio
 usuário. Inicie o servidor da interface com porta fixa e `strictPort` (por exemplo,
-`npm run dev -- --host localhost --port 5173 --strictPort` na pasta `ui`).
+`npm run dev -- --host 127.0.0.1 --port 5173 --strictPort` na pasta `ui`).
 Se a porta estiver ocupada, pare e investigue; não abra a URL nem aceite outra
 porta automaticamente. Configurar uma URL diferente não comprova sua propriedade.
 Outro usuário pode servir uma página nessa porta e ler o fragmento com o token.

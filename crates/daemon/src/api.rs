@@ -4,7 +4,9 @@ use crate::auth::{Token, permits_upgrade};
 use crate::events::EventLog;
 use crate::pty_client::{ClientError, ErrorCode, Event, PtyClient};
 use ads_contracts::CommandSessionOpenV1Params;
-use ads_ptyhost::wire::{Notification, OpenParams, ResizeParams, SessionParams, WriteParams};
+use ads_ptyhost::wire::{
+    Notification, OpenParams, ResizeParams, SessionId, SessionParams, WriteParams,
+};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
@@ -155,7 +157,8 @@ fn valid_ui_base(base: &str) -> bool {
     let Ok(uri) = base.parse::<tokio_tungstenite::tungstenite::http::Uri>() else {
         return false;
     };
-    matches!(uri.scheme_str(), Some("http" | "https"))
+    uri.scheme_str() == Some("http")
+        && matches!(uri.host(), Some("localhost" | "127.0.0.1" | "[::1]"))
         && uri
             .authority()
             .is_some_and(|a| !a.as_str().contains(['*', '@']))
@@ -190,6 +193,8 @@ struct Session {
     last_host_seq: u64,
     ended: bool,
     closing: bool,
+    invalidated: bool,
+    released: bool,
 }
 struct Entry {
     key: String,
@@ -202,6 +207,8 @@ struct Service {
     log: Arc<Mutex<EventLog>>,
     sessions: HashMap<String, Session>,
     keys: VecDeque<Entry>,
+    invalidated: VecDeque<SessionId>,
+    released: VecDeque<SessionId>,
 }
 impl Service {
     async fn command(&mut self, command: &Value) -> Result<bool, ApiError> {
@@ -249,7 +256,9 @@ impl Service {
         let id = params["session_id"].as_str().unwrap_or("");
         match method {
             "session.open" => {
-                if self.sessions.len() >= self.config.max_sessions {
+                if self.sessions.values().filter(|s| !s.released).count()
+                    >= self.config.max_sessions
+                {
                     return Err(ApiError::Capacity);
                 }
                 if self.sessions.contains_key(id) {
@@ -272,6 +281,8 @@ impl Service {
                         last_host_seq: 0,
                         ended: false,
                         closing: false,
+                        invalidated: false,
+                        released: false,
                     },
                 );
                 let setup = async {
@@ -316,14 +327,9 @@ impl Service {
                 )?;
             }
             "session.close" => {
-                self.active(id)?;
                 let close: SessionParams =
                     serde_json::from_value(host_params).map_err(|_| ApiError::Invalid)?;
-                self.sessions.get_mut(id).ok_or(ApiError::Invalid)?.closing = true;
-                if let Err(error) = self.wait_host(host.close(close)).await {
-                    self.sessions.get_mut(id).ok_or(ApiError::Invalid)?.closing = false;
-                    return Err(error);
-                }
+                self.close(close).await?;
             }
             "events.subscribe" => {
                 self.log.lock().await.after(
@@ -334,6 +340,51 @@ impl Service {
             _ => return Err(ApiError::Method),
         }
         Ok(())
+    }
+    async fn close(&mut self, params: SessionParams) -> Result<(), ApiError> {
+        let id = params.session_id.clone();
+        let session = self
+            .sessions
+            .get_mut(id.as_str())
+            .ok_or(ApiError::Invalid)?;
+        if session.invalidated && session.released {
+            return Ok(());
+        }
+        // Uma sessão encerrada segue no host com a vaga e possíveis filhos vivos até o fechamento.
+        if session.closing || session.released {
+            return Err(ApiError::Invalid);
+        }
+        session.closing = true;
+        let host = self.host.commands();
+        let result = self.wait_host(host.close(params)).await;
+        let session = self
+            .sessions
+            .get_mut(id.as_str())
+            .ok_or(ApiError::Invalid)?;
+        session.closing = false;
+        if result.is_ok() || result == Err(ApiError::Host(ErrorCode::UnknownSession)) {
+            session.released = true;
+            self.released.push_back(id);
+            if self.released.len() > self.config.max_sessions
+                && let Some(expired) = self.released.pop_front()
+            {
+                self.sessions.remove(expired.as_str());
+                self.log.lock().await.remove(expired.as_str());
+            }
+        }
+        result.map(|_| ())
+    }
+    async fn invalidate(&mut self, id: SessionId) {
+        if let Some(session) = self.sessions.get_mut(id.as_str())
+            && !session.invalidated
+        {
+            session.invalidated = true;
+            // A invalidação pode ocorrer enquanto o daemon espera outra resposta do host.
+            if !session.released {
+                self.invalidated.push_back(id.clone());
+            }
+            self.log.lock().await.invalidate(id.as_str());
+        }
     }
     async fn wait_host<T>(
         &mut self,
@@ -351,7 +402,7 @@ impl Service {
         if self
             .sessions
             .get(id)
-            .is_some_and(|s| !s.ended && !s.closing)
+            .is_some_and(|s| !s.ended && !s.closing && !s.invalidated && !s.released)
         {
             Ok(())
         } else {
@@ -365,9 +416,11 @@ impl Service {
                 let Some(session) = self.sessions.get_mut(id) else {
                     return Ok(());
                 };
-                if session.ended || header.seq.get() != session.last_host_seq + 1 {
-                    session.ended = true;
-                    self.log.lock().await.invalidate(id);
+                if session.ended || session.invalidated {
+                    return Ok(());
+                }
+                if header.seq.get() != session.last_host_seq + 1 {
+                    self.invalidate(header.session_id).await;
                     return Ok(());
                 }
                 self.log.lock().await.append(id, "output", json!({"session_id": id, "offset": session.offset, "length": bytes.len(), "encoding": "base64", "payload": STANDARD.encode(&bytes)}), None)?;
@@ -382,16 +435,15 @@ impl Service {
                 let Some(session) = self.sessions.get_mut(id) else {
                     return Ok(());
                 };
-                if session.ended {
+                if session.ended || session.invalidated {
                     return Ok(());
                 }
                 if exit.last_seq != session.last_host_seq {
-                    session.ended = true;
-                    self.log.lock().await.invalidate(id);
+                    self.invalidate(exit.session_id).await;
                     return Ok(());
                 }
                 session.ended = true;
-                self.log.lock().await.append(id, "ended", json!({"session_id": id, "reason": if session.closing { "killed" } else if exit.exit_code.is_some() { "exit" } else { "error" }, "exit_code": exit.exit_code}), None)?;
+                self.log.lock().await.append(id, "ended", json!({"session_id": id, "reason": if session.closing || session.released { "killed" } else if exit.exit_code.is_some() { "exit" } else { "error" }, "exit_code": exit.exit_code}), None)?;
             }
             Event::Notification(Notification::SubscriptionClosed(closed))
                 if closed.reason == ads_ptyhost::wire::CloseReason::SessionClosed =>
@@ -400,10 +452,9 @@ impl Service {
                 let Some(session) = self.sessions.get_mut(id) else {
                     return Ok(());
                 };
-                if !session.ended {
+                if !session.ended && !session.invalidated {
                     if closed.last_seq != session.last_host_seq {
-                        session.ended = true;
-                        self.log.lock().await.invalidate(id);
+                        self.invalidate(closed.session_id).await;
                         return Ok(());
                     }
                     session.ended = true;
@@ -421,11 +472,7 @@ impl Service {
                     .get(session_id.as_str())
                     .is_some_and(|s| !s.ended) =>
             {
-                self.sessions
-                    .get_mut(session_id.as_str())
-                    .ok_or(ApiError::Invalid)?
-                    .ended = true;
-                self.log.lock().await.invalidate(session_id.as_str());
+                self.invalidate(session_id).await;
                 if host_error(error) == ApiError::Unavailable {
                     return Err(ApiError::Unavailable);
                 }
@@ -462,6 +509,8 @@ impl LocalApi {
             log,
             sessions: HashMap::new(),
             keys: VecDeque::new(),
+            invalidated: VecDeque::new(),
+            released: VecDeque::new(),
         };
         Ok(Self {
             listener,
@@ -501,6 +550,16 @@ impl LocalApi {
         let mut connections = tokio::task::JoinSet::new();
         let mut accepting = Box::pin(accept_retry(&listener, config.accept_retry_ms));
         loop {
+            while let Some(session_id) = service.invalidated.pop_front() {
+                let outcome = timeout(
+                    Duration::from_millis(config.host_timeout_ms),
+                    service.close(SessionParams { session_id }),
+                )
+                .await;
+                if matches!(outcome, Err(_) | Ok(Err(ApiError::Unavailable))) {
+                    return Err(ApiError::Unavailable);
+                }
+            }
             tokio::select! {
                 event = service.host.next() => {
                     if service.event(event.map_err(host_error)?).await == Err(ApiError::Unavailable) { return Err(ApiError::Unavailable); }

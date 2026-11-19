@@ -76,7 +76,7 @@ async fn fixture_with_host(
     let port = api.port().unwrap();
     let url = api.launch_url().unwrap();
     let (http, fragment) = url.split_once('#').unwrap();
-    assert_eq!(http, "http://localhost:5173/");
+    assert_eq!(http, "http://127.0.0.1:5173/");
     assert!(!http.contains("token"));
     let (core, token) = fragment.split_once("&token=").unwrap();
     assert_eq!(core, format!("core=ws://127.0.0.1:{port}"));
@@ -149,7 +149,7 @@ async fn call(ws: &mut Socket, method: &str, params: Value) -> Value {
     response
 }
 async fn authenticated(f: &Fixture) -> Socket {
-    let mut ws = connect(f, Some("http://localhost:5173"), None)
+    let mut ws = connect(f, Some("http://127.0.0.1:5173"), None)
         .await
         .unwrap();
     assert_eq!(
@@ -174,9 +174,9 @@ async fn upgrade_rejects_wrong_or_missing_origin_and_host() {
     for (origin, host) in [
         (Some("https://untrusted.invalid"), None),
         (None, None),
-        (Some("http://localhost:5173"), Some("untrusted.invalid")),
+        (Some("http://127.0.0.1:5173"), Some("untrusted.invalid")),
         (Some("null"), None),
-        (Some("http://localhost:5173.attacker.invalid"), None),
+        (Some("http://127.0.0.1:5173.attacker.invalid"), None),
     ] {
         let error = connect(&f, origin, host)
             .await
@@ -188,7 +188,7 @@ async fn upgrade_rejects_wrong_or_missing_origin_and_host() {
             _ => panic!("expected 403"),
         }
     }
-    for origin in ["http://localhost:5173"] {
+    for origin in ["http://127.0.0.1:5173"] {
         for host in [
             format!("localhost:{}", f.port),
             format!("127.0.0.1:{}", f.port),
@@ -208,13 +208,13 @@ async fn authentication_rejects_missing_wrong_late_token_and_command_before_hell
         command("session.open", open_params("unauthenticated")),
         command("auth.hello", json!({"token": f.token, "extra": true})),
     ] {
-        let mut ws = connect(&f, Some("http://localhost:5173"), None)
+        let mut ws = connect(&f, Some("http://127.0.0.1:5173"), None)
             .await
             .unwrap();
         transmit(&mut ws, &value).await;
         closed(&mut ws).await;
     }
-    let mut ws = connect(&f, Some("http://localhost:5173"), None)
+    let mut ws = connect(&f, Some("http://127.0.0.1:5173"), None)
         .await
         .unwrap();
     closed(&mut ws).await;
@@ -479,10 +479,10 @@ fn configuration_rejects_invalid_bounds_and_origins() {
 #[test]
 fn credentials_only_appear_in_launch_fragment_and_diagnostics_are_redacted() {
     let token = Token::generate().unwrap();
-    let url = token.launch_url("http://localhost:5173", 12345);
+    let url = token.launch_url("http://127.0.0.1:5173", 12345);
     let (http, fragment) = url.split_once('#').unwrap();
     let secret = fragment.split_once("&token=").unwrap().1;
-    assert_eq!(http, "http://localhost:5173/");
+    assert_eq!(http, "http://127.0.0.1:5173/");
     assert!(!http.contains(secret));
     assert!(token.matches(secret));
     assert!(!token.matches(&"X".repeat(43)));
@@ -490,7 +490,7 @@ fn credentials_only_appear_in_launch_fragment_and_diagnostics_are_redacted() {
     assert_ne!(
         Token::generate()
             .unwrap()
-            .launch_url("http://localhost:5173", 12345),
+            .launch_url("http://127.0.0.1:5173", 12345),
         url
     );
     let mut log = EventLog::new(2);
@@ -561,7 +561,7 @@ async fn connection_and_message_limits_close_excess_clients() {
     )
     .await;
     let mut ws = authenticated(&f).await;
-    let mut excess = connect(&f, Some("http://localhost:5173"), None)
+    let mut excess = connect(&f, Some("http://127.0.0.1:5173"), None)
         .await
         .unwrap();
     transmit(
@@ -595,25 +595,25 @@ async fn missing_duplicate_headers_and_query_credentials_are_rejected_before_upg
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let f = fixture("", Arc::new(TestLauncher)).await;
     for (target, headers) in [
-        ("/", "Origin: http://localhost:5173\r\n".to_owned()),
+        ("/", "Origin: http://127.0.0.1:5173\r\n".to_owned()),
         (
             "/",
             format!(
-                "Host: 127.0.0.1:{}\r\nOrigin: http://localhost:5173\r\nOrigin: http://localhost:5173\r\n",
+                "Host: 127.0.0.1:{}\r\nOrigin: http://127.0.0.1:5173\r\nOrigin: http://127.0.0.1:5173\r\n",
                 f.port
             ),
         ),
         (
             "/",
             format!(
-                "Host: 127.0.0.1:{}\r\nHost: localhost:{}\r\nOrigin: http://localhost:5173\r\n",
+                "Host: 127.0.0.1:{}\r\nHost: localhost:{}\r\nOrigin: http://127.0.0.1:5173\r\n",
                 f.port, f.port
             ),
         ),
         (
             "/?token=refused",
             format!(
-                "Host: 127.0.0.1:{}\r\nOrigin: http://localhost:5173\r\n",
+                "Host: 127.0.0.1:{}\r\nOrigin: http://127.0.0.1:5173\r\n",
                 f.port
             ),
         ),
@@ -655,7 +655,7 @@ async fn unsafe_open_parameters_and_invalid_sizes_never_reach_the_host() {
 #[test]
 fn interface_origin_is_derived_and_overridable() {
     let defaults = ApiConfig::from_toml_str("").unwrap();
-    assert_eq!(defaults.allowed_origins, ["http://localhost:5173"]);
+    assert_eq!(defaults.allowed_origins, ["http://127.0.0.1:5173"]);
     let custom = ApiConfig::from_toml_str("ui_base_url = 'http://localhost:8271/'").unwrap();
     assert_eq!(custom.allowed_origins, ["http://localhost:8271"]);
     let url = Token::generate()
@@ -663,11 +663,19 @@ fn interface_origin_is_derived_and_overridable() {
         .launch_url(&custom.ui_base_url, 42);
     assert!(url.starts_with("http://localhost:8271/#core=ws://127.0.0.1:42&token="));
     let explicit = ApiConfig::from_toml_str(
-        "ui_base_url = 'https://localhost:8271'\nallowed_origins = ['https://localhost:9000']",
+        "ui_base_url = 'http://localhost:8271'\nallowed_origins = ['https://localhost:9000']",
     )
     .unwrap();
     assert_eq!(explicit.allowed_origins, ["https://localhost:9000"]);
+    for host in ["localhost", "127.0.0.1", "[::1]"] {
+        assert!(ApiConfig::from_toml_str(&format!("ui_base_url = 'http://{host}:5173'")).is_ok());
+    }
     for value in [
+        "https://localhost:5173",
+        "http://192.0.2.1:5173",
+        "http://localhost.example:5173",
+        "http://127.0.0.2:5173",
+        "http://[::2]:5173",
         "null",
         "http://localhost:5173/path",
         "http://localhost:5173/#token=x",
@@ -676,6 +684,39 @@ fn interface_origin_is_derived_and_overridable() {
     ] {
         assert!(ApiConfig::from_toml_str(&format!("ui_base_url = '{value}'")).is_err());
     }
+}
+
+#[test]
+fn default_interface_url_matches_the_vite_server_address() {
+    let vite = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../ui/vite.config.ts"
+    ))
+    .expect("ui/vite.config.ts");
+    let server = vite
+        .split_once("server: {")
+        .and_then(|(_, rest)| rest.split_once('}'))
+        .map(|(block, _)| block)
+        .expect("server block in ui/vite.config.ts");
+    let field = |name: &str| {
+        server
+            .split(',')
+            .filter_map(|part| part.split_once(':'))
+            .find(|(key, _)| key.trim() == name)
+            .map(|(_, value)| value.trim().trim_matches(['\'', '"']).to_owned())
+            .unwrap_or_else(|| panic!("server.{name} missing in ui/vite.config.ts"))
+    };
+    let base = ApiConfig::from_toml_str("").unwrap().ui_base_url;
+    assert_eq!(
+        base.trim_end_matches('/'),
+        format!("http://{}:{}", field("host"), field("port")),
+        "ui_base_url and the Vite server address diverge"
+    );
+}
+
+#[test]
+fn pending_auth_default_allows_thirty_two_connections() {
+    assert_eq!(ApiConfig::from_toml_str("").unwrap().max_pending_auth, 32);
 }
 
 #[tokio::test]
@@ -690,21 +731,21 @@ async fn exact_host_and_origin_variants_are_refused() {
         format!("localhost:{}", if f.port == 65535 { 1 } else { f.port + 1 }),
     ] {
         assert!(
-            connect(&f, Some("http://localhost:5173"), Some(&host))
+            connect(&f, Some("http://127.0.0.1:5173"), Some(&host))
                 .await
                 .is_err(),
             "accepted {host}"
         );
     }
     for origin in [
-        "http://127.0.0.1:5173",
-        "http://localhost:5174",
-        "HTTP://LOCALHOST:5173",
-        "http://localhost.:5173",
+        "http://localhost:5173",
+        "http://127.0.0.1:5174",
+        "HTTP://127.0.0.1:5173",
+        "http://127.0.0.1.:5173",
         "http://[::1]:5173",
-        "http://localhost",
-        "http://localhost:5173/",
-        "https://localhost:5173",
+        "http://127.0.0.1",
+        "http://127.0.0.1:5173/",
+        "https://127.0.0.1:5173",
         "null",
     ] {
         assert!(
@@ -721,7 +762,7 @@ async fn authentication_frames_are_single_attempt_and_ping_works_after_authentic
         Message::Ping(vec![1].into()),
         Message::Binary(vec![1].into()),
     ] {
-        let mut ws = connect(&f, Some("http://localhost:5173"), None)
+        let mut ws = connect(&f, Some("http://127.0.0.1:5173"), None)
             .await
             .unwrap();
         ws.send(frame).await.unwrap();
@@ -733,7 +774,7 @@ async fn authentication_frames_are_single_attempt_and_ping_works_after_authentic
         "x".repeat(44),
         "x".repeat(43),
     ] {
-        let mut ws = connect(&f, Some("http://localhost:5173"), None)
+        let mut ws = connect(&f, Some("http://127.0.0.1:5173"), None)
             .await
             .unwrap();
         transmit(&mut ws, &command("auth.hello", json!({"token": token}))).await;
@@ -783,7 +824,7 @@ async fn remote_commands_never_change_sessions_or_subscriptions() {
     assert!(f.backend.terminals()[0].input().is_empty());
     assert_eq!(f.backend.terminals()[0].size().cols, 80);
     assert!(!f.backend.terminals()[0].was_killed());
-    let mut unauth = connect(&f, Some("http://localhost:5173"), None)
+    let mut unauth = connect(&f, Some("http://127.0.0.1:5173"), None)
         .await
         .unwrap();
     transmit(
@@ -846,7 +887,7 @@ async fn unauthenticated_sockets_have_separate_bounded_slots() {
     let b = TcpStream::connect(("127.0.0.1", f.port)).await.unwrap();
     tokio::time::sleep(Duration::from_millis(20)).await;
     assert!(
-        connect(&f, Some("http://localhost:5173"), None)
+        connect(&f, Some("http://127.0.0.1:5173"), None)
             .await
             .is_err()
     );
@@ -856,7 +897,7 @@ async fn unauthenticated_sockets_have_separate_bounded_slots() {
     );
     tokio::time::sleep(Duration::from_millis(220)).await;
     drop((a, b));
-    let mut available = connect(&f, Some("http://localhost:5173"), None)
+    let mut available = connect(&f, Some("http://127.0.0.1:5173"), None)
         .await
         .unwrap();
     available.close(None).await.unwrap();
@@ -871,7 +912,7 @@ async fn handshake_and_hello_share_one_deadline() {
     tokio::time::sleep(Duration::from_millis(280)).await;
     // Complete the pending HTTP request with the client codec without writing its G twice.
     let request = format!(
-        "ET / HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nOrigin: http://localhost:5173\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+        "ET / HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nOrigin: http://127.0.0.1:5173\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
         f.port
     );
     stream.write_all(request.as_bytes()).await.unwrap();
@@ -899,6 +940,7 @@ async fn refusing_fixture(
     let error_text = Arc::new(std::sync::Mutex::new(String::new()));
     let peer_error = error_text.clone();
     let (near, mut far) = tokio::io::duplex(4096);
+    let peer_host = host.clone();
     let peer = tokio::spawn(async move {
         let mut refused = false;
         let mut subscriptions = 0;
@@ -944,6 +986,25 @@ async fn refusing_fixture(
                     _ => ResultBody::Empty(wire::Empty {}),
                 })
             };
+            if outcome.is_ok() && (target.starts_with("gap-") || target == "recover") {
+                match &request.call {
+                    Call::Open(params) => {
+                        peer_host
+                            .open(
+                                &params.session_id,
+                                &ads_ptyhost::SpawnSpec {
+                                    program: params.program.clone().into(),
+                                    ..Default::default()
+                                },
+                            )
+                            .unwrap();
+                    }
+                    Call::Close(params) => {
+                        peer_host.close(&params.session_id).await.unwrap();
+                    }
+                    _ => (),
+                }
+            }
             if let Call::Close(params) = &request.call
                 && target == "exit-before-close-response"
             {
@@ -1119,7 +1180,7 @@ async fn every_host_refusal_returns_its_code_and_service_survives() {
                 _ => result,
             };
             assert_eq!(result["error"]["code"], code.number(), "{target}: {code:?}");
-            if target == "close" {
+            if target == "close" && code != UnknownSession {
                 assert_eq!(
                     call(&mut ws, "session.close", json!({"session_id": "session"})).await["result"]
                         ["accepted"],
@@ -1233,9 +1294,86 @@ async fn fake_backend_existing_session_and_full_host_do_not_stop_service() {
 }
 
 #[tokio::test]
+async fn unknown_session_on_close_releases_the_slot() {
+    use ads_ptyhost::wire::ErrorCode::UnknownSession;
+    let (f, _) = refusing_fixture("max_sessions = 1", "close", UnknownSession, 0).await;
+    let mut ws = authenticated(&f).await;
+    assert_eq!(
+        call(&mut ws, "session.open", open_params("session")).await["result"]["accepted"],
+        true
+    );
+    assert_eq!(
+        call(&mut ws, "session.close", json!({"session_id": "session"})).await["error"]["code"],
+        UnknownSession.number()
+    );
+    assert_eq!(
+        call(&mut ws, "session.open", open_params("replacement")).await["result"]["accepted"],
+        true
+    );
+}
+
+#[tokio::test]
+async fn ended_sessions_can_be_closed_and_return_their_slots() {
+    let f = fixture("max_sessions = 2", Arc::new(TestLauncher)).await;
+    let mut ws = authenticated(&f).await;
+    for (index, id) in ["first", "second"].into_iter().enumerate() {
+        call(&mut ws, "session.open", open_params(id)).await;
+        call(
+            &mut ws,
+            "events.subscribe",
+            json!({"stream": format!("session/{id}"), "after_seq": 0}),
+        )
+        .await;
+        assert_eq!(receive(&mut ws).await["seq"], 1);
+        f.backend.terminals()[index].exit(0);
+        assert_eq!(
+            receive(&mut ws).await["type"],
+            "urn:ads:event:session.ended:1"
+        );
+    }
+    assert_eq!(
+        call(&mut ws, "session.open", open_params("third")).await["error"]["code"],
+        -32003
+    );
+    assert_eq!(f.host.sessions().len(), 2);
+    for id in ["first", "second"] {
+        assert_eq!(
+            call(&mut ws, "session.close", json!({"session_id": id})).await["result"]["accepted"],
+            true
+        );
+    }
+    assert!(f.host.sessions().is_empty());
+    assert_eq!(
+        call(&mut ws, "session.close", json!({"session_id": "first"})).await["error"]["code"],
+        -32602
+    );
+    assert_eq!(
+        call(&mut ws, "session.open", open_params("third")).await["result"]["accepted"],
+        true
+    );
+}
+
+async fn assert_invalidated_session_closed(f: &Fixture, ws: &mut Socket) {
+    bounded(async {
+        while !f.backend.terminals()[0].was_killed() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    assert_eq!(
+        call(ws, "session.close", json!({"session_id": "session"})).await["result"]["accepted"],
+        true
+    );
+    assert_eq!(
+        call(ws, "session.open", open_params("replacement")).await["result"]["accepted"],
+        true
+    );
+}
+
+#[tokio::test]
 async fn failed_host_resubscribe_invalidates_only_the_affected_stream() {
     let (f, _) = refusing_fixture(
-        "",
+        "max_sessions = 1",
         "recover",
         ads_ptyhost::wire::ErrorCode::ReplayEvicted,
         0,
@@ -1269,6 +1407,7 @@ async fn failed_host_resubscribe_invalidates_only_the_affected_stream() {
         .await["result"]["accepted"],
         true
     );
+    assert_invalidated_session_closed(&f, &mut ws).await;
     assert!(!f.api.is_finished());
 }
 
@@ -1301,8 +1440,13 @@ async fn host_timeout_ends_the_service_after_an_uncertain_command() {
 #[tokio::test]
 async fn host_event_gaps_refuse_replay_without_stopping_the_service() {
     for target in ["gap-output", "gap-exit", "gap-close"] {
-        let (f, _) =
-            refusing_fixture("", target, ads_ptyhost::wire::ErrorCode::InternalError, 0).await;
+        let (f, _) = refusing_fixture(
+            "max_sessions = 1",
+            target,
+            ads_ptyhost::wire::ErrorCode::InternalError,
+            0,
+        )
+        .await;
         let mut ws = authenticated(&f).await;
         call(&mut ws, "session.open", open_params("session")).await;
         assert_eq!(
@@ -1328,6 +1472,7 @@ async fn host_event_gaps_refuse_replay_without_stopping_the_service() {
             call(&mut ws, "unknown", json!({})).await["error"]["code"],
             -32601
         );
+        assert_invalidated_session_closed(&f, &mut ws).await;
         assert!(!f.api.is_finished());
     }
 }

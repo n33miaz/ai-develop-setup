@@ -7,6 +7,8 @@ import { wireValidators } from './scripts/wire-validators.mjs'
 export default defineConfig({
   base: './',
   plugins: [react(), wireValidators(), pwa()],
+  server: { port: 5173, strictPort: true, host: '127.0.0.1' },
+  preview: { port: 5173, strictPort: true, host: '127.0.0.1' },
   build: { target: 'es2022' },
   test: {
     environment: 'jsdom',

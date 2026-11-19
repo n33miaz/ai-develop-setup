@@ -71,7 +71,7 @@ async fn binary_stdout_contains_only_the_launch_url() {
         .unwrap()
         .unwrap();
     let (base, fragment) = line.trim_end().split_once('#').unwrap();
-    assert_eq!(base, "http://localhost:5173/");
+    assert_eq!(base, "http://127.0.0.1:5173/");
     let (core, token) = fragment.split_once("&token=").unwrap();
     assert!(core.starts_with("core=ws://127.0.0.1:"));
     assert!(
