@@ -6,7 +6,7 @@ Exceção prevista, ainda não usada: `ads-adapter-vault` vai precisar de chamad
 
 | Crate | Blocos `unsafe` | Motivo |
 |---|---|---|
-| `ads-ptyhost` | 27 | chamadas da API do Windows, listadas abaixo |
+| `ads-ptyhost` | 30 | chamadas da API do Windows, listadas abaixo |
 | `ads-adapter-fs` | 4 | chamadas da API do Windows para abrir, mover e apagar por identificador aberto, listadas abaixo; no Linux as mesmas operações vêm do `rustix`, sem `unsafe` |
 | `ads-storage` | 0 | SQLite e cifra pelas APIs seguras das dependências; herda `forbid` |
 | demais | 0 | nenhum |
@@ -21,6 +21,7 @@ Cada bloco é uma única operação (uma chamada da API do Windows pelo crate `w
 | `JobObject::assign` | 1 | `AssignProcessToJobObject` | pôr o processo raiz da sessão no job |
 | `JobObject::terminate` | 1 | `TerminateJobObject` | encerrar a árvore inteira ao fechar a sessão |
 | `JobObject::process_ids` | 1 | `QueryInformationJobObject` | listar os processos vivos da sessão |
+| `ProcessProbe::open`, `ProcessProbe::is_alive` | 3 | `OpenProcess`, `OwnedHandle::from_raw_handle`, `WaitForSingleObject` | acompanhar o mesmo processo pelo handle e consultar seu encerramento sem bloquear |
 | `own_handle_count` | 1 | `GetProcessHandleCount` | medir os handles abertos do próprio processo (prova de que não vazam) |
 | `process_table` | 4 | `CreateToolhelp32Snapshot`, `OwnedHandle::from_raw_handle`, `Process32FirstW`, `Process32NextW` | listar os processos do sistema com o pai (prova de que não sobra filho) |
 | `LocalMemory::drop` | 1 | `LocalFree` | liberar a memória que o sistema alocou (texto do identificador, descritor de segurança) |
