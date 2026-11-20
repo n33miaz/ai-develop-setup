@@ -7,6 +7,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { createAjv, loadSchemas } from "./lib.mjs";
 import { planHash } from "./rules.mjs";
+import { readAlphabet, titlePatterns } from "./title-alphabet.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const corpus = JSON.parse(fs.readFileSync(path.join(root, "corpus", "abspath.json"), "utf8"));
@@ -109,22 +110,33 @@ test("todo caminho dos dourados válidos de record.action-plan cabe na abspath:2
 });
 
 // O alfabeto do título (corpus/title-chars.json) contra o Schema; crates/contracts/tests/title_corpus.rs confere o
-// tipo Rust contra o mesmo arquivo, e assim os dois aceitam o mesmo conjunto em qualquer versão de Unicode.
-test("título aceita exatamente o alfabeto do corpus", () => {
-  const alphabet = JSON.parse(fs.readFileSync(path.join(root, "corpus", "title-chars.json"), "utf8"));
+// tipo Rust contra o mesmo arquivo. Os padrões são faixas explícitas do Unicode 16 montadas das classes do corpus, então
+// os dois aceitam o mesmo conjunto em qualquer versão de Unicode do motor.
+test("o Schema do título é montado das faixas do corpus", () => {
+  const { pattern, not } = titlePatterns(readAlphabet().classes);
+  const schema = JSON.parse(fs.readFileSync(path.join(root, "schemas", "record.queue-task.v1.schema.json"), "utf8"));
+  assert.equal(schema.properties.title.pattern, pattern, "rode node tools/title-alphabet.mjs --write");
+  assert.deepEqual(schema.properties.title.not, { pattern: not }, "rode node tools/title-alphabet.mjs --write");
+});
+
+test("título aceita exatamente o alfabeto do corpus em cada posição", () => {
+  const alphabet = readAlphabet();
   const errors = [];
   const ajv = createAjv();
   for (const { schema } of loadSchemas(root, errors)) ajv.addSchema(schema);
   assert.deepEqual(errors, []);
   const validate = ajv.getSchema(`${alphabet.schema}#/properties/title`);
-  const ranges = [];
-  for (let code = 0; code <= 0x10ffff; code += 1) {
-    if (code >= 0xd800 && code <= 0xdfff) continue;
-    if (!validate(alphabet.probe + String.fromCodePoint(code))) continue;
-    const last = ranges.at(-1);
-    if (last && last[1] + 1 === code) last[1] = code;
-    else ranges.push([code, code]);
-  }
   const hex = (n) => n.toString(16).toUpperCase().padStart(4, "0");
-  assert.deepEqual(ranges.map(([a, b]) => [hex(a), hex(b)]), alphabet.accepted);
+  assert.ok(alphabet.probes.length >= 3, "o corpus testa várias posições");
+  for (const { template, accepted } of alphabet.probes) {
+    const ranges = [];
+    for (let code = 0; code <= 0x10ffff; code += 1) {
+      if (code >= 0xd800 && code <= 0xdfff) continue;
+      if (!validate(template.replace("{c}", String.fromCodePoint(code)))) continue;
+      const last = ranges.at(-1);
+      if (last && last[1] + 1 === code) last[1] = code;
+      else ranges.push([code, code]);
+    }
+    assert.deepEqual(ranges.map(([a, b]) => [hex(a), hex(b)]), accepted, template);
+  }
 });

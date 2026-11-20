@@ -49,8 +49,8 @@ function rawString(text) {
 }
 
 // Categorias gerais que o Ajv (flag `u`) e o regex do Rust leem com a mesma sintaxe. O conteúdo de cada uma segue a
-// versão de Unicode de cada motor: um padrão que dependa dela recusa explicitamente o que não é atribuído na versão
-// fixada e tem corpus comum aos dois lados (corpus/title-chars.json).
+// versão de Unicode de cada motor. Um contrato cujo resultado não pode variar com essa versão usa faixas explícitas
+// de uma versão fixa, como o título da tarefa da fila (corpus/title-chars.json e tools/title-alphabet.mjs).
 const UNICODE_CATEGORIES = new Set(["L", "M", "N", "P", "S", "Zs", "Cc", "Cf", "Co", "Cn"]);
 
 // Traduz a expressão regular do Schema (ECMA-262) para a sintaxe do regex do Rust, aceitando só o subconjunto em que

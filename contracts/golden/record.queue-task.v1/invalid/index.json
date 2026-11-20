@@ -132,13 +132,13 @@
     "instancePath": "/title"
   },
   "title-variation.json": {
-    "rule": "O título recusa seletores de variação além do de emoji.",
-    "keyword": "not",
+    "rule": "O título recusa seletores de variação.",
+    "keyword": "pattern",
     "instancePath": "/title"
   },
   "title-variation-supplement.json": {
     "rule": "O título recusa seletores de variação suplementares.",
-    "keyword": "not",
+    "keyword": "pattern",
     "instancePath": "/title"
   },
   "title-soft-hyphen.json": {
@@ -148,7 +148,7 @@
   },
   "title-hangul-filler.json": {
     "rule": "O título recusa preenchedores Hangul invisíveis.",
-    "keyword": "not",
+    "keyword": "pattern",
     "instancePath": "/title"
   },
   "title-private-use.json": {
@@ -187,43 +187,43 @@
     "instancePath": "/branch"
   },
   "title-vs16-letter.json": {
-    "rule": "O seletor de emoji só acompanha símbolo ou tecla.",
-    "keyword": "not",
+    "rule": "O título recusa o seletor de apresentação de emoji.",
+    "keyword": "pattern",
     "instancePath": "/title"
   },
   "title-zwj-letters.json": {
-    "rule": "O ZWJ só une símbolos.",
-    "keyword": "not",
+    "rule": "O título recusa o ZWJ.",
+    "keyword": "pattern",
     "instancePath": "/title"
   },
   "title-zwj-edge.json": {
-    "rule": "O ZWJ não fica antes de espaço nem no fim.",
-    "keyword": "not",
+    "rule": "O título recusa o ZWJ.",
+    "keyword": "pattern",
     "instancePath": "/title"
   },
   "title-khmer-vowel.json": {
     "rule": "O título recusa vogais inerentes invisíveis.",
-    "keyword": "not",
+    "keyword": "pattern",
     "instancePath": "/title"
   },
   "title-braille-blank.json": {
     "rule": "O título recusa o braille em branco.",
-    "keyword": "not",
+    "keyword": "pattern",
     "instancePath": "/title"
   },
   "title-khitan-filler.json": {
     "rule": "O título recusa preenchedores invisíveis.",
-    "keyword": "not",
+    "keyword": "pattern",
     "instancePath": "/title"
   },
   "title-null-notehead.json": {
     "rule": "O título recusa símbolos que não aparecem.",
-    "keyword": "not",
+    "keyword": "pattern",
     "instancePath": "/title"
   },
   "title-object-replacement.json": {
     "rule": "O título recusa o caractere de substituição de objeto.",
-    "keyword": "not",
+    "keyword": "pattern",
     "instancePath": "/title"
   },
   "title-spaces.json": {
@@ -243,6 +243,31 @@
   },
   "title-new-unicode.json": {
     "rule": "O título aceita só pontos de código atribuídos no Unicode 16.",
+    "keyword": "pattern",
+    "instancePath": "/title"
+  },
+  "title-emoji-selector.json": {
+    "rule": "O emoji entra sem o seletor de apresentação.",
+    "keyword": "pattern",
+    "instancePath": "/title"
+  },
+  "title-zwj-sequence.json": {
+    "rule": "Sequências de emoji unidas por ZWJ são recusadas.",
+    "keyword": "pattern",
+    "instancePath": "/title"
+  },
+  "title-leading-space.json": {
+    "rule": "O título não começa com espaço.",
+    "keyword": "not",
+    "instancePath": "/title"
+  },
+  "title-trailing-space.json": {
+    "rule": "O título não termina com espaço.",
+    "keyword": "not",
+    "instancePath": "/title"
+  },
+  "title-double-space.json": {
+    "rule": "O título não repete espaços.",
     "keyword": "not",
     "instancePath": "/title"
   }
