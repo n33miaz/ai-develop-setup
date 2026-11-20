@@ -235,6 +235,8 @@ struct Retry {
     due: Instant,
 }
 struct Service {
+    #[cfg(test)]
+    before_setup: Arc<Gate>,
     host: PtyClient,
     launcher: Arc<dyn Launcher>,
     config: ApiConfig,
@@ -334,6 +336,8 @@ impl Service {
                     },
                 );
                 let setup = async {
+                    #[cfg(test)]
+                    self.before_setup.pass().await;
                     self.log.lock().await.append(id, "created", json!({"session_id": id, "task_id": null, "harness": params["harness"], "mode": "interactive", "cols": params["cols"], "rows": params["rows"], "workdir_alias": params["workdir_alias"]}), cause)?;
                     self.wait_host(host.subscribe(request.session_id.clone(), Some(0)), deadline).await
                         // O prazo vence aqui, no caminho que guarda o registro e agenda o fechamento.
@@ -532,6 +536,9 @@ impl Service {
         let expired = tokio::time::sleep_until(deadline);
         tokio::pin!(expired);
         loop {
+            if Instant::now() >= deadline {
+                return Err(ApiError::HostTimeout);
+            }
             tokio::select! {
                 result = &mut future => return result.map_err(host_error),
                 event = self.host.next() => self.event(event.map_err(host_error)?).await?,
@@ -629,6 +636,7 @@ pub struct LocalApi {
     token: Token,
     config: ApiConfig,
     service: Service,
+    pending: Arc<Semaphore>,
     hooks: Arc<TestHooks>,
 }
 
@@ -637,6 +645,8 @@ pub struct LocalApi {
 pub struct Gate {
     closed: AtomicBool,
     opened: Notify,
+    #[cfg(test)]
+    reached: Notify,
 }
 impl Gate {
     pub fn hold(&self) {
@@ -654,6 +664,8 @@ impl Gate {
             if !self.closed.load(Ordering::Acquire) {
                 return;
             }
+            #[cfg(test)]
+            self.reached.notify_one();
             opened.await;
         }
     }
@@ -664,6 +676,7 @@ impl Gate {
 #[derive(Default)]
 pub struct TestHooks {
     accept_faults: AtomicUsize,
+    accept_retry: Gate,
     /// Depois do upgrade, antes do `auth.hello`.
     pub after_upgrade: Gate,
     /// Na tarefa expulsa, antes de ela terminar e devolver a vaga.
@@ -725,12 +738,8 @@ impl Admitter<'_> {
     /// Conexão que já fez upgrade conserva a vaga até autenticar ou vencer o prazo; se todas fizeram, a nova é recusada.
     async fn admit(&self) -> Admission {
         loop {
-            let (stream, _) = accept_retry(
-                self.listener,
-                self.config.accept_retry_ms,
-                &self.hooks.accept_faults,
-            )
-            .await;
+            let (stream, _) =
+                accept_retry(self.listener, self.config.accept_retry_ms, &self.hooks).await;
             let permit = match self.pending.clone().try_acquire_owned() {
                 Ok(permit) => permit,
                 Err(_) => {
@@ -808,6 +817,8 @@ impl LocalApi {
             config.retired_sessions,
         )));
         let service = Service {
+            #[cfg(test)]
+            before_setup: Arc::default(),
             host,
             launcher,
             config: config.clone(),
@@ -821,6 +832,7 @@ impl LocalApi {
         Ok(Self {
             listener,
             token,
+            pending: Arc::new(Semaphore::new(config.max_pending_auth)),
             config,
             service,
             hooks: Arc::new(TestHooks::default()),
@@ -847,6 +859,7 @@ impl LocalApi {
             token,
             config,
             mut service,
+            pending,
             hooks,
         } = self;
         let token = Arc::new(token);
@@ -860,7 +873,7 @@ impl LocalApi {
         let admitter = Admitter {
             listener: &listener,
             config: &config,
-            pending: Arc::new(Semaphore::new(config.max_pending_auth)),
+            pending,
             waiting: std::sync::Mutex::new(VecDeque::new()),
             hooks: hooks.clone(),
         };
@@ -900,7 +913,7 @@ impl LocalApi {
     }
 }
 
-async fn retry_io<T, F, Fut>(mut operation: F, delay_ms: u64) -> T
+async fn retry_io<T, F, Fut>(mut operation: F, delay_ms: u64, retry: &Gate) -> T
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = std::io::Result<T>>,
@@ -911,6 +924,7 @@ where
             Err(_) => {
                 eprintln!("ads-daemon: local accept failed; retrying");
                 tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                retry.pass().await;
             }
         }
     }
@@ -918,11 +932,12 @@ where
 async fn accept_retry(
     listener: &TcpListener,
     delay_ms: u64,
-    faults: &AtomicUsize,
+    hooks: &TestHooks,
 ) -> (TcpStream, std::net::SocketAddr) {
     retry_io(
         || async {
-            if faults
+            if hooks
+                .accept_faults
                 .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1))
                 .is_ok()
             {
@@ -931,6 +946,7 @@ async fn accept_retry(
             listener.accept().await
         },
         delay_ms,
+        &hooks.accept_retry,
     )
     .await
 }
@@ -1230,6 +1246,7 @@ mod tests {
                 })
             },
             10,
+            &Gate::default(),
         )
         .await;
         assert_eq!(value, 42);
@@ -1243,8 +1260,12 @@ mod tests {
         assert_eq!(consume_hello(&mut hello).unwrap(), "request");
         assert!(hello.is_none());
     }
-    #[tokio::test]
-    async fn failed_created_event_closes_the_opened_host_session() {
+    async fn fake_service() -> (
+        LocalApi,
+        Arc<ads_ptyhost::FakeBackend>,
+        Arc<ads_ptyhost::PtyHost>,
+        tokio::task::JoinHandle<()>,
+    ) {
         use crate::pty_client::ClientConfig;
         use ads_ptyhost::{FakeBackend, HostConfig, PtyHost, server};
         struct FakeLauncher;
@@ -1263,13 +1284,90 @@ mod tests {
         let client = PtyClient::over(near, ClientConfig::recommended(host.config()))
             .await
             .unwrap();
-        let mut api = LocalApi::bind(
-            ApiConfig::from_toml_str("").unwrap(),
+        let api = LocalApi::bind(
+            ApiConfig::from_toml_str("max_sessions = 1").unwrap(),
             client,
             Arc::new(FakeLauncher),
         )
         .await
         .unwrap();
+        (api, backend, host, peer)
+    }
+
+    #[tokio::test]
+    async fn confirmed_open_with_expired_setup_budget_schedules_cleanup() {
+        let (mut api, backend, host, peer) = fake_service().await;
+        let gate = api.service.before_setup.clone();
+        gate.hold();
+        let params = json!({"session_id": "session", "harness": "test", "workdir_alias": "workspace", "cols": 80, "rows": 24, "_meta": {"origin": "local", "idempotency_key": "01ARZ3NDEKTSV4RRFFQ69G5FAB"}});
+        let budget = Duration::from_secs(5);
+        let deadline = Instant::now() + budget;
+        let (result, ()) = timeout(Duration::from_secs(10), async {
+            tokio::join!(
+                api.service.execute("session.open", &params, None, deadline),
+                async {
+                    gate.reached.notified().await;
+                    assert_eq!(host.sessions().len(), 1);
+                    tokio::time::pause();
+                    tokio::time::advance(budget).await;
+                    gate.release();
+                }
+            )
+        })
+        .await
+        .unwrap();
+        tokio::time::resume();
+        assert_eq!(result.map(|_| ()), Err(ApiError::SetupTimeout));
+        assert_eq!(api.service.retries.len(), 1);
+        let mut other = params.clone();
+        other["session_id"] = json!("other");
+        assert_eq!(
+            api.service
+                .execute("session.open", &other, None, Instant::now() + budget)
+                .await
+                .map(|_| ()),
+            Err(ApiError::Capacity)
+        );
+        api.service.retry_close().await.unwrap();
+        assert!(backend.terminals()[0].was_killed());
+        assert!(host.sessions().is_empty());
+        assert!(api.service.sessions.is_empty());
+        assert!(
+            api.service
+                .execute("session.open", &params, None, Instant::now() + budget)
+                .await
+                .is_ok()
+        );
+        assert_eq!(host.sessions().len(), 1);
+        assert!(api.service.retries.is_empty());
+        peer.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn ready_host_call_is_not_polled_at_the_deadline() {
+        let (mut api, _, _, peer) = fake_service().await;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let ready = || std::future::ready(Ok::<_, ClientError>(()));
+        assert_eq!(api.service.wait_host(ready(), deadline).await, Ok(()));
+        tokio::time::advance(Duration::from_secs(5)).await;
+        let mut polls = 0;
+        for _ in 0..32 {
+            let response = std::future::poll_fn(|_| {
+                polls += 1;
+                std::task::Poll::Ready(Ok::<_, ClientError>(()))
+            });
+            assert_eq!(
+                api.service.wait_host(response, deadline).await,
+                Err(ApiError::HostTimeout)
+            );
+        }
+        assert_eq!(polls, 0);
+        peer.abort();
+    }
+
+    #[tokio::test]
+    async fn failed_created_event_closes_the_opened_host_session() {
+        let (mut api, backend, host, peer) = fake_service().await;
         api.service.log.lock().await.exhaust_sequence("session");
         let params = json!({"session_id": "session", "harness": "test", "workdir_alias": "workspace", "cols": 80, "rows": 24, "_meta": {"origin": "local", "idempotency_key": "01ARZ3NDEKTSV4RRFFQ69G5FAB"}});
         assert_eq!(
@@ -1438,6 +1536,7 @@ mod tests {
             .await
             .unwrap();
         let start = Instant::now();
+        hooks.accept_retry.hold();
         hooks.fail_accepts(25);
         // The accept already waiting takes this socket; the next ones hit the injected failures.
         let _armed = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
@@ -1445,16 +1544,28 @@ mod tests {
             let token = token.clone();
             async move { authenticate(port, &token).await }
         });
-        // While accept keeps failing, the service still answers a command routed through it.
+        timeout(
+            Duration::from_secs(5),
+            hooks.accept_retry.reached.notified(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(hooks.accept_faults_left(), 24);
+        // The service answers while the next accept attempt is held.
         let subscribe = json!({"jsonrpc": "2.0", "id": "01ARZ3NDEKTSV4RRFFQ69G5FAC", "method": "events.subscribe", "params": {"stream": "session/none", "after_seq": 0, "_meta": {"origin": "local", "idempotency_key": "01ARZ3NDEKTSV4RRFFQ69G5FAC"}}});
         first
             .send(Message::Text(subscribe.to_string().into()))
             .await
             .unwrap();
-        let reply: Value =
-            serde_json::from_str(first.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+        let reply = timeout(Duration::from_secs(5), first.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let reply: Value = serde_json::from_str(reply.to_text().unwrap()).unwrap();
         assert_eq!(reply["result"]["accepted"], true);
-        assert!(hooks.accept_faults_left() > 0);
+        assert_eq!(hooks.accept_faults_left(), 24);
+        hooks.accept_retry.release();
         timeout(Duration::from_secs(5), late)
             .await
             .unwrap()
@@ -1486,6 +1597,7 @@ mod tests {
         .unwrap();
         let port = api.port().unwrap();
         let hooks = api.test_hooks();
+        let pending = api.pending.clone();
         let running = tokio::spawn(api.run());
         let wait_live = |count: usize| {
             let hooks = hooks.clone();
@@ -1504,7 +1616,13 @@ mod tests {
         // The evicted task is held before it ends, so its slot is still taken.
         hooks.evicted_exit.hold();
         let _newest = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        timeout(
+            Duration::from_secs(5),
+            hooks.evicted_exit.reached.notified(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(pending.available_permits(), 0);
         assert_eq!(hooks.pending().0, 1);
         assert_eq!(hooks.pending().1, 1);
         hooks.evicted_exit.release();

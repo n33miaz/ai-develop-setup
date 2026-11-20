@@ -2221,6 +2221,97 @@ async fn subscribe_without_host_reply_keeps_the_record_and_schedules_the_close()
 }
 
 #[tokio::test]
+async fn waiting_stream_eviction_wakes_an_idle_websocket() {
+    let f = fixture("retired_sessions = 1", Arc::new(TestLauncher)).await;
+    let mut watcher = authenticated(&f).await;
+    let mut control = authenticated(&f).await;
+    let first = command(
+        "events.subscribe",
+        json!({"stream": "session/a", "after_seq": 0}),
+    );
+    transmit(&mut watcher, &first).await;
+    assert_eq!(receive(&mut watcher).await["result"]["accepted"], true);
+    bounded(watcher.send(Message::Ping(vec![1].into())))
+        .await
+        .unwrap();
+    assert_eq!(
+        bounded(watcher.next()).await.unwrap().unwrap(),
+        Message::Pong(vec![1].into())
+    );
+    assert_eq!(
+        call(
+            &mut control,
+            "events.subscribe",
+            json!({"stream": "session/b", "after_seq": 0}),
+        )
+        .await["result"]["accepted"],
+        true
+    );
+    let ended = receive(&mut watcher).await;
+    assert_eq!(ended["id"], first["id"]);
+    assert_eq!(ended["error"]["code"], -32004);
+}
+
+#[tokio::test]
+async fn waiting_stream_survives_cleanup_and_resubscription_to_the_same_id() {
+    let (f, _) = scripted_fixture(
+        "retired_sessions = 2",
+        "subscribe",
+        ads_ptyhost::wire::ErrorCode::InternalError,
+        0,
+        &[("subscribe", 1)],
+    )
+    .await;
+    let mut watcher = authenticated(&f).await;
+    let mut control = authenticated(&f).await;
+    let first = command(
+        "events.subscribe",
+        json!({"stream": "session/a", "after_seq": 0}),
+    );
+    transmit(&mut watcher, &first).await;
+    assert_eq!(receive(&mut watcher).await["result"]["accepted"], true);
+    assert_eq!(
+        call(&mut control, "session.open", open_params("a")).await["error"]["code"],
+        ads_ptyhost::wire::ErrorCode::InternalError.number()
+    );
+    loop {
+        let event = receive(&mut watcher).await;
+        if event["id"] == first["id"] {
+            assert_eq!(event["error"]["code"], -32004);
+            break;
+        }
+        assert_eq!(event["type"], "urn:ads:event:session.created:1");
+    }
+    assert!(f.host.sessions().is_empty());
+    assert_eq!(
+        call(
+            &mut watcher,
+            "events.subscribe",
+            json!({"stream": "session/a", "after_seq": 0})
+        )
+        .await["result"]["accepted"],
+        true
+    );
+    let mut other = authenticated(&f).await;
+    assert_eq!(
+        call(
+            &mut other,
+            "events.subscribe",
+            json!({"stream": "session/b", "after_seq": 0})
+        )
+        .await["result"]["accepted"],
+        true
+    );
+    assert_eq!(
+        call(&mut control, "session.open", open_params("a")).await["result"]["accepted"],
+        true
+    );
+    let created = receive(&mut watcher).await;
+    assert_eq!(created["stream"], "session/a");
+    assert_eq!(created["type"], "urn:ads:event:session.created:1");
+}
+
+#[tokio::test]
 async fn early_subscriber_held_across_reuse_never_follows_the_new_session() {
     let f = fixture(
         "max_sessions = 2\nretired_sessions = 2",
@@ -2264,6 +2355,76 @@ async fn early_subscriber_held_across_reuse_never_follows_the_new_session() {
     let created = receive(&mut watcher).await;
     assert_eq!(created["stream"], "session/later");
     assert_eq!(created["type"], "urn:ads:event:session.created:1");
+}
+
+#[tokio::test]
+async fn queued_host_output_stays_with_the_session_closed_before_id_reuse() {
+    let f = fixture(
+        "max_sessions = 1\nretired_sessions = 1",
+        Arc::new(TestLauncher),
+    )
+    .await;
+    let mut control = authenticated(&f).await;
+    let mut watcher = authenticated(&f).await;
+    let subscribe = command(
+        "events.subscribe",
+        json!({"stream": "session/a", "after_seq": 0}),
+    );
+    transmit(&mut watcher, &subscribe).await;
+    assert_eq!(receive(&mut watcher).await["result"]["accepted"], true);
+    assert_eq!(
+        call(&mut control, "session.open", open_params("a")).await["result"]["accepted"],
+        true
+    );
+    assert_eq!(receive(&mut watcher).await["seq"], 1);
+    f.hooks.before_delivery.hold();
+    f.backend.terminals()[0].emit(b"previous");
+    for id in ["a", "b", "c"] {
+        if id != "a" {
+            assert_eq!(
+                call(&mut control, "session.open", open_params(id)).await["result"]["accepted"],
+                true
+            );
+        }
+        assert_eq!(
+            call(&mut control, "session.close", json!({"session_id": id})).await["result"]["accepted"],
+            true
+        );
+    }
+    assert_eq!(
+        call(&mut control, "session.open", open_params("a")).await["result"]["accepted"],
+        true
+    );
+    f.hooks.before_delivery.release();
+    let ended = receive(&mut watcher).await;
+    assert_eq!(ended["id"], subscribe["id"]);
+    assert_eq!(ended["error"]["code"], -32004);
+    assert_eq!(
+        call(
+            &mut watcher,
+            "events.subscribe",
+            json!({"stream": "session/a", "after_seq": 0})
+        )
+        .await["result"]["accepted"],
+        true
+    );
+    assert_eq!(
+        receive(&mut watcher).await["type"],
+        "urn:ads:event:session.created:1"
+    );
+    assert_eq!(
+        call(
+            &mut control,
+            "session.write",
+            json!({"session_id": "a", "data": STANDARD.encode(b"current")})
+        )
+        .await["result"]["accepted"],
+        true
+    );
+    let output = receive(&mut watcher).await;
+    assert_eq!(output["seq"], 2);
+    assert_eq!(output["data"]["offset"], 0);
+    assert_eq!(output["data"]["payload"], STANDARD.encode(b"current"));
 }
 
 #[tokio::test]

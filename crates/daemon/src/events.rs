@@ -127,7 +127,7 @@ pub struct EventLog {
     streams: HashMap<String, Arc<Stream>>,
     capacity: usize,
     retired: VecDeque<String>,
-    waiting: VecDeque<String>,
+    waiting: VecDeque<(String, Arc<Stream>)>,
     retired_capacity: usize,
     changed: watch::Sender<()>,
 }
@@ -162,7 +162,11 @@ impl EventLog {
     }
     fn evict(&mut self, name: &str) {
         if let Some(stream) = self.streams.remove(name) {
-            stream.state().detach();
+            let mut state = stream.state();
+            if !state.opened && !state.retired {
+                self.waiting.retain(|(waiting, _)| waiting != name);
+            }
+            state.detach();
         }
     }
     pub(crate) fn remove(&mut self, session: &str) {
@@ -174,6 +178,9 @@ impl EventLog {
         let name = format!("session/{session}");
         let stream = self.streams.entry(name.clone()).or_default();
         let mut state = stream.state();
+        if !state.opened && !state.retired {
+            self.waiting.retain(|(waiting, _)| waiting != &name);
+        }
         state.events.clear();
         state.finish(ApiError::Replay);
         if !state.retired {
@@ -238,9 +245,12 @@ impl EventLog {
             }),
         )?;
         // Um stream assinado antes do open é a mesma encarnação que a sessão passa a preencher.
-        let stream = self.streams.entry(name).or_default();
+        let stream = self.streams.entry(name.clone()).or_default();
         let mut state = stream.state();
-        state.opened = true;
+        if !state.opened {
+            self.waiting.retain(|(waiting, _)| waiting != &name);
+            state.opened = true;
+        }
         state.last = seq;
         state.events.push_back(event);
         while state.events.len() > self.capacity {
@@ -260,13 +270,16 @@ impl EventLog {
             }
             let entry = Arc::new(Stream::default());
             self.streams.insert(stream.to_owned(), entry.clone());
-            self.waiting.push_back(stream.to_owned());
-            while self.waiting.len() > self.retired_capacity {
-                if let Some(oldest) = self.waiting.pop_front()
-                    && self.streams.get(&oldest).is_some_and(|s| !s.state().opened)
-                {
-                    self.evict(&oldest);
-                }
+            self.waiting.push_back((stream.to_owned(), entry.clone()));
+            if self.waiting.len() > self.retired_capacity
+                && let Some((oldest, incarnation)) = self.waiting.pop_front()
+                && self
+                    .streams
+                    .get(&oldest)
+                    .is_some_and(|current| Arc::ptr_eq(current, &incarnation))
+            {
+                self.evict(&oldest);
+                self.changed.send_replace(());
             }
             return Ok(entry);
         };
