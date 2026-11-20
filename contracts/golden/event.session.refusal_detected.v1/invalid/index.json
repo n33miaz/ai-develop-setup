@@ -20,8 +20,23 @@
     "instancePath": "/data"
   },
   "model.json": {
-    "rule": "O modelo tem de 1 a 128 caracteres.",
-    "keyword": "minLength",
+    "rule": "O modelo é um identificador curto do catálogo, sem espaço, maiúscula nem texto livre.",
+    "keyword": "pattern",
+    "instancePath": "/data/model"
+  },
+  "model-free-text.json": {
+    "rule": "O modelo é um identificador curto do catálogo, sem espaço, maiúscula nem texto livre.",
+    "keyword": "pattern",
+    "instancePath": "/data/model"
+  },
+  "model-credential.json": {
+    "rule": "O modelo é um identificador curto do catálogo, sem espaço, maiúscula nem texto livre.",
+    "keyword": "pattern",
+    "instancePath": "/data/model"
+  },
+  "model-length.json": {
+    "rule": "O modelo é um identificador curto do catálogo, sem espaço, maiúscula nem texto livre.",
+    "keyword": "pattern",
     "instancePath": "/data/model"
   }
 }

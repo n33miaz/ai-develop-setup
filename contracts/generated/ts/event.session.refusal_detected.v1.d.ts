@@ -1,7 +1,7 @@
 /* Gerado por tools/gen-ts.mjs a partir de schemas/event.session.refusal_detected.v1.schema.json. Não edite à mão. */
 
 /**
- * Recusa ou filtro detectado. A ferramenta recusou um pedido ou um filtro de segurança interrompeu a sessão. Só metadados: ferramenta, provedor, modelo e tipo. O texto do pedido e da resposta não cabe no evento.
+ * Recusa ou filtro detectado. A ferramenta recusou um pedido ou um filtro de segurança interrompeu a sessão. Só metadados: ferramenta, provedor, identificador do modelo no catálogo e tipo. O texto do pedido e da resposta não cabe no evento.
  */
 export type EventSessionRefusalDetectedV1 = EventEnvelopeV1 & {
   type: "urn:ads:event:session.refusal_detected:1";
@@ -11,6 +11,9 @@ export type EventSessionRefusalDetectedV1 = EventEnvelopeV1 & {
     session_id: CommonIdV1;
     harness: CommonIdV1;
     provider: CommonIdV1;
+    /**
+     * Identificador de um modelo do catálogo configurado: 1 a 48 caracteres de minúsculas, dígitos e . _ -, começando por minúscula ou dígito. Não é texto livre.
+     */
     model: string;
     kind: "refusal" | "safety_filter";
   };

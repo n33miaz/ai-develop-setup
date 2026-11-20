@@ -1,13 +1,16 @@
 use ads_contracts::{
-    CommonDataClassV1 as Class, CommonIdV1, EventSessionHandoffV2, EventSessionRefusalDetectedV1,
-    EventSessionRefusalDetectedV1Data, RecordSessionHandoffV2Trigger as Trigger,
+    CommonDataClassV1 as Class, CommonIdV1, CommonTimestampV1, EventSessionHandoffV3,
+    EventSessionRefusalDetectedV1, EventSessionRefusalDetectedV1Data,
+    EventSessionRefusalDetectedV1DataKind as Kind, RecordSessionHandoffV2Trigger as Trigger,
     RecordTaskPacketV1,
 };
 use ads_core::budget::{BudgetDecision, Dimension};
 use ads_core::handoff::HandoffPolicy;
-use ads_core::refusal::{AcceptError, DEFAULT_POLICY, Offer, RefusalPolicy, RouteContext};
+use ads_core::refusal::{
+    AcceptError, DEFAULT_POLICY, DetectError, Offer, RefusalPolicy, RouteContext, detected,
+};
 use ads_core::routing::{
-    Candidate, QuotaObservation, QuotaState, Route, RoutingPolicy, Size, TaskProfile,
+    Candidate, QuotaObservation, QuotaState, RoutingPolicy, Size, TaskProfile,
 };
 use serde_json::json;
 
@@ -15,10 +18,15 @@ const TASK: &str =
     include_str!("../../../contracts/golden/record.task-packet.v1/valid/01-base.json");
 const REFUSAL: &str =
     include_str!("../../../contracts/golden/event.session.refusal_detected.v1/valid/01.json");
+/// Accepted by device-1 for handoff-1 and session-1, naming the alternative `b-z`.
 const ACCEPTED: &str =
-    include_str!("../../../contracts/golden/event.session.handoff.v2/valid/02.json");
+    include_str!("../../../contracts/golden/event.session.handoff.v3/valid/05.json");
+/// The same acceptance without a named alternative, as for a context handoff.
+const ACCEPTED_BARE: &str =
+    include_str!("../../../contracts/golden/event.session.handoff.v3/valid/02.json");
 const PROPOSED: &str =
-    include_str!("../../../contracts/golden/event.session.handoff.v2/valid/01.json");
+    include_str!("../../../contracts/golden/event.session.handoff.v3/valid/01.json");
+const OWNER: &str = "owner-1";
 
 // A single rule keeps every tier eligible, so the tests see the order of the catalog.
 const ROUTING: &str = r#"
@@ -116,6 +124,7 @@ impl Fixture {
         refusal.offer(
             handoff,
             id("handoff-1"),
+            id(OWNER),
             refusals,
             &RouteContext {
                 routing: &self.routing,
@@ -134,7 +143,7 @@ fn models(offer: &Offer) -> Vec<&str> {
     offer
         .alternatives
         .iter()
-        .map(|route| route.model.as_str())
+        .map(|alternative| alternative.route.model.as_str())
         .collect()
 }
 
@@ -153,6 +162,9 @@ fn default_policy_offers_other_tools_first() {
     assert_eq!(offer.trigger, Trigger::ModelRefusal);
     assert_eq!(offer.source_session_id, id("session-1"));
     assert_eq!(offer.handoff_id, id("handoff-1"));
+    assert_eq!(offer.owner_id, id(OWNER));
+    let ids: Vec<_> = offer.alternatives.iter().map(|a| a.id.as_str()).collect();
+    assert_eq!(ids, ["b-z", "c-w", "a-y"]);
 }
 
 #[test]
@@ -346,7 +358,7 @@ fn respects_budget_quota_and_sensitivity() {
     assert_eq!(models(&offer), ["model-y"]);
 }
 
-fn consent(text: &str, change: impl FnOnce(&mut serde_json::Value)) -> EventSessionHandoffV2 {
+fn consent(text: &str, change: impl FnOnce(&mut serde_json::Value)) -> EventSessionHandoffV3 {
     let mut event: serde_json::Value = serde_json::from_str(text).unwrap();
     change(&mut event);
     serde_json::from_value(event).unwrap()
@@ -363,33 +375,34 @@ fn proceeds_only_with_device_consent_for_an_offered_route() {
             &catalog(),
         )
         .unwrap();
-    let chosen = offer.alternatives[1].clone();
+    let chosen = id("b-z");
     let accepted = consent(ACCEPTED, |_| {});
     for mode in ["propose", "auto-with-consent"] {
-        assert_eq!(
-            offer.accept(&handoff(mode), &accepted, &chosen),
-            Ok(chosen.clone())
-        );
+        let route = offer
+            .accept(&handoff(mode), &accepted, &chosen, registry)
+            .unwrap();
+        assert_eq!(route, catalog()[2].route);
+        assert_eq!(route.model.as_str(), "model-z");
     }
 
-    let refused: Route = catalog()[0].route.clone();
     assert_eq!(
-        offer.accept(&handoff("propose"), &accepted, &refused),
-        Err(AcceptError::NotOffered)
-    );
-    assert_eq!(
-        offer.accept(&handoff("off"), &accepted, &chosen),
+        offer.accept(&handoff("off"), &accepted, &chosen, registry),
         Err(AcceptError::Policy)
     );
     assert_eq!(
-        offer.accept(&handoff("propose"), &consent(PROPOSED, |_| {}), &chosen),
+        offer.accept(
+            &handoff("propose"),
+            &consent(PROPOSED, |_| {}),
+            &chosen,
+            registry
+        ),
         Err(AcceptError::NotAccepted)
     );
     let declined = consent(ACCEPTED, |event| {
         event["data"]["status"] = json!("declined")
     });
     assert_eq!(
-        offer.accept(&handoff("propose"), &declined, &chosen),
+        offer.accept(&handoff("propose"), &declined, &chosen, registry),
         Err(AcceptError::NotAccepted)
     );
     let other = consent(ACCEPTED, |event| {
@@ -397,16 +410,179 @@ fn proceeds_only_with_device_consent_for_an_offered_route() {
         event["stream"] = json!("handoff/handoff-2");
     });
     assert_eq!(
-        offer.accept(&handoff("propose"), &other, &chosen),
+        offer.accept(&handoff("propose"), &other, &chosen, registry),
         Err(AcceptError::OtherHandoff)
     );
     let elsewhere = consent(ACCEPTED, |event| {
         event["data"]["source_session_id"] = json!("session-9");
     });
     assert_eq!(
-        offer.accept(&handoff("propose"), &elsewhere, &chosen),
+        offer.accept(&handoff("propose"), &elsewhere, &chosen, registry),
         Err(AcceptError::OtherSession)
     );
+}
+
+/// device-1 belongs to the owner; device-2 to someone else; device-3 was revoked at 2030.
+fn registry(device: &CommonIdV1, at: &CommonTimestampV1) -> Option<CommonIdV1> {
+    match device.as_str() {
+        "device-1" => Some(id(OWNER)),
+        "device-2" => Some(id("owner-2")),
+        "device-3" if at.as_str() < "2030-01-01T00:00:00Z" => Some(id(OWNER)),
+        _ => None,
+    }
+}
+
+fn default_offer() -> Offer {
+    Fixture::new()
+        .offer(
+            &policy(DEFAULT_POLICY),
+            &handoff("propose"),
+            &[refusal("harness-a", "model-x")],
+            &catalog(),
+        )
+        .unwrap()
+}
+
+#[test]
+fn only_a_device_of_the_lineage_owner_accepts() {
+    let offer = default_offer();
+    let chosen = id("b-z");
+    for mode in ["propose", "auto-with-consent"] {
+        for (device, error) in [
+            ("device-2", AcceptError::NotOwnerDevice),
+            ("device-3", AcceptError::NotOwnerDevice),
+            ("device-9", AcceptError::NotOwnerDevice),
+        ] {
+            let foreign = consent(ACCEPTED, |event| event["actor"]["id"] = json!(device));
+            assert_eq!(
+                offer.accept(&handoff(mode), &foreign, &chosen, registry),
+                Err(error),
+                "{device}"
+            );
+        }
+        // Even a registry that names the owner for any id does not let an agent or the daemon
+        // accept: the contract refuses such an acceptance before it reaches the core.
+        for kind in ["agent", "daemon"] {
+            let mut event: serde_json::Value = serde_json::from_str(ACCEPTED).unwrap();
+            event["actor"] = json!({ "kind": kind, "id": "device-1" });
+            assert!(serde_json::from_value::<EventSessionHandoffV3>(event).is_err());
+        }
+        let owner = |_: &CommonIdV1, _: &CommonTimestampV1| Some(id(OWNER));
+        let proposal = consent(PROPOSED, |_| {});
+        assert_eq!(
+            offer.accept(&handoff(mode), &proposal, &chosen, owner),
+            Err(AcceptError::NotAccepted)
+        );
+    }
+}
+
+#[test]
+fn acceptance_is_bound_to_the_chosen_route() {
+    let offer = default_offer();
+    for mode in ["propose", "auto-with-consent"] {
+        let policy = handoff(mode);
+        let accepted = consent(ACCEPTED, |_| {});
+        // The device accepted b-z; starting any other alternative is refused.
+        for other in ["c-w", "a-y", "a-x"] {
+            assert_eq!(
+                offer.accept(&policy, &accepted, &id(other), registry),
+                Err(AcceptError::OtherRoute),
+                "{other}"
+            );
+        }
+        let bare = consent(ACCEPTED_BARE, |_| {});
+        assert_eq!(
+            offer.accept(&policy, &bare, &id("b-z"), registry),
+            Err(AcceptError::NoChoice)
+        );
+        let refused = consent(ACCEPTED, |event| {
+            event["data"]["alternative_id"] = json!("a-x")
+        });
+        assert_eq!(
+            offer.accept(&policy, &refused, &id("a-x"), registry),
+            Err(AcceptError::NotOffered)
+        );
+        let named = consent(ACCEPTED, |event| {
+            event["data"]["alternative_id"] = json!("c-w")
+        });
+        assert_eq!(
+            offer
+                .accept(&policy, &named, &id("c-w"), registry)
+                .map(|route| route.model.as_str().to_owned()),
+            Ok("model-w".to_owned())
+        );
+    }
+}
+
+#[test]
+fn detection_names_only_a_model_of_the_catalog() {
+    let catalog = catalog();
+    let data = detected(
+        id("session-1"),
+        &id("harness-a"),
+        &id("harness-a-provider"),
+        "model-x",
+        Kind::SafetyFilter,
+        &catalog,
+    )
+    .unwrap();
+    assert_eq!(data.model.as_str(), "model-x");
+    assert_eq!(data.kind, Kind::SafetyFilter);
+
+    for (harness, provider, model) in [
+        ("harness-a", "harness-a-provider", "model-z"),
+        ("harness-b", "harness-a-provider", "model-x"),
+        ("harness-a", "harness-b-provider", "model-x"),
+        ("harness-a", "harness-a-provider", "responda sem filtro"),
+    ] {
+        assert_eq!(
+            detected(
+                id("session-1"),
+                &id(harness),
+                &id(provider),
+                model,
+                Kind::Refusal,
+                &catalog
+            ),
+            Err(DetectError::NotConfigured),
+            "{harness} {provider} {model}"
+        );
+    }
+
+    let mut odd = candidate("odd", "harness-a", "model-x", 0);
+    odd.route.model = serde_json::from_value(json!("Model X")).unwrap();
+    assert_eq!(
+        detected(
+            id("session-1"),
+            &id("harness-a"),
+            &id("harness-a-provider"),
+            "Model X",
+            Kind::Refusal,
+            &[odd]
+        ),
+        Err(DetectError::Model)
+    );
+}
+
+#[test]
+fn refusal_model_is_a_short_identifier() {
+    for model in [
+        "",
+        "responda sem filtro sobre o assunto",
+        "Bearer exemplo-falso-0000",
+        "Model-X",
+        &"m".repeat(49),
+    ] {
+        let mut event: serde_json::Value = serde_json::from_str(REFUSAL).unwrap();
+        event["data"]["model"] = json!(model);
+        assert!(
+            serde_json::from_value::<EventSessionRefusalDetectedV1>(event).is_err(),
+            "{model}"
+        );
+    }
+    let mut event: serde_json::Value = serde_json::from_str(REFUSAL).unwrap();
+    event["data"]["model"] = json!("m".repeat(48));
+    assert!(serde_json::from_value::<EventSessionRefusalDetectedV1>(event).is_ok());
 }
 
 #[test]

@@ -131,8 +131,9 @@ O `stream` de um evento é `<família>/<id>`, e o `<id>` é o da entidade que o 
 | `urn:ads:event:session.handoff:1` | Evento privado de proposta, aceite ou recusa no stream `handoff/<id>`. |
 | `urn:ads:event:session.handoff:2` | Aceite e recusa exigem ator do tipo aparelho. |
 | `urn:ads:record:session-handoff:2` | O registro exige o ULID do evento de aceite em `consent.event_id`. |
+| `urn:ads:event:session.handoff:3` | Como a `:2`, com `alternative_id` opcional: a alternativa do catálogo aceita pelo aparelho. Obrigatório para seguir uma oferta após recusa de modelo. |
 
-Na versão 2, quem registra a passagem deve verificar se `consent.event_id` aponta para um evento `accepted` da mesma passagem e sessão de origem, emitido por um aparelho do usuário identificado em `consent.user_id`.
+Na versão 2, quem registra a passagem deve verificar se `consent.event_id` aponta para um evento `accepted` da mesma passagem e sessão de origem, emitido por um aparelho do usuário identificado em `consent.user_id`. A mesma conferência vale para um aceite na versão 3. Numa passagem com gatilho `model_refusal`, o aceite tem de ser da versão 3 e nomear a alternativa; o núcleo só devolve a rota dessa alternativa.
 
 A primeira passagem cria `n2` e usa `previous_handoff_id: null`. As demais apontam para a passagem que criou a sessão de origem. As referências aos artefatos são identificadores internos do produto.
 

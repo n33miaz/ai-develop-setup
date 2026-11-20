@@ -12,7 +12,7 @@ use super::common_ulid_v1::CommonUlidV1;
 use crate::support;
 use crate::support::{ContractError, Pattern};
 
-/// Recusa ou filtro detectado. A ferramenta recusou um pedido ou um filtro de segurança interrompeu a sessão. Só metadados: ferramenta, provedor, modelo e tipo. O texto do pedido e da resposta não cabe no evento.
+/// Recusa ou filtro detectado. A ferramenta recusou um pedido ou um filtro de segurança interrompeu a sessão. Só metadados: ferramenta, provedor, identificador do modelo no catálogo e tipo. O texto do pedido e da resposta não cabe no evento.
 ///
 /// `urn:ads:event:session.refusal_detected:1`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -143,14 +143,17 @@ pub struct EventSessionRefusalDetectedV1Data {
     pub kind: EventSessionRefusalDetectedV1DataKind,
 }
 
+static EVENT_SESSION_REFUSAL_DETECTED_V1_DATA_MODEL_PATTERN: Pattern =
+    Pattern::new(r"^[a-z0-9][a-z0-9._-]{0,47}$");
+
+/// Identificador de um modelo do catálogo configurado: 1 a 48 caracteres de minúsculas, dígitos e . _ -, começando por minúscula ou dígito. Não é texto livre.
+///
 /// `data.model` in `urn:ads:event:session.refusal_detected:1`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
 #[serde(try_from = "String")]
 pub struct EventSessionRefusalDetectedV1DataModel(String);
 
 impl EventSessionRefusalDetectedV1DataModel {
-    pub const MAX_CHARS: usize = 128;
-
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -164,8 +167,7 @@ impl EventSessionRefusalDetectedV1DataModel {
     }
 
     fn accepts(text: &str) -> bool {
-        let length = text.chars().count();
-        (1..=Self::MAX_CHARS).contains(&length)
+        EVENT_SESSION_REFUSAL_DETECTED_V1_DATA_MODEL_PATTERN.matches(text)
     }
 
     pub fn as_str(&self) -> &str {

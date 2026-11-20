@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:ads:event:session.refusal_detected:1",
   "title": "Recusa ou filtro detectado",
-  "description": "A ferramenta recusou um pedido ou um filtro de segurança interrompeu a sessão. Só metadados: ferramenta, provedor, modelo e tipo. O texto do pedido e da resposta não cabe no evento.",
+  "description": "A ferramenta recusou um pedido ou um filtro de segurança interrompeu a sessão. Só metadados: ferramenta, provedor, identificador do modelo no catálogo e tipo. O texto do pedido e da resposta não cabe no evento.",
   "allOf": [
     {
       "$ref": "urn:ads:event:envelope:1"
@@ -47,8 +47,8 @@
             },
             "model": {
               "type": "string",
-              "minLength": 1,
-              "maxLength": 128
+              "description": "Identificador de um modelo do catálogo configurado: 1 a 48 caracteres de minúsculas, dígitos e . _ -, começando por minúscula ou dígito. Não é texto livre.",
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,47}$"
             },
             "kind": {
               "enum": [
