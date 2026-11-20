@@ -399,6 +399,14 @@ describe('sessions the core cannot keep', () => {
     })
   }
 
+  function exited(client: FakeCoreClient, id: string) {
+    client.emit({
+      type: 'urn:ads:event:session.ended:1',
+      stream: `session/${id}`,
+      data: { session_id: id, reason: 'exit', exit_code: 0 },
+    })
+  }
+
   it('shows a pending close and sends session.close from its button', async () => {
     const client = createFakeCoreClient(CATALOG)
     const send = vi.spyOn(client, 'send')
@@ -456,7 +464,7 @@ describe('sessions the core cannot keep', () => {
       }),
     )
     fireEvent.click(screen.getByRole('button', { name: 'Close session' }))
-    expect(await screen.findByRole('alert')).toHaveTextContent(t('session.commandFailed'))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not close Session A.')
     expect(screen.getByRole('button', { name: 'Close session' })).toBeInTheDocument()
   })
 
@@ -495,7 +503,7 @@ describe('sessions the core cannot keep', () => {
    * assinatura ainda ativa e a desliga. Conta os cancelamentos feitos pela tela.
    */
   function trackSubscriptions(client: FakeCoreClient) {
-    const ends: { stream: string; end: (code: SubscriptionEndCode) => void }[] = []
+    const ends: { stream: string; end: (code: SubscriptionEndCode) => boolean }[] = []
     const stopped: string[] = []
     const original = client.subscribe.bind(client)
     vi.spyOn(client, 'subscribe').mockImplementation((stream, afterSeq, onEvent, onEnd) => {
@@ -505,10 +513,11 @@ describe('sessions the core cannot keep', () => {
         ends.push({
           stream,
           end: (code) => {
-            if (!active) return
+            if (!active) return false
             active = false
             stop()
             onEnd(code)
+            return true
           },
         })
       return () => {
@@ -568,7 +577,7 @@ describe('sessions the core cannot keep', () => {
     ids: readonly string[],
     closing: readonly number[],
   ) {
-    render(
+    const view = render(
       <I18nContext value={createTranslator('en')}>
         <App
           client={client}
@@ -586,6 +595,7 @@ describe('sessions the core cannot keep', () => {
       for (const id of new Set(ids)) created(client, id, `Session ${id.slice(-1).toUpperCase()}`)
       for (const index of closing) ends[index]?.end(-32013)
     })
+    return view
   }
 
   const refused = (command: CommandRequestV1, code: number) =>
@@ -595,17 +605,18 @@ describe('sessions the core cannot keep', () => {
       error: { code, message: 'refused' },
     })
 
-  it('keeps the close action when -32013 arrives before -32014', async () => {
+  it('offers cleanup after a configured session exits before automatic cleanup fails', async () => {
     const client = createFakeCoreClient(CATALOG)
     const { ends } = trackSubscriptions(client)
-    await openWith(client, (command) => {
-      ends.at(-1)?.end(-32013)
-      return refused(command, -32014)
+    await renderClosing(client, ends, ['session-a'], [])
+    act(() => {
+      exited(client, 'session-a')
     })
-    expect(screen.getByRole('status', { name: 'Session state' })).toHaveTextContent(
-      'The core could not close this session',
-    )
-    expect(screen.getByRole('button', { name: 'Close session' })).toBeInTheDocument()
+    expect(screen.getByText('No sessions.')).toBeInTheDocument()
+    act(() => {
+      expect(ends[0]?.end(-32013)).toBe(true)
+    })
+    expect(screen.getByRole('button', { name: 'Close session' })).toBeEnabled()
   })
 
   it('shows the close action when -32013 arrives after -32014', async () => {
@@ -619,36 +630,73 @@ describe('sessions the core cannot keep', () => {
     expect(screen.getByRole('button', { name: 'Close session' })).toBeInTheDocument()
   })
 
-  it('does not bring back a closing session that another subscription saw end', async () => {
+  it('allows cleanup after the process exits during a setup that times out', async () => {
     const client = createFakeCoreClient(CATALOG)
     const { ends } = trackSubscriptions(client)
-    render(
-      <I18nContext value={createTranslator('en')}>
-        <App client={client} live sessionStreams={['session/session-a', 'session/session-a']} />
-      </I18nContext>,
-    )
-    await waitFor(() => {
-      expect(client.getState()).toBe('connected')
+    await openWith(client, (command) => {
+      const id = command.params.session_id as string
+      created(client, id, 'Session A')
+      exited(client, id)
+      return refused(command, -32014)
     })
-    act(() => {
-      created(client, 'session-a', 'Session A')
-      ends[0]?.end(-32013)
-    })
-    expect(screen.getByRole('button', { name: 'Close session' })).toBeInTheDocument()
-    act(() => {
-      client.emit({
-        type: 'urn:ads:event:session.ended:1',
-        stream: 'session/session-a',
-        data: { session_id: 'session-a', reason: 'exit', exit_code: 0 },
-      })
-    })
-    expect(screen.getByText('No sessions.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Session A/ })).toHaveTextContent('Failed to start')
     expect(screen.queryByRole('button', { name: 'Close session' })).not.toBeInTheDocument()
     act(() => {
-      ends[1]?.end(-32013)
+      expect(ends[0]?.end(-32013)).toBe(true)
     })
-    expect(screen.queryByRole('button', { name: 'Close session' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Session A/ })).toHaveTextContent('Closing')
+    expect(screen.getByRole('button', { name: 'Close session' })).toBeEnabled()
   })
+
+  it.each(['accepted', 'missing'])(
+    'removes a failed setup after reconnecting when close is %s',
+    async (result) => {
+      const { client, reconnect } = quietReconnect()
+      const send = await openWith(client, (command) => {
+        if (command.method === 'session.open') return refused(command, -32014)
+        return result === 'missing' ? refused(command, -32602) : Promise.resolve(accepted(command))
+      })
+      expect(screen.queryByRole('button', { name: 'Close session' })).not.toBeInTheDocument()
+      await act(async () => {
+        await reconnect()
+      })
+      const close = screen.getByRole('button', { name: 'Close session' })
+      expect(close).toBeEnabled()
+      fireEvent.click(close)
+      expect(await screen.findByText('No sessions.')).toBeInTheDocument()
+      expect(send.mock.lastCall?.[0].method).toBe('session.close')
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    },
+  )
+
+  it('removes a pending close when the session no longer exists', async () => {
+    const client = createFakeCoreClient(CATALOG)
+    const { ends } = trackSubscriptions(client)
+    await renderClosing(client, ends, ['session-a'], [0])
+    vi.spyOn(client, 'send').mockImplementation((command) => refused(command, -32602))
+    fireEvent.click(screen.getByRole('button', { name: 'Close session' }))
+    expect(await screen.findByText('No sessions.')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it.each([-32004, -32013] as const)(
+    'offers manual cleanup after setup fails and observes final result %s',
+    async (code) => {
+      const client = createFakeCoreClient(CATALOG)
+      const { ends } = trackSubscriptions(client)
+      await openWith(client, (command) => {
+        created(client, command.params.session_id as string, 'Session A')
+        return refused(command, -32603)
+      })
+      expect(screen.getByRole('button', { name: /Session A/ })).toHaveTextContent('Failed to start')
+      expect(screen.getByRole('button', { name: 'Close session' })).toBeEnabled()
+      act(() => {
+        expect(ends[0]?.end(code)).toBe(true)
+      })
+      if (code === -32004) expect(screen.getByText('No sessions.')).toBeInTheDocument()
+      else expect(screen.getByRole('button', { name: /Session A/ })).toHaveTextContent('Closing')
+    },
+  )
 
   it('releases the subscription of a refused open', async () => {
     const client = createFakeCoreClient(CATALOG)
@@ -657,28 +705,26 @@ describe('sessions the core cannot keep', () => {
     expect(stopped).toHaveLength(1)
   })
 
-  it('releases the open subscription when the session ends after -32014', async () => {
+  it('removes a failed setup when automatic cleanup confirms', async () => {
     const client = createFakeCoreClient(CATALOG)
-    const { stopped } = trackSubscriptions(client)
-    const send = await openWith(client, (command) => refused(command, -32014))
-    expect(stopped).toHaveLength(0)
-    const id = send.mock.calls[0]?.[0].params.session_id as string
-    act(() => {
-      client.emit({
-        type: 'urn:ads:event:session.ended:1',
-        stream: `session/${id}`,
-        data: { session_id: id, reason: 'error' },
-      })
+    const { ends } = trackSubscriptions(client)
+    await openWith(client, (command) => {
+      created(client, command.params.session_id as string, 'Session A')
+      return refused(command, -32014)
     })
-    expect(stopped).toHaveLength(1)
-    expect(screen.queryByRole('button', { name: /Failed to start/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Session A/ })).toBeInTheDocument()
+    act(() => {
+      expect(ends[0]?.end(-32004)).toBe(true)
+    })
+    expect(screen.getByText('No sessions.')).toBeInTheDocument()
   })
 
-  it('shows the close action when another subscription of the stream ended first', async () => {
+  it('resumes cleanup of an opened session whose stream is also configured', async () => {
     const client = createFakeCoreClient(CATALOG)
     const { ends } = trackSubscriptions(client)
     const t = createTranslator('en')
-    const send = vi.spyOn(client, 'send')
+    const answer = deferred()
+    const send = vi.spyOn(client, 'send').mockReturnValue(answer.promise)
     const { rerender } = render(
       <I18nContext value={t}>
         <App client={client} live harnesses={['claude']} />
@@ -687,31 +733,48 @@ describe('sessions the core cannot keep', () => {
     const open = await screen.findByRole('button', { name: 'Open claude' })
     await waitFor(() => expect(open).toBeEnabled())
     fireEvent.click(open)
-    await waitFor(() => expect(open).toBeEnabled())
-    const id = send.mock.calls[0]?.[0].params.session_id as string
+    const command = send.mock.calls[0]?.[0]
+    const id = command?.params.session_id as string
     rerender(
       <I18nContext value={t}>
         <App client={client} live harnesses={['claude']} sessionStreams={[`session/${id}`]} />
       </I18nContext>,
     )
     expect(ends).toHaveLength(2)
-    act(() => {
-      ends[1]?.end(-32004)
-      ends[0]?.end(-32013)
+    await act(async () => {
+      created(client, id, 'Session A')
+      exited(client, id)
+      answer.resolve({
+        ...refusal(command),
+        error: { code: -32014, message: 'setup timed out' },
+      })
+      await answer.promise
     })
-    expect(screen.getByRole('button', { name: 'Close session' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Failed to start/ })).toBeInTheDocument()
+    act(() => {
+      expect(ends[1]?.end(-32013)).toBe(true)
+    })
+    expect(screen.getByRole('button', { name: 'Close session' })).toBeEnabled()
   })
 
   it('shows a new session that reuses the id of a closed one', async () => {
     const client = createFakeCoreClient(CATALOG)
     const { ends } = trackSubscriptions(client)
-    await renderClosing(client, ends, ['session-a', 'session-a'], [0])
+    const { rerender } = await renderClosing(client, ends, ['session-a', 'session-a'], [0])
     fireEvent.click(screen.getByRole('button', { name: 'Close session' }))
     await waitFor(() => {
       expect(screen.getByText('No sessions.')).toBeInTheDocument()
     })
     act(() => {
-      ends[0]?.end(-32013)
+      expect(ends[1]?.end(-32013)).toBe(true)
+    })
+    expect(screen.getByText('No sessions.')).toBeInTheDocument()
+    rerender(
+      <I18nContext value={createTranslator('en')}>
+        <App client={client} live sessionStreams={['session/session-a']} />
+      </I18nContext>,
+    )
+    act(() => {
       created(client, 'session-a', 'Session A again')
     })
     expect(screen.getByRole('button', { name: /Session A again/ })).toHaveTextContent('Active')
@@ -774,6 +837,66 @@ describe('sessions the core cannot keep', () => {
       expect(screen.getByText('No sessions.')).toBeInTheDocument()
     })
 
+    it('ignores a stale refusal while a retry is pending', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      const client = createFakeCoreClient(CATALOG)
+      const { ends } = trackSubscriptions(client)
+      await renderClosing(client, ends, ['session-a'], [0])
+      const firstAnswer = deferred()
+      const retryAnswer = deferred()
+      const send = vi
+        .spyOn(client, 'send')
+        .mockReturnValueOnce(firstAnswer.promise)
+        .mockReturnValueOnce(retryAnswer.promise)
+      const close = screen.getByRole('button', { name: 'Close session' })
+      fireEvent.click(close)
+      await act(() => vi.advanceTimersByTimeAsync(50))
+      fireEvent.click(close)
+      const [first, retry] = closes(send)
+      await act(async () => {
+        firstAnswer.resolve(refusal(first))
+        await firstAnswer.promise
+      })
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+      expect(close).toBeDisabled()
+      await act(async () => {
+        retryAnswer.resolve(accepted(retry))
+        await retryAnswer.promise
+      })
+      expect(screen.getByText('No sessions.')).toBeInTheDocument()
+    })
+
+    it('preserves another session warning when closing succeeds', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      const client = createFakeCoreClient(CATALOG)
+      const { ends } = trackSubscriptions(client)
+      await renderClosing(client, ends, ['session-a', 'session-b'], [0, 1])
+      const answerA = deferred()
+      const answerB = deferred()
+      const send = vi
+        .spyOn(client, 'send')
+        .mockReturnValueOnce(answerA.promise)
+        .mockReturnValueOnce(answerB.promise)
+      fireEvent.click(screen.getByRole('button', { name: 'Close session' }))
+      await act(() => vi.advanceTimersByTimeAsync(50))
+      expect(screen.getByRole('alert')).toHaveTextContent('Could not close Session A.')
+      fireEvent.click(screen.getByRole('button', { name: /Session B/ }))
+      fireEvent.click(screen.getByRole('button', { name: 'Close session' }))
+      expect(screen.getByRole('alert')).toHaveTextContent('Could not close Session A.')
+      await act(() => vi.advanceTimersByTimeAsync(50))
+      await act(async () => {
+        answerB.resolve(accepted(closes(send)[1]))
+        await answerB.promise
+      })
+      expect(screen.queryByRole('button', { name: /Session B/ })).not.toBeInTheDocument()
+      expect(screen.getByRole('alert')).toHaveTextContent('Could not close Session A.')
+      await act(async () => {
+        answerA.resolve(accepted(closes(send)[0]))
+        await answerA.promise
+      })
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    })
+
     it('sends one close per session while it waits and keeps other sessions closable', async () => {
       vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
       const client = createFakeCoreClient(CATALOG)
@@ -792,9 +915,7 @@ describe('sessions the core cannot keep', () => {
       fireEvent.click(closeB)
       expect(closes(send).map((c) => c.params.session_id)).toEqual(['session-a', 'session-b'])
       await act(() => vi.advanceTimersByTimeAsync(50))
-      expect(screen.getByRole('alert')).toHaveTextContent(
-        createTranslator('en')('session.commandFailed'),
-      )
+      expect(screen.getByRole('alert')).toHaveTextContent('Could not close Session A.')
       fireEvent.click(screen.getByRole('button', { name: /Session A/ }))
       expect(screen.getByRole('button', { name: 'Close session' })).toBeEnabled()
     })
@@ -819,12 +940,11 @@ describe('sessions the core cannot keep', () => {
     })
   })
 
-  it('moves focus to the terminal when the session ends under the focused button', async () => {
+  it('moves focus to the terminal when the focused sidebar session exits', async () => {
     const client = createFakeCoreClient(CATALOG)
     const { ends } = trackSubscriptions(client)
-    await renderClosing(client, ends, ['session-a', 'session-a'], [0])
-    const region = screen.getByRole('status', { name: 'Session state' })
-    screen.getByRole('button', { name: 'Close session' }).focus()
+    await renderClosing(client, ends, ['session-a'], [])
+    screen.getByRole('button', { name: /Session A/ }).focus()
     act(() => {
       client.emit({
         type: 'urn:ads:event:session.ended:1',
@@ -832,9 +952,8 @@ describe('sessions the core cannot keep', () => {
         data: { session_id: 'session-a', reason: 'exit', exit_code: 0 },
       })
     })
-    expect(screen.queryByRole('button', { name: 'Close session' })).not.toBeInTheDocument()
+    expect(screen.getByText('No sessions.')).toBeInTheDocument()
     expect(document.activeElement).toBe(document.getElementById('terminal'))
-    expect(region).toBeEmptyDOMElement()
   })
 
   it('announces the notice in a live region and moves focus after closing', async () => {

@@ -88,6 +88,7 @@ export function Sidebar({
                   type="button"
                   className={styles.item}
                   aria-current={session.id === selectedSessionId}
+                  data-session={session.id}
                   onClick={() => {
                     onSelectSession(session.id)
                   }}
