@@ -152,7 +152,7 @@ Padrões em [defaults/daemon.toml](../../defaults/daemon.toml), aplicados ao ini
 | `accept_retry_ms` | 50 | Espera após erro de aceitação TCP; reduz tentativas sob falta de recursos. |
 | `max_message_bytes` | 131072 | Limite de mensagem e quadro WebSocket recebido; reduzir pode impedir escritas grandes. |
 | `send_timeout_ms` | 5000 | Prazo por envio; cliente lento é desconectado. |
-| `host_timeout_ms` | 10000 | Prazo único por comando no host e na conexão inicial. Cada chamada ao host começa dentro do prazo. Falha encerra o serviço para evitar repetir efeito incerto. Duas exceções não encerram: no fechamento automático o prazo esgotado conta como tentativa falha, e na preparação depois de um `session.open` confirmado ele responde `-32014` (`session setup timed out`), guarda o registro e agenda o fechamento. |
+| `host_timeout_ms` | 10000 | Prazo único por comando no host e na conexão inicial. Cada chamada ao host começa dentro do prazo. Falha encerra o serviço para evitar repetir efeito incerto. Duas exceções não encerram: no fechamento automático o prazo esgotado conta como tentativa falha, e na preparação depois de um `session.open` confirmado ele responde `-32014` (`session setup failed`), como qualquer outra falha dessa etapa (ver abaixo). |
 | `retired_sessions` | 1024 | Ids de sessões podadas que não podem ser reabertos nesta execução (acima do limite, o mais antigo volta a ser aceito) e, em separado, streams assinados antes do `session.open` (acima do limite, a espera mais antiga termina com `-32004` no id da assinatura, mesmo se a conexão estiver ociosa). |
 | `close_retries` | 3 | Tentativas do fechamento automático de sessão invalidada, de `open` que falhou ou de sessão que terminou sozinha; esgotadas numa sessão invalidada, a assinatura do stream recebe `-32013`. |
 | `close_retry_ms` | 1000 | Espera entre tentativas do fechamento automático. |
@@ -170,8 +170,15 @@ durante as tentativas e `-32013` depois delas, até um `session.close` confirmad
 `session.close` continua aceito enquanto o registro da sessão invalidada estiver
 retido. Cada tentativa vale só para a instância da sessão que a gerou e é
 descartada quando a vaga é devolvida. Se um `open` falhar depois de o host abrir o
-terminal, o fechamento vai para a mesma fila, com prazo próprio por tentativa;
+terminal, seja pelo prazo, seja por recusa do host ou do registro, a resposta é
+sempre `-32014` (`session setup failed`); só uma falha que encerra o serviço, como
+a perda do host, responde `-32603`. Recusas anteriores ao terminal aberto mantêm o próprio código.
+Com `-32014`, o fechamento vai para a mesma fila, com prazo próprio por tentativa;
 o registro e a vaga ficam até o host confirmar, e então o id volta a ser aceito.
+A conexão que abriu não recebe nenhum evento dessa sessão: os eventos só seguem
+depois da resposta, e o stream invalidado já não os tem. O resultado final chega
+a uma assinatura feita antes do `open`: `-32004` quando o host confirma o
+fechamento, `-32013` quando as tentativas se esgotam.
 `UnknownSession` no fechamento libera a vaga; num stream válido (não invalidado) que ainda não
 tinha evento terminal, grava `ended` com `reason: "error"`. Um `ended` já gravado fica como está, e
 um stream invalidado não recebe `ended`. Quando o processo de uma

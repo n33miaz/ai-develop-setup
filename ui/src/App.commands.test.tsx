@@ -48,4 +48,42 @@ describe('live terminal commands', () => {
       params: { session_id: 'session-a', cols: 130, rows: 45 },
     })
   })
+
+  it('clears the command warning when the next terminal command succeeds', async () => {
+    const client = createFakeCoreClient()
+    const t = createTranslator('en')
+    for (const draft of sampleSessionEvents(t)) client.emit(draft)
+    let refuse = true
+    const send = vi
+      .spyOn(client, 'send')
+      .mockImplementation((command) =>
+        Promise.resolve(
+          refuse
+            ? { jsonrpc: '2.0', id: command.id, error: { code: -32602, message: 'refused' } }
+            : { jsonrpc: '2.0', id: command.id, result: { accepted: true, replayed: false } },
+        ),
+      )
+    render(
+      <I18nContext value={t}>
+        <App client={client} live sessionStreams={['session/session-a']} />
+      </I18nContext>,
+    )
+    await screen.findByText(t('sample.session.a'))
+    fireEvent.click(screen.getByText('resize'))
+    expect(await screen.findByRole('alert')).toHaveTextContent(t('session.commandFailed'))
+    refuse = false
+    fireEvent.click(screen.getByText('input'))
+    await waitFor(() => {
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    })
+    refuse = true
+    fireEvent.click(screen.getByText('resize'))
+    expect(await screen.findByRole('alert')).toHaveTextContent(t('session.commandFailed'))
+    refuse = false
+    fireEvent.click(screen.getByText('resize'))
+    await waitFor(() => {
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    })
+    expect(send).toHaveBeenCalledTimes(4)
+  })
 })

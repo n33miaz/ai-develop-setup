@@ -14,8 +14,8 @@ export type ConnectionState = 'disconnected' | 'connecting' | 'connected'
 export const SUBSCRIPTION_REPLAY_UNAVAILABLE = -32004
 /** As tentativas automáticas de fechar a sessão se esgotaram: falta um `session.close`. */
 export const SESSION_CLOSE_PENDING = -32013
-/** A preparação depois de `session.open` estourou o prazo; o núcleo agenda o fechamento. */
-export const SESSION_SETUP_TIMED_OUT = -32014
+/** A preparação depois de o terminal abrir falhou (prazo ou recusa); o núcleo agenda o fechamento. */
+export const SESSION_SETUP_FAILED = -32014
 
 /** Códigos que encerram uma assinatura sem derrubar a conexão. */
 export type SubscriptionEndCode =

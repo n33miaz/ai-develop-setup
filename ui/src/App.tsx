@@ -14,7 +14,7 @@ import {
   newUlid,
   HarnessListError,
   SESSION_CLOSE_PENDING,
-  SESSION_SETUP_TIMED_OUT,
+  SESSION_SETUP_FAILED,
   useConnectionGeneration,
   useConnectionState,
   type CommandRequestV1,
@@ -72,10 +72,8 @@ type SessionStatuses = Readonly<Record<string, SessionStatus>>
 
 interface OpenSubscription {
   stop: () => void
-  // O processo pode sair durante a preparação, antes do resultado do fechamento automático.
+  // Até a resposta de `session.open`; com falha na preparação, até o resultado final da assinatura.
   preparing: boolean
-  created: boolean
-  exited: boolean
 }
 
 function without(statuses: SessionStatuses, id: string): SessionStatuses {
@@ -167,6 +165,11 @@ export function App({
   const reportError = useCallback(() => {
     setWarnings((current) => new Set(current).add('command'))
   }, [])
+
+  // O aviso genérico vale até o próximo comando concluído com sucesso.
+  const reportSuccess = useCallback(() => {
+    clearWarning('command')
+  }, [clearWarning])
 
   const mainRef = useRef<HTMLElement>(null)
   const closeButtonRef = useRef<HTMLButtonElement>(null)
@@ -267,14 +270,7 @@ export function App({
       const wasFinished = replay.current.isFinished(id)
       if (!replay.current.receive(session)) return
       if (session.type === 'urn:ads:event:session.ended:1') {
-        const entry = openedSubscriptions.current.get(id)
-        if (entry?.preparing) {
-          entry.exited = true
-          markSession(id, 'ended')
-          replay.current.finish(id, true)
-        } else {
-          finishSession(id, true)
-        }
+        finishSession(id, true)
         return
       }
       if (wasFinished) setStatuses((previous) => without(previous, id))
@@ -284,7 +280,7 @@ export function App({
         return next
       })
     },
-    [finishSession, markSession],
+    [finishSession],
   )
 
   useEffect(
@@ -412,9 +408,11 @@ export function App({
 
   const input = useMemo(
     () =>
-      liveGeneration > 0 && sessionId ? sessionInput(client, sessionId, reportError) : undefined,
+      liveGeneration > 0 && sessionId
+        ? sessionInput(client, sessionId, reportError, reportSuccess)
+        : undefined,
 
-    [liveGeneration, sessionId, client, reportError],
+    [liveGeneration, sessionId, client, reportError, reportSuccess],
   )
 
   const resize = useCallback(
@@ -428,9 +426,10 @@ export function App({
 
         .then((response) => {
           if (response.error) reportError()
+          else reportSuccess()
         }, reportError)
     },
-    [client, input, sessionId, reportError],
+    [client, input, sessionId, reportError, reportSuccess],
   )
 
   const open = async (harness: string) => {
@@ -442,38 +441,25 @@ export function App({
 
     const id = `s-${newUlid()}`
 
-    // Assina antes da abertura: session.created pode preceder a resposta.
+    // Assina antes da abertura para receber o resultado final de uma preparação que falhe. Nesta
+    // conexão os eventos da sessão só chegam depois da resposta; numa falha, nenhum chega.
 
     setChosenSessionId(id)
 
     try {
-      const entry: OpenSubscription = {
-        stop: () => undefined,
-        preparing: true,
-        created: false,
-        exited: false,
-      }
+      const entry: OpenSubscription = { stop: () => undefined, preparing: true }
       openedSubscriptions.current.set(id, entry)
-      entry.stop = client.subscribe(
-        SESSION_STREAM_PREFIX + id,
-        0,
-        (event) => {
-          if (event.type === 'urn:ads:event:session.created:1') entry.created = true
-          receiveSession(event)
-        },
-        (code) => {
-          if (openedSubscriptions.current.get(id) !== entry) return
-          releaseOpened(id)
-          if (code === SESSION_CLOSE_PENDING) {
-            if (entry.exited && entry.preparing) replay.current.resumeCleanup(id)
-            markSession(id, 'closing')
-          } else if (entry.preparing) {
-            finishSession(id)
-          } else {
-            markSession(id, 'ended')
-          }
-        },
-      )
+      entry.stop = client.subscribe(SESSION_STREAM_PREFIX + id, 0, receiveSession, (code) => {
+        if (openedSubscriptions.current.get(id) !== entry) return
+        releaseOpened(id)
+        if (code === SESSION_CLOSE_PENDING) {
+          markSession(id, 'closing')
+        } else if (entry.preparing) {
+          finishSession(id)
+        } else {
+          markSession(id, 'ended')
+        }
+      })
 
       const response = await client.send(
         newCommand('session.open', {
@@ -486,10 +472,9 @@ export function App({
 
       if (openedSubscriptions.current.get(id) !== entry) return
       if (response.error) {
-        const timedOut = response.error.code === SESSION_SETUP_TIMED_OUT
-        if (timedOut || entry.created) {
-          if (entry.exited) replay.current.resumeCleanup(id)
-          if (timedOut) setSetupGenerations((previous) => new Map(previous).set(id, generation))
+        // O terminal chegou a abrir: a assinatura fica para o resultado do fechamento automático.
+        if (response.error.code === SESSION_SETUP_FAILED) {
+          setSetupGenerations((previous) => new Map(previous).set(id, generation))
           markSession(id, 'setupFailed')
         } else {
           releaseOpened(id)
@@ -497,7 +482,7 @@ export function App({
         }
       } else {
         entry.preparing = false
-        if (entry.exited) finishSession(id, true)
+        reportSuccess()
       }
     } catch {
       releaseOpened(id)
@@ -536,8 +521,12 @@ export function App({
     client.send(command).then(
       (response) => {
         clearTimeout(timer)
-        if (response.error && response.error.code !== INVALID_PARAMS) fail(true)
-        else if (
+        if (response.error && response.error.code !== INVALID_PARAMS) {
+          fail(true)
+          return
+        }
+        if (!response.error) reportSuccess()
+        if (
           closeCommands.current.get(id)?.params._meta.idempotency_key ===
           command.params._meta.idempotency_key
         )
@@ -555,7 +544,9 @@ export function App({
       ({ id, status }) =>
         (status === 'closing' || status === 'setupFailed') && warnings.has('close:' + id),
     )
-    .map(({ id, displayName }) => t('session.closeFailed', { name: displayName ?? id }))
+    .map(({ displayName }) =>
+      t('session.closeFailed', { name: displayName ?? t('session.unnamed') }),
+    )
   if (warnings.has('command')) warningMessages.unshift(t('session.commandFailed'))
 
   return (

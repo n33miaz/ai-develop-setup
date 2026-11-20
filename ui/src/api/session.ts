@@ -1,6 +1,11 @@
 import { encodeBase64, newCommand, type CoreClient } from './index'
 
-export function sessionInput(client: CoreClient, sessionId: string, onError: () => void) {
+export function sessionInput(
+  client: CoreClient,
+  sessionId: string,
+  onError: () => void,
+  onSuccess: () => void = () => undefined,
+) {
   let pending = Promise.resolve()
 
   return (bytes: Uint8Array) => {
@@ -13,6 +18,7 @@ export function sessionInput(client: CoreClient, sessionId: string, onError: () 
         )
 
         if (response.error) throw new Error('session write rejected')
+        onSuccess()
       })
     }
 
