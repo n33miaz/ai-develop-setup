@@ -14,9 +14,9 @@ Estado da mitigação, em cada risco:
 
 | Risco | Dono | Estado da mitigação |
 |---|---|---|
-| [Ação destrutiva fora do escopo](#ação-destrutiva-fora-do-escopo) | portão de ações e executor de arquivos | implementada e testada; executor ainda não ligado |
+| [Ação destrutiva fora do escopo](#ação-destrutiva-fora-do-escopo) | portão de ações e executor de arquivos | implementada na biblioteca do daemon |
 | [Troca no disco durante a execução](#troca-no-disco-durante-a-execução) | executor de arquivos | implementada e testada, com limites escritos |
-| [Licença de execução usada duas vezes](#licença-de-execução-usada-duas-vezes) | portão, executor e armazenamento | parcial: só dentro de um processo |
+| [Licença de execução usada duas vezes](#licença-de-execução-usada-duas-vezes) | portão, executor e armazenamento | protegido pelo diário persistente |
 | [Perda de sessões de terminal](#perda-de-sessões-de-terminal) | host de terminais | implementada e testada; host supervisionado pelo [lançador](../crates/launcher/README.md) |
 | [Outro usuário da máquina alcança as sessões](#outro-usuário-da-máquina-alcança-as-sessões) | host de terminais e daemon | implementada e testada no Windows; teste com duas contas ausente |
 | [Credencial de CLI de IA vaza para o processo filho](#credencial-de-cli-de-ia-vaza-para-o-processo-filho) | adaptadores de ferramenta e host | parcial: filtro do ambiente implementado |
@@ -52,7 +52,7 @@ Estado da mitigação, em cada risco:
 - **Teto.** `approval_item_limit` e `approval_byte_limit` (acima deles, aprovação), `quarantine_enabled` (apagar vira mover para a quarentena) em [`defaults/action-gate.toml`](../defaults/action-gate.toml); `definitive_delete` em [`defaults/fs-executor.toml`](../defaults/fs-executor.toml).
 - **Mitigação existente (implementada e testada).** O portão normaliza o caminho só por texto, nega pastas protegidas, raiz de trabalho, raízes permitidas e repositórios, exige aprovação acima dos limites e reescreve apagar como quarentena ([regras](../crates/core/README.md#regras)); a aprovação vale só para o `plan_hash` do plano julgado ([máquina de estados](../crates/core/README.md#máquina-de-estados)). O executor julga de novo com a política confiável, abre tudo por identificador sem seguir link e só move ou apaga o que levantou ([o que é conferido](../crates/adapters/fs/README.md#o-que-é-conferido-antes-da-primeira-alteração)). Testes em `crates/core/tests/gate_*.rs` e `crates/adapters/fs/tests/`; os jobs `rust` e `fs-windows` do CI rodam os dois.
 - **Plano B.** Quarentena com [restauração](../crates/adapters/fs/README.md#restauração); execução que para diz exatamente o que mudou ([falha no meio](../crates/adapters/fs/README.md#falha-no-meio-e-recuperação)).
-- **O que falta.** Nada no workspace chama o executor ainda. Curinga, `fs.overwrite`, `fs.clean_untracked` e mover para fora da quarentena são recusados por falta de definição ([o que não é executado](../crates/adapters/fs/README.md#o-que-não-é-executado)). Purga de leva com repositório não tem regra. Um caminho protegido escrito em outra forma Unicode não é reconhecido pelo texto; só o executor, no disco, o alcança.
+- **O que falta.** A API local ainda não expõe operações de arquivo. Curinga, `fs.overwrite`, `fs.clean_untracked` e mover para fora da quarentena são recusados por falta de definição ([o que não é executado](../crates/adapters/fs/README.md#o-que-não-é-executado)). Purga de leva com repositório não tem regra. Um caminho protegido escrito em outra forma Unicode não é reconhecido pelo texto; só o executor, no disco, o alcança.
 
 ### Troca no disco durante a execução
 
@@ -68,11 +68,12 @@ Estado da mitigação, em cada risco:
 
 - **Descrição.** A mesma aprovação ou a mesma licença executa a ação mais de uma vez, por repetição, por reinício ou por dois executores.
 - **Impacto.** A ação roda de novo sobre um disco que já mudou.
-- **Dono.** Portão (tipos), executor (diário) e quem persiste os eventos.
-- **Teto.** Não definido.
+- **Dono.** Portão, executor e armazenamento.
+- **Teto.** Um início por ação e uma ação por aprovação. O tempo de espera pelo lock é `busy_timeout_ms`.
 - **Mitigação existente.** Dentro de um processo, nem a ação nem a licença podem ser copiadas e o `replay` recusa log com `action.started` repetido ([máquina de estados](../crates/core/README.md#máquina-de-estados)); o executor exige que o diário registre o consumo antes de tudo e lembra as licenças recebidas (`E_FS_PERMIT_REUSED`); a pasta da ação na quarentena é criada de forma exclusiva ([entrada do executor](../crates/adapters/fs/README.md#entrada)).
 - **Plano B.** A quarentena deixa marca no disco que recusa a repetição.
-- **O que falta.** Não há diário persistente: entre reinícios, com a quarentena desligada, nada impede a segunda execução. A gravação atômica de `action.started` é dever do armazenamento: o log de eventos já grava só-anexo, com `seq` conferido por stream, mas ainda não confere as invariantes do portão (uso único da licença) nem está ligado ao executor. O formato da linha já leva `action_id` e `approval_id` em claro, autenticados e encadeados, para os índices únicos que entram com a ponte ([log de eventos](../crates/storage/README.md#log-de-eventos)). A [âncora no cofre](../crates/storage/README.md#âncora-no-cofre) detecta corte do fim e restauração de cópia anterior. A abertura ancorada verifica a cadeia inteira e detecta lacunas no meio do log, inclusive a exclusão de um `action.started`. Um `append` numa conexão já aberta reautentica a cadeia quando outra conexão SQLite confirmou mudanças. Uma escrita feita direto nos bytes do arquivo não é vista por esse mecanismo: no padrão (`verify_on_append = "changed"`), o `append` aceita o histórico alterado e a âncora avança, e só a próxima abertura ancorada ou `verify_chain` detecta. Com `verify_on_append = "always"`, todo `append` reautentica a cadeia e recusa esse caso, com custo proporcional ao histórico. A ponte com o portão ainda precisa usar o log ancorado. Linha forjada sem chave é detectada, não impedida: o banco a aceita e só a leitura e `verify_chain` a recusam; com os índices únicos, ela poderia ocupar a vaga da licença verdadeira e bloqueá-la, então a ponte confere o HMAC da linha com que colidiu antes de confiar no conflito.
+- **Mitigação no log.** O [diário do portão](../crates/storage/README.md#diário-do-portão) verifica a cadeia HMAC antes de confiar em colisões, confirma a gravação antes de entregar a licença e bloqueia a reexecução após reinício. Os testes cobrem corrida entre conexões, abandono de uma licença já gravada, segundo início e aprovação de outra ação com `seq` livre, remoção do início gravado e alteração de um registro com conexão aberta.
+- **O que falta.** Medir a latência em históricos grandes e expor a composição sob a API local com o fluxo de confirmação. Uma queda entre a atualização da âncora e o commit pode bloquear o banco até a recuperação. Depois de um início confirmado, o operador confere o disco e prepara outra ação com nova decisão se ainda houver trabalho.
 
 ## Terminais
 

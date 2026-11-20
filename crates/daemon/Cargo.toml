@@ -13,6 +13,7 @@ workspace = true
 ads-adapter-claude = { path = "../adapters/claude" }
 ads-adapter-codex = { path = "../adapters/codex" }
 ads-adapter-vault = { path = "../adapters/vault" }
+ads-adapter-fs = { path = "../adapters/fs" }
 ads-core = { workspace = true }
 ads-storage = { workspace = true }
 ads-contracts = { workspace = true }
