@@ -127,29 +127,34 @@ export function tasksFrom(events: readonly EventDraft<TaskEvent>[]): TaskView[] 
  */
 export function sessionsFrom(events: readonly EventDraft<SessionEvent>[]): SessionView[] {
   const sessions = new Map<string, SessionView>()
-  for (const event of events) {
-    const id = event.data.session_id
-    switch (event.type) {
-      case 'urn:ads:event:session.created:1': {
-        const name = event.data.display_name
-        sessions.set(id, {
-          id,
-          activity: 'active',
-          ...(name === undefined ? {} : { displayName: name }),
-        })
-        break
-      }
-      case 'urn:ads:event:session.activity_changed:1': {
-        const session = sessions.get(id)
-        if (session) session.activity = event.data.activity
-        break
-      }
-      case 'urn:ads:event:session.ended:1':
-        sessions.delete(id)
-        break
-      default:
-        break
-    }
-  }
+  for (const event of events) applySessionEvent(sessions, event)
   return [...sessions.values()]
+}
+
+export function applySessionEvent(
+  sessions: Map<string, SessionView>,
+  event: EventDraft<SessionEvent>,
+): void {
+  const id = event.data.session_id
+  switch (event.type) {
+    case 'urn:ads:event:session.created:1': {
+      const name = event.data.display_name
+      sessions.set(id, {
+        id,
+        activity: 'active',
+        ...(name === undefined ? {} : { displayName: name }),
+      })
+      break
+    }
+    case 'urn:ads:event:session.activity_changed:1': {
+      const session = sessions.get(id)
+      if (session) sessions.set(id, { ...session, activity: event.data.activity })
+      break
+    }
+    case 'urn:ads:event:session.ended:1':
+      sessions.delete(id)
+      break
+    default:
+      break
+  }
 }
