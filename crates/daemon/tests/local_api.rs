@@ -133,6 +133,15 @@ async fn receive(ws: &mut Socket) -> Value {
             .unwrap()
             .is_ok()
     );
+    // Only the answer to harness.list is new: every other frame still fits the first version.
+    if value["result"].get("harnesses").is_none() {
+        assert!(
+            ads_contracts::reencode("urn:ads:contract:local-api.server-message:1", value.clone())
+                .unwrap()
+                .is_ok(),
+            "{value}"
+        );
+    }
     if let Some(schema) = value["type"].as_str() {
         assert!(
             ads_contracts::reencode(schema, value.clone())
@@ -1700,5 +1709,42 @@ async fn harness_list_refuses_parameters() {
     assert_eq!(
         call(&mut ws, "harness.list", json!({})).await["result"]["harnesses"],
         json!([])
+    );
+}
+
+#[tokio::test]
+async fn harness_list_needs_the_allowed_page_authentication_and_local_origin() {
+    let overrides = "[workdirs]\ndefault = 'C:/dir-sentinel'\n[tools.codex]\nprogram = 'C:/prog-sentinel/codex.exe'\n";
+    let launcher = ToolLauncher::from_toml_str(
+        overrides,
+        Vec::<(String, String)>::new(),
+        ListProbe,
+        ListProbe,
+    )
+    .unwrap();
+    let f = fixture("", Arc::new(launcher)).await;
+    let expected = json!({"harnesses": ["codex"], "workdir_aliases": ["default"]});
+
+    match connect(&f, Some("https://untrusted.invalid"), None).await {
+        Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+            assert_eq!(response.status(), 403)
+        }
+        _ => panic!("expected 403"),
+    }
+
+    let mut early = connect(&f, Some("http://127.0.0.1:5173"), None)
+        .await
+        .unwrap();
+    transmit(&mut early, &command("harness.list", json!({}))).await;
+    closed(&mut early).await;
+
+    let mut ws = authenticated(&f).await;
+    transmit(&mut ws, &remote(command("harness.list", json!({})))).await;
+    let refused = receive(&mut ws).await;
+    assert_eq!(refused["error"]["code"], -32010);
+    assert!(refused.get("result").is_none());
+    assert_eq!(
+        call(&mut ws, "harness.list", json!({})).await["result"],
+        expected
     );
 }

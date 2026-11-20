@@ -56,12 +56,15 @@ permissões dele. Argumentos que desligam as confirmações ou a área isolada d
 ferramenta, somados ao controle do terminal pela API, dão a quem usa a interface
 acesso total à sua conta.
 Conectada, a interface mostra um botão de abertura para cada ferramenta que o
-daemon informa em `harness.list`; lista vazia ou recusada não mostra botão
-(a recusa aparece como aviso). `VITE_CORE_HARNESSES` (identificadores separados
+daemon informa em `harness.list`. Enquanto a consulta não volta, um aviso diz que
+ela está em andamento; lista vazia, recusa ou falta de resposta em 10 segundos
+mostram cada uma o seu aviso, sem botões. Sem apelido de pasta anunciado pelo
+daemon, os botões ficam desativados e um aviso explica o motivo. A cada
+reconexão a consulta recomeça e só vale a resposta da conexão atual. `VITE_CORE_HARNESSES` (identificadores separados
 por vírgula, padrão vazio) vale só como reserva no modo de exemplo, sem núcleo,
 onde os botões ficam desativados. `VITE_CORE_WORKDIR` escolhe o apelido de pasta,
 com padrão `default`; se o daemon não conhecer esse apelido, a interface usa o
-primeiro que ele informar. Ao abrir, a interface assina o stream e envia
+primeiro que ele informar, e nunca um que ele não informou. Ao abrir, a interface assina o stream e envia
 `session.open`. Recusas aparecem como aviso traduzido. A sessão recebe foco
 ao abrir, e a digitação e a colagem enviam `session.write` em blocos ordenados
 de até 65.536 bytes.

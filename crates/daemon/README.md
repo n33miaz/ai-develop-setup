@@ -118,7 +118,8 @@ Os tipos gerados validam todos os comandos e eventos contra os contratos.
 incluindo uma assinatura feita antes de abrir a sessão. Nenhum `fs.*` está registrado.
 Todo comando remoto é recusado, mesmo com autenticação válida.
 
-`harness.list` (sem parâmetros, só depois de `auth.hello`) responde
+`harness.list` (só depois de `auth.hello`; `params` leva apenas o `_meta`
+obrigatório de todo comando) responde
 `{"harnesses": [...], "workdir_aliases": [...]}`
 ([`command.harness.list.response:1`](../../contracts/README.md#api-local)): os
 identificadores das ferramentas com `program` preenchido, na ordem `claude`,
@@ -129,7 +130,10 @@ para reler a configuração), e não confere o disco: uma ferramenta listada ain
 pode receber `-32602` em `session.open` se o programa ou a pasta não existir.
 Como só lê, não passa pela cache de idempotência: repetir a chave devolve a
 lista de novo, nunca `replayed`. `api::Launcher::catalog` fornece a lista; o
-padrão é vazio, como em `DisabledLauncher`.
+padrão é vazio, como em `DisabledLauncher`. A resposta é a única mensagem
+que precisa da `local-api.server-message:2`; quem não envia `harness.list`
+continua recebendo só mensagens da `:1`. Um daemon anterior ao comando o recusa
+com `-32601`, e a interface mostra que não obteve as ferramentas.
 
 Padrões em [defaults/daemon.toml](../../defaults/daemon.toml), aplicados ao iniciar:
 

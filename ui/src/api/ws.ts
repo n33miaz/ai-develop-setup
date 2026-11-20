@@ -16,6 +16,8 @@ export interface WsClientOptions {
   url: string
   token: string
   socketFactory?: (url: string) => CoreSocket
+  /** Prazo de `harness.list`; ao vencer, o pedido é esquecido e a consulta falha. */
+  listTimeoutMs?: number
 }
 
 function accepted(response: Reply): boolean {
@@ -26,6 +28,7 @@ export function createWsCoreClient({
   url,
   token,
   socketFactory = (url) => new WebSocket(url),
+  listTimeoutMs = 10000,
 }: WsClientOptions): CoreClient {
   let endpoint: URL
   try {
@@ -197,10 +200,24 @@ export function createWsCoreClient({
     },
     listHarnesses() {
       if (state !== 'connected') return Promise.reject(unavailable())
-      return transmit(newCommand('harness.list')).then((response) => {
-        if (!isHarnessList(response)) throw new Error('command rejected')
-        return response.result
+      const command = newCommand('harness.list')
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const expired = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          const request = pending.get(command.id)
+          pending.delete(command.id)
+          request?.reject(new Error('core timeout'))
+          reject(new Error('core timeout'))
+        }, listTimeoutMs)
       })
+      return Promise.race([transmit(command), expired])
+        .then((response) => {
+          if (!isHarnessList(response)) throw new Error('command rejected')
+          return response.result
+        })
+        .finally(() => {
+          clearTimeout(timer)
+        })
     },
     subscribe(stream, afterSeq, onEvent) {
       if (state !== 'connected') throw unavailable()

@@ -31,6 +31,10 @@ class FakeSocket extends EventTarget {
   }
   receive(message: unknown) {
     valid('urn:ads:contract:local-api.server-message:2', message)
+    this.receiveRaw(message)
+  }
+  /** Entrega sem conferir: simula um núcleo que manda o que o contrato não aceita. */
+  receiveRaw(message: unknown) {
     this.dispatchEvent(new MessageEvent('message', { data: JSON.stringify(message) }))
   }
   answer(index: number) {
@@ -42,12 +46,13 @@ class FakeSocket extends EventTarget {
   }
 }
 const token = 'a'.repeat(43)
-function setup() {
+function setup(listTimeoutMs?: number) {
   const socket = new FakeSocket()
   const urls: string[] = []
   const client = createWsCoreClient({
     url: 'ws://127.0.0.1:12345',
     token,
+    ...(listTimeoutMs === undefined ? {} : { listTimeoutMs }),
     socketFactory: (url) => {
       urls.push(url)
       return socket
@@ -55,8 +60,8 @@ function setup() {
   })
   return { socket, client, urls }
 }
-async function connected() {
-  const context = setup()
+async function connected(listTimeoutMs?: number) {
+  const context = setup(listTimeoutMs)
   const ready = context.client.connect()
   context.socket.dispatchEvent(new Event('open'))
   context.socket.answer(0)
@@ -266,6 +271,48 @@ describe('local WebSocket client', () => {
       result: { harnesses: [], workdir_aliases: [] },
     })
     await expect(closing).rejects.toThrow('core disconnected')
+  })
+  it.each([
+    ['an extra field', { harnesses: ['claude'], workdir_aliases: ['default'], program: 'x' }],
+    ['a POSIX path as alias', { harnesses: ['claude'], workdir_aliases: ['/srv/work'] }],
+    ['a Windows path as alias', { harnesses: ['claude'], workdir_aliases: ['C:\\work'] }],
+    ['a repeated tool', { harnesses: ['claude', 'claude'], workdir_aliases: [] }],
+    ['no alias list', { harnesses: ['claude'] }],
+  ])('drops the connection on a tool list with %s', async (_, result) => {
+    const { client, socket } = await connected()
+    const listed = client.listHarnesses()
+    socket.receiveRaw({ jsonrpc: '2.0', id: socket.sent[1]?.id, result })
+    await expect(listed).rejects.toThrow('core disconnected')
+    expect(client.getState()).toBe('disconnected')
+  })
+  it('rejects the list when an older core does not know the method', async () => {
+    const { client, socket } = await connected()
+    const listed = client.listHarnesses()
+    socket.receive({
+      jsonrpc: '2.0',
+      id: socket.sent[1]?.id,
+      error: { code: -32601, message: 'unknown method' },
+    })
+    await expect(listed).rejects.toThrow('command rejected')
+    expect(client.getState()).toBe('connected')
+  })
+  it('gives up on a list the core never answers and ignores the late reply', async () => {
+    const { client, socket } = await connected(20)
+    const listed = client.listHarnesses()
+    await expect(listed).rejects.toThrow('core timeout')
+    socket.receive({
+      jsonrpc: '2.0',
+      id: socket.sent[1]?.id,
+      result: { harnesses: ['claude'], workdir_aliases: ['default'] },
+    })
+    expect(client.getState()).toBe('connected')
+    const again = client.listHarnesses()
+    socket.receive({
+      jsonrpc: '2.0',
+      id: socket.sent[2]?.id,
+      result: { harnesses: [], workdir_aliases: [] },
+    })
+    await expect(again).resolves.toEqual({ harnesses: [], workdir_aliases: [] })
   })
   it('refuses to authenticate when the hello reply is a tool list', async () => {
     const { client, socket } = setup()

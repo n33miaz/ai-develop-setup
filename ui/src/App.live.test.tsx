@@ -157,7 +157,7 @@ describe('tool list', () => {
         <App client={client} live harnesses={['claude']} />
       </I18nContext>,
     )
-    expect(await screen.findByRole('alert')).toHaveTextContent(t('session.commandFailed'))
+    expect(await screen.findByRole('alert')).toHaveTextContent(t('harness.failed'))
     expect(screen.queryByRole('button', { name: 'Open claude' })).not.toBeInTheDocument()
   })
   it('falls back to the build-time list only in sample mode', () => {
@@ -170,5 +170,121 @@ describe('tool list', () => {
     )
     expect(screen.getByRole('button', { name: 'Open sample-tool' })).toBeDisabled()
     expect(listHarnesses).not.toHaveBeenCalled()
+  })
+})
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((done) => {
+    resolve = done
+  })
+  return { promise, resolve }
+}
+
+describe('tool list states', () => {
+  it('tells a pending list apart from an empty one', async () => {
+    const client = createFakeCoreClient(CATALOG)
+    const answer = deferred<{ harnesses: string[]; workdir_aliases: string[] }>()
+    vi.spyOn(client, 'listHarnesses').mockReturnValue(answer.promise)
+    const t = createTranslator('en')
+    render(
+      <I18nContext value={t}>
+        <App client={client} live />
+      </I18nContext>,
+    )
+    expect(await screen.findByText(t('harness.loading'))).toBeInTheDocument()
+    await act(async () => {
+      answer.resolve({ harnesses: [], workdir_aliases: ['default'] })
+      await answer.promise
+    })
+    expect(screen.getByText(t('harness.none'))).toBeInTheDocument()
+    expect(screen.queryByText(t('harness.loading'))).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Open / })).not.toBeInTheDocument()
+  })
+  it('never opens a session without an alias the core announced', async () => {
+    const client = createFakeCoreClient({ harnesses: ['claude'], workdir_aliases: [] })
+    const send = vi.spyOn(client, 'send')
+    const subscribe = vi.spyOn(client, 'subscribe')
+    const t = createTranslator('en')
+    render(
+      <I18nContext value={t}>
+        <App client={client} live workdir="default" />
+      </I18nContext>,
+    )
+    expect(await screen.findByText(t('harness.noWorkdir'))).toBeInTheDocument()
+    const button = screen.getByRole('button', { name: 'Open claude' })
+    expect(button).toBeDisabled()
+    fireEvent.click(button)
+    expect(send).not.toHaveBeenCalled()
+    expect(subscribe).not.toHaveBeenCalled()
+  })
+  it('uses only the answer of the current connection after reconnecting', async () => {
+    const client = createFakeCoreClient(CATALOG)
+    const first = deferred<{ harnesses: string[]; workdir_aliases: string[] }>()
+    const second = deferred<{ harnesses: string[]; workdir_aliases: string[] }>()
+    vi.spyOn(client, 'listHarnesses')
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise)
+    const send = vi.spyOn(client, 'send')
+    const t = createTranslator('en')
+    render(
+      <I18nContext value={t}>
+        <App client={client} live />
+      </I18nContext>,
+    )
+    await screen.findByText(t('harness.loading'))
+    act(() => {
+      client.disconnect()
+    })
+    await act(async () => {
+      await client.connect()
+    })
+    expect(screen.getByText(t('harness.loading'))).toBeInTheDocument()
+    await act(async () => {
+      second.resolve({ harnesses: ['codex'], workdir_aliases: ['new'] })
+      await second.promise
+    })
+    await act(async () => {
+      first.resolve({ harnesses: ['claude'], workdir_aliases: ['old'] })
+      await first.promise
+    })
+    expect(screen.queryByRole('button', { name: 'Open claude' })).not.toBeInTheDocument()
+    const button = screen.getByRole('button', { name: 'Open codex' })
+    await waitFor(() => {
+      expect(button).toBeEnabled()
+    })
+    fireEvent.click(button)
+    await waitFor(() => {
+      expect(send).toHaveBeenCalled()
+    })
+    expect(send.mock.calls[0]?.[0]).toMatchObject({
+      params: { harness: 'codex', workdir_alias: 'new' },
+    })
+  })
+  it('releases the session subscription when a listed tool fails to open', async () => {
+    const client = createFakeCoreClient(CATALOG)
+    const stop = vi.fn()
+    const subscribe = vi.spyOn(client, 'subscribe').mockReturnValue(stop)
+    vi.spyOn(client, 'send').mockImplementation((command) =>
+      Promise.resolve({
+        jsonrpc: '2.0',
+        id: command.id,
+        error: { code: -32602, message: 'invalid command' },
+      }),
+    )
+    const t = createTranslator('en')
+    render(
+      <I18nContext value={t}>
+        <App client={client} live />
+      </I18nContext>,
+    )
+    const button = await screen.findByRole('button', { name: 'Open claude' })
+    await waitFor(() => {
+      expect(button).toBeEnabled()
+    })
+    fireEvent.click(button)
+    expect(await screen.findByRole('alert')).toHaveTextContent(t('session.commandFailed'))
+    expect(subscribe).toHaveBeenCalledTimes(1)
+    expect(stop).toHaveBeenCalledTimes(1)
   })
 })

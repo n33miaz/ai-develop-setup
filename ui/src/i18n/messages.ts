@@ -5,6 +5,11 @@ export const ptBR = {
     'Não foi possível executar o comando da sessão. Confira a conexão e a configuração do núcleo.',
 
   'notice.live': 'Conexão ao núcleo local. As sessões exibem os eventos recebidos.',
+  'harness.loading': 'Consultando as ferramentas configuradas no núcleo.',
+  'harness.none': 'Nenhuma ferramenta configurada no núcleo.',
+  'harness.noWorkdir':
+    'Nenhuma pasta de trabalho configurada no núcleo; não é possível abrir sessões.',
+  'harness.failed': 'Não foi possível obter as ferramentas do núcleo. Reabra a URL da execução.',
   'app.title': 'ai-develop-setup',
   'skip.toTerminal': 'Pular para o terminal',
   'notice.wip': 'Em construção. Esta tela mostra dados de exemplo locais; nada aqui vem do núcleo.',
@@ -55,6 +60,10 @@ export const en: Record<MessageKey, string> = {
     'Could not execute the session command. Check the connection and core configuration.',
 
   'notice.live': 'Local core connection. Sessions display received events.',
+  'harness.loading': 'Asking the core for its configured tools.',
+  'harness.none': 'No tools are configured in the core.',
+  'harness.noWorkdir': 'No work folder is configured in the core; sessions cannot be opened.',
+  'harness.failed': 'Could not get the tools from the core. Reopen the run URL.',
   'app.title': 'ai-develop-setup',
   'skip.toTerminal': 'Skip to the terminal',
   'notice.wip':

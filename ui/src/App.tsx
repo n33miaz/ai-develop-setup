@@ -105,7 +105,8 @@ export function App({
 
   const [liveEvents, setLiveEvents] = useState<SessionEvent[]>([])
 
-  const [catalog, setCatalog] = useState<HarnessCatalog | null>(null)
+  // null: consulta em andamento na conexão atual.
+  const [catalog, setCatalog] = useState<HarnessCatalog | 'failed' | null>(null)
 
   const receiveSession = useCallback((event: EventEnvelopeV1) => {
     if (
@@ -148,22 +149,36 @@ export function App({
         if (current) setCatalog(received)
       },
       () => {
-        if (current) {
-          setCatalog({ harnesses: [], workdir_aliases: [] })
-          reportError()
-        }
+        if (current) setCatalog('failed')
       },
     )
     return () => {
       current = false
       setCatalog(null)
     }
-  }, [client, live, connection, reportError])
+  }, [client, live, connection])
 
   const liveCatalog = live && connection === 'connected' ? catalog : null
-  const available = live ? (liveCatalog?.harnesses ?? NO_STREAMS) : harnesses
-  const aliases = liveCatalog?.workdir_aliases ?? NO_STREAMS
-  const workdirAlias = aliases.length === 0 || aliases.includes(workdir) ? workdir : aliases[0]
+  const listed = liveCatalog !== null && liveCatalog !== 'failed' ? liveCatalog : null
+  const available = live ? (listed?.harnesses ?? NO_STREAMS) : harnesses
+  // Conectada, só abre com um apelido que o núcleo anunciou.
+  const workdirAlias = !live
+    ? workdir
+    : listed?.workdir_aliases.includes(workdir)
+      ? workdir
+      : listed?.workdir_aliases[0]
+  const catalogNotice: MessageKey | null =
+    !live || connection !== 'connected'
+      ? null
+      : liveCatalog === null
+        ? 'harness.loading'
+        : liveCatalog === 'failed'
+          ? 'harness.failed'
+          : liveCatalog.harnesses.length === 0
+            ? 'harness.none'
+            : workdirAlias === undefined
+              ? 'harness.noWorkdir'
+              : null
 
   useEffect(() => {
     if (!live || connection !== 'connected') return
@@ -226,6 +241,7 @@ export function App({
   )
 
   const open = async (harness: string) => {
+    if (workdirAlias === undefined) return
     setOpening(true)
 
     setWarning(false)
@@ -236,8 +252,13 @@ export function App({
 
     setChosenSessionId(id)
 
+    let stop: (() => void) | undefined
+    const release = () => {
+      stop?.()
+      openedSubscriptions.current = openedSubscriptions.current.filter((item) => item !== stop)
+    }
     try {
-      const stop = client.subscribe(`session/${id}`, 0, receiveSession)
+      stop = client.subscribe(`session/${id}`, 0, receiveSession)
 
       openedSubscriptions.current.push(stop)
 
@@ -250,8 +271,12 @@ export function App({
         }),
       )
 
-      if (response.error) reportError()
+      if (response.error) {
+        release()
+        reportError()
+      }
     } catch {
+      release()
       reportError()
     } finally {
       setOpening(false)
@@ -289,7 +314,7 @@ export function App({
               key={harness}
               type="button"
               className={styles.button}
-              disabled={connection !== 'connected' || opening}
+              disabled={connection !== 'connected' || opening || workdirAlias === undefined}
               onClick={() => {
                 void open(harness)
               }}
@@ -298,6 +323,10 @@ export function App({
             </button>
           ))}
         </div>
+      )}
+
+      {catalogNotice && (
+        <p role={catalogNotice === 'harness.failed' ? 'alert' : 'status'}>{t(catalogNotice)}</p>
       )}
 
       {warning && <p role="alert">{t('session.commandFailed')}</p>}
