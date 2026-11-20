@@ -171,6 +171,53 @@ fn recovery_rechecks_the_confirmed_plan_and_never_silently_enrolls_history() {
 }
 
 #[test]
+fn append_refuses_changed_history_on_an_open_connection() {
+    for (sql, position) in [
+        ("DELETE FROM event WHERE position = 2", 3),
+        (
+            "UPDATE event SET data_ct = zeroblob(length(data_ct)) WHERE position = 2",
+            2,
+        ),
+    ] {
+        let path = fixture();
+        let anchor = MemoryAnchor::default();
+        let mut log = anchored(&path, &anchor).unwrap();
+        for seq in 1..=3 {
+            log.append(&event("task/t1", seq, seq, serde_json::json!({})))
+                .unwrap();
+        }
+        drop(log);
+        let mut log = anchored(&path, &anchor).unwrap();
+        let before = anchor.0.lock().unwrap().commitment;
+        tamper(&path, sql, None);
+
+        let next = event("task/t1", 4, 4, serde_json::json!({}));
+        for _ in 0..2 {
+            assert_eq!(
+                log.append(&next),
+                Err(StorageError::HistoryChanged { position })
+            );
+            assert_eq!(anchor.0.lock().unwrap().commitment, before);
+            assert_eq!(log.head(&next.stream), Ok(3));
+        }
+    }
+}
+
+#[test]
+fn append_accepts_authenticated_history_from_another_connection() {
+    let path = fixture();
+    let anchor = MemoryAnchor::default();
+    let mut first = anchored(&path, &anchor).unwrap();
+    let mut second = anchored(&path, &anchor).unwrap();
+    first
+        .append(&event("task/t1", 1, 1, serde_json::json!({})))
+        .unwrap();
+    let next = event("task/t1", 2, 2, serde_json::json!({}));
+    assert_eq!(second.append(&next).unwrap().get(), 2);
+    assert_eq!(anchored(&path, &anchor).unwrap().verify_chain(), Ok(2));
+}
+
+#[test]
 fn anchored_open_and_recovery_refuse_a_missing_middle_row() {
     let path = fixture();
     let anchor = MemoryAnchor::default();

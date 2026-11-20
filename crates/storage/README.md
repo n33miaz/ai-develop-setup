@@ -18,7 +18,7 @@ A versão 3 acrescentou `event` e `cipher_key`. A versão 4 acrescenta `log_gene
 
 API: `EventLog::open(caminho, configuração, provedor de chaves, cofre da âncora)`; `head(stream)` devolve o último `seq` (0 sem eventos); `read_stream(stream, de_seq, limite)` decifra linha a linha, sem juntar a página antes, e para no `limite` (até `read_page_limit`) ou antes da linha cujo texto cifrado passaria de `read_page_max_bytes` (a primeira sempre entra; quem lê continua do último `seq` recebido); `verify_chain()` percorre o log inteiro e devolve o número de linhas ou `ChainBroken` com a posição da primeira linha alterada, forjada, fora de ordem, de formato desconhecido ou de chave que o provedor não entrega ou que não confere com o `key_check` (chave antiga perdida aparece assim: mantenha as chaves antigas no cofre). Erros são só categorias, sem SQL, caminho nem conteúdo.
 
-`append(evento)` confere o `seq` do stream e a âncora dentro de `BEGIN IMMEDIATE`. A sincronização com o cofre segue o procedimento abaixo.
+`append(evento)` confere o `seq` do stream e a âncora dentro de `BEGIN IMMEDIATE`. A sincronização com o cofre segue o procedimento abaixo. Sob o mesmo lock, uma consulta a `PRAGMA data_version` verifica se outra conexão confirmou mudanças desde a última conferência. Sem mudança, a consulta tem custo constante em relação ao tamanho do histórico. Se o valor mudou, o log confere o esquema e autentica novamente toda a cadeia antes de escrever ou atualizar a âncora, com custo proporcional aos bytes armazenados e sem decifrar os dados. Uma gravação da própria conexão preserva o valor. A verificação é obrigatória.
 
 | Erro | Quando | O que fazer |
 |---|---|---|
@@ -27,6 +27,8 @@ API: `EventLog::open(caminho, configuração, provedor de chaves, cofre da ânco
 | `AnchorUnavailable` | falha de acesso ao cofre | restabelecer o acesso antes de tentar gravar de novo |
 | `AnchorMissing` | entrada da âncora ausente | parar a escrita e seguir a recuperação |
 | `AnchorMismatch` | banco e âncora divergem | parar a escrita e seguir a recuperação |
+| `HistoryChanged { position }` | a cadeia falhou na posição indicada após mudança confirmada por outra conexão | parar a escrita e seguir a recuperação |
+| `UnsupportedSchema` | o esquema diverge após mudança confirmada por outra conexão | parar a escrita e conferir a integridade do banco |
 | `Constraint` | o banco recusou a linha (`id` repetido ou gatilho) | não repetir igual |
 | `InvalidEvent` | limite de `type` ou família, ou id do portão que não é o do stream | corrigir o evento |
 | `TooLarge` | `data` serializado acima de `max_event_bytes` | guardar em outro lugar |

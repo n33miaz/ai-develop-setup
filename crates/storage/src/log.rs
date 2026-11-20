@@ -6,6 +6,8 @@ use crate::{
         ReanchorPlan,
     },
     cipher::{self, AssociatedData, ChainKey, Ciphertext, KeyId, KeyProvider, SecretKey},
+    migrate::{expected_schema, schema},
+    open::SCHEMA_VERSION,
 };
 use ads_contracts::{
     CommonActorV1, CommonActorV1Kind, CommonDataClassV1, CommonIdV1, CommonTimestampV1,
@@ -263,6 +265,7 @@ pub struct EventLog {
     keys: Box<dyn KeyProvider + Send>,
     config: StorageConfig,
     anchor: Option<Box<dyn AnchorStore>>,
+    verified_data_version: i64,
 }
 
 impl std::fmt::Debug for EventLog {
@@ -417,6 +420,17 @@ fn genesis(tx: &rusqlite::Connection) -> Result<Vec<u8>, StorageError> {
     })
 }
 
+fn data_version(tx: &Transaction<'_>) -> Result<i64, StorageError> {
+    Ok(tx.pragma_query_value(None, "data_version", |row| row.get(0))?)
+}
+
+fn check_log_schema(tx: &Transaction<'_>) -> Result<(), StorageError> {
+    if schema(tx)? != expected_schema(SCHEMA_VERSION)? {
+        return Err(StorageError::UnsupportedSchema);
+    }
+    Ok(())
+}
+
 impl EventLog {
     /// Checks the independent vault commitment and authenticates the full chain
     /// under one write lock. Verification processes all stored ciphertext.
@@ -432,6 +446,8 @@ impl EventLog {
             .store
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let version = data_version(&tx)?;
+        check_log_schema(&tx)?;
         let stored = anchor.read()?;
         let actual = commitment(&tx)?;
         match stored {
@@ -445,6 +461,7 @@ impl EventLog {
         verify_in(&tx, &*log.keys)?;
         tx.commit()?;
         log.anchor = Some(anchor);
+        log.verified_data_version = version;
         Ok(log)
     }
 
@@ -517,6 +534,7 @@ impl EventLog {
             keys,
             config: config.clone(),
             anchor: None,
+            verified_data_version: 0,
         })
     }
 
@@ -542,6 +560,8 @@ impl EventLog {
     /// `AnchorUnavailable`: restore access to the vault before trying again.
     /// `AnchorMissing`: the vault entry is absent. Stop and follow recovery.
     /// `AnchorMismatch`: the vault and database differ. Stop and follow recovery.
+    /// `HistoryChanged`: the chain failed verification after an external commit.
+    /// Stop and follow recovery.
     /// `Constraint`: the database refused the row (repeated `id`, or a trigger);
     /// do not retry unchanged. `InvalidEvent`: `type` or stream family over its
     /// bound, or a gate event whose `action_id`/`approval_id` disagree with its
@@ -582,6 +602,18 @@ impl EventLog {
                 Some(expected) if expected == commitment(&tx)? => {}
                 Some(_) => return Err(StorageError::AnchorMismatch),
                 None => return Err(StorageError::AnchorMissing),
+            }
+            // This connection's own commits do not change its data_version.
+            let version = data_version(&tx)?;
+            if version != self.verified_data_version {
+                check_log_schema(&tx)?;
+                verify_in(&tx, &*self.keys).map_err(|error| match error {
+                    StorageError::ChainBroken { position } => {
+                        StorageError::HistoryChanged { position }
+                    }
+                    other => other,
+                })?;
+                self.verified_data_version = version;
             }
         }
         if seq != head_in(&tx, stream)? + 1 {

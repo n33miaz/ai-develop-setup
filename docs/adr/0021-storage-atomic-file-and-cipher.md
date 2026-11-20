@@ -206,6 +206,9 @@ com ela, mantendo o trecho contíguo. A verificação depende da integridade
 das chaves. A [âncora externa](../../crates/storage/README.md#âncora-no-cofre)
 vincula gênese, último `position`, `chain` e registros de chaves ao cofre
 em cada `append`. A abertura e o próximo `append` conferem essa âncora.
+Sob o lock de escrita, uma mudança em `PRAGMA data_version` também exige
+nova autenticação da cadeia antes de gravar
+([log de eventos](../../crates/storage/README.md#log-de-eventos)).
 Detectar não é impedir: um `INSERT` simples sem chave é aceito pelo banco e só
 `verify_chain` e `read_stream` o recusam depois. Com os índices únicos do
 portão, uma linha assim pode ocupar a vaga de uma licença (um `action.started`
