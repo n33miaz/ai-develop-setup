@@ -502,3 +502,61 @@ describe('tool list deadline', () => {
     expect(client.getState()).toBe('connected')
   })
 })
+
+describe('expired tool list ids', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+  it('forgets expired ids when the connection ends', async () => {
+    vi.useFakeTimers()
+    const sockets: FakeSocket[] = []
+    const client = createWsCoreClient({
+      url: 'ws://127.0.0.1:12345',
+      token,
+      listTimeoutMs: 50,
+      socketFactory: () => {
+        const socket = new FakeSocket()
+        sockets.push(socket)
+        return socket
+      },
+    })
+    const open = async () => {
+      const ready = client.connect()
+      const socket = sockets[sockets.length - 1]
+      if (!socket) throw new Error('missing socket')
+      socket.dispatchEvent(new Event('open'))
+      socket.answer(0)
+      await ready
+      return socket
+    }
+    const first = await open()
+    const late = client.listHarnesses().catch(() => undefined)
+    await vi.advanceTimersByTimeAsync(50)
+    await late
+    const expiredId = first.sent[1]?.id
+    client.disconnect()
+    const second = await open()
+    second.receiveRaw({
+      jsonrpc: '2.0',
+      id: expiredId,
+      result: { harnesses: ['claude'], workdir_aliases: ['/srv/work'] },
+    })
+    expect(client.getState()).toBe('disconnected')
+  })
+  it('keeps only the newest 32 expired ids', async () => {
+    vi.useFakeTimers()
+    const { client, socket } = await connected(50)
+    const lists = Array.from({ length: 33 }, () => client.listHarnesses().catch(() => undefined))
+    await vi.advanceTimersByTimeAsync(50)
+    await Promise.all(lists)
+    const malformed = (id: string | undefined) => ({
+      jsonrpc: '2.0',
+      id,
+      result: { harnesses: ['claude'], workdir_aliases: ['/srv/work'] },
+    })
+    socket.receiveRaw(malformed(socket.sent[33]?.id))
+    expect(client.getState()).toBe('connected')
+    socket.receiveRaw(malformed(socket.sent[1]?.id))
+    expect(client.getState()).toBe('disconnected')
+  })
+})

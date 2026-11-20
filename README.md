@@ -60,7 +60,7 @@ daemon informa em `harness.list`. Enquanto a consulta não volta, um aviso diz q
 ela está em andamento. Sem botões, cada caso tem o seu aviso: lista vazia;
 falta de resposta em 10 segundos (reabra a URL da execução); daemon anterior ao
 comando, que responde `-32601` (atualize o daemon; reabrir a URL não resolve);
-e outra recusa (confira a configuração do daemon). Sem apelido de pasta anunciado
+e outra recusa do daemon, com aviso neutro. Sem apelido de pasta anunciado
 pelo daemon, os botões ficam desativados e um aviso explica o motivo. Cada
 conexão autenticada tem uma geração própria: a lista, o apelido e os botões
 valem só para a geração que os recebeu, então uma reconexão volta ao aviso de

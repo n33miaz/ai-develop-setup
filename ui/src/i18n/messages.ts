@@ -19,7 +19,7 @@ export const ptBR = {
   'harness.none': 'Nenhuma ferramenta configurada no núcleo.',
   'harness.noWorkdir':
     'Nenhuma pasta de trabalho configurada no núcleo; não é possível abrir sessões.',
-  'harness.failed': 'O núcleo recusou a lista de ferramentas. Confira a configuração dele.',
+  'harness.failed': 'O núcleo recusou a lista de ferramentas.',
   'harness.timeout':
     'O núcleo não respondeu a tempo com a lista de ferramentas. Reabra a URL da execução.',
   'harness.unsupported':
@@ -88,7 +88,7 @@ export const en: Record<MessageKey, string> = {
   'harness.loading': 'Asking the core for its configured tools.',
   'harness.none': 'No tools are configured in the core.',
   'harness.noWorkdir': 'No work folder is configured in the core; sessions cannot be opened.',
-  'harness.failed': 'The core refused the tool list. Check its configuration.',
+  'harness.failed': 'The core refused the tool list.',
   'harness.timeout': 'The core did not send the tool list in time. Reopen the run URL.',
   'harness.unsupported':
     'This core does not report its configured tools. Update the core to open sessions.',

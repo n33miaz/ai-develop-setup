@@ -63,3 +63,16 @@ describe('tool list over the local socket', () => {
     expect(screen.queryByRole('button', { name: 'Open claude' })).not.toBeInTheDocument()
   })
 })
+
+describe('tool list refusal over the local socket', () => {
+  it('shows the neutral refusal notice for an error other than an unknown method', async () => {
+    const { socket, t } = await mount(10000)
+    socket.reply({
+      jsonrpc: '2.0',
+      id: socket.sent[1]?.id,
+      error: { code: -32602, message: 'invalid command' },
+    })
+    expect(await screen.findByRole('alert')).toHaveTextContent(t('harness.failed'))
+    expect(screen.queryByText(t('harness.unsupported'))).not.toBeInTheDocument()
+  })
+})

@@ -268,7 +268,8 @@ export function App({
 
       opened.clear()
     },
-    [client, connection],
+    // A geração refaz tudo numa reconexão que a tela não chegou a ver.
+    [client, connection, generation],
   )
 
   useEffect(() => {
@@ -286,7 +287,8 @@ export function App({
         if (current) setCatalog({ generation, value: received })
       },
       (error: unknown) => {
-        if (current)
+        // Erro de uma conexão que já foi trocada não diz nada sobre a atual.
+        if (current && client.getGeneration() === generation)
           setCatalog({
             generation,
             value: error instanceof HarnessListError ? error.reason : 'refused',
@@ -335,7 +337,7 @@ export function App({
     return () => {
       for (const stop of unsubscribe) stop()
     }
-  }, [client, live, connection, sessionStreams, receiveSession, markSession])
+  }, [client, live, connection, generation, sessionStreams, receiveSession, markSession])
 
   const { tasks, sessions } = useMemo(() => {
     if (live)
@@ -352,9 +354,11 @@ export function App({
   const session = sessions.find((item) => item.id === chosenSessionId) ?? sessions[0]
   const sessionId = session?.id
   const sessionName = session ? (session.displayName ?? t('session.unnamed')) : ''
+  // Fonte e entrada são da conexão autenticada atual (0: nenhuma); uma reconexão as refaz.
+  const liveGeneration = live && connection === 'connected' ? generation : 0
   const source = useMemo(
     () =>
-      live && sessionId !== undefined && connection === 'connected'
+      liveGeneration > 0 && sessionId !== undefined
         ? eventByteSource(client, `session/${sessionId}`)
         : staticByteSource(
             live
@@ -363,16 +367,14 @@ export function App({
                 ? ''
                 : decodeBase64(sampleOutput(t, sessionId, sessionName).data.payload),
           ),
-    [t, sessionId, sessionName, live, client, connection],
+    [t, sessionId, sessionName, live, client, liveGeneration],
   )
 
   const input = useMemo(
     () =>
-      live && sessionId && connection === 'connected'
-        ? sessionInput(client, sessionId, reportError)
-        : undefined,
+      liveGeneration > 0 && sessionId ? sessionInput(client, sessionId, reportError) : undefined,
 
-    [live, sessionId, connection, client, reportError],
+    [liveGeneration, sessionId, client, reportError],
   )
 
   const resize = useCallback(

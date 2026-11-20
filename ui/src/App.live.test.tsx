@@ -311,12 +311,13 @@ function quietReconnect() {
       return () => listeners.delete(listener)
     },
   }
-  const reconnect = async () => {
+  // `notify = false`: a tela nem fica sabendo da reconexão (renderização velha).
+  const reconnect = async (notify = true) => {
     muted = true
     fake.disconnect()
     await fake.connect()
     muted = false
-    for (const listener of [...listeners]) listener(fake.getState())
+    if (notify) for (const listener of [...listeners]) listener(fake.getState())
   }
   return { client, reconnect }
 }
@@ -887,5 +888,51 @@ describe('sessions the core cannot keep', () => {
     expect(await screen.findByText(t('session.notice.setupFailed'))).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Falhou ao iniciar/ })).toBeInTheDocument()
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+})
+
+describe('session streams across connections', () => {
+  it('subscribes the session streams again after a reconnect the screen did not see', async () => {
+    const { client, reconnect } = quietReconnect()
+    const t = createTranslator('en')
+    render(
+      <I18nContext value={t}>
+        <App client={client} live sessionStreams={['session/session-a']} />
+      </I18nContext>,
+    )
+    await screen.findByRole('button', { name: 'Open claude' })
+    await act(async () => {
+      await reconnect()
+    })
+    act(() => {
+      for (const draft of sampleSessionEvents(t)) {
+        if (draft.stream === 'session/session-a') client.emit(draft)
+      }
+    })
+    expect(
+      screen.getByRole('region', { name: t('terminal.label', { name: t('sample.session.a') }) }),
+    ).toBeInTheDocument()
+  })
+  it('does not open from a button of a connection that was already replaced', async () => {
+    const { client, reconnect } = quietReconnect()
+    const t = createTranslator('en')
+    render(
+      <I18nContext value={t}>
+        <App client={client} live />
+      </I18nContext>,
+    )
+    const button = await screen.findByRole('button', { name: 'Open claude' })
+    await waitFor(() => {
+      expect(button).toBeEnabled()
+    })
+    const subscribe = vi.spyOn(client, 'subscribe')
+    const send = vi.spyOn(client, 'send')
+    await reconnect(false)
+    fireEvent.click(button)
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(subscribe).not.toHaveBeenCalled()
+    expect(send).not.toHaveBeenCalled()
   })
 })
