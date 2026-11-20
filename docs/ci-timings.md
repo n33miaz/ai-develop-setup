@@ -13,6 +13,8 @@ Retrato inicial do workspace, medido na API do GitHub a partir de `startedAt` e 
 | `shell-check` | Windows | 171 s | 64 s e 58 s |
 | `pty-windows` | Windows | 113 s (primeira execução, no PR que criou o job) | a medir |
 | `fs-windows` | Windows | a medir (no PR que criou o job) | a medir |
+| `storage-windows` | Windows | a medir (no PR que criou o job) | a medir |
+| `vault-windows` | Windows | a medir (no PR que criou o job) | a medir |
 | `ci-ok` | Ubuntu | 2 a 3 s | igual |
 
 - Caminho bloqueante quando a casca é tocada: o maior job é o `shell-check`, 171 s frio e cerca de 1 min quente. Sem tocar a casca, o `shell-check` é pulado e o caminho é o `rust` (cerca de 25 s nessa medição).

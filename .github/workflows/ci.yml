@@ -165,6 +165,7 @@ jobs:
       pty: ${{ steps.filter.outputs.pty }}
       fs: ${{ steps.filter.outputs.fs }}
       storage: ${{ steps.filter.outputs.storage }}
+      vault: ${{ steps.filter.outputs.vault }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -190,6 +191,8 @@ jobs:
           # tudo que muda o resultado da compilação.
           FS_PATHS: '^(crates/adapters/fs/|crates/core/|crates/contracts/|contracts/|defaults/action-gate\.toml$|defaults/fs-executor\.toml$|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
           STORAGE_PATHS: '^(crates/storage/|crates/contracts/|contracts/|defaults/storage\.toml$|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
+          # Cofre: o crate, as dependências dele no workspace, este workflow e as entradas da compilação.
+          VAULT_PATHS: '^(crates/adapters/vault/|crates/core/|crates/contracts/|contracts/|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
         run: |
           set -euo pipefail
           # Na dúvida (disparo manual, push sem base conhecida, diff impossível), roda.
@@ -199,6 +202,7 @@ jobs:
           pty=true
           fs=true
           storage=true
+          vault=true
           range=""
           case "$EVENT" in
             pull_request) range="$PR_BASE_SHA...$PR_HEAD_SHA" ;;
@@ -217,6 +221,7 @@ jobs:
             if echo "$files" | grep -Eq "$PTY_PATHS"; then pty=true; else pty=false; fi
             if echo "$files" | grep -Eq "$FS_PATHS"; then fs=true; else fs=false; fi
             if echo "$files" | grep -Eq "$STORAGE_PATHS"; then storage=true; else storage=false; fi
+            if echo "$files" | grep -Eq "$VAULT_PATHS"; then vault=true; else vault=false; fi
           fi
           echo "shell=$shell" >> "$GITHUB_OUTPUT"
           echo "ui=$ui" >> "$GITHUB_OUTPUT"
@@ -224,7 +229,8 @@ jobs:
           echo "pty=$pty" >> "$GITHUB_OUTPUT"
           echo "fs=$fs" >> "$GITHUB_OUTPUT"
           echo "storage=$storage" >> "$GITHUB_OUTPUT"
-          echo "shell-check roda: $shell; ui roda: $ui; contracts roda: $contracts; pty-windows roda: $pty; fs-windows roda: $fs; storage-windows roda: $storage"
+          echo "vault=$vault" >> "$GITHUB_OUTPUT"
+          echo "shell-check roda: $shell; ui roda: $ui; contracts roda: $contracts; pty-windows roda: $pty; fs-windows roda: $fs; storage-windows roda: $storage; vault-windows roda: $vault"
 
   contracts:
     name: contracts
@@ -463,10 +469,41 @@ jobs:
           cargo clippy --locked -p ads-storage --all-targets -j 2 -- -D warnings
           cargo test --locked -p ads-storage -j 2
 
+  # O Gerenciador de Credenciais só existe no Windows: no Linux o cofre compila com o stub, então o código real
+  # (e o unsafe dele) só é compilado e testado aqui. O teste que grava no cofre de verdade fica ignorado.
+  vault-windows:
+    name: vault-windows
+    needs: changes
+    if: needs.changes.outputs.vault == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Instalar a versão fixada em rust-toolchain.toml
+        run: |
+          rustup toolchain install
+          rustc --version
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: vault-windows
+          save-if: ${{ github.ref == 'refs/heads/develop' && github.event_name != 'pull_request' }}
+      - name: Lint do cofre no Windows (avisos como erro)
+        run: cargo clippy --locked -p ads-adapter-vault --all-targets -j 2 -- -D warnings
+      - name: Testes do cofre (sem o teste ignorado)
+        run: cargo test --locked -p ads-adapter-vault -j 2
+
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [commits, secrets, terms, changes, contracts, rust, shell-check, ui, pty-windows, fs-windows, storage-windows]
+    needs: [commits, secrets, terms, changes, contracts, rust, shell-check, ui, pty-windows, fs-windows, storage-windows, vault-windows]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:

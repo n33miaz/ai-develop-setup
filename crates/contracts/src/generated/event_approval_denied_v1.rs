@@ -125,6 +125,8 @@ pub struct EventApprovalDeniedV1Data {
 pub struct EventApprovalDeniedV1DataReason(String);
 
 impl EventApprovalDeniedV1DataReason {
+    pub const MAX_CHARS: usize = 500;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -136,7 +138,7 @@ impl EventApprovalDeniedV1DataReason {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        (1..=500).contains(&length)
+        (1..=Self::MAX_CHARS).contains(&length)
     }
 
     pub fn as_str(&self) -> &str {

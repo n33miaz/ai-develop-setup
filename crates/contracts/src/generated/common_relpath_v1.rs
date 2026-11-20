@@ -17,6 +17,8 @@ static COMMON_RELPATH_V1_EXCLUDED: Pattern = Pattern::new(r"(^|/)\.\.(/|$)");
 pub struct CommonRelpathV1(String);
 
 impl CommonRelpathV1 {
+    pub const MAX_CHARS: usize = 260;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -28,7 +30,7 @@ impl CommonRelpathV1 {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        (1..=260).contains(&length)
+        (1..=Self::MAX_CHARS).contains(&length)
             && COMMON_RELPATH_V1_PATTERN.matches(text)
             && !COMMON_RELPATH_V1_EXCLUDED.matches(text)
     }

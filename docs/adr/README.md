@@ -29,3 +29,4 @@ Uma decisão por arquivo. Número nunca é reutilizado; decisão substituída ga
 | [0023](0023-remote-session-encryption.md) | 0023. Remote session encryption | proposta |
 | [0024](0024-agent-authored-commits.md) | 0024. Agent-authored commits (substitui em parte a 0011 e a 0014) | aceita |
 | [0025](0025-semver-dev-prereleases-until-first-installer.md) | 0025. SemVer dev pre-releases until the first installer (substitui a 0017) | aceita |
+| [0026](0026-operating-system-vault.md) | 0026. Operating system vault for product secrets | proposta |

@@ -57,6 +57,12 @@ version = "0.0.0"
 [[package]]
 name = "ads-adapter-vault"
 version = "0.0.0"
+dependencies = [
+ "ads-core",
+ "getrandom 0.4.3",
+ "windows",
+ "zeroize",
+]
 
 [[package]]
 name = "ads-contracts"
@@ -76,6 +82,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "toml 1.2.1+spec-1.1.0",
+ "zeroize",
 ]
 
 [[package]]

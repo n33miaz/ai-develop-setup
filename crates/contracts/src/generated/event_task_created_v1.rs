@@ -210,6 +210,8 @@ static EVENT_TASK_CREATED_V1_DATA_TITLE_PATTERN: Pattern =
 pub struct EventTaskCreatedV1DataTitle(String);
 
 impl EventTaskCreatedV1DataTitle {
+    pub const MAX_CHARS: usize = 120;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -221,7 +223,8 @@ impl EventTaskCreatedV1DataTitle {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        (1..=120).contains(&length) && EVENT_TASK_CREATED_V1_DATA_TITLE_PATTERN.matches(text)
+        (1..=Self::MAX_CHARS).contains(&length)
+            && EVENT_TASK_CREATED_V1_DATA_TITLE_PATTERN.matches(text)
     }
 
     pub fn as_str(&self) -> &str {

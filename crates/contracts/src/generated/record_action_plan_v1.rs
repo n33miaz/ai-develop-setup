@@ -209,8 +209,10 @@ impl RecordActionPlanV1Operation {
 pub struct RecordActionPlanV1Targets(Vec<RecordActionPlanV1TargetsItem>);
 
 impl RecordActionPlanV1Targets {
+    pub const MAX_ITEMS: usize = 10000;
+
     pub fn new(items: Vec<RecordActionPlanV1TargetsItem>) -> Result<Self, ContractError> {
-        if (1..=10000).contains(&items.len()) && support::all_distinct(&items) {
+        if (1..=Self::MAX_ITEMS).contains(&items.len()) && support::all_distinct(&items) {
             Ok(Self(items))
         } else {
             Err(ContractError::new(
@@ -268,6 +270,8 @@ static RECORD_ACTION_PLAN_V1_TARGETS_ITEM_PATTERN_PATTERN: Pattern =
 pub struct RecordActionPlanV1TargetsItemPattern(String);
 
 impl RecordActionPlanV1TargetsItemPattern {
+    pub const MAX_CHARS: usize = 255;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -282,7 +286,8 @@ impl RecordActionPlanV1TargetsItemPattern {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        length <= 255 && RECORD_ACTION_PLAN_V1_TARGETS_ITEM_PATTERN_PATTERN.matches(text)
+        length <= Self::MAX_CHARS
+            && RECORD_ACTION_PLAN_V1_TARGETS_ITEM_PATTERN_PATTERN.matches(text)
     }
 
     pub fn as_str(&self) -> &str {
@@ -464,8 +469,10 @@ impl RecordActionPlanV1VerdictDecision {
 pub struct RecordActionPlanV1VerdictReasons(Vec<RecordActionPlanV1VerdictReasonsItem>);
 
 impl RecordActionPlanV1VerdictReasons {
+    pub const MAX_ITEMS: usize = 1000;
+
     pub fn new(items: Vec<RecordActionPlanV1VerdictReasonsItem>) -> Result<Self, ContractError> {
-        if items.len() <= 1000 {
+        if items.len() <= Self::MAX_ITEMS {
             Ok(Self(items))
         } else {
             Err(ContractError::new(
@@ -518,6 +525,8 @@ pub struct RecordActionPlanV1VerdictReasonsItem {
 pub struct RecordActionPlanV1VerdictReasonsItemSubject(String);
 
 impl RecordActionPlanV1VerdictReasonsItemSubject {
+    pub const MAX_CHARS: usize = 4096;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -532,7 +541,7 @@ impl RecordActionPlanV1VerdictReasonsItemSubject {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        (1..=4096).contains(&length)
+        (1..=Self::MAX_CHARS).contains(&length)
     }
 
     pub fn as_str(&self) -> &str {

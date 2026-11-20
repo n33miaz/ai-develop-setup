@@ -130,6 +130,8 @@ static EVENT_ACTION_PLANNED_V1_DATA_VERB_PATTERN: Pattern =
 pub struct EventActionPlannedV1DataVerb(String);
 
 impl EventActionPlannedV1DataVerb {
+    pub const MAX_CHARS: usize = 64;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -141,7 +143,7 @@ impl EventActionPlannedV1DataVerb {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        length <= 64 && EVENT_ACTION_PLANNED_V1_DATA_VERB_PATTERN.matches(text)
+        length <= Self::MAX_CHARS && EVENT_ACTION_PLANNED_V1_DATA_VERB_PATTERN.matches(text)
     }
 
     pub fn as_str(&self) -> &str {

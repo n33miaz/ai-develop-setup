@@ -190,6 +190,8 @@ static COMMAND_HARNESS_LIST_V1_PARAMS_META_REMOTE_SIGNATURE_PATTERN: Pattern =
 pub struct CommandHarnessListV1ParamsMetaRemoteSignature(String);
 
 impl CommandHarnessListV1ParamsMetaRemoteSignature {
+    pub const MAX_CHARS: usize = 88;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -204,7 +206,8 @@ impl CommandHarnessListV1ParamsMetaRemoteSignature {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        length == 88 && COMMAND_HARNESS_LIST_V1_PARAMS_META_REMOTE_SIGNATURE_PATTERN.matches(text)
+        length == Self::MAX_CHARS
+            && COMMAND_HARNESS_LIST_V1_PARAMS_META_REMOTE_SIGNATURE_PATTERN.matches(text)
     }
 
     pub fn as_str(&self) -> &str {
