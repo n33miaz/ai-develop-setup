@@ -20,7 +20,8 @@ pub trait Probe {
 }
 
 /// The real file system. A path absolute only in the other system's style is never found: on
-/// Windows `/x` is relative to the current drive, and elsewhere `C:\x` is a relative name.
+/// Windows `/x` is relative to the current drive, and elsewhere `C:\x` is a relative name. The
+/// configuration already refuses such a path when it loads; this check stays as a second guard.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DiskProbe;
 

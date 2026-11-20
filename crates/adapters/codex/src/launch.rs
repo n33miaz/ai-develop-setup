@@ -15,13 +15,13 @@ use crate::CodexConfig;
 /// ```
 /// use ads_adapter_codex::{Codex, DiskProbe, open_params};
 /// use ads_contracts::CommandSessionOpenV1Params;
-/// use ads_core::child_env::NameCase;
+/// use ads_core::tool_launch::HostRules;
 /// use ads_core::tool_launch::ToolConfig;
 ///
 /// ads_core::tool_harness!(Other = "other");
 ///
 /// fn open(request: &CommandSessionOpenV1Params) {
-///     let config = ToolConfig::<Codex>::defaults(NameCase::Sensitive);
+///     let config = ToolConfig::<Codex>::defaults(HostRules::POSIX);
 ///     let _ = open_params(&config, request, Vec::<(String, String)>::new(), &DiskProbe);
 /// }
 /// ```
@@ -29,13 +29,13 @@ use crate::CodexConfig;
 /// ```compile_fail
 /// use ads_adapter_codex::{Codex, DiskProbe, open_params};
 /// use ads_contracts::CommandSessionOpenV1Params;
-/// use ads_core::child_env::NameCase;
+/// use ads_core::tool_launch::HostRules;
 /// use ads_core::tool_launch::ToolConfig;
 ///
 /// ads_core::tool_harness!(Other = "other");
 ///
 /// fn open(request: &CommandSessionOpenV1Params) {
-///     let config = ToolConfig::<Other>::defaults(NameCase::Sensitive);
+///     let config = ToolConfig::<Other>::defaults(HostRules::POSIX);
 ///     let _ = open_params(&config, request, Vec::<(String, String)>::new(), &DiskProbe);
 /// }
 /// ```

@@ -3,9 +3,9 @@
 
 use super::Harness;
 
-use super::{ConfigError, DiskProbe, LaunchError, Probe, open_params};
+use super::{ConfigError, DiskProbe, HostRules, LaunchError, Probe, open_params};
 use crate::child_env::{EnvList, EnvPolicyError, NameCase};
-use crate::gate::PathError;
+use crate::gate::{PathError, PathStyle};
 
 /// A tool with its own table, appended to the shipped defaults. Written by hand: only this
 /// test tool replaces the defaults, so the public macro does not offer it.
@@ -77,7 +77,7 @@ fn every_diagnostic_key_is_derived_from_the_tool_id() {
 #[test]
 fn a_tool_without_a_shipped_table_is_refused() {
     assert_eq!(
-        super::ToolConfig::<Absent>::from_toml_str("", NameCase::Insensitive),
+        super::ToolConfig::<Absent>::from_toml_str("", HostRules::WINDOWS),
         Err(ConfigError::MissingKey("tools.harness-absent"))
     );
     // The user's file cannot add a tool: the table has to come from the shipped defaults.
@@ -91,7 +91,7 @@ args = []
 mode = 'interactive'
 ";
     assert_eq!(
-        super::ToolConfig::<Absent>::from_toml_str(complete, NameCase::Insensitive),
+        super::ToolConfig::<Absent>::from_toml_str(complete, HostRules::WINDOWS),
         Err(ConfigError::MissingKey("tools.harness-absent"))
     );
     assert!(!super::config::DEFAULTS_TOML.contains("[tools.harness-test]"));

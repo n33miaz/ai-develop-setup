@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use crate::child_env::{EnvLayer, EnvPolicy, EnvPolicyError, NameCase};
-use crate::gate::{AbsPath, PathError};
+use crate::gate::{AbsPath, PathError, PathStyle};
 use ads_contracts::{
     CommonIdV1, ContractPtyHostRequestV1SessionOpenParamsArgsItem as ArgItem,
     ContractPtyHostRequestV1SessionOpenParamsCwd as Cwd,
@@ -41,6 +41,34 @@ pub enum Mode {
     Interactive,
 }
 
+/// The rules of the system the tool runs on: how it compares variable names and how it writes
+/// an absolute path. Passed in, so that both systems' rules can be checked on either.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostRules {
+    pub case: NameCase,
+    pub paths: PathStyle,
+}
+
+impl HostRules {
+    pub const WINDOWS: Self = Self {
+        case: NameCase::Insensitive,
+        paths: PathStyle::Windows,
+    };
+    pub const POSIX: Self = Self {
+        case: NameCase::Sensitive,
+        paths: PathStyle::Posix,
+    };
+
+    /// The rules of the system this code runs on.
+    pub const fn host() -> Self {
+        if cfg!(windows) {
+            Self::WINDOWS
+        } else {
+            Self::POSIX
+        }
+    }
+}
+
 /// Why the parameters were refused. Carries a key, a position or a reason code, never the
 /// rejected text nor the raw parser message, which could quote it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,6 +82,9 @@ pub enum ConfigError {
     /// The program path is not absolute and literal.
     Program(PathError),
     ProgramTooLong,
+    /// The program path is absolute only in the other system's style (`/usr/bin/tool` on
+    /// Windows, `C:\tool.exe` elsewhere), where it would not name this file.
+    ProgramOtherSystem,
     /// Too long, or with NUL or another control character.
     Argument(usize),
     /// Entries of `[workdirs]` count the shipped ones first, each layer in name order.
@@ -65,6 +96,8 @@ pub enum ConfigError {
     WorkdirTooLong(usize),
     /// A drive root or `/`: the tool would work on the whole disk.
     WorkdirIsRoot(usize),
+    /// Absolute only in the other system's style, like [`ConfigError::ProgramOtherSystem`].
+    WorkdirOtherSystem(usize),
 }
 
 impl fmt::Display for ConfigError {
@@ -78,6 +111,9 @@ impl fmt::Display for ConfigError {
             Self::Env(error) => error.fmt(f),
             Self::Program(error) => write!(f, "program path refused: {error}"),
             Self::ProgramTooLong => f.write_str("program path too long"),
+            Self::ProgramOtherSystem => {
+                f.write_str("program path is written for another operating system")
+            }
             Self::Argument(index) => write!(f, "invalid argument {index}"),
             Self::Alias(index) => write!(f, "invalid folder alias at entry {index}"),
             Self::Workdir { index, error } => {
@@ -85,6 +121,12 @@ impl fmt::Display for ConfigError {
             }
             Self::WorkdirTooLong(index) => write!(f, "folder at entry {index} too long"),
             Self::WorkdirIsRoot(index) => write!(f, "folder at entry {index} is a drive root"),
+            Self::WorkdirOtherSystem(index) => {
+                write!(
+                    f,
+                    "folder at entry {index} is written for another operating system"
+                )
+            }
         }
     }
 }
@@ -105,12 +147,13 @@ pub struct ToolConfig<H: Harness> {
 
 impl<H: Harness> ToolConfig<H> {
     /// The shipped defaults: the tool is off and no folder is known.
-    pub fn defaults(case: NameCase) -> Self {
-        Self::from_toml_str("", case).expect("the shipped defaults are complete")
+    pub fn defaults(host: HostRules) -> Self {
+        Self::from_toml_str("", host).expect("the shipped defaults are complete")
     }
 
-    /// The shipped defaults with the user's file `overrides` over them.
-    pub fn from_toml_str(overrides: &str, case: NameCase) -> Result<Self, ConfigError> {
+    /// The shipped defaults with the user's file `overrides` over them, judged by the rules of
+    /// `host`.
+    pub fn from_toml_str(overrides: &str, host: HostRules) -> Result<Self, ConfigError> {
         #[cfg(test)]
         let defaults = H::DEFAULTS;
         #[cfg(not(test))]
@@ -120,7 +163,7 @@ impl<H: Harness> ToolConfig<H> {
         let env = EnvPolicy::from_layers(
             base.env.as_ref().ok_or(ConfigError::MissingKey("env"))?,
             over.env.as_ref(),
-            case,
+            host.case,
         )
         .map_err(ConfigError::Env)?;
 
@@ -144,6 +187,9 @@ impl<H: Harness> ToolConfig<H> {
             None
         } else {
             let path = AbsPath::parse(&program).map_err(ConfigError::Program)?;
+            if path.style() != host.paths {
+                return Err(ConfigError::ProgramOtherSystem);
+            }
             Some(Program::new(path.to_string()).map_err(|_| ConfigError::ProgramTooLong)?)
         };
         let args = args
@@ -170,6 +216,9 @@ impl<H: Harness> ToolConfig<H> {
                 AbsPath::parse(&path).map_err(|error| ConfigError::Workdir { index, error })?;
             if path.is_root() {
                 return Err(ConfigError::WorkdirIsRoot(index));
+            }
+            if path.style() != host.paths {
+                return Err(ConfigError::WorkdirOtherSystem(index));
             }
             let cwd = Cwd::new(path.to_string()).map_err(|_| ConfigError::WorkdirTooLong(index))?;
             workdirs.insert(String::from(id), cwd);

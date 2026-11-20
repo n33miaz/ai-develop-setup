@@ -103,14 +103,16 @@ COLORTERM = "truecolor"
 # Pastas de trabalho por apelido: `apelido = "caminho absoluto"`. Quem pede a sessao manda so o
 # apelido; apelido que nao esta aqui e recusado. A camada do usuario ACRESCENTA ou troca apelidos.
 # Apelido: letras, digitos e . _ : -, ate 64 caracteres. Padrao vazio: nenhuma pasta.
-# A raiz de uma unidade (`C:\`) ou `/` e recusada: a ferramenta trabalharia no disco inteiro.
+# A raiz de uma unidade (`C:\`) ou `/` e recusada: a ferramenta trabalharia no disco inteiro. Pasta no
+# estilo do outro sistema tambem e recusada na carga.
 [workdirs]
 
 # Uma tabela por ferramenta. Cada adaptador le so a sua.
 [tools.claude]
 
 # Caminho ABSOLUTO do programa, que precisa existir quando a sessao abre. Vazio (padrao): ferramenta
-# desligada. Caminho relativo, com variavel (`%VAR%`, `$VAR`), `~` ou `..` e recusado.
+# desligada. Caminho relativo, com variavel (`%VAR%`, `$VAR`), `~` ou `..` e recusado. Caminho escrito
+# no estilo do outro sistema (`/usr/bin/x` no Windows, `C:\x.exe` fora dele) e recusado na carga.
 program = ""
 
 # Argumentos fixos passados ao programa, sempre os mesmos. Padrao vazio.

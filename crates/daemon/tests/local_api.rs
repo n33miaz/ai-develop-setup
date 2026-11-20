@@ -1,4 +1,5 @@
 use ads_contracts::CommandSessionOpenV1Params;
+use ads_core::tool_launch::HostRules;
 use ads_daemon::api::{ApiConfig, ApiError, DisabledLauncher, Launcher, LocalApi, TestHooks};
 use ads_daemon::auth::Token;
 use ads_daemon::events::{EventLog, Poll, new_id};
@@ -2210,8 +2211,14 @@ args = ['codex-arg']
     ]
     .map(|(name, value)| (name.to_owned(), value.to_owned()))
     .to_vec();
-    let launcher =
-        ToolLauncher::from_toml_str(overrides, parent_env, FakeProbe, FakeProbe).unwrap();
+    let launcher = ToolLauncher::from_toml_str(
+        overrides,
+        HostRules::WINDOWS,
+        parent_env,
+        FakeProbe,
+        FakeProbe,
+    )
+    .unwrap();
     let f = fixture("", Arc::new(launcher)).await;
     let mut ws = authenticated(&f).await;
     for (index, harness) in ["claude", "codex"].into_iter().enumerate() {
@@ -2245,9 +2252,14 @@ args = ['codex-arg']
 
 #[tokio::test]
 async fn unconfigured_and_unknown_tools_are_refused_before_spawning() {
-    let launcher =
-        ToolLauncher::from_toml_str("", Vec::<(String, String)>::new(), FakeProbe, FakeProbe)
-            .unwrap();
+    let launcher = ToolLauncher::from_toml_str(
+        "",
+        HostRules::WINDOWS,
+        Vec::<(String, String)>::new(),
+        FakeProbe,
+        FakeProbe,
+    )
+    .unwrap();
     let f = fixture("", Arc::new(launcher)).await;
     let mut ws = authenticated(&f).await;
     for (harness, code) in [("claude", -32011), ("codex", -32011), ("unknown", -32602)] {
@@ -3125,7 +3137,13 @@ args = ['--arg-sentinel']
     ]
     .map(|(name, value)| (name.to_owned(), value.to_owned()))
     .to_vec();
-    let launcher = ToolLauncher::from_toml_str(overrides, parent_env, ListProbe, ListProbe);
+    let launcher = ToolLauncher::from_toml_str(
+        overrides,
+        HostRules::WINDOWS,
+        parent_env,
+        ListProbe,
+        ListProbe,
+    );
     let launcher = launcher.unwrap();
     let f = fixture("", Arc::new(launcher)).await;
     let mut ws = authenticated(&f).await;
@@ -3152,8 +3170,14 @@ async fn harness_list_is_empty_without_configured_tools() {
     for launcher in [
         Arc::new(DisabledLauncher) as Arc<dyn Launcher>,
         Arc::new(
-            ToolLauncher::from_toml_str("", Vec::<(String, String)>::new(), ListProbe, ListProbe)
-                .unwrap(),
+            ToolLauncher::from_toml_str(
+                "",
+                HostRules::WINDOWS,
+                Vec::<(String, String)>::new(),
+                ListProbe,
+                ListProbe,
+            )
+            .unwrap(),
         ),
         Arc::new(TestLauncher),
     ] {
@@ -3184,6 +3208,7 @@ async fn harness_list_needs_the_allowed_page_authentication_and_local_origin() {
     let overrides = "[workdirs]\ndefault = 'C:/dir-sentinel'\n[tools.codex]\nprogram = 'C:/prog-sentinel/codex.exe'\n";
     let launcher = ToolLauncher::from_toml_str(
         overrides,
+        HostRules::WINDOWS,
         Vec::<(String, String)>::new(),
         ListProbe,
         ListProbe,

@@ -3,7 +3,7 @@
 mod config;
 mod launch;
 
-pub use config::{ConfigError, Mode, ToolConfig};
+pub use config::{ConfigError, HostRules, Mode, ToolConfig};
 pub use launch::{DiskProbe, LaunchError, Probe, open_params, process_env};
 
 /// A tool an adapter launches: its identifier and its static configuration keys for

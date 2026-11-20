@@ -1,9 +1,9 @@
 //! Terminal launch contract, run by the core with its test tool and by each adapter.
 
 use super::{
-    ConfigError, DENIED_EXTRA, DiskProbe, EnvList, EnvPolicyError, HARNESS_ID, LaunchError,
-    NameCase, OTHER_HARNESS, POISON_EXTRA, PROGRAM, PathError, Probe, ToolConfig, WRONG_HARNESSES,
-    open_params,
+    ConfigError, DENIED_EXTRA, DiskProbe, EnvList, EnvPolicyError, HARNESS_ID, HostRules,
+    LaunchError, NameCase, OTHER_HARNESS, POISON_EXTRA, PROGRAM, PathError, PathStyle, Probe,
+    ToolConfig, WRONG_HARNESSES, open_params,
 };
 use std::collections::BTreeSet;
 
@@ -48,7 +48,7 @@ args = ["--fixed-flag", "value"]
 }
 
 fn config() -> ToolConfig {
-    ToolConfig::from_toml_str(&user_toml(PROGRAM), NameCase::Insensitive).unwrap()
+    ToolConfig::from_toml_str(&user_toml(PROGRAM), HostRules::WINDOWS).unwrap()
 }
 
 fn request(harness: &str, alias: &str) -> CommandSessionOpenV1Params {
@@ -147,8 +147,12 @@ fn credentials_in_the_user_allow_list_or_set_refuse_the_configuration() {
                 table.replace('%', name)
             );
             for case in [NameCase::Insensitive, NameCase::Sensitive] {
+                let host = HostRules {
+                    case,
+                    paths: PathStyle::Windows,
+                };
                 assert_eq!(
-                    ToolConfig::from_toml_str(&text, case),
+                    ToolConfig::from_toml_str(&text, host),
                     Err(ConfigError::Env(EnvPolicyError::DeniedName { list, index })),
                     "{name} {case:?}"
                 );
@@ -195,7 +199,7 @@ set = {{ TERM = "{m}\u0000" }}"#
         format!("program = '{m}\n"),
     ];
     for text in cases {
-        let error = ToolConfig::from_toml_str(&text, NameCase::Insensitive).unwrap_err();
+        let error = ToolConfig::from_toml_str(&text, HostRules::WINDOWS).unwrap_err();
         for shown in [error.to_string(), format!("{error:?}")] {
             assert!(!shown.contains(m), "{text:?} -> {shown}");
         }
@@ -218,8 +222,8 @@ fn another_tool_is_refused() {
 #[test]
 fn an_empty_program_turns_the_tool_off() {
     for config in [
-        ToolConfig::defaults(NameCase::Insensitive),
-        ToolConfig::from_toml_str(&user_toml(""), NameCase::Insensitive).unwrap(),
+        ToolConfig::defaults(HostRules::WINDOWS),
+        ToolConfig::from_toml_str(&user_toml(""), HostRules::WINDOWS).unwrap(),
     ] {
         let result = open_params(
             &config,
@@ -256,7 +260,7 @@ fn a_program_path_that_is_not_absolute_and_literal_is_refused() {
         ),
     ];
     for (program, error) in cases {
-        let result = ToolConfig::from_toml_str(&user_toml(&program), NameCase::Insensitive);
+        let result = ToolConfig::from_toml_str(&user_toml(&program), HostRules::WINDOWS);
         assert_eq!(result, Err(ConfigError::Program(error)), "{program}");
     }
 }
@@ -308,7 +312,7 @@ fn a_configured_folder_that_does_not_exist_is_refused() {
 fn a_relative_folder_in_the_configuration_is_refused() {
     let text = user_toml(PROGRAM).replace(FOLDER, r"work\scratch");
     assert_eq!(
-        ToolConfig::from_toml_str(&text, NameCase::Insensitive),
+        ToolConfig::from_toml_str(&text, HostRules::WINDOWS),
         Err(ConfigError::Workdir {
             index: 0,
             error: PathError::Relative
@@ -337,13 +341,13 @@ fn the_request_cannot_carry_a_program_args_env_or_folder() {
 fn headless_mode_and_unknown_keys_are_refused() {
     let headless = format!("{}mode = 'headless'\n", user_toml(PROGRAM));
     assert!(matches!(
-        ToolConfig::from_toml_str(&headless, NameCase::Insensitive),
+        ToolConfig::from_toml_str(&headless, HostRules::WINDOWS),
         Err(ConfigError::Toml { .. })
     ));
     let unknown = format!("{}environment = []\n", user_toml(PROGRAM));
-    assert!(ToolConfig::from_toml_str(&unknown, NameCase::Insensitive).is_err());
+    assert!(ToolConfig::from_toml_str(&unknown, HostRules::WINDOWS).is_err());
     let typo = format!("[tool.{HARNESS_ID}]\nprogram = 'C:\\\\x.exe'\n");
-    assert!(ToolConfig::from_toml_str(&typo, NameCase::Insensitive).is_err());
+    assert!(ToolConfig::from_toml_str(&typo, HostRules::WINDOWS).is_err());
 }
 
 #[test]
@@ -352,7 +356,7 @@ fn another_tool_table_is_left_to_its_adapter() {
         "{}\n[tools.{OTHER_HARNESS}]\nprogram = 'whatever'\nfuture_key = 1\n",
         user_toml(PROGRAM)
     );
-    assert!(ToolConfig::from_toml_str(&text, NameCase::Insensitive).is_ok());
+    assert!(ToolConfig::from_toml_str(&text, HostRules::WINDOWS).is_ok());
 }
 
 #[test]
@@ -369,7 +373,7 @@ program = {}
         toml_string(&folder.display().to_string()),
         toml_string(&program.display().to_string())
     );
-    let config = ToolConfig::from_toml_str(&text, NameCase::host()).unwrap();
+    let config = ToolConfig::from_toml_str(&text, HostRules::host()).unwrap();
     let params = open_params(
         &config,
         &request(HARNESS_ID, "scratch"),
@@ -390,7 +394,7 @@ program = {}
         toml_string(&folder.display().to_string()),
         toml_string(&missing.display().to_string())
     );
-    let config = ToolConfig::from_toml_str(&gone, NameCase::host()).unwrap();
+    let config = ToolConfig::from_toml_str(&gone, HostRules::host()).unwrap();
     let result = open_params(
         &config,
         &request(HARNESS_ID, "scratch"),
@@ -497,13 +501,13 @@ fn the_path_corpus_is_refused_as_program_and_as_folder() {
     for (path, error) in DANGEROUS_PATHS {
         let program = format!("[tools.{HARNESS_ID}]\nprogram = {}\n", toml_string(path));
         assert_eq!(
-            ToolConfig::from_toml_str(&program, NameCase::Insensitive),
+            ToolConfig::from_toml_str(&program, HostRules::WINDOWS),
             Err(ConfigError::Program(*error)),
             "program {path:?}"
         );
         let folder = format!("[workdirs]\nscratch = {}\n", toml_string(path));
         assert_eq!(
-            ToolConfig::from_toml_str(&folder, NameCase::Insensitive),
+            ToolConfig::from_toml_str(&folder, HostRules::WINDOWS),
             Err(ConfigError::Workdir {
                 index: 0,
                 error: *error
@@ -513,7 +517,7 @@ fn the_path_corpus_is_refused_as_program_and_as_folder() {
     }
     // An empty program turns the tool off (tested above); an empty folder is refused.
     assert_eq!(
-        ToolConfig::from_toml_str("[workdirs]\nscratch = ''\n", NameCase::Insensitive),
+        ToolConfig::from_toml_str("[workdirs]\nscratch = ''\n", HostRules::WINDOWS),
         Err(ConfigError::Workdir {
             index: 0,
             error: PathError::Empty
@@ -528,7 +532,7 @@ fn a_drive_root_is_refused_as_folder() {
             "[workdirs]\nother = 'C:\\work'\nscratch = {}\n",
             toml_string(root)
         );
-        let result = ToolConfig::from_toml_str(&text, NameCase::Insensitive);
+        let result = ToolConfig::from_toml_str(&text, HostRules::WINDOWS);
         // `//` is a network prefix before it is a root.
         if root == "//" {
             assert_eq!(
@@ -543,8 +547,48 @@ fn a_drive_root_is_refused_as_folder() {
         }
     }
     // One level down is a folder like any other.
-    let text = "[workdirs]\nscratch = 'C:\\work'\nposix = '/work'\n";
-    assert!(ToolConfig::from_toml_str(text, NameCase::Insensitive).is_ok());
+    let text = "[workdirs]\nscratch = 'C:\\work'\n";
+    assert!(ToolConfig::from_toml_str(text, HostRules::WINDOWS).is_ok());
+    let text = "[workdirs]\nscratch = '/work'\n";
+    assert!(ToolConfig::from_toml_str(text, HostRules::POSIX).is_ok());
+}
+
+#[test]
+fn a_path_written_for_the_other_system_is_refused_at_load() {
+    for (host, other, own) in [
+        (
+            HostRules::WINDOWS,
+            "/usr/local/bin/tool",
+            r"C:\Tools\tool.exe",
+        ),
+        (
+            HostRules::POSIX,
+            r"C:\Tools\tool.exe",
+            "/usr/local/bin/tool",
+        ),
+    ] {
+        let program = format!("[tools.{HARNESS_ID}]\nprogram = {}\n", toml_string(other));
+        assert_eq!(
+            ToolConfig::from_toml_str(&program, host),
+            Err(ConfigError::ProgramOtherSystem),
+            "{other}"
+        );
+        let folder = format!(
+            "[workdirs]\nmine = {}\ntheirs = {}\n",
+            toml_string(own),
+            toml_string(other)
+        );
+        assert_eq!(
+            ToolConfig::from_toml_str(&folder, host),
+            Err(ConfigError::WorkdirOtherSystem(1)),
+            "{other}"
+        );
+        let own_only = format!(
+            "[workdirs]\nmine = {q}\n[tools.{HARNESS_ID}]\nprogram = {q}\n",
+            q = toml_string(own)
+        );
+        assert!(ToolConfig::from_toml_str(&own_only, host).is_ok(), "{own}");
+    }
 }
 
 #[test]
@@ -555,7 +599,12 @@ fn safe_path_forms_are_kept_as_program_and_as_folder() {
             "[workdirs]\nscratch = {quoted}\n[tools.{HARNESS_ID}]\nprogram = {quoted}\n",
             quoted = toml_string(path)
         );
-        let config = ToolConfig::from_toml_str(&text, NameCase::Insensitive)
+        let host = if kept.starts_with('/') {
+            HostRules::POSIX
+        } else {
+            HostRules::WINDOWS
+        };
+        let config = ToolConfig::from_toml_str(&text, host)
             .unwrap_or_else(|error| panic!("{path:?}: {error}"));
         assert_eq!(config.program().map(|p| p.as_str()), Some(*kept));
         assert_eq!(config.workdir(&alias).map(|c| c.as_str()), Some(*kept));
