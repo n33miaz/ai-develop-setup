@@ -1,4 +1,11 @@
-import { CoreClientError, HarnessListError, type ConnectionState, type CoreClient } from './client'
+import {
+  CoreClientError,
+  HarnessListError,
+  isSubscriptionEndCode,
+  type ConnectionState,
+  type CoreClient,
+  type SubscriptionEndCode,
+} from './client'
 import { newCommand } from './command'
 import type {
   CommandHarnessListResponseV1,
@@ -60,11 +67,16 @@ export function createWsCoreClient({
     string,
     { method: string; resolve: (response: Reply) => void; reject: (error: Error) => void }
   >()
-  const subscriptions = new Set<{
+  interface Subscription {
     stream: string
     seq: number
     onEvent: (event: EventEnvelopeV1) => void
-  }>()
+    onEnd?: (code: SubscriptionEndCode) => void
+  }
+  const subscriptions = new Set<Subscription>()
+  // O resultado final de uma assinatura chega como resposta ao id do `events.subscribe`, mesmo
+  // depois de ela ter sido aceita; por isso o id continua ligado à assinatura enquanto ela vive.
+  const subscriptionRequests = new Map<string, Subscription>()
   const unavailable = () => new CoreClientError('not_connected', 'core disconnected')
   const setState = (next: ConnectionState) => {
     if (state === next) return
@@ -78,11 +90,19 @@ export function createWsCoreClient({
     rejectConnection?.(unavailable())
     rejectConnection = null
     subscriptions.clear()
+    subscriptionRequests.clear()
     expired.clear()
     for (const request of pending.values()) request.reject(unavailable())
     pending.clear()
     setState('disconnected')
     previous?.close()
+  }
+  function endSubscription(id: string, code: SubscriptionEndCode) {
+    const subscription = subscriptionRequests.get(id)
+    subscriptionRequests.delete(id)
+    if (!subscription || !subscriptions.has(subscription)) return
+    subscriptions.delete(subscription)
+    subscription.onEnd?.(code)
   }
   function transmit(command: CommandRequestV1): Promise<Reply> {
     if (!isLocalCommand(command)) return Promise.reject(new Error('invalid local command'))
@@ -179,6 +199,16 @@ export function createWsCoreClient({
               return
             }
             pending.delete(response.id)
+            // Resposta de assinatura ativa, inicial ou tardia: -32004 e -32013 encerram só ela;
+            // outro erro não tem explicação e derruba a conexão. Assinatura cancelada não chega aqui.
+            if (subscriptionRequests.has(response.id) && 'error' in response) {
+              const { code } = response.error
+              if (!isSubscriptionEndCode(code)) {
+                fail()
+                return
+              }
+              endSubscription(response.id, code)
+            }
             request?.resolve(response)
           } else {
             const event = value
@@ -245,18 +275,18 @@ export function createWsCoreClient({
           clearTimeout(timer)
         })
     },
-    subscribe(stream, afterSeq, onEvent) {
+    subscribe(stream, afterSeq, onEvent, onEnd) {
       if (state !== 'connected') throw unavailable()
-      const subscription = { stream, seq: afterSeq, onEvent }
+      const subscription: Subscription = { stream, seq: afterSeq, onEvent }
+      if (onEnd) subscription.onEnd = onEnd
+      const command = newCommand('events.subscribe', { stream, after_seq: afterSeq })
       subscriptions.add(subscription)
-      void transmit(newCommand('events.subscribe', { stream, after_seq: afterSeq })).then(
-        (response) => {
-          if (!accepted(response)) disconnect()
-        },
-        () => undefined,
-      )
+      subscriptionRequests.set(command.id, subscription)
+      void transmit(command).catch(() => undefined)
       return () => {
         subscriptions.delete(subscription)
+        subscriptionRequests.delete(command.id)
+        pending.delete(command.id)
       }
     },
   }
