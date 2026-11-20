@@ -4,7 +4,7 @@ use crate::api::{ApiError, HarnessCatalog, Launcher};
 use ads_adapter_claude as claude;
 use ads_adapter_codex as codex;
 use ads_contracts::CommandSessionOpenV1Params;
-use ads_core::child_env::NameCase;
+use ads_core::tool_launch::HostRules;
 use ads_ptyhost::wire::OpenParams;
 use std::collections::BTreeMap;
 
@@ -27,9 +27,11 @@ fn describe(tool: &str, shared: bool, error: impl std::fmt::Display) -> String {
 }
 
 impl<C, X> ToolLauncher<C, X> {
-    /// Filters `parent_env` once; only the result is kept.
+    /// Filters `parent_env` once; only the result is kept. Paths and names are judged by the
+    /// rules of `host`, [`HostRules::host`] outside tests.
     pub fn from_toml_str<I, K, V>(
         overrides: &str,
+        host: HostRules,
         parent_env: I,
         claude_probe: C,
         codex_probe: X,
@@ -41,10 +43,9 @@ impl<C, X> ToolLauncher<C, X> {
     {
         use claude::ConfigError as A;
         use codex::ConfigError as B;
-        let case = NameCase::host();
         // The daemon passes a rebuilt subset of the user's file: line numbers would point to
         // the wrong place, so they are dropped.
-        let claude = claude::ClaudeConfig::from_toml_str(overrides, case).map_err(|error| {
+        let claude = claude::ClaudeConfig::from_toml_str(overrides, host).map_err(|error| {
             let shared = matches!(
                 error,
                 A::Env(_)
@@ -52,6 +53,7 @@ impl<C, X> ToolLauncher<C, X> {
                     | A::Workdir { .. }
                     | A::WorkdirTooLong(_)
                     | A::WorkdirIsRoot(_)
+                    | A::WorkdirOtherSystem(_)
             );
             let error = match error {
                 A::Toml { .. } => A::Toml { line: None },
@@ -59,7 +61,7 @@ impl<C, X> ToolLauncher<C, X> {
             };
             describe(claude::HARNESS_ID, shared, error)
         })?;
-        let codex = codex::CodexConfig::from_toml_str(overrides, case).map_err(|error| {
+        let codex = codex::CodexConfig::from_toml_str(overrides, host).map_err(|error| {
             let shared = matches!(
                 error,
                 B::Env(_)
@@ -67,6 +69,7 @@ impl<C, X> ToolLauncher<C, X> {
                     | B::Workdir { .. }
                     | B::WorkdirTooLong(_)
                     | B::WorkdirIsRoot(_)
+                    | B::WorkdirOtherSystem(_)
             );
             let error = match error {
                 B::Toml { .. } => B::Toml { line: None },
@@ -144,6 +147,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn launcher_configuration_refuses_credentials_before_a_session_exists() {
+        let drive = if cfg!(windows) { "C:" } else { "" };
+        for (setting, key) in [
+            ("allow = ['AWS_PROFILE']", "env.allow"),
+            ("set = { AWS_PROFILE = 'fixture' }", "env.set"),
+        ] {
+            let error = ToolLauncher::from_toml_str(
+                &format!("[env]\n{setting}\n[accounts.claude.primary]\nprofile_dir = '{drive}/profiles/primary'"),
+                HostRules::host(),
+                [("AWS_PROFILE", "fixture")],
+                claude::DiskProbe,
+                codex::DiskProbe,
+            )
+            .err();
+            assert_eq!(
+                error.as_deref(),
+                Some(
+                    format!("invalid user configuration: denied variable name at `{key}` entry 0")
+                        .as_str()
+                )
+            );
+        }
+    }
+
+    #[test]
     fn tools_reject_overlapping_profile_folders() {
         let drive = if cfg!(windows) { "C:" } else { "" };
         for second in ["profiles/./main", "profiles/main/nested"] {
@@ -152,6 +180,7 @@ mod tests {
             );
             let error = ToolLauncher::from_toml_str(
                 &overrides,
+                HostRules::host(),
                 Vec::<(String, String)>::new(),
                 claude::DiskProbe,
                 codex::DiskProbe,
@@ -169,6 +198,7 @@ mod tests {
     fn a_root_folder_is_reported_as_a_shared_error() {
         let error = ToolLauncher::from_toml_str(
             "[workdirs]\nscratch = '/'\n",
+            HostRules::POSIX,
             Vec::<(String, String)>::new(),
             claude::DiskProbe,
             codex::DiskProbe,
@@ -182,9 +212,48 @@ mod tests {
     }
 
     #[test]
+    fn a_path_written_for_another_system_is_refused_at_load() {
+        for (host, profile, folder, program) in [
+            (
+                HostRules::WINDOWS,
+                "C:/profiles/primary",
+                "/work",
+                "/usr/bin/tool",
+            ),
+            (
+                HostRules::POSIX,
+                "/profiles/primary",
+                r"C:\work",
+                r"C:\tools\tool.exe",
+            ),
+        ] {
+            let error = |text: String| {
+                ToolLauncher::from_toml_str(
+                    &format!("{text}[accounts.codex.primary]\nprofile_dir = '{profile}'"),
+                    host,
+                    Vec::<(String, String)>::new(),
+                    claude::DiskProbe,
+                    codex::DiskProbe,
+                )
+                .err()
+                .unwrap()
+            };
+            assert_eq!(
+                error(format!("[workdirs]\nscratch = '{folder}'\n")),
+                "invalid user configuration: folder at entry 0 is written for another operating system"
+            );
+            assert_eq!(
+                error(format!("[tools.codex]\nprogram = '{program}'\n")),
+                "invalid codex configuration: program path is written for another operating system"
+            );
+        }
+    }
+
+    #[test]
     fn only_the_filtered_environment_is_kept() {
         let launcher = ToolLauncher::from_toml_str(
             "",
+            HostRules::host(),
             [
                 ("PATH", "p"),
                 ("ANTHROPIC_API_KEY", "sentinel"),

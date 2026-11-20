@@ -13,6 +13,8 @@ O modelo de tarefa obrigava o título da issue a seguir o padrão dos commits (`
 
 Aqui a junção é por rebase (ADR 0014): os commits do PR entram um a um, o título do PR não vira commit e não há automação de release que leia títulos (ADR 0017).
 
+Com a [ADR 0024](0024-agent-authored-commits.md), o título do PR aparece no corpo do commit de merge no fluxo de autoria de agente. A convenção continua valendo, pois os commits originais preservam seus assuntos e a publicação de pré-lançamentos usa o SHA, conforme a [ADR 0025](0025-semver-dev-prereleases-until-first-installer.md).
+
 ## Decisão
 Cada coisa com a sua convenção:
 

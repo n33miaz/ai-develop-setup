@@ -12,11 +12,15 @@ Estado: em construção, sem versão estável; só pré-lançamentos de desenvol
 - Títulos, descrições, comentários, branches e commits descrevem o assunto e o resultado da entrega, sem o histórico do processo interno de trabalho, sem códigos internos de organização e sem marcas de ferramentas nem rodapé de autoria por ferramenta. O único rastro de ferramenta permitido é o trailer de coautoria regido por `defaults/devflow.toml`. O checador de commits recusa no assunto e no nome da branch os termos e códigos listados em `defaults/devflow.toml` (`commits.process_terms`, `commits.internal_code_patterns`); detalhes em CONTRIBUTING.md, "Texto público".
 
 ## Camadas
+
+A [arquitetura local](docs/architecture.md) descreve os processos, canais e fronteiras de confiança.
 - `contracts/`: JSON Schemas versionados e arquivos de referência (golden). É o único jeito de os módulos conversarem.
 - `core/`: política e lógica. Depende só de `contracts/`. Nunca depende de `adapters/`; um teste de CI impõe isso.
 - `adapters/`: um por ferramenta, provedor, transporte ou cofre. Depende de `core/` e `contracts/`. Só adapta.
 - `ptyhost/`: processo estável das sessões de terminal e do replay. O núcleo reinicia sem derrubá-lo.
 - `daemon/`: composição que liga núcleo, adaptadores, HTTP e WebSocket. `shell/`: casca Tauri. `ui/`: React 19, Vite e TypeScript.
+- `storage/`: estado local e cifra por coluna. `e2e/`: sessão cifrada do transporte remoto.
+- `launcher/`: supervisão e atualização. `testkit/`: auxiliares exclusivos dos testes.
 - `defaults/`: parâmetros e regras em TOML. `tools/`: scripts do repositório. `docs/`: ADRs, mapa de módulos, riscos, arquivos de instruções por ferramenta, guardas.
 - `docs/modules.md` mapeia cada módulo em uma frase, com o estado; sem entrada, sem merge (`python tools/check_deps.py check` reprova). Os nomes das pastas são propostas até um ADR em `docs/adr/` fixá-los.
 

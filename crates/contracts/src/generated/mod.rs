@@ -29,6 +29,7 @@ pub mod common_sha256_v1;
 pub mod common_timestamp_v1;
 pub mod common_ulid_v1;
 pub mod contract_harness_adapter_v1;
+pub mod contract_local_api_error_code_v1;
 pub mod contract_local_api_server_message_v1;
 pub mod contract_local_api_server_message_v2;
 pub mod contract_pty_host_frame_v1;
@@ -121,6 +122,7 @@ pub use common_sha256_v1::*;
 pub use common_timestamp_v1::*;
 pub use common_ulid_v1::*;
 pub use contract_harness_adapter_v1::*;
+pub use contract_local_api_error_code_v1::*;
 pub use contract_local_api_server_message_v1::*;
 pub use contract_local_api_server_message_v2::*;
 pub use contract_pty_host_frame_v1::*;
@@ -235,6 +237,10 @@ pub const SCHEMAS: &[(&str, &str)] = &[
     (
         "contract.harness-adapter.v1",
         "urn:ads:contract:harness-adapter:1",
+    ),
+    (
+        "contract.local-api.error-code.v1",
+        "urn:ads:contract:local-api.error-code:1",
     ),
     (
         "contract.local-api.server-message.v1",
@@ -496,6 +502,9 @@ pub fn reencode(id: &str, value: Value) -> Option<Result<Value, serde_json::Erro
         "urn:ads:common:ulid:1" => support::reencode::<CommonUlidV1>(value),
         "urn:ads:contract:harness-adapter:1" => {
             support::reencode::<ContractHarnessAdapterV1>(value)
+        }
+        "urn:ads:contract:local-api.error-code:1" => {
+            support::reencode::<ContractLocalApiErrorCodeV1>(value)
         }
         "urn:ads:contract:local-api.server-message:1" => {
             support::reencode::<ContractLocalApiServerMessageV1>(value)

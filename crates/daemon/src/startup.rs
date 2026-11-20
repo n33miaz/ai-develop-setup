@@ -99,7 +99,7 @@ fn read_config_file(flag: &str, path: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ads_core::child_env::NameCase;
+    use ads_core::tool_launch::HostRules;
 
     #[test]
     fn account_tables_reach_the_corresponding_adapter() {
@@ -113,7 +113,7 @@ mod tests {
         ))
         .unwrap();
         let config =
-            ads_adapter_claude::ClaudeConfig::from_toml_str(&tools, NameCase::host()).unwrap();
+            ads_adapter_claude::ClaudeConfig::from_toml_str(&tools, HostRules::host()).unwrap();
         let alias = ads_contracts::CommonIdV1::new("primary").unwrap();
         assert_eq!(
             config.profile(&alias).unwrap().directory().as_str(),

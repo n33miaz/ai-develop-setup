@@ -1,4 +1,5 @@
 use ads_contracts::CommandSessionOpenV1Params;
+use ads_core::tool_launch::HostRules;
 use ads_daemon::api::{ApiConfig, ApiError, DisabledLauncher, Launcher, LocalApi, TestHooks};
 use ads_daemon::auth::Token;
 use ads_daemon::events::{EventLog, Poll, new_id};
@@ -1779,7 +1780,7 @@ close_retry_ms = 20",
     })
     .await;
     // Both automatic attempts were refused: the stream stays whole and the slot stays taken.
-    // The existing subscription stays open: the next frame answers this request, not -32004 or -32013.
+    // The next frame answers this request while the existing subscription stays open.
     assert_eq!(
         call(
             &mut ws,
@@ -2078,6 +2079,13 @@ async fn failed_host_resubscribe_invalidates_only_the_affected_stream() {
     assert!(!f.api.is_finished());
 }
 
+#[test]
+fn unavailable_service_and_host_timeout_share_the_internal_error_code() {
+    for error in [ApiError::Unavailable, ApiError::HostTimeout] {
+        assert_eq!(error.code(), -32603);
+    }
+}
+
 #[tokio::test]
 async fn host_timeout_ends_the_service_after_an_uncertain_command() {
     let (mut f, _) = refusing_fixture(
@@ -2189,13 +2197,11 @@ impl ads_core::tool_launch::Probe for FakeProbe {
 
 #[tokio::test]
 async fn configured_adapters_supply_the_host_with_filtered_parameters() {
-    let drive = if cfg!(windows) { "C:" } else { "" };
-    let overrides = format!(
-        r#"
+    let overrides = r#"
 [accounts.claude.primary]
-profile_dir = '{drive}/profiles/claude'
+profile_dir = 'C:/profiles/claude'
 [accounts.codex.primary]
-profile_dir = '{drive}/profiles/codex'
+profile_dir = 'C:/profiles/codex'
 [workdirs]
 workspace = 'C:/workspace'
 [tools.claude]
@@ -2204,8 +2210,7 @@ args = ['claude-arg']
 [tools.codex]
 program = 'C:/tools/codex.exe'
 args = ['codex-arg']
-"#
-    );
+"#;
     let parent_env = [
         ("PATH", "C:/tools"),
         ("ANTHROPIC_API_KEY", "sentinel"),
@@ -2217,8 +2222,14 @@ args = ['codex-arg']
     ]
     .map(|(name, value)| (name.to_owned(), value.to_owned()))
     .to_vec();
-    let launcher =
-        ToolLauncher::from_toml_str(&overrides, parent_env, FakeProbe, FakeProbe).unwrap();
+    let launcher = ToolLauncher::from_toml_str(
+        overrides,
+        HostRules::WINDOWS,
+        parent_env,
+        FakeProbe,
+        FakeProbe,
+    )
+    .unwrap();
     let f = fixture("", Arc::new(launcher)).await;
     let mut ws = authenticated(&f).await;
     for (index, harness) in ["claude", "codex"].into_iter().enumerate() {
@@ -2252,9 +2263,14 @@ args = ['codex-arg']
 
 #[tokio::test]
 async fn unconfigured_and_unknown_tools_are_refused_before_spawning() {
-    let launcher =
-        ToolLauncher::from_toml_str("", Vec::<(String, String)>::new(), FakeProbe, FakeProbe)
-            .unwrap();
+    let launcher = ToolLauncher::from_toml_str(
+        "",
+        HostRules::WINDOWS,
+        Vec::<(String, String)>::new(),
+        FakeProbe,
+        FakeProbe,
+    )
+    .unwrap();
     let f = fixture("", Arc::new(launcher)).await;
     let mut ws = authenticated(&f).await;
     for (harness, code) in [("claude", -32011), ("codex", -32011), ("unknown", -32602)] {
@@ -3132,7 +3148,13 @@ args = ['--arg-sentinel']
     ]
     .map(|(name, value)| (name.to_owned(), value.to_owned()))
     .to_vec();
-    let launcher = ToolLauncher::from_toml_str(overrides, parent_env, ListProbe, ListProbe);
+    let launcher = ToolLauncher::from_toml_str(
+        overrides,
+        HostRules::WINDOWS,
+        parent_env,
+        ListProbe,
+        ListProbe,
+    );
     let launcher = launcher.unwrap();
     let f = fixture("", Arc::new(launcher)).await;
     let mut ws = authenticated(&f).await;
@@ -3159,8 +3181,14 @@ async fn harness_list_is_empty_without_configured_tools() {
     for launcher in [
         Arc::new(DisabledLauncher) as Arc<dyn Launcher>,
         Arc::new(
-            ToolLauncher::from_toml_str("", Vec::<(String, String)>::new(), ListProbe, ListProbe)
-                .unwrap(),
+            ToolLauncher::from_toml_str(
+                "",
+                HostRules::WINDOWS,
+                Vec::<(String, String)>::new(),
+                ListProbe,
+                ListProbe,
+            )
+            .unwrap(),
         ),
         Arc::new(TestLauncher),
     ] {
@@ -3191,6 +3219,7 @@ async fn harness_list_needs_the_allowed_page_authentication_and_local_origin() {
     let overrides = "[workdirs]\ndefault = 'C:/dir-sentinel'\n[tools.codex]\nprogram = 'C:/prog-sentinel/codex.exe'\n";
     let launcher = ToolLauncher::from_toml_str(
         overrides,
+        HostRules::WINDOWS,
         Vec::<(String, String)>::new(),
         ListProbe,
         ListProbe,

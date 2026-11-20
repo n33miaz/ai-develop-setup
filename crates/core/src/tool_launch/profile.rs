@@ -4,9 +4,9 @@ use ads_contracts::{CommonIdV1, ContractPtyHostRequestV1SessionOpenParamsCwd as 
 use serde::Deserialize;
 
 use crate::child_env::EnvPolicy;
-use crate::gate::AbsPath;
+use crate::gate::{AbsPath, PathStyle};
 
-use super::{ConfigError, launch::host_style};
+use super::ConfigError;
 
 /// Account selection policy for a future session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -64,12 +64,13 @@ impl ProfileBinding {
         alias: String,
         directory: &str,
         variable: &'static str,
+        style: PathStyle,
         index: usize,
     ) -> Result<Self, ConfigError> {
         let alias = CommonIdV1::new(alias).map_err(|_| ConfigError::ProfileAlias(index))?;
         let path =
             AbsPath::parse(directory).map_err(|error| ConfigError::ProfileDir { index, error })?;
-        if path.style() != host_style() {
+        if path.style() != style {
             return Err(ConfigError::ProfileDirForeignStyle(index));
         }
         if path.is_root() {
@@ -119,8 +120,8 @@ impl ProfileBinding {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::child_env::NameCase;
-    use crate::tool_launch::ToolConfig;
+    use crate::tool_launch::{HostRules, ToolConfig};
+
     #[test]
     fn profiles_reject_foreign_absolute_paths() {
         let path = if cfg!(windows) {
@@ -130,7 +131,7 @@ mod tests {
         };
         let overrides = format!("[accounts.claude.primary]\nprofile_dir = '{path}'");
         assert_eq!(
-            Config::from_toml_str(&overrides, NameCase::host()),
+            Config::from_toml_str(&overrides, HostRules::host()),
             Err(ConfigError::ProfileDirForeignStyle(0))
         );
     }
@@ -143,7 +144,7 @@ mod tests {
                 "[workdirs]\nw = '{drive}/{workdir}'\n[accounts.claude.a]\nprofile_dir = '{drive}/{profile}'"
             );
             assert_eq!(
-                Config::from_toml_str(&overrides, NameCase::host()),
+                Config::from_toml_str(&overrides, HostRules::host()),
                 Err(ConfigError::ProfileDirOverlapsWorkdir(0)),
                 "{workdir} / {profile}"
             );
@@ -158,7 +159,7 @@ mod tests {
                 "[accounts.claude.a]\nprofile_dir = '{drive}/profiles/main'\n[accounts.claude.b]\nprofile_dir = '{drive}/{second}'"
             );
             assert_eq!(
-                Config::from_toml_str(&overrides, NameCase::host()),
+                Config::from_toml_str(&overrides, HostRules::host()),
                 Err(ConfigError::ProfileDirsOverlap),
                 "{second}"
             );
@@ -171,7 +172,7 @@ mod tests {
     #[test]
     fn configured_profiles_are_validated_and_policy_is_layered() {
         assert_eq!(
-            Config::defaults(NameCase::host()).switch_policy(),
+            Config::defaults(HostRules::host()).switch_policy(),
             SwitchPolicy {
                 mode: SwitchMode::Propose,
                 switch_at_pct: Some(90)
@@ -184,7 +185,7 @@ mod tests {
                 "[accounts.claude.secondary]\nprofile_dir = '{path}'\n\
              [tools.claude]\nswitch = 'auto'\nswitch_at_pct = 75"
             ),
-            NameCase::host(),
+            HostRules::host(),
         )
         .unwrap();
         assert_eq!(
@@ -216,21 +217,21 @@ mod tests {
         ] {
             let overrides = format!("[accounts.claude.{alias}]\nprofile_dir = '{path}'");
             assert_eq!(
-                Config::from_toml_str(&overrides, NameCase::host()),
+                Config::from_toml_str(&overrides, HostRules::host()),
                 Err(error)
             );
         }
         for path in ["relative", "/profiles/../escape", "/profiles/$USER"] {
             let overrides = format!("[accounts.claude.secondary]\nprofile_dir = '{path}'");
             assert!(matches!(
-                Config::from_toml_str(&overrides, NameCase::host()),
+                Config::from_toml_str(&overrides, HostRules::host()),
                 Err(ConfigError::ProfileDir { .. })
             ));
         }
         for threshold in [0, 101] {
             let overrides = format!("[tools.claude]\nswitch_at_pct = {threshold}");
             assert_eq!(
-                Config::from_toml_str(&overrides, NameCase::host()),
+                Config::from_toml_str(&overrides, HostRules::host()),
                 Err(ConfigError::SwitchPolicy)
             );
         }
@@ -244,7 +245,7 @@ mod tests {
              [accounts.claude.a]\nprofile_dir = '{drive}/work-profile'\n\
              [accounts.claude.b]\nprofile_dir = '{drive}/work-profile2'"
         );
-        Config::from_toml_str(&overrides, NameCase::host()).unwrap();
+        Config::from_toml_str(&overrides, HostRules::host()).unwrap();
     }
 
     #[test]
@@ -273,7 +274,7 @@ mod tests {
                 "[accounts.claude.primary]\nprofile_dir = '{drive}/profiles/primary'\n\
                       [accounts.claude.secondary]\nprofile_dir = '{drive}/profiles/secondary'"
             ),
-            NameCase::host(),
+            HostRules::host(),
         )
         .unwrap();
         let binding = config

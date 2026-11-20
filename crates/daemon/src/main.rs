@@ -55,6 +55,7 @@ async fn main() -> ExitCode {
             load_config(args.collect::<Result<Vec<_>, _>>()?.into_iter())?;
         let launcher = ToolLauncher::from_toml_str(
             &tools,
+            ads_core::tool_launch::HostRules::host(),
             ads_adapter_claude::process_env(),
             ads_adapter_claude::DiskProbe,
             ads_adapter_codex::DiskProbe,

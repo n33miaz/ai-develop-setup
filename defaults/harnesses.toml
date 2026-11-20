@@ -60,6 +60,8 @@ deny = [
   "*_PAT_*",
   "*_AUTH*",
   "*_PASS*",
+  "*PASSPHRASE*",
+  "*ASKPASS*",
   "*_SESSION*",
   "*_COOKIE*",
   "*_JWT*",
@@ -71,6 +73,20 @@ deny = [
   # Variaveis que levam a credencial dentro do valor ou apontam para o arquivo dela.
   "DATABASE_URL",
   "KUBECONFIG",
+  "*NETRC*",
+  "PGPASSFILE",
+  "DOCKER_CONFIG",
+  "NPM_CONFIG_USERCONFIG",
+  "NPM_CONFIG_GLOBALCONFIG",
+  "NPM_CONFIG_PREFIX",
+  "NPM_CONFIG_REGISTRY",
+  "NPM_CONFIG_USERNAME",
+  "NPM_CONFIG_OTP",
+  "NPM_CONFIG_PROXY",
+  "NPM_CONFIG_HTTPS_PROXY",
+  "NPM_CONFIG_CERT",
+  "NPM_CONFIG_CERTFILE",
+  "NPM_CONFIG_KEYFILE",
   # Ferramentas e provedores: login, configuracao de login e chaves.
   "ANTHROPIC_*",
   "CLAUDE_*",
@@ -94,6 +110,20 @@ deny = [
   "HUGGING_FACE_*",
 ]
 
+# Excecoes nominais do produto, so para o padrao indicado. A camada do usuario pode negar
+# esses nomes, mas nao pode definir excecoes.
+[env.deny_exceptions]
+"*_AUTH*" = ["GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_AUTHOR_DATE"]
+"*_SESSION*" = [
+  "WT_SESSION",
+  "XDG_SESSION_ID",
+  "XDG_SESSION_TYPE",
+  "XDG_SESSION_CLASS",
+  "XDG_SESSION_DESKTOP",
+  "DBUS_SESSION_BUS_ADDRESS",
+  "DESKTOP_SESSION",
+]
+
 # Valores que o proprio produto define (nao vem do pai). A camada do usuario SUBSTITUI a tabela.
 # Nenhum pode casar com `deny`.
 [env.set]
@@ -103,7 +133,9 @@ COLORTERM = "truecolor"
 # Pastas de trabalho por apelido: `apelido = "caminho absoluto"`. Quem pede a sessao manda so o
 # apelido; apelido que nao esta aqui e recusado. A camada do usuario ACRESCENTA ou troca apelidos.
 # Apelido: letras, digitos e . _ : -, ate 64 caracteres. Padrao vazio: nenhuma pasta.
-# A raiz de uma unidade (`C:\`) ou `/` e recusada: a ferramenta trabalharia no disco inteiro.
+# A raiz de uma unidade (`C:\`) ou `/` e recusada: a ferramenta trabalharia no disco inteiro. Pasta no
+# estilo do outro sistema tambem e recusada na carga. Na abertura, o destino resolvido deve ser
+# local e nao pode ser a raiz.
 [workdirs]
 
 [accounts]
@@ -114,7 +146,8 @@ COLORTERM = "truecolor"
 [tools.claude]
 
 # Caminho ABSOLUTO do programa, que precisa existir quando a sessao abre. Vazio (padrao): ferramenta
-# desligada. Caminho relativo, com variavel (`%VAR%`, `$VAR`), `~` ou `..` e recusado.
+# desligada. Caminho relativo, com variavel (`%VAR%`, `$VAR`), `~` ou `..` e recusado. Caminho escrito
+# no estilo do outro sistema (`/usr/bin/x` no Windows, `C:\x.exe` fora dele) e recusado na carga.
 program = ""
 
 # Argumentos fixos passados ao programa, sempre os mesmos. Padrao vazio.
