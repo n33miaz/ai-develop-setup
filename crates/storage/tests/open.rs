@@ -747,7 +747,7 @@ fn product_wal_with_older_generation_tail_opens() {
 }
 
 #[test]
-fn product_wal_frame_with_other_salt_before_two_commits_is_refused() {
+fn product_wal_frame_with_damaged_salt_before_later_commit_is_refused() {
     let (main, wal) = pending_product_wal(&[
         "INSERT INTO meta VALUES ('first', x'01')",
         "INSERT INTO meta VALUES ('second', zeroblob(20000))",
@@ -760,12 +760,59 @@ fn product_wal_frame_with_other_salt_before_two_commits_is_refused() {
     let mut middle = wal.clone();
     middle[all[1][0] + 8] ^= 1;
     refused_keeping_pair(&write_pair(&main, &middle), StorageError::Corrupt);
-    // Only the commit of the transaction holding the break follows: a torn write.
     let mut last = wal.clone();
     last[all[2][0] + 8] ^= 1;
-    let path = write_pair(&main, &last);
+    refused_keeping_pair(&write_pair(&main, &last), StorageError::Corrupt);
+}
+
+#[test]
+fn product_wal_invalid_frame_before_final_transaction_commit_is_refused() {
+    let (main, wal) = pending_product_wal(&[
+        "INSERT INTO meta VALUES ('first', x'01')",
+        "INSERT INTO meta VALUES ('second', zeroblob(20000))",
+    ]);
+    let all = transactions(&wal);
+    assert_eq!(all.len(), 2);
+    assert!(all[1].len() >= 3);
+    let frame = all[1][1];
+    let frame_size = 24 + word(&wal[8..]) as usize;
+
+    let mut damaged = wal.clone();
+    damaged[frame + 24 + 100] ^= 1;
+    let mut zeroed = wal.clone();
+    zeroed[frame..frame + frame_size].fill(0);
+
+    let mut older = wal.clone();
+    let previous_salt = word(&wal[16..]).wrapping_sub(1).to_be_bytes();
+    older[16..20].copy_from_slice(&previous_salt);
+    let salt: [u8; 8] = older[16..24].try_into().unwrap();
+    for old_frame in older[32..].chunks_exact_mut(frame_size) {
+        old_frame[8..16].copy_from_slice(&salt);
+    }
+    reseal(&mut older);
+    let mut reused = wal.clone();
+    reused[frame..frame + frame_size].copy_from_slice(&older[frame..frame + frame_size]);
+
+    for invalid in [damaged, zeroed, reused] {
+        refused_keeping_pair(&write_pair(&main, &invalid), StorageError::Corrupt);
+    }
+}
+
+#[test]
+fn product_wal_with_big_endian_checksums_opens_and_detects_damage() {
+    let (main, mut wal) = pending_product_wal(&[
+        "INSERT INTO meta VALUES ('first', x'01')",
+        "INSERT INTO meta VALUES ('second', x'02')",
+    ]);
+    wal[..4].copy_from_slice(&0x377f0683u32.to_be_bytes());
+    reseal(&mut wal);
+    let path = write_pair(&main, &wal);
     drop(AuditStore::open(&path, &StorageConfig::defaults()).unwrap());
     assert_eq!(keys(&path), ["first", "second"]);
+
+    let all = transactions(&wal);
+    wal[all[0][0] + 24 + 100] ^= 1;
+    refused_keeping_pair(&write_pair(&main, &wal), StorageError::Corrupt);
 }
 
 #[test]
@@ -777,6 +824,35 @@ fn product_wal_with_partial_last_frame_opens() {
     let path = write_pair(&main, &wal[..wal.len() - 100]);
     drop(AuditStore::open(&path, &StorageConfig::defaults()).unwrap());
     assert_eq!(keys(&path), ["first"]);
+}
+
+#[test]
+fn product_wal_commit_with_damaged_salt_before_one_commit_is_refused() {
+    let (main, mut wal) = pending_product_wal(&[
+        "INSERT INTO meta VALUES ('first', x'01')",
+        "INSERT INTO meta VALUES ('second', x'02')",
+        "INSERT INTO meta VALUES ('third', x'03')",
+    ]);
+    let all = transactions(&wal);
+    assert_eq!(all.len(), 3);
+    let commit = *all[1].last().unwrap();
+    wal[commit + 8] ^= 1;
+    refused_keeping_pair(&write_pair(&main, &wal), StorageError::Corrupt);
+}
+
+#[test]
+fn product_wal_commit_with_zeroed_marker_before_one_commit_is_refused() {
+    let (main, mut wal) = pending_product_wal(&[
+        "INSERT INTO meta VALUES ('first', x'01')",
+        "INSERT INTO meta VALUES ('second', x'02')",
+        "INSERT INTO meta VALUES ('third', x'03')",
+    ]);
+    let all = transactions(&wal);
+    assert_eq!(all.len(), 3);
+    let commit = *all[1].last().unwrap();
+    wal[commit + 4..commit + 8].fill(0);
+    wal[commit + 24 + 100] ^= 1;
+    refused_keeping_pair(&write_pair(&main, &wal), StorageError::Corrupt);
 }
 
 #[test]
