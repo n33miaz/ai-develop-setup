@@ -400,6 +400,7 @@ Os sete comandos estendem `urn:ads:command:request:1` com `allOf`, fixam `method
 | `urn:ads:event:session.resized:1` | O terminal da sessão mudou de tamanho. |
 | `urn:ads:event:session.ended:1` | A sessão terminou: o processo saiu, foi morto, o host de PTY reiniciou ou houve erro. Saída normal traz o código de saída. |
 | `urn:ads:event:session.permission_asked:1` | O CLI de IA pediu permissão para algo (comando, escrita, rede). O resumo pode conter texto do usuário, então a classe é private ou secret. |
+| `urn:ads:event:session.refusal_detected:1` | A ferramenta recusou um pedido (`refusal`) ou um filtro de segurança interrompeu a sessão (`safety_filter`). Leva só ferramenta, provedor e modelo; o texto do pedido e o da resposta não cabem. É a entrada da oferta de outro modelo, que segue a [passagem entre sessões](#passagem-entre-sessões). Evento privado. |
 
 ### Eventos de tarefa
 

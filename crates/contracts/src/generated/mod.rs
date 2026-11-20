@@ -83,6 +83,7 @@ pub mod event_session_handoff_v1;
 pub mod event_session_handoff_v2;
 pub mod event_session_output_v1;
 pub mod event_session_permission_asked_v1;
+pub mod event_session_refusal_detected_v1;
 pub mod event_session_resized_v1;
 pub mod event_task_cancelled_v1;
 pub mod event_task_completed_v1;
@@ -188,6 +189,7 @@ pub use event_session_handoff_v1::*;
 pub use event_session_handoff_v2::*;
 pub use event_session_output_v1::*;
 pub use event_session_permission_asked_v1::*;
+pub use event_session_refusal_detected_v1::*;
 pub use event_session_resized_v1::*;
 pub use event_task_cancelled_v1::*;
 pub use event_task_completed_v1::*;
@@ -443,6 +445,10 @@ pub const SCHEMAS: &[(&str, &str)] = &[
         "urn:ads:event:session.permission_asked:1",
     ),
     (
+        "event.session.refusal_detected.v1",
+        "urn:ads:event:session.refusal_detected:1",
+    ),
+    (
         "event.session.resized.v1",
         "urn:ads:event:session.resized:1",
     ),
@@ -655,6 +661,9 @@ pub fn reencode(id: &str, value: Value) -> Option<Result<Value, serde_json::Erro
         "urn:ads:event:session.output:1" => support::reencode::<EventSessionOutputV1>(value),
         "urn:ads:event:session.permission_asked:1" => {
             support::reencode::<EventSessionPermissionAskedV1>(value)
+        }
+        "urn:ads:event:session.refusal_detected:1" => {
+            support::reencode::<EventSessionRefusalDetectedV1>(value)
         }
         "urn:ads:event:session.resized:1" => support::reencode::<EventSessionResizedV1>(value),
         "urn:ads:event:task.cancelled:1" => support::reencode::<EventTaskCancelledV1>(value),

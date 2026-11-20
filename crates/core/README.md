@@ -14,7 +14,9 @@ O [roteador](src/routing.rs) interpreta [routing.toml](../../defaults/routing.to
 
 `handoff` avalia os gatilhos da [ADR 0027](../../docs/adr/0027-session-handoff.md), calcula o próximo nome com o instante UTC recebido e valida a cadeia completa, da primeira passagem em diante. Valida vínculos consecutivos, continuidade da sessão de origem, linhagem, sequência sem saltos e unicidade dos identificadores de passagem e de sessão.
 
-As opções em [`defaults/handoff.toml`](../../defaults/handoff.toml) podem ser trocadas ao carregar outra política. Quem chama fornece a medição, quando disponível, e verifica o consentimento para a passagem específica. Em `propose`, o aceite autoriza a continuidade. Para troca de conta, quem chama aplica primeiro a política da ADR 0022. A decisão do núcleo não abre sessões.
+As opções em [`defaults/handoff.toml`](../../defaults/handoff.toml) podem ser trocadas ao carregar outra política. Quem chama fornece a medição, quando disponível, e verifica o consentimento para a passagem específica. Nos dois modos ativos, o aceite autoriza a continuidade; a recusa de modelo nunca segue sem ele. Para troca de conta, quem chama aplica primeiro a política da ADR 0022. A decisão do núcleo não abre sessões.
+
+[`refusal`](src/refusal.rs) monta a oferta de outro modelo após recusa ou filtro de segurança, a partir dos eventos `session.refusal_detected:1` do mesmo trabalho. Usa a ordem e as regras do roteador e a cota observada, nunca repete ferramenta e modelo que já recusaram e não oferece nada com orçamento parado, passagem em `off` ou [`defaults/refusal.toml`](../../defaults/refusal.toml) desligado. A rota só é aceita com um evento `accepted` de aparelho para a mesma passagem e sessão, e se estiver entre as oferecidas; quem chama confere que o aparelho é do dono. O núcleo não detecta a recusa nem abre a sessão.
 
 ## Fila contínua
 

@@ -1,0 +1,20 @@
+{
+  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+  "type": "urn:ads:event:session.refusal_detected:1",
+  "ts": "2030-01-02T03:04:05Z",
+  "stream": "session/session-1",
+  "seq": 7,
+  "actor": {
+    "kind": "daemon",
+    "id": "core-01"
+  },
+  "cause": null,
+  "data_class": "private",
+  "data": {
+    "session_id": "session-1",
+    "harness": "harness-a",
+    "provider": "provider-a",
+    "model": "model-x",
+    "kind": "other"
+  }
+}

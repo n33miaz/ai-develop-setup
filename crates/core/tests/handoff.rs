@@ -77,7 +77,7 @@ fn default_proceeds_after_consent() {
 }
 
 #[test]
-fn automatic_mode_requires_consent_and_refusal_stays_an_offer() {
+fn automatic_mode_requires_consent_for_every_trigger() {
     let policy = policy("auto-with-consent", 90);
     for (consent, decision) in [
         (Consent::Pending, Decision::Propose),
@@ -92,14 +92,14 @@ fn automatic_mode_requires_consent_and_refusal_stays_an_offer() {
             policy.evaluate(Trigger::AccountSwitch, None, consent),
             decision
         );
+        assert_eq!(
+            policy.evaluate(Trigger::ModelRefusal, None, consent),
+            decision
+        );
     }
     assert_eq!(
         policy.evaluate(Trigger::ContextLimit, usage(89), Consent::Granted),
         Decision::None
-    );
-    assert_eq!(
-        policy.evaluate(Trigger::ModelRefusal, None, Consent::Granted),
-        Decision::Propose
     );
 }
 
