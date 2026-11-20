@@ -2,6 +2,8 @@
 
 Status: proposta em 14/11/2026, aguarda aceite do mantenedor
 
+Em vigor no código, pendente de ratificação pelo mantenedor.
+
 ## Contexto
 A licença do produto é proprietária, com código aberto à vista, e só aceita dependências MIT, Apache-2.0, BSD, ISC, Zlib e Unicode; MPL-2.0 só com exceção registrada (ver `AGENTS.md` e `deny.toml`). O primeiro `cargo metadata` da árvore do Tauri 2.12.5 para `x86_64-pc-windows-msvc` listou 239 bibliotecas externas. Todas cabem na lista permitida, escolhendo-se a alternativa permitida nas licenças duplas, **exceto cinco, todas MPL-2.0**:
 

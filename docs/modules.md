@@ -7,7 +7,8 @@ A coluna "Estado" diz o que existe hoje na `develop`. "Esqueleto" é um crate qu
 No daemon, `api` compõe os comandos autenticados da interface com o host;
 `auth` protege o upgrade e a credencial por execução; `events` conserva streams
 limitados em memória; `pty_client` transporta o contrato público do host;
-`main` inicia o serviço com sua configuração.
+`startup` carrega a configuração; `tool_launcher` compõe os adaptadores de abertura;
+`main` inicia o serviço.
 
 | Módulo | Pasta | Responsabilidade | Estado |
 |---|---|---|---|
@@ -18,15 +19,15 @@ limitados em memória; `pty_client` transporta o contrato público do host;
 | `ads-ptyhost` | `crates/ptyhost` | Processo estável que segura as sessões de terminal e o anel de replay, servidos ao núcleo pelo contrato `pty-host/1`. | Implementado e testado, com os ciclos de ConPTY no CI ([README](../crates/ptyhost/README.md)). |
 | `ads-daemon` | `crates/daemon` | Composição que liga o núcleo, os adaptadores e a API local de HTTP e WebSocket. | Cliente do `ptyhost`, que confere o dono do canal, e a API local autenticada por WebSocket ([README](../crates/daemon/README.md)); abre Claude e Codex pelo host com configuração do usuário. |
 | `ads-testkit` | `crates/testkit` | Auxiliares só de teste: um processo filho do binário de teste que faz o papel de servidor de outra conta. | Em uso como dependência de desenvolvimento do `ads-ptyhost` e do `ads-daemon`; nunca entra num binário do produto. |
-| `ads-launcher` | `crates/launcher` | Supervisor estável que inicia os outros processos e aplica as atualizações. | Esqueleto: o executável só imprime o nome. |
+| `ads-launcher` | `crates/launcher` | Supervisor estável que inicia os outros processos e aplica as atualizações. | Esqueleto: o executável só imprime o nome e a versão ([README](../crates/launcher/README.md)). |
 | `ads-shell` | `crates/shell` | Casca Tauri (janela, bandeja e painel) como cliente fino do núcleo. | Esqueleto: janela vazia que carrega a interface e ícone de bandeja. |
 | `ads-e2e` | `crates/e2e` | Sessão cifrada de ponta a ponta do transporte remoto, para o PC e a PWA. | Esqueleto. |
 | `ads-adapter-claude` | `crates/adapters/claude` | Adapta a ferramenta de linha de comando Claude ao contrato do núcleo. | Implementado: identifica a ferramenta para a política de abertura do núcleo, com testes compartilhados. |
-| `ads-adapter-codex` | `crates/adapters/codex` | Monta os parâmetros de abertura de terminal para a ferramenta Codex. | Implementado: identifica a ferramenta para a política de abertura do núcleo, com testes compartilhados. |
+| `ads-adapter-codex` | `crates/adapters/codex` | Adapta a ferramenta de linha de comando Codex ao contrato do núcleo. | Implementado: identifica a ferramenta para a política de abertura do núcleo, com testes compartilhados. |
 | `ads-adapter-antigravity` | `crates/adapters/antigravity` | Adapta a ferramenta de linha de comando Antigravity ao contrato do núcleo. | Esqueleto. |
 | `ads-adapter-api` | `crates/adapters/api` | Adapta as chamadas diretas às APIs de provedores ao contrato do núcleo. | Esqueleto. |
 | `ads-adapter-vault` | `crates/adapters/vault` | Adapta o cofre de segredos do sistema operacional ao contrato do núcleo. | Esqueleto. |
 | `ads-adapter-collectors` | `crates/adapters/collectors` | Coleta, só em leitura, os dados de uso das ferramentas. | Esqueleto. |
 | `ads-adapter-relay` | `crates/adapters/relay` | Adapta o transporte do relé remoto ao contrato do núcleo. | Esqueleto; só os Schemas do relé existem. |
 | `ads-adapter-fs` | `crates/adapters/fs` | Executa no sistema de arquivos, dentro de uma cerca, as ações que o portão do núcleo licenciou. | Implementado e testado, ainda não chamado por nenhum módulo ([README](../crates/adapters/fs/README.md)). |
-| `ads-ui` | `ui` | Interface web, cliente fino do núcleo: mostra o estado que os eventos recebidos descrevem. | Tela com barra lateral e terminal e o cliente da API local, usado quando recebe a URL com o token; sem ela, mostra dados de exemplo ([README da raiz](../README.md#interface-e-conexão-local); sem README próprio). Entrada, redimensionamento com debounce e abertura por ferramenta configurada implementados na interface. |
+| `ads-ui` | `ui` | Interface web, cliente fino do núcleo: mostra o estado que os eventos recebidos descrevem. | Tela com barra lateral e terminal e o cliente da API local, usado quando recebe a URL com o token; sem ela, mostra dados de exemplo ([README da interface](../ui/README.md)). Entrada, redimensionamento com debounce e abertura por ferramenta configurada implementados na interface. |

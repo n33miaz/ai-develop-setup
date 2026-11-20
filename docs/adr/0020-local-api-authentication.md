@@ -2,6 +2,8 @@
 
 Status: proposta, aguardando ratificação do mantenedor
 
+Em vigor no código, pendente de ratificação pelo mantenedor.
+
 ## Contexto
 A interface (no navegador, e depois na casca Tauri, ADR 0007) fala com o núcleo por um WebSocket em loopback. Por essa conexão passam a abertura de sessões de terminal, o que se digita nelas e a saída delas. Quem fala com essa porta comanda um terminal do usuário com uma ferramenta de IA dentro.
 
