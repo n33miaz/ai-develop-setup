@@ -1054,6 +1054,36 @@ fn written_text_is_the_golden_file_byte_for_byte() {
     assert_eq!(checked, GATE_FOLDERS.iter().copied().collect());
 }
 
+#[test]
+fn reads_saved_long_wildcard_targets_and_refuses_new_requests() {
+    let mut record = golden_record("01-base.json");
+    let path = format!("/work/proj/{}", "a".repeat(4096 - "/work/proj/".len()));
+    let pattern = "*";
+    let target = format!("{path}/{pattern}");
+    record["targets"] = serde_json::json!([{
+        "path": path,
+        "pattern": pattern,
+        "repo_root": false,
+    }]);
+    let canonical = canonical_of(&record);
+    record["plan_hash"] = sha256_of(&canonical).into();
+
+    let current: ActionPlanRecord = serde_json::from_value(record.clone()).unwrap();
+    assert_eq!(current.canonical(), canonical);
+    record["version"] = 1.into();
+    let legacy: ActionPlanRecordV1 = serde_json::from_value(record).unwrap();
+    assert_eq!(legacy.canonical(), canonical);
+
+    let request = request(Op::DeleteRecursive, "/work/proj", &[&target]);
+    assert!(matches!(
+        ActionPlan::normalize(&request),
+        Err(ads_core::gate::PlanError::Target {
+            index: 0,
+            error: ads_core::gate::PathError::TooLong,
+        })
+    ));
+}
+
 fn golden_record_v1(name: &str) -> Value {
     golden_files("record.action-plan.v1", "valid")
         .into_iter()

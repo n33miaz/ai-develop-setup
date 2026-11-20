@@ -185,6 +185,17 @@ impl fmt::Display for AbsPath {
 impl TargetPath {
     /// Like [`AbsPath::parse`], accepting `*` and `?` in the last component.
     pub fn parse(raw: &str) -> Result<Self, PathError> {
+        let target = Self::parse_record_target(raw)?;
+        // A rule that fires cites the whole text of the target in the record.
+        let limit = ads_contracts::RecordActionPlanV2VerdictReasonsItemSubject::MAX_CHARS;
+        if target.to_string().chars().count() > limit {
+            return Err(PathError::TooLong);
+        }
+        Ok(target)
+    }
+
+    // Saved records bound the path and wildcard separately.
+    pub(super) fn parse_record_target(raw: &str) -> Result<Self, PathError> {
         let (base, pattern) = parse(raw)?;
         let limit = ads_contracts::RecordActionPlanV2TargetsItemPattern::MAX_CHARS;
         if pattern
@@ -193,13 +204,7 @@ impl TargetPath {
         {
             return Err(PathError::PatternTooLong);
         }
-        let target = Self { base, pattern };
-        // A rule that fires cites the whole text of the target in the record.
-        let limit = ads_contracts::RecordActionPlanV2VerdictReasonsItemSubject::MAX_CHARS;
-        if target.to_string().chars().count() > limit {
-            return Err(PathError::TooLong);
-        }
-        Ok(target)
+        Ok(Self { base, pattern })
     }
 
     /// The path the rules judge: the target itself, or the folder a wildcard ranges over
