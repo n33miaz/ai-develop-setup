@@ -722,9 +722,11 @@ fn restore_job(
         Ok(bytes) => bytes,
         Err(error @ sys::Error::Missing(_)) => return Err(invalid("no manifest").with_cause(error)),
         Err(sys::Error::Io(error)) if error.kind() == std::io::ErrorKind::FileTooLarge => {
-            return Err(invalid("the manifest is too large"));
+            return Err(invalid("the manifest is too large").with_cause(error));
         }
-        Err(error) => return Err(invalid(&format!("the manifest is not a file ({error})"))),
+        Err(error) => {
+            return Err(invalid(&format!("the manifest is not a file ({error})")).with_cause(error));
+        }
     };
     let manifest = Manifest::from_bytes(&bytes)?;
     if batch.rel.last() != Some(&manifest.action_id) {
