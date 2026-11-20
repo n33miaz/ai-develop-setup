@@ -10,7 +10,7 @@ A contagem só sobe com justificativa aqui.
 | `ads-adapter-fs` | 4 | chamadas da API do Windows para abrir, mover e apagar por identificador aberto, listadas abaixo; no Linux as mesmas operações vêm do `rustix`, sem `unsafe` |
 | `ads-testkit` | 7 | só de teste, fora de qualquer binário do produto; listados abaixo |
 | `ads-adapter-vault` | 6 | operações por nome no cofre do Windows e tratamento da memória devolvida |
-| `ads-launcher` | 13 | chamadas da API do Windows para criar a pasta de controle só do usuário e conferir dono e lista de acesso, listadas abaixo; no Unix o mesmo vem da biblioteca padrão e do `rustix`, sem `unsafe` |
+| `ads-launcher` | 19 | chamadas da API do Windows para criar a pasta de controle e seus arquivos só do usuário, conferir dono e lista de acesso e operar relativo à pasta aberta, listadas abaixo (2 delas só nos testes); no Unix o mesmo vem da biblioteca padrão e do `rustix`, sem `unsafe` |
 | `ads-storage` | 0 | SQLite e cifra pelas APIs seguras das dependências; herda `forbid` |
 | demais | 0 | nenhum |
 
@@ -69,7 +69,7 @@ Um processo filho do binário de teste fecha o próprio processo ou o próprio t
 
 ## `ads-launcher` (`crates/launcher/src/private/win.rs`)
 
-A biblioteca padrão não cria pasta com lista de acesso própria nem lê dono e lista de acesso. Cada bloco é uma única chamada, ou a leitura do que a chamada anterior preencheu, e leva um comentário `SAFETY`; o token aberto passa na hora para um `OwnedHandle`, e a memória que o sistema aloca fica num guarda que a libera ao sair de escopo. A pasta e as entradas são abertas pela biblioteca padrão, sem seguir ponto de reanálise.
+A biblioteca padrão não cria pasta nem arquivo com lista de acesso própria, não lê dono e lista de acesso e só abre, move e apaga por caminho, que o sistema resolve de novo a cada chamada. Por isso a pasta de controle é aberta uma vez, sem seguir ponto de reanálise e sem compartilhar o direito de apagar (o que impede renomear a pasta e as pastas acima dela enquanto o lançador roda), conferida nesse identificador, e a trava, o estado e os sinais são abertos relativos a ele, com a mesma técnica do `ads-adapter-fs`. Cada bloco é uma única chamada, ou a leitura do que a chamada anterior preencheu, e leva um comentário `SAFETY`; os identificadores abertos passam na hora para um `OwnedHandle`, e a memória que o sistema aloca fica num guarda que a libera ao sair de escopo.
 
 | Onde | Blocos | Chamada | Motivo |
 |---|---|---|---|
@@ -78,5 +78,10 @@ A biblioteca padrão não cria pasta com lista de acesso própria nem lê dono e
 | `sid_text` | 1 | `ConvertSidToStringSidW` | escrever um identificador de segurança em texto (`S-1-...`), forma em que donos e entradas são comparados |
 | `token_sid` | 2 | `GetTokenInformation`, leitura do ponteiro inicial do `TOKEN_USER` ou `TOKEN_OWNER` preenchido | ler o usuário atual e o dono que ele dá aos objetos que cria |
 | `current_identity` | 2 | `OpenProcessToken` (só `TOKEN_QUERY`) com `GetCurrentProcess`, `OwnedHandle::from_raw_handle` | abrir para leitura o token do próprio processo |
-| `create_dir` | 2 | `ConvertStringSecurityDescriptorToSecurityDescriptorW`, `CreateDirectoryW` | criar a pasta de controle com dono e lista de acesso protegida de uma entrada só, a do usuário, herdada pelos arquivos de dentro |
-| `security` | 4 | `GetSecurityInfo` (dono e lista de acesso), `GetAclInformation`, `GetAce`, leitura do cabeçalho da entrada | conferir o dono e cada entrada da lista de acesso de uma pasta existente ou de um arquivo de sinal |
+| `private_descriptor` | 1 | `ConvertStringSecurityDescriptorToSecurityDescriptorW` | montar o descritor com dono e lista de acesso protegida de uma entrada só, a do usuário |
+| `create_dir` | 1 | `CreateDirectoryW` | criar a pasta de controle com esse descritor, entrada herdada pelos arquivos de dentro |
+| `kind` | 1 | `GetFileInformationByHandleEx` | ler do identificador aberto se a entrada é pasta, arquivo ou ponto de reanálise |
+| `open_at` | 2 | `NtCreateFile`, `OwnedHandle::from_raw_handle` | abrir ou criar a trava, o estado temporário e os sinais por um nome só, relativos à pasta aberta, sem seguir ponto de reanálise, e criar arquivo já com o descritor privado |
+| `apply` | 1 | `NtSetInformationFile` | mover o estado temporário sobre o estado e apagar um sinal, os dois pelo identificador em que foram conferidos |
+| `security` | 4 | `GetSecurityInfo` (dono e lista de acesso), `GetAclInformation`, `GetAce`, leitura do cabeçalho da entrada | conferir o dono e cada entrada da lista de acesso da pasta, da trava e de cada sinal, no identificador aberto |
+| `access_list_text` (só testes) | 2 | `GetSecurityInfo`, `ConvertSecurityDescriptorToStringSecurityDescriptorW` | ler a lista de acesso em texto, com proteção e herança, para os testes compararem com a esperada |

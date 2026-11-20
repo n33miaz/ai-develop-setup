@@ -1,13 +1,24 @@
 //! Keeps the control folder and its files reachable only by the current user.
+//!
+//! The folder is opened once, checked on that open handle, and held: every later operation
+//! (the lock, the state, the signals) is relative to the handle, never to the path again. How
+//! the path was resolved therefore does not matter: a link or junction anywhere on it only
+//! changes which folder was opened, and that folder is the one checked and used. On Windows
+//! the handle also keeps the folder, and every folder above it, from being renamed while the
+//! launcher runs. Each file is checked on its own handle too, and a signal is removed through
+//! the handle it was checked on.
 
+#[cfg(unix)]
+mod unix;
 #[cfg(windows)]
 #[allow(unsafe_code)]
 mod win;
 
 use std::{
-    fs::{self, OpenOptions},
-    io,
-    path::Path,
+    fs::{self, File},
+    io::{self, Write},
+    path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 /// Who runs the launcher. On Windows, security identifiers in text form; on Unix, the
@@ -94,6 +105,23 @@ pub(crate) fn unix_private(local: &Identity, owner: u32, mode: u32) -> Result<()
     Ok(())
 }
 
+/// What an open entry is. A link or reparse point is `Other`, never what it points to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Kind {
+    Dir,
+    File,
+    Other,
+}
+
+/// What was found under the name of a signal.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Signal {
+    Absent,
+    Accepted,
+    /// A file another account owns or can use: left in place and never honored.
+    Foreign,
+}
+
 /// Creates the folder `path` (not its parents) readable and writable only by `local`.
 pub(crate) fn create_dir(path: &Path, local: &Identity) -> io::Result<()> {
     #[cfg(windows)]
@@ -108,76 +136,240 @@ pub(crate) fn create_dir(path: &Path, local: &Identity) -> io::Result<()> {
     }
 }
 
-/// Creates the control folder privately when missing, then refuses it unless only `local`
-/// can reach it.
-pub(crate) fn ensure_dir(path: &Path, local: &Identity) -> io::Result<()> {
-    if let Some(parent) = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        fs::create_dir_all(parent)?;
-    }
-    match create_dir(path, local) {
-        Err(error) if error.kind() != io::ErrorKind::AlreadyExists => return Err(error),
-        _ => {}
-    }
-    check_dir(path, local)
+fn refusal(what: &str, path: &Path, reason: &str) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        format!(
+            "control {what} {} {reason}; remove it so the launcher recreates it, or restrict it \
+             to your account only",
+            path.display()
+        ),
+    )
 }
 
-fn check_dir(path: &Path, local: &Identity) -> io::Result<()> {
-    let refuse = |reason: &str| {
-        io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            format!(
-                "control folder {} {reason}; remove it so the launcher recreates it, or \
-                 restrict it to your account only",
-                path.display()
-            ),
-        )
-    };
-    let metadata = fs::symlink_metadata(path)?;
-    if !metadata.is_dir() {
-        return Err(refuse("is not a plain folder"));
-    }
+#[cfg(unix)]
+fn is_loop(error: &io::Error) -> bool {
+    error.raw_os_error() == Some(rustix::io::Errno::LOOP.raw_os_error())
+}
+
+/// The control folder, open and held for as long as the value lives.
+pub(crate) struct ControlDir {
     #[cfg(windows)]
-    let decision = windows_private(local, &win::security(path)?);
+    dir: File,
     #[cfg(unix)]
-    let decision = {
-        use std::os::unix::fs::MetadataExt;
-        unix_private(local, metadata.uid(), metadata.mode())
-    };
-    decision.map_err(refuse)
+    dir: std::os::fd::OwnedFd,
+    path: PathBuf,
+    local: Identity,
 }
 
-/// Whether `local` owns the file `path` (the link itself, never its target).
-pub(crate) fn owned_by(path: &Path, local: &Identity) -> io::Result<bool> {
-    #[cfg(windows)]
-    {
-        Ok(local.owns(&win::security(path)?.owner))
+impl ControlDir {
+    /// Creates the folder privately when missing, opens it and refuses it unless only `local`
+    /// can reach it.
+    pub(crate) fn open(path: &Path, local: &Identity) -> io::Result<Self> {
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            fs::create_dir_all(parent)?;
+        }
+        match create_dir(path, local) {
+            Err(error) if error.kind() != io::ErrorKind::AlreadyExists => return Err(error),
+            _ => {}
+        }
+        let refuse = |reason| refusal("folder", path, reason);
+        #[cfg(windows)]
+        let dir = {
+            let dir = win::open_dir(path)?;
+            if win::kind(&dir)? != Kind::Dir {
+                return Err(refuse("is not a plain folder"));
+            }
+            windows_private(local, &win::security(&dir)?).map_err(refuse)?;
+            dir
+        };
+        #[cfg(unix)]
+        let dir = {
+            let dir = unix::open_dir(path).map_err(|error| {
+                if is_loop(&error) {
+                    refuse("is not a plain folder")
+                } else {
+                    error
+                }
+            })?;
+            let stat = unix::stat(&dir)?;
+            if unix::kind(&stat) != Kind::Dir {
+                return Err(refuse("is not a plain folder"));
+            }
+            unix_private(local, stat.st_uid, stat.st_mode).map_err(refuse)?;
+            dir
+        };
+        Ok(Self {
+            dir,
+            path: path.to_path_buf(),
+            local: local.clone(),
+        })
     }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        Ok(local.owns(&fs::symlink_metadata(path)?.uid().to_string()))
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// The same folder, with its files judged as `local`'s.
+    #[cfg(test)]
+    pub(crate) fn judged_as(self, local: Identity) -> Self {
+        Self { local, ..self }
+    }
+
+    /// Opens the lock file `name`, created private when missing; an existing one is refused
+    /// unless it is a plain file that only the user can reach.
+    pub(crate) fn lock_file(&self, name: &str) -> io::Result<File> {
+        let refuse = |reason| refusal("file", &self.path.join(name), reason);
+        #[cfg(windows)]
+        {
+            let file = win::open_or_create(&self.dir, name, &self.local)?;
+            if win::kind(&file)? != Kind::File {
+                return Err(refuse("is not a plain file"));
+            }
+            windows_private(&self.local, &win::security(&file)?).map_err(refuse)?;
+            Ok(file)
+        }
+        #[cfg(unix)]
+        {
+            let file = unix::open_or_create(&self.dir, name).map_err(|error| {
+                if is_loop(&error) {
+                    refuse("is not a plain file")
+                } else {
+                    error
+                }
+            })?;
+            let stat = unix::stat_file(&file)?;
+            if unix::kind(&stat) != Kind::File {
+                return Err(refuse("is not a plain file"));
+            }
+            unix_private(&self.local, stat.st_uid, stat.st_mode).map_err(refuse)?;
+            Ok(file)
+        }
+    }
+
+    /// Replaces the file `name` with `bytes` at once: a new private file is written, then
+    /// moved over it.
+    pub(crate) fn publish(&self, name: &str, bytes: &[u8]) -> io::Result<()> {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let temp = format!("{name}.{}-{stamp}.tmp", std::process::id());
+        #[cfg(windows)]
+        {
+            let mut file = win::create_new(&self.dir, &temp, &self.local)?;
+            let result = file
+                .write_all(bytes)
+                .and_then(|()| file.sync_all())
+                .and_then(|()| win::rename(&file, &self.dir, name));
+            if result.is_err() {
+                let _ = win::remove(&file);
+            }
+            result
+        }
+        #[cfg(unix)]
+        {
+            let mut file = unix::create_new(&self.dir, &temp)?;
+            let result = file.write_all(bytes).and_then(|()| file.sync_all());
+            drop(file);
+            let result = result.and_then(|()| unix::rename(&self.dir, &temp, name));
+            if result.is_err() {
+                let _ = unix::remove(&self.dir, &temp);
+            }
+            result
+        }
+    }
+
+    /// Looks at the signal `name` and, when it is the user's own and `consume` is set,
+    /// removes it: the entry removed is the one checked.
+    pub(crate) fn signal(&self, name: &str, consume: bool) -> io::Result<Signal> {
+        #[cfg(windows)]
+        {
+            let file = match win::open_to_remove(&self.dir, name) {
+                Ok(file) => file,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    return Ok(Signal::Absent);
+                }
+                // The user cannot even read who owns it: another account's.
+                Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+                    return Ok(Signal::Foreign);
+                }
+                Err(error) => return Err(error),
+            };
+            if win::kind(&file)? != Kind::File {
+                return Ok(Signal::Absent);
+            }
+            if windows_private(&self.local, &win::security(&file)?).is_err() {
+                return Ok(Signal::Foreign);
+            }
+            if consume {
+                before_remove();
+                win::remove(&file)?;
+            }
+            Ok(Signal::Accepted)
+        }
+        #[cfg(unix)]
+        {
+            let owns = |stat: &rustix::fs::Stat| self.local.owns(&stat.st_uid.to_string());
+            let entry = match unix::open_entry(&self.dir, name) {
+                Ok(entry) => entry,
+                Err(error) if error.kind() == io::ErrorKind::NotFound || is_loop(&error) => {
+                    return Ok(Signal::Absent);
+                }
+                Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+                    let stat = unix::stat_at(&self.dir, name)?;
+                    return if owns(&stat) {
+                        Err(error)
+                    } else {
+                        Ok(Signal::Foreign)
+                    };
+                }
+                Err(error) => return Err(error),
+            };
+            let checked = unix::stat(&entry)?;
+            if unix::kind(&checked) != Kind::File {
+                return Ok(Signal::Absent);
+            }
+            if !owns(&checked) {
+                return Ok(Signal::Foreign);
+            }
+            if consume {
+                before_remove();
+                // Only the user can change the entries of the private folder held open; the
+                // comparison still makes sure the name removed is the file checked.
+                if !unix::same(&checked, &unix::stat_at(&self.dir, name)?) {
+                    return Err(io::Error::other(
+                        "the signal changed while it was checked; left in place",
+                    ));
+                }
+                unix::remove(&self.dir, name)?;
+            }
+            Ok(Signal::Accepted)
+        }
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Runs once between the check of a signal and its removal, to stand in for a race.
+    pub(crate) static BEFORE_REMOVE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn before_remove() {
+    #[cfg(test)]
+    if let Some(hook) = BEFORE_REMOVE.with(|hook| hook.borrow_mut().take()) {
+        hook();
+    }
+}
+
+/// The access list of `path` in text form, protection and inheritance flags included.
 #[cfg(all(windows, test))]
-pub(crate) fn windows_security(path: &Path) -> io::Result<Security> {
-    win::security(path)
-}
-
-/// Options for files the launcher creates in the control folder. On Windows they inherit the
-/// folder's single entry; on Unix they are created with mode 0600.
-pub(crate) fn file_options() -> OpenOptions {
-    #[allow(unused_mut)]
-    let mut options = OpenOptions::new();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    options
+pub(crate) fn access_list_text(path: &Path) -> io::Result<String> {
+    win::access_list_text(path)
 }
 
 #[cfg(test)]

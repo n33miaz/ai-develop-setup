@@ -10,11 +10,18 @@ O arquivo sobrepõe as chaves de [`defaults/launcher.toml`](../../defaults/launc
 Use uma pasta de controle exclusiva da instalação. Se ela não existe, o lançador
 a cria acessível só pela conta atual: no Windows, com uma lista de acesso protegida
 de uma entrada só, a do usuário, herdada pelos arquivos de dentro; no Unix, com modo
-0700, e os arquivos de trava e de estado com 0600. Uma pasta já existente é recusada,
-com erro e sem iniciar nada, se o dono não for a conta atual ou se outra conta tiver
-qualquer acesso a ela. No Windows, só o sistema local e o grupo Administradores, que
-já podem assumir qualquer arquivo da máquina, são tolerados além do usuário. Para
-corrigir, apague a pasta para o lançador recriá-la ou restrinja-a à sua conta.
+0700. Os arquivos de trava e de estado nascem com a mesma restrição, posta na criação
+(lista protegida do usuário no Windows, modo 0600 no Unix), sem depender da herança.
+Uma pasta ou trava já existente é recusada, com erro e sem iniciar nada, se o dono
+não for a conta atual ou se outra conta tiver qualquer acesso a ela. No Windows, só o
+sistema local e o grupo Administradores, que já podem assumir qualquer arquivo da
+máquina, são tolerados além do usuário. Para corrigir, apague a pasta ou a trava para
+o lançador recriá-la, ou restrinja-a à sua conta.
+A pasta é aberta uma vez e conferida nesse identificador aberto; trava, estado e
+sinais são abertos, movidos e apagados relativos a ele, nunca pelo caminho de novo,
+e sem seguir link nem ponto de reanálise. Assim, trocar a pasta ou um ancestral por
+outra depois da conferência não redireciona nada. No Windows, enquanto o lançador
+roda, a pasta e as pastas acima dela também não podem ser renomeadas.
 Uma trava de sistema operacional limita a execução a um lançador por pasta de
 controle e fica ativa enquanto ele roda.
 Os arquivos de trava são reutilizados após a saída. O daemon supervisionado
@@ -37,8 +44,9 @@ iniciada pelo daemon, inclua seu nome nas duas listas, `child_env_allow` e
 
 Crie o arquivo vazio `restart` na pasta de controle para reiniciar o daemon e
 zerar seu contador de falhas na janela móvel. Crie `stop` para encerrar o daemon e
-o lançador. Um arquivo de sinal cujo dono não é a conta atual fica no lugar,
-é ignorado e aparece em `last_error`. Um sinal de parada da conta atual pendente
+o lançador. Um arquivo de sinal cujo dono não é a conta atual, ou que no
+Windows dá acesso a outra conta, fica no lugar, é ignorado e aparece em `last_error`.
+O sinal apagado é o mesmo arquivo conferido. Um sinal de parada da conta atual pendente
 na partida continua válido e fica registrado no estado em `stop_pending_at_startup`. Se os dois arquivos
 estiverem presentes, a parada prevalece. O host
 permanece em execução com as sessões existentes. Enquanto supervisionado, ele
