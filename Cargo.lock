@@ -91,9 +91,11 @@ version = "0.0.0"
 dependencies = [
  "ads-adapter-claude",
  "ads-adapter-codex",
+ "ads-adapter-vault",
  "ads-contracts",
  "ads-core",
  "ads-ptyhost",
+ "ads-storage",
  "ads-testkit",
  "base64 0.23.1",
  "futures-util",

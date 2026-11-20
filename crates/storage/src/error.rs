@@ -27,6 +27,9 @@ pub enum StorageError {
     /// A key with this id was registered with different key material.
     WrongKey,
     KeyUnavailable,
+    AnchorUnavailable,
+    AnchorMissing,
+    AnchorMismatch,
     /// Ciphertext, nonce or an authenticated clear column was altered.
     Tampered,
     TooLarge,

@@ -55,8 +55,8 @@ nenhum marcador de commit com o salt atual segue a quebra. A verificação mira
 dano acidental. Quem pode escrever no `-wal` pode ocultar commits truncando
 o arquivo, trocando o salt da cauda ou recalculando checksums. O SQLite também
 pode aplicar um WAL inteiro de outro banco do produto se os checksums forem
-válidos. A defesa planejada contra essas adulterações é a âncora fora do
-arquivo para o log encadeado. Em seguida a inspeção roda numa transação de leitura
+válidos. A abertura do log confere o estado visível com a âncora fora do
+arquivo. Em seguida a inspeção roda numa transação de leitura
 consistente na conexão de escrita, com custo que não depende de copiar o banco, e
 a verificação de integridade roda uma vez. A conexão sempre abre com
 `SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE`, desligado só depois que a inspeção passa, sem
@@ -192,11 +192,9 @@ forjada: chaves antigas têm de ficar no cofre. A comparação do HMAC é em tem
 constante. `append` busca a chave uma vez (`current()` e `by_id` do mesmo id,
 que têm de coincidir, senão `WrongKey`) e usa esse mesmo material no
 `key_check`, na cifra e na cadeia; a abertura também recusa provedor incoerente.
-`WrongKey` ou `KeyUnavailable` ao abrir ou ao ler também podem indicar uma
-linha de `cipher_key` forjada (o gatilho só barra id repetido), por exemplo o
-próximo `key_id` do cofre registrado de antemão com `key_check` errado, o que
-trava a troca de chave; a âncora no cofre deve guardar também os `key_id`
-válidos.
+Uma linha com identificador de chave indisponível retorna `ChainBroken` na
+leitura. A âncora inclui o resumo dos registros de chave e detecta um
+`key_id` pré-registrado, inclusive quando o `key_check` foi forjado.
 
 O que a cadeia detecta, sem decifrar `data`: alteração de qualquer coluna,
 remoção no meio, reordenação, troca de texto cifrado entre linhas e linha
@@ -204,8 +202,10 @@ acrescentada por quem não tem a chave, inclusive por um `INSERT` simples que pa
 pelos gatilhos. A cadeia pode aceitar um fim cortado, uma cópia anterior ou outro
 banco inteiro com a própria gênese. Quem tem uma chave ainda fornecida pelo cofre
 pode cortar o log ao fim do trecho dessa chave e acrescentar linhas autenticadas
-com ela, mantendo o trecho contíguo. A verificação depende da integridade das chaves. A âncora planejada é o último `position` e `chain`
-guardados no cofre a cada `append` do portão e conferidos ao abrir.
+com ela, mantendo o trecho contíguo. A verificação depende da integridade
+das chaves. A [âncora externa](../../crates/storage/README.md#âncora-no-cofre)
+vincula gênese, último `position`, `chain` e registros de chaves ao cofre
+em cada `append`. A abertura e o próximo `append` conferem essa âncora.
 Detectar não é impedir: um `INSERT` simples sem chave é aceito pelo banco e só
 `verify_chain` e `read_stream` o recusam depois. Com os índices únicos do
 portão, uma linha assim pode ocupar a vaga de uma licença (um `action.started`
@@ -251,8 +251,8 @@ criar migração explícita com backup e demonstração de atomicidade; nunca re
 user_version nem dividir invariantes entre arquivos WAL. As tabelas futuras devem
 incrementar a versão a partir da versão 3, só acrescentando objetos. Gatilhos
 não protegem de quem escreve no arquivo: ele pode removê-los e alterar linhas,
-mas sem a chave não recalcula a cadeia; o corte do fim do log e a volta de uma
-cópia antiga não deixam rastro sem uma âncora fora do arquivo.
+mas sem a chave não recalcula a cadeia. A âncora fora do arquivo detecta
+o corte do fim do log e a volta de uma cópia antiga.
 
 ## Condição de reversão
 
