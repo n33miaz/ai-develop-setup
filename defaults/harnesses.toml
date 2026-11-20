@@ -123,8 +123,10 @@ args = []
 # Modo de uso. So `interactive` (terminal operado pela pessoa) e aceito por enquanto.
 mode = "interactive"
 
-# Limiar da cota observada (1 a 100). A configuracao ainda nao aciona a troca.
+# switch = "manual" deixa a escolha com a pessoa. "propose" sugere e pede confirmacao.
+# "auto" escolhe o proximo perfil. Use "propose" ate validar isolamento e medicao de cota.
 switch = "propose"
+# Limiar da cota observada (1 a 100), padrao 90. A configuracao ainda nao aciona a troca.
 switch_at_pct = 90
 
 # Mesmas chaves e regras de `[tools.claude]`.

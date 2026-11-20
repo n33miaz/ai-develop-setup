@@ -271,9 +271,9 @@ Riscos da troca de conta por pasta de perfil ([ADR 0022](adr/0022-account-profil
 - **Impacto.** Quebra da regra C1; credencial exposta.
 - **Dono.** Núcleo (ligação ao perfil) e coletores de uso.
 - **Teto.** Lista de subpastas permitidas por ferramenta.
-- **Mitigação existente.** A variável de pasta é constante do adaptador, injetada depois do filtro de ambiente; `CLAUDE_*` e `CODEX_*` continuam em `env.deny`. Coletores que leiam subpastas do perfil dependem de decisão do mantenedor e de exceção explícita na regra C1; até lá, só o comando de status.
+- **Mitigação existente.** O núcleo valida a sobreposição de caminhos por texto. A ligação ao perfil está fora da abertura de ferramentas. O filtro `env.deny` continua barrando `CLAUDE_*` e `CODEX_*`. Coletores que leiam subpastas do perfil dependem de decisão do mantenedor e de exceção explícita na regra C1; até lá, só o comando de status.
 - **Plano B.** Remover a ligação ao perfil (condição de reversão da ADR 0022).
-- **O que falta.** Ligar os perfis após a validação do isolamento na máquina do mantenedor. Qualquer coletor de perfil exige a decisão prevista na ADR e um teste de arquivo sentinela.
+- **O que falta.** A pasta do perfil e seus ancestrais ainda podem conter links simbólicos ou junções que contornem a comparação por texto. O núcleo deve conferir esses caminhos no PR que ligar os perfis à abertura, após a validação do isolamento na máquina do mantenedor. Até lá, a abertura segue sem seleção de perfil. Qualquer coletor de perfil exige a decisão prevista na ADR e um teste de arquivo sentinela.
 
 ### Chave passa na frente do login do perfil
 

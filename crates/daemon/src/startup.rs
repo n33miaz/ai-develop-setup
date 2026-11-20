@@ -103,19 +103,26 @@ mod tests {
 
     #[test]
     fn account_tables_reach_the_corresponding_adapter() {
-        let (_, tools) =
-            split_config("[accounts.claude.primary]\nprofile_dir = '/profiles/primary'").unwrap();
+        let directory = if cfg!(windows) {
+            r"C:\profiles\primary"
+        } else {
+            "/profiles/primary"
+        };
+        let (_, tools) = split_config(&format!(
+            "[accounts.claude.primary]\nprofile_dir = '{directory}'"
+        ))
+        .unwrap();
         let config =
             ads_adapter_claude::ClaudeConfig::from_toml_str(&tools, NameCase::host()).unwrap();
         let alias = ads_contracts::CommonIdV1::new("primary").unwrap();
         assert_eq!(
             config.profile(&alias).unwrap().directory().as_str(),
-            "/profiles/primary"
+            directory
         );
     }
 
     #[test]
-    fn an_unsupported_tool_cannot_configure_account_rotation() {
+    fn an_unknown_tool_is_refused_in_account_and_tool_tables() {
         assert!(
             split_config("[accounts.antigravity.primary]\nprofile_dir = '/profiles/primary'")
                 .is_err()

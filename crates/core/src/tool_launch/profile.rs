@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::path::Path;
 
 use ads_contracts::{CommonIdV1, ContractPtyHostRequestV1SessionOpenParamsCwd as Folder};
 use serde::Deserialize;
@@ -7,7 +6,7 @@ use serde::Deserialize;
 use crate::child_env::EnvPolicy;
 use crate::gate::AbsPath;
 
-use super::ConfigError;
+use super::{ConfigError, launch::host_style};
 
 /// Account selection policy for a future session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -67,29 +66,14 @@ impl ProfileBinding {
         variable: &'static str,
         index: usize,
     ) -> Result<Self, ConfigError> {
-        let source = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .nth(2)
-            .and_then(Path::to_str)
-            .and_then(|root| AbsPath::parse(root).ok());
-        Self::validate(alias, directory, variable, index, source.as_ref())
-    }
-
-    fn validate(
-        alias: String,
-        directory: &str,
-        variable: &'static str,
-        index: usize,
-        repository: Option<&AbsPath>,
-    ) -> Result<Self, ConfigError> {
         let alias = CommonIdV1::new(alias).map_err(|_| ConfigError::ProfileAlias(index))?;
         let path =
             AbsPath::parse(directory).map_err(|error| ConfigError::ProfileDir { index, error })?;
+        if path.style() != host_style() {
+            return Err(ConfigError::ProfileDirForeignStyle(index));
+        }
         if path.is_root() {
             return Err(ConfigError::ProfileDirIsRoot(index));
-        }
-        if repository.is_some_and(|root| path.is_loosely_within(root)) {
-            return Err(ConfigError::ProfileDirInRepository(index));
         }
         let directory =
             Folder::new(path.to_string()).map_err(|_| ConfigError::ProfileDirTooLong(index))?;
@@ -106,6 +90,16 @@ impl ProfileBinding {
 
     pub fn directory(&self) -> &Folder {
         &self.directory
+    }
+
+    pub(super) fn path(&self) -> AbsPath {
+        AbsPath::parse(self.directory.as_str())
+            .expect("profile paths are normalized at construction")
+    }
+
+    pub(super) fn overlaps_path(&self, other: &AbsPath) -> bool {
+        let path = self.path();
+        path.is_loosely_within(other) || other.is_loosely_within(&path)
     }
 
     /// Filters the parent environment before applying the chosen account folder.
@@ -127,9 +121,49 @@ mod tests {
     use super::*;
     use crate::child_env::NameCase;
     use crate::tool_launch::ToolConfig;
-    use std::fs;
-    use std::process::Command;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    #[test]
+    fn profiles_reject_foreign_absolute_paths() {
+        let path = if cfg!(windows) {
+            "/profiles/x"
+        } else {
+            "C:/profiles/x"
+        };
+        let overrides = format!("[accounts.claude.primary]\nprofile_dir = '{path}'");
+        assert_eq!(
+            Config::from_toml_str(&overrides, NameCase::host()),
+            Err(ConfigError::ProfileDirForeignStyle(0))
+        );
+    }
+
+    #[test]
+    fn profiles_reject_overlapping_configured_folders() {
+        let drive = if cfg!(windows) { "C:" } else { "" };
+        for (workdir, profile) in [("work", "work/profile"), ("work/project", "work")] {
+            let overrides = format!(
+                "[workdirs]\nw = '{drive}/{workdir}'\n[accounts.claude.a]\nprofile_dir = '{drive}/{profile}'"
+            );
+            assert_eq!(
+                Config::from_toml_str(&overrides, NameCase::host()),
+                Err(ConfigError::ProfileDirOverlapsWorkdir(0)),
+                "{workdir} / {profile}"
+            );
+        }
+    }
+
+    #[test]
+    fn profiles_reject_duplicate_and_nested_folders() {
+        let drive = if cfg!(windows) { "C:" } else { "" };
+        for second in ["profiles/./MAIN", "profiles/main/nested"] {
+            let overrides = format!(
+                "[accounts.claude.a]\nprofile_dir = '{drive}/profiles/main'\n[accounts.claude.b]\nprofile_dir = '{drive}/{second}'"
+            );
+            assert_eq!(
+                Config::from_toml_str(&overrides, NameCase::host()),
+                Err(ConfigError::ProfileDirsOverlap),
+                "{second}"
+            );
+        }
+    }
 
     crate::tool_harness!(ProfileTool = "claude", profile_env = "CLAUDE_CONFIG_DIR");
     type Config = ToolConfig<ProfileTool>;
@@ -143,9 +177,13 @@ mod tests {
                 switch_at_pct: Some(90)
             },
         );
+        let drive = if cfg!(windows) { "C:" } else { "" };
+        let path = format!("{drive}/profiles/secondary");
         let config = Config::from_toml_str(
-            "[accounts.claude.secondary]\nprofile_dir = '/profiles/secondary'\n\
-             [tools.claude]\nswitch = 'auto'\nswitch_at_pct = 75",
+            &format!(
+                "[accounts.claude.secondary]\nprofile_dir = '{path}'\n\
+             [tools.claude]\nswitch = 'auto'\nswitch_at_pct = 75"
+            ),
             NameCase::host(),
         )
         .unwrap();
@@ -159,24 +197,21 @@ mod tests {
         let profile = config
             .profile(&CommonIdV1::new("secondary").unwrap())
             .unwrap();
-        assert_eq!(profile.directory().as_str(), "/profiles/secondary");
+        assert_eq!(
+            profile.directory().as_str(),
+            AbsPath::parse(&path).unwrap().to_string()
+        );
 
-        let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .nth(2)
-            .unwrap();
-        let nested = repo.join("nested-profile");
         for (alias, path, error) in [
             (
                 "'profile@example.invalid'",
-                "/profiles/secondary",
+                path,
                 ConfigError::ProfileAlias(0),
             ),
-            ("secondary", "/", ConfigError::ProfileDirIsRoot(0)),
             (
                 "secondary",
-                nested.to_str().unwrap(),
-                ConfigError::ProfileDirInRepository(0),
+                format!("{drive}/"),
+                ConfigError::ProfileDirIsRoot(0),
             ),
         ] {
             let overrides = format!("[accounts.claude.{alias}]\nprofile_dir = '{path}'");
@@ -202,6 +237,17 @@ mod tests {
     }
 
     #[test]
+    fn paths_with_shared_text_prefixes_can_be_distinct_folders() {
+        let drive = if cfg!(windows) { "C:" } else { "" };
+        let overrides = format!(
+            "[workdirs]\nw = '{drive}/work'\n\
+             [accounts.claude.a]\nprofile_dir = '{drive}/work-profile'\n\
+             [accounts.claude.b]\nprofile_dir = '{drive}/work-profile2'"
+        );
+        Config::from_toml_str(&overrides, NameCase::host()).unwrap();
+    }
+
+    #[test]
     fn a_tool_without_profile_support_has_no_switch_override() {
         assert_eq!(
             SwitchPolicy::from_config(None, None, None),
@@ -220,90 +266,37 @@ mod tests {
     }
 
     #[test]
-    fn selected_profile_reaches_the_child_without_inherited_credentials() {
-        let stamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .nth(2)
-            .unwrap()
-            .join("target")
-            .join(format!("profile-test-{}-{stamp}", std::process::id()));
-        let repository = fixture.join("repository");
-        let repository = AbsPath::parse(repository.to_str().unwrap()).unwrap();
-        let mut bindings = Vec::new();
-
-        for alias in ["primary", "secondary"] {
-            let folder = fixture.join(alias);
-            fs::create_dir_all(&folder).unwrap();
-            let sentinel = folder.join("sentinel");
-            fs::write(&sentinel, "profile data").unwrap();
-            fs::OpenOptions::new()
-                .write(true)
-                .open(&sentinel)
-                .unwrap()
-                .set_times(fs::FileTimes::new().set_accessed(UNIX_EPOCH))
-                .unwrap();
-            let before = fs::metadata(&sentinel).unwrap();
-            let binding = ProfileBinding::validate(
-                alias.to_owned(),
-                folder.to_str().unwrap(),
-                "CLAUDE_CONFIG_DIR",
-                0,
-                Some(&repository),
-            )
+    fn selected_profile_replaces_profile_environment_and_filters_credentials() {
+        let drive = if cfg!(windows) { "C:" } else { "" };
+        let config = Config::from_toml_str(
+            &format!(
+                "[accounts.claude.primary]\nprofile_dir = '{drive}/profiles/primary'\n\
+                      [accounts.claude.secondary]\nprofile_dir = '{drive}/profiles/secondary'"
+            ),
+            NameCase::host(),
+        )
+        .unwrap();
+        let binding = config
+            .profile(&CommonIdV1::new("secondary").unwrap())
             .unwrap();
-            bindings.push((binding, sentinel, before));
-        }
-
-        let config = Config::defaults(NameCase::host());
-        let parent = [
-            ("ANTHROPIC_API_KEY", "poison"),
-            ("CLAUDE_CONFIG_DIR", "wrong"),
-            ("CODEX_HOME", "wrong"),
-        ];
-        let child = bindings[1].0.child_env(config.env(), parent);
+        let child = binding.child_env(
+            config.env(),
+            [
+                ("ANTHROPIC_API_KEY", "poison"),
+                ("CLAUDE_CONFIG_DIR", "wrong"),
+                ("CODEX_HOME", "wrong"),
+            ],
+        );
         assert_eq!(
-            child.get("CLAUDE_CONFIG_DIR").map(String::as_str),
-            Some(bindings[1].0.directory().as_str())
-        );
-        assert!(!child.contains_key("CODEX_HOME"));
-        assert!(!child.contains_key("ANTHROPIC_API_KEY"));
-
-        let output = Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "tool_launch::profile::tests::report_profile_environment",
-                "--ignored",
-                "--nocapture",
+            child,
+            BTreeMap::from([
+                (
+                    "CLAUDE_CONFIG_DIR".to_owned(),
+                    binding.directory().to_string()
+                ),
+                ("TERM".to_owned(), "xterm-256color".to_owned()),
+                ("COLORTERM".to_owned(), "truecolor".to_owned()),
             ])
-            .env_clear()
-            .envs(&child)
-            .output()
-            .unwrap();
-        assert!(output.status.success());
-        let output = String::from_utf8(output.stdout).unwrap();
-        assert!(
-            output
-                .lines()
-                .any(|line| { line == format!("profile={}", bindings[1].0.directory()) })
         );
-        assert!(!output.contains(bindings[0].0.directory().as_str()));
-
-        for (_, sentinel, before) in bindings {
-            let after = fs::metadata(&sentinel).unwrap();
-            assert_eq!(after.modified().unwrap(), before.modified().unwrap());
-            assert_eq!(after.accessed().ok(), before.accessed().ok());
-            assert_eq!(fs::read_to_string(sentinel).unwrap(), "profile data");
-        }
-    }
-    #[test]
-    #[ignore = "run as an isolated child process by the profile binding test"]
-    fn report_profile_environment() {
-        assert!(std::env::var_os("ANTHROPIC_API_KEY").is_none());
-        assert!(std::env::var_os("CODEX_HOME").is_none());
-        println!("profile={}", std::env::var("CLAUDE_CONFIG_DIR").unwrap());
     }
 }

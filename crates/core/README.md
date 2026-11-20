@@ -91,10 +91,12 @@ abertura. `DiskProbe` faz essa consulta no disco.
 
 No arquivo de configuração do usuário, `[accounts.<ferramenta>.<apelido>]`
 define `profile_dir`. O apelido segue as regras de `workdirs`. O caminho é
-absoluto, segue as mesmas regras de sintaxe e fica fora da árvore do
-repositório usada para compilar o núcleo. A validação compara componentes do
-caminho sem consultar o conteúdo do perfil. Configure pastas externas reais,
-sem redirecionamentos para dentro do repositório.
+absoluto no estilo do sistema em que o núcleo roda e segue as mesmas regras
+de sintaxe. A validação compara os componentes do caminho normalizado e
+recusa pastas iguais ou aninhadas entre perfis e em relação às pastas de
+`[workdirs]`. Configure pastas de perfil sem links simbólicos nem junções
+no caminho, conforme o [risco registrado](../../docs/risks.md#contas-por-pasta-de-perfil).
+A futura ligação na abertura deve ocorrer após o filtro final de `open_params`.
 
 Em `[tools.<id>]`, `switch` aceita `manual`, `propose` (padrão) e `auto`.
 `switch_at_pct` aceita inteiros de 1 a 100, com padrão 90% da cota observada.

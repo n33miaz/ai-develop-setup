@@ -77,6 +77,11 @@ impl<C, X> ToolLauncher<C, X> {
         if claude.env() != codex.env() {
             return Err("invalid user configuration: tools disagree on `[env]`".into());
         }
+        if claude.has_overlapping_profiles(&codex) {
+            return Err(
+                "invalid user configuration: account profile folders overlap across tools".into(),
+            );
+        }
         let child_env = claude.env().child_env(parent_env);
         Ok(Self {
             claude,
@@ -137,6 +142,28 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tools_reject_overlapping_profile_folders() {
+        let drive = if cfg!(windows) { "C:" } else { "" };
+        for second in ["profiles/./main", "profiles/main/nested"] {
+            let overrides = format!(
+                "[accounts.claude.a]\nprofile_dir = '{drive}/profiles/main'\n[accounts.codex.b]\nprofile_dir = '{drive}/{second}'"
+            );
+            let error = ToolLauncher::from_toml_str(
+                &overrides,
+                Vec::<(String, String)>::new(),
+                claude::DiskProbe,
+                codex::DiskProbe,
+            )
+            .err()
+            .unwrap();
+            assert_eq!(
+                error, "invalid user configuration: account profile folders overlap across tools",
+                "{second}"
+            );
+        }
+    }
 
     #[test]
     fn a_root_folder_is_reported_as_a_shared_error() {
