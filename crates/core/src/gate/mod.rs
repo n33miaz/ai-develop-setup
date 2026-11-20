@@ -35,3 +35,65 @@ pub use plan::{
     TargetRequest,
 };
 pub use policy::{GatePolicy, HostFacts, PolicyError, Protection};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::error::Error;
+
+    #[test]
+    fn gate_failures_are_standard_errors() {
+        fn assert_error<T: Error>() {}
+
+        assert_error::<ContractError>();
+        assert_error::<PathError>();
+        assert_error::<PlanError>();
+        assert_error::<PolicyError>();
+        assert_error::<Refused>();
+        assert_error::<ReplayError>();
+        assert_error::<TransitionError>();
+    }
+
+    #[test]
+    fn gate_errors_expose_their_typed_causes() {
+        let path = AbsPath::parse("relative").unwrap_err();
+        for plan in [
+            PlanError::WorkRoot(path),
+            PlanError::Destination(path),
+            PlanError::Target {
+                index: 0,
+                error: path,
+            },
+        ] {
+            assert_eq!(
+                plan.source().unwrap().downcast_ref::<PathError>(),
+                Some(&path)
+            );
+        }
+        let host = HostFacts {
+            user_home: "/home/test",
+        };
+        let policy = GatePolicy::from_toml_str("allowed_roots = [1]", &host).unwrap_err();
+        let cause = policy
+            .source()
+            .unwrap()
+            .downcast_ref::<toml::de::Error>()
+            .unwrap();
+        assert_eq!(policy.to_string(), cause.to_string());
+
+        let policy = GatePolicy::from_toml_str("allowed_roots = ['relative']", &host).unwrap_err();
+        assert_eq!(
+            policy.source().unwrap().downcast_ref::<PathError>(),
+            Some(&path)
+        );
+
+        let error = TransitionError::Unrecordable(ContractError::new("plan", "invalid"));
+        assert!(error.source().unwrap().is::<ContractError>());
+        let error = TransitionError::Inconsistent(ReplayError::EmptyLog);
+        assert_eq!(
+            error.source().unwrap().downcast_ref::<ReplayError>(),
+            Some(&ReplayError::EmptyLog)
+        );
+        assert!(TransitionError::ApprovalRequired.source().is_none());
+    }
+}

@@ -10,7 +10,7 @@ Fonte única de toda mensagem e todo registro do produto: JSON Schema 2020-12, u
 | `golden/<tipo>.<nome>.v<versão>/valid/` | Exemplos que têm de passar (pelo menos 2) |
 | `golden/<tipo>.<nome>.v<versão>/invalid/` | Exemplos que têm de falhar (pelo menos 3), mais `index.json` |
 | `corpus/` | Casos comuns a dois validadores: o Schema e o código que lê o mesmo dado. Hoje, `abspath.json` ([caminho absoluto](#caminho-absoluto-o-schema-e-o-núcleo)) e `title-chars.json` ([título da tarefa](#fila-contínua)) |
-| `generated/ts/` | Tipos TypeScript gerados, versionados; o CI reprova se estiverem desatualizados. A interface os importa por `ui/src/api/contracts.ts` |
+| `generated/ts/` | Tipos e constantes TypeScript gerados, versionados; o CI reprova se estiverem desatualizados. A interface os importa por `ui/src/api/contracts.ts` |
 | `../crates/contracts/src/generated/` | Tipos Rust gerados (crate `ads-contracts`), versionados; o CI reprova se estiverem desatualizados. Como cada parte do Schema vira tipo está no [README do crate](../crates/contracts/README.md) |
 | `tools/` | Validador, geradores (`gen-ts.mjs`, `gen-rust.mjs`), regras entre campos (`rules.mjs`) e os testes deles |
 
@@ -20,11 +20,19 @@ Fonte única de toda mensagem e todo registro do produto: JSON Schema 2020-12, u
 cd contracts
 npm ci
 npm run validate   # Schemas válidos, referências resolvidas, URNs únicas, dourados no lugar
-npm run gen:ts     # regera generated/ts
+npm run gen:ts     # regera tipos e constantes em generated/ts
 npm run gen:rust   # regera ../crates/contracts/src/generated
-npm run gen:check  # reprova se os tipos gerados (TypeScript e Rust) não forem o que os geradores produzem agora
+npm run gen:check  # confere os tipos e constantes gerados em TypeScript e Rust
 npm test           # testes do próprio validador e dos geradores
 ```
+
+Cada Schema gera um `.d.ts`. Um catálogo com `anyOf` composto apenas de
+referências locais a `$defs` do tipo `integer` gera também um `.constants.ts`.
+Cada definição referenciada precisa de um `const` inteiro seguro em JavaScript
+e um nome em minúsculas, com letras, dígitos e sublinhados e começando por uma
+letra. O gerador exporta o nome em maiúsculas com seu valor literal.
+O catálogo de erros da API local segue esse formato, e a interface acessa as
+constantes pelo mesmo módulo dos tipos, `ui/src/api/contracts.ts`.
 
 O gerador de Rust passa a saída pelo `rustfmt` da versão fixada em `rust-toolchain.toml`, então `gen:rust`, `gen:check` e `npm test` precisam do Rust instalado. Ele para com erro diante de palavra-chave ou expressão regular que não sabe traduzir, em vez de gerar um tipo mais frouxo que o Schema, e nunca apaga arquivo: módulo que sobrou de um Schema removido é acusado e sai pelo nome. Cada dourado é conferido também contra os tipos Rust (`cargo test -p ads-contracts`): o válido tem de ir e voltar igual, o inválido tem de ser recusado.
 
@@ -279,7 +287,7 @@ WebSocket em loopback entre a interface (navegador ou casca) e o núcleo. Como a
 - Da interface ao núcleo: comandos `command.request:1`, cada método com Schema próprio que fixa `method` e fecha `params` (tabela [API local](#api-local-1)). O primeiro comando de toda conexão é `auth.hello`; antes dele o núcleo não aceita outro.
 - Do núcleo à interface: `urn:ads:contract:local-api.server-message:2`, que é a resposta `command.response:2` a um comando, a resposta `command.harness.list.response:1` a `harness.list` ou um evento `event.envelope:1` de um stream assinado por `events.subscribe`. A saída do terminal chega como evento `session.output:1`. A `:1` (sem a resposta de `harness.list`) continua no repositório, sem alteração.
 - `harness.list` só lê: devolve os identificadores das ferramentas ligadas e os apelidos de pasta de trabalho da configuração do usuário, para a interface saber o que pode abrir. O `params` é um objeto só com o `_meta` obrigatório do envelope. O `result` é fechado e só leva nomes; programa, argumentos, ambiente e caminho nunca saem do núcleo. Comando recusado volta como `command.response:2` com `error`.
-- A `:2` é uma extensão aditiva, acionada pelo pedido: não há negociação de versão no `auth.hello` nem marcador na mensagem. O núcleo só manda a resposta de `harness.list` a quem enviou `harness.list`; para um cliente que nunca o envia, toda mensagem continua cabendo na `:1`. Um núcleo anterior ao comando o recusa com `-32601` (método desconhecido); a interface mostra, sem botões de abertura, que o núcleo precisa ser atualizado.
+- A `:2` é uma extensão aditiva, acionada pelo pedido: não há negociação de versão no `auth.hello` nem marcador na mensagem. O núcleo só manda a resposta de `harness.list` a quem enviou `harness.list`; para um cliente que nunca o envia, toda mensagem continua cabendo na `:1`. Um núcleo anterior ao comando o recusa com `METHOD_NOT_FOUND`; a interface mostra, sem botões de abertura, que o núcleo precisa ser atualizado.
 - A interface escolhe a ferramenta pelo identificador do adaptador (`harness`) e a pasta pelo apelido (`workdir_alias`). `session.open` recusa `program`, `args`, `env` e `cwd`: o que roda, com que argumentos, em que ambiente e em que pasta sai só da configuração do usuário no núcleo.
 - Limites: colunas e linhas de 1 a 1000 (os mesmos do `pty-host/1`); `session.write` leva de 1 a 65536 bytes (87384 caracteres em base64), o que cabe com folga no quadro padrão do `pty-host/1` (`max_frame_bytes` de 1 MiB). Texto maior vai em vários comandos, na ordem.
 - O Schema aceita `origin: "remote"` no `_meta`, como o envelope de comando. Quem recusa comando remoto na API local é o núcleo (ADR 0020), não o Schema: o mesmo comando pode chegar, assinado, pelo transporte remoto.
@@ -364,6 +372,7 @@ Os sete comandos estendem `urn:ads:command:request:1` com `allOf`, fixam `method
 | `urn:ads:command:harness.list:1` | Pede, só para leitura, as ferramentas ligadas na configuração do usuário e os apelidos de pasta de trabalho. |
 | `urn:ads:command:harness.list.response:1` | Resposta aceita de `harness.list`: identificadores das ferramentas e apelidos de pasta, só nomes, nunca programa, argumentos, ambiente ou caminho. |
 | `urn:ads:contract:local-api.server-message:2` | A `:1` mais a resposta de `harness.list`. É a que o núcleo escreve; a `:1` não é alterada. |
+| `urn:ads:contract:local-api.error-code:1` | [Códigos emitidos pela API local](schemas/contract.local-api.error-code.v1.schema.json), com nomes e significados. Recusas encaminhadas do host seguem o contrato [pty-host/1](#contrato-pty-host1). |
 
 ### Eventos de sessão
 

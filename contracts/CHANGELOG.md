@@ -6,7 +6,7 @@ Formato: uma seção por data. Contrato novo, campo opcional acrescentado, vers�
 
 - `queue.task_created:2` exige ator do tipo aparelho em pedidos manuais e convive com a `:1`.
 - `queue.clock_reanchored:1` registra a reancoragem do relógio de admissão pelo dono da fila.
-
+- `local-api.error-code:1` define os códigos de erro emitidos pela API local.
 - Eventos de roteamento `proposed`, `decided` e `fallback` ganham a versão
   `:2` com `account_alias` (nulo quando não há perfil). As versões `:1` convivem com as novas.
 - `account.switched:1` registra a seleção de perfil para a próxima sessão.

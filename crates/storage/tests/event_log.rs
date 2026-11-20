@@ -217,7 +217,7 @@ fn tamper_with(path: &Path, change: impl FnOnce(&Connection)) {
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap();
-    assert_eq!(triggers.len(), 6);
+    assert_eq!(triggers.len(), 9);
     for (name, _) in &triggers {
         c.execute_batch(&format!("DROP TRIGGER {name}")).unwrap();
     }
@@ -334,7 +334,11 @@ fn altered_clear_column_or_ciphertext_is_refused_on_read() {
         let log = EventLog::open(&path, &StorageConfig::defaults(), rotated).unwrap();
         assert_eq!(
             log.read_stream(&stream(read), 1, 10).unwrap_err(),
-            StorageError::Tampered,
+            if *column == "key_id" {
+                StorageError::ChainBroken { position: 2 }
+            } else {
+                StorageError::Tampered
+            },
             "{column}"
         );
         assert!(
@@ -1114,6 +1118,50 @@ fn page_stops_at_the_byte_budget_and_always_makes_progress() {
     assert_eq!(seqs(&log, 2), [2]);
 }
 
+#[test]
+fn reading_numeric_arrays_measures_retained_event_memory() {
+    use serde_json::Value;
+
+    let path = fixture();
+    let config =
+        StorageConfig::from_toml_str("max_event_bytes = 20000\nread_page_max_bytes = 40000")
+            .unwrap();
+    let mut log = EventLog::open(&path, &config, keys("key-a", 1)).unwrap();
+    for n in 1..=3 {
+        log.append(&event(
+            "task/t1",
+            n,
+            n,
+            serde_json::json!({ "numbers": vec![0; 8192] }),
+        ))
+        .unwrap();
+    }
+    let page = log.read_stream(&stream("task/t1"), 1, 10).unwrap();
+    assert_eq!(page.len(), 2);
+    let row_bytes: u32 = Connection::open(&path)
+        .unwrap()
+        .query_row(
+            "SELECT length(data_ct) FROM event WHERE position = 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let page_slots = page.capacity() * std::mem::size_of::<ads_storage::StoredEvent>();
+    let mut array_bytes = 0;
+    for event in &page {
+        let Value::Array(numbers) = &event.event.data["numbers"] else {
+            panic!("expected numeric array");
+        };
+        assert_eq!(numbers.len(), 8192);
+        array_bytes += numbers.capacity() * std::mem::size_of::<Value>();
+    }
+    eprintln!(
+        "ciphertext per event: {row_bytes} B; retained per event: {} B of array slots; page: {} B of array and event slots",
+        array_bytes / page.len(),
+        array_bytes + page_slots,
+    );
+}
+
 /// Version 1 file: `meta` only, marked by the product.
 fn version_one(path: &Path) {
     let c = Connection::open(path).unwrap();
@@ -1184,7 +1232,264 @@ fn retired_version_two_and_meta_only_current_files_are_refused_unchanged() {
             extra.len()
         );
         assert_eq!(std::fs::read(&path).unwrap(), before);
+        if version == 2 {
+            assert_eq!(
+                std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
+                1
+            );
+        }
     }
+}
+
+#[test]
+fn refused_identity_in_pending_wal_never_reaches_main_file() {
+    for (pragma, value, error) in [
+        ("user_version", 2, StorageError::RetiredSchema),
+        (
+            "user_version",
+            SCHEMA_VERSION + 1,
+            StorageError::SchemaTooNew,
+        ),
+        (
+            "application_id",
+            APPLICATION_ID + 1,
+            StorageError::ForeignApplication,
+        ),
+    ] {
+        assert_pending_wal_refusal(&[(pragma, value)], error);
+    }
+}
+
+#[test]
+fn product_wal_cannot_clear_the_database_identity() {
+    assert_pending_wal_refusal(
+        &[("application_id", 0), ("user_version", 0)],
+        StorageError::ForeignApplication,
+    );
+}
+
+fn assert_pending_wal_refusal(pragmas: &[(&str, i64)], error: StorageError) {
+    let source = fixture();
+    version_one(&source);
+    let mut writer = Connection::open(&source).unwrap();
+    writer.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
+    let tx = writer.transaction().unwrap();
+    for &(pragma, value) in pragmas {
+        tx.pragma_update(None, pragma, value).unwrap();
+    }
+    tx.commit().unwrap();
+    let path = fixture();
+    let wal_path = path.with_file_name("audit.db-wal");
+    let main = std::fs::read(&source).unwrap();
+    let wal = std::fs::read(source.with_file_name("audit.db-wal")).unwrap();
+    assert_eq!(i32::from_be_bytes(main[60..64].try_into().unwrap()), 1);
+    std::fs::write(&path, &main).unwrap();
+    std::fs::write(&wal_path, &wal).unwrap();
+    assert_eq!(
+        AuditStore::open(&path, &StorageConfig::defaults()).unwrap_err(),
+        error
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), main);
+    assert_eq!(std::fs::read(&wal_path).unwrap(), wal);
+    assert!(!path.with_file_name("audit.db-shm").exists());
+}
+
+#[test]
+fn external_connection_cannot_modify_genesis() {
+    let path = fixture();
+    drop(open(&path));
+    let connection = Connection::open(&path).unwrap();
+    for sql in [
+        "UPDATE log_genesis SET link = zeroblob(32)",
+        "DELETE FROM log_genesis",
+        "INSERT OR REPLACE INTO log_genesis VALUES (1, zeroblob(32))",
+        "INSERT INTO log_genesis VALUES (1, zeroblob(32)) ON CONFLICT(singleton) DO UPDATE SET link = excluded.link",
+    ] {
+        let error = connection.execute(sql, []).unwrap_err();
+        assert!(
+            matches!(error, rusqlite::Error::SqliteFailure(_, Some(message)) if message == "append-only")
+        );
+    }
+    connection
+        .execute_batch("DROP TRIGGER log_genesis_no_delete")
+        .unwrap();
+    assert_eq!(
+        AuditStore::open(&path, &StorageConfig::defaults()).unwrap_err(),
+        StorageError::UnsupportedSchema
+    );
+}
+
+#[test]
+fn missing_genesis_breaks_the_chain_at_position_one() {
+    let path = fixture();
+    drop(open(&path));
+    let connection = Connection::open(&path).unwrap();
+    let trigger: Option<String> = connection
+        .query_row(
+            "SELECT (SELECT sql FROM sqlite_schema WHERE name = 'log_genesis_no_delete')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    connection
+        .execute_batch("DROP TRIGGER IF EXISTS log_genesis_no_delete; DELETE FROM log_genesis")
+        .unwrap();
+    if let Some(sql) = trigger {
+        connection.execute_batch(&sql).unwrap();
+    }
+    drop(connection);
+    let mut log = open(&path);
+    let error = StorageError::ChainBroken { position: 1 };
+    assert_eq!(log.verify_chain(), Err(error));
+    assert_eq!(
+        log.append(&event("task/t1", 1, 1, serde_json::json!({}))),
+        Err(error)
+    );
+}
+
+#[test]
+fn genesis_is_distinct_per_database_and_binds_the_first_row() {
+    let first_link = |path: &Path| {
+        Connection::open(path)
+            .unwrap()
+            .query_row("SELECT prev_chain FROM event WHERE position = 1", [], |r| {
+                r.get::<_, Vec<u8>>(0)
+            })
+            .unwrap()
+    };
+    let first = fixture();
+    let second = fixture();
+    for path in [&first, &second] {
+        let mut log = open(path);
+        three(&mut log);
+        assert_eq!(log.verify_chain(), Ok(3));
+    }
+    assert_ne!(first_link(&first), [0; 32]);
+    assert_ne!(first_link(&first), first_link(&second));
+    let other = first_link(&second);
+    tamper(
+        &first,
+        "UPDATE event SET prev_chain = ?1 WHERE position = 1",
+        Some(other),
+    );
+    assert_eq!(
+        open(&first).verify_chain(),
+        Err(StorageError::ChainBroken { position: 1 })
+    );
+}
+
+#[test]
+fn an_authenticated_chain_cannot_return_to_an_older_key() {
+    let path = fixture();
+    let mut log = open(&path);
+    three(&mut log);
+    drop(log);
+    let config = StorageConfig::defaults();
+    let mut log = EventLog::open(&path, &config, keys("key-b", 2)).unwrap();
+    log.append(&event("task/t1", 4, 4, serde_json::json!({})))
+        .unwrap();
+    drop(log);
+    let mut log = open(&path);
+    let before = files(&path);
+    assert_eq!(
+        log.append(&event("task/t1", 5, 5, serde_json::json!({}))),
+        Err(StorageError::WrongKey)
+    );
+    assert_eq!(files(&path), before);
+    let log = EventLog::open(
+        &path,
+        &config,
+        Box::new(Keys {
+            current: ("key-b", 2),
+            older: vec![("key-a", 1)],
+        }),
+    )
+    .unwrap();
+    assert_eq!(log.verify_chain(), Ok(4));
+}
+
+#[test]
+fn read_stream_checks_alternative_registrations_within_budget() {
+    let path = fixture();
+    let mut log = open(&path);
+    three(&mut log);
+    drop(log);
+    tamper_with(&path, |c| {
+        c.execute_batch(
+            "INSERT INTO cipher_key VALUES ('key-b', 'xchacha20poly1305', zeroblob(24), zeroblob(16));
+             UPDATE event SET key_id = 'key-b' WHERE position = 2;
+             UPDATE cipher_key SET key_check = zeroblob(16) WHERE key_id = 'key-a';",
+        ).unwrap();
+    });
+    for n in 0..12 {
+        Connection::open(&path).unwrap().execute(
+            "INSERT INTO cipher_key VALUES (?1, 'xchacha20poly1305', zeroblob(24), zeroblob(16))",
+            [format!("other-{n:02}")],
+        ).unwrap();
+    }
+    let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let config = StorageConfig::from_toml_str("read_key_candidates = 2").unwrap();
+    // Open under a fresh id so the read, rather than open, checks both registrations.
+    struct ReaderKeys(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+    impl KeyProvider for ReaderKeys {
+        fn current(&self) -> Result<(KeyId, SecretKey), CipherError> {
+            Ok((KeyId::new("reader")?, SecretKey::new(&[3; 32])))
+        }
+
+        fn by_id(&self, id: &KeyId) -> Result<SecretKey, CipherError> {
+            if id.as_str() != "reader" {
+                self.0.lock().unwrap().push(id.as_str().to_owned());
+            }
+            let byte = match id.as_str() {
+                "key-a" => 1,
+                "key-b" => 2,
+                "reader" => 3,
+                _ => return Err(CipherError::KeyUnavailable),
+            };
+            Ok(SecretKey::new(&[byte; 32]))
+        }
+    }
+    let log = EventLog::open(&path, &config, Box::new(ReaderKeys(calls.clone()))).unwrap();
+    assert_eq!(
+        log.read_stream(&stream("task/t1"), 2, 1).unwrap_err(),
+        StorageError::WrongKey
+    );
+    assert_eq!(*calls.lock().unwrap(), ["key-b", "key-a", "other-00"]);
+}
+
+#[test]
+fn read_stream_reports_the_position_of_a_forged_key_id() {
+    let path = fixture();
+    let mut log = open(&path);
+    three(&mut log);
+    drop(log);
+    tamper_with(&path, |c| {
+        c.pragma_update(None, "foreign_keys", 0).unwrap();
+        c.execute("UPDATE event SET key_id = 'forged' WHERE position = 2", [])
+            .unwrap();
+    });
+    assert_eq!(
+        open(&path)
+            .read_stream(&stream("task/t1"), 1, 10)
+            .unwrap_err(),
+        StorageError::ChainBroken { position: 2 }
+    );
+    Connection::open(&path)
+        .unwrap()
+        .execute(
+            "INSERT INTO cipher_key VALUES ('forged', 'xchacha20poly1305', zeroblob(24), zeroblob(16))",
+            [],
+        )
+        .unwrap();
+    let log = open(&path);
+    assert_eq!(
+        log.read_stream(&stream("task/t1"), 1, 10).unwrap_err(),
+        StorageError::ChainBroken { position: 2 }
+    );
+    assert_eq!(
+        log.verify_chain(),
+        Err(StorageError::ChainBroken { position: 2 })
+    );
 }
 
 /// `action/a1`, `approval/ap1` and `task/t1`, one event each.

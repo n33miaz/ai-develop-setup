@@ -24,7 +24,7 @@ struct Parts {
 
 /// A name that can only mean one entry of one folder.
 pub(crate) fn check_name(name: &str) -> Result<(), Stop> {
-    sys::plain(name).map_err(|error| Stop::new(Reason::NotPhysical, error))
+    sys::plain(name).map_err(|error| Stop::caused_by(Reason::NotPhysical, error))
 }
 
 /// The parts of a path the operating system resolved (the output of `canonicalize`).
@@ -91,10 +91,13 @@ fn parts_of_text(path: &AbsPath) -> Result<Parts, Stop> {
 }
 
 /// Why a folder cannot be a fence.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum FenceError {
     /// The folder does not exist or cannot be resolved.
-    Unresolved(String),
+    Unresolved {
+        detail: String,
+        cause: crate::reason::Cause,
+    },
     NotADirectory,
     /// A drive root or `/`: a fence that fences nothing.
     FilesystemRoot,
@@ -107,10 +110,47 @@ pub enum FenceError {
     NotPlain(String),
 }
 
+impl FenceError {
+    fn unresolved(error: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self::unresolved_with(error.to_string(), error)
+    }
+
+    fn unresolved_with(
+        detail: String,
+        error: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::Unresolved {
+            detail,
+            cause: std::sync::Arc::new(error),
+        }
+    }
+}
+
+impl PartialEq for FenceError {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Unresolved { detail: a, .. }, Self::Unresolved { detail: b, .. })
+            | (Self::NotPlain(a), Self::NotPlain(b)) => a == b,
+            _ => std::mem::discriminant(self) == std::mem::discriminant(other),
+        }
+    }
+}
+
+impl Eq for FenceError {}
+
+impl std::error::Error for FenceError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Unresolved { cause, .. } => Some(cause.as_ref()),
+            _ => None,
+        }
+    }
+}
+
 impl std::fmt::Display for FenceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Unresolved(error) => write!(f, "the fence cannot be resolved: {error}"),
+            Self::Unresolved { detail, .. } => write!(f, "the fence cannot be resolved: {detail}"),
             Self::NotADirectory => f.write_str("the fence is not a folder"),
             Self::FilesystemRoot => f.write_str("the fence is the root of a file system"),
             Self::NotLocal => f.write_str("the fence is not a local path"),
@@ -156,7 +196,7 @@ impl Frame {
         };
         Node::anchor(Path::new(&anchor)).map_err(|error| match error.kind() {
             std::io::ErrorKind::Unsupported => FenceError::UnsupportedSystem,
-            _ => FenceError::Unresolved(error.to_string()),
+            _ => FenceError::unresolved(error),
         })
     }
 
@@ -172,10 +212,9 @@ impl Frame {
     /// Where nothing holds (Linux) this sees a folder that moved during the walk and was not
     /// put back before the second one, and nothing else.
     fn open(&self, walked: &mut dyn FnMut(&str)) -> Result<Node, FenceError> {
-        let unresolved = |error: &dyn std::fmt::Display| FenceError::Unresolved(error.to_string());
         let mut node = self.anchor()?;
         if sys::HOLDS {
-            node = node.hold().map_err(|error| unresolved(&error))?;
+            node = node.hold().map_err(FenceError::unresolved)?;
         }
         let mut held = Vec::new();
         let mut ids = Vec::new();
@@ -184,9 +223,14 @@ impl Frame {
             let child = match node.child(name) {
                 Ok(child) => child,
                 Err(sys::Error::Alias) => return Err(FenceError::NotPlain(name.clone())),
-                Err(error) => return Err(unresolved(&format!("{name}: {error}"))),
+                Err(error) => {
+                    return Err(FenceError::unresolved_with(
+                        format!("{name}: {error}"),
+                        error,
+                    ));
+                }
             };
-            let meta = child.meta().map_err(|error| unresolved(&error))?;
+            let meta = child.meta().map_err(FenceError::unresolved)?;
             match meta.kind {
                 Some(Kind::Dir) => {}
                 Some(Kind::Link) => return Err(FenceError::NotPlain(name.clone())),
@@ -194,13 +238,18 @@ impl Frame {
             }
             let child = match sys::HOLDS {
                 true => {
-                    let fixed = child
-                        .hold()
-                        .map_err(|error| unresolved(&format!("{name}: {error}")))?;
+                    let fixed = child.hold().map_err(|error| {
+                        FenceError::unresolved_with(format!("{name}: {error}"), error)
+                    })?;
                     match node.holds(name, meta.id) {
                         Ok(true) => fixed,
                         Ok(false) => return Err(FenceError::NotPlain(name.clone())),
-                        Err(error) => return Err(unresolved(&format!("{name}: {error}"))),
+                        Err(error) => {
+                            return Err(FenceError::unresolved_with(
+                                format!("{name}: {error}"),
+                                error,
+                            ));
+                        }
                     }
                 }
                 false => child,
@@ -224,9 +273,7 @@ impl Frame {
                 Ok(child) => child,
                 Err(_) => return Err(FenceError::NotPlain(name.clone())),
             };
-            let now = node
-                .meta()
-                .map_err(|error| FenceError::Unresolved(error.to_string()))?;
+            let now = node.meta().map_err(FenceError::unresolved)?;
             if now.id != *id || now.kind != Some(Kind::Dir) {
                 return Err(FenceError::NotPlain(name.clone()));
             }
@@ -296,11 +343,10 @@ impl Fence {
         resolved: impl FnOnce(),
         walked: &mut dyn FnMut(&str),
     ) -> Result<Self, FenceError> {
-        let unresolved = |error: std::io::Error| FenceError::Unresolved(error.to_string());
-        let frame = Frame::from_resolved(fs::canonicalize(base).map_err(unresolved)?)?;
+        let frame = Frame::from_resolved(fs::canonicalize(base).map_err(FenceError::unresolved)?)?;
         resolved();
         let root = frame.open(walked)?;
-        let home = root.meta().map_err(unresolved)?;
+        let home = root.meta().map_err(FenceError::unresolved)?;
         if home.kind != Some(Kind::Dir) {
             return Err(FenceError::NotADirectory);
         }
@@ -365,7 +411,7 @@ impl Fence {
         check_name(name)?;
         let node = match parent.child(name) {
             Ok(node) => node,
-            Err(sys::Error::Missing) => return Ok(None),
+            Err(sys::Error::Missing(_)) => return Ok(None),
             Err(sys::Error::Alias) => {
                 return Err(Stop::new(
                     Reason::NotPhysical,
@@ -507,6 +553,17 @@ impl Fence {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unresolved_fence_keeps_the_system_error() {
+        use std::{error::Error, io};
+
+        let io_error = io::Error::new(io::ErrorKind::NotFound, "missing");
+        let error = FenceError::unresolved(io_error);
+        assert_eq!(error.to_string(), "the fence cannot be resolved: missing");
+        let cause = error.source().unwrap().downcast_ref::<io::Error>().unwrap();
+        assert_eq!(cause.kind(), io::ErrorKind::NotFound);
+    }
 
     // Pure: nothing here looks at the disk.
 

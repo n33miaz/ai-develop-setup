@@ -4,7 +4,7 @@ mod config;
 mod launch;
 mod profile;
 
-pub use config::{ConfigError, Mode, ToolConfig};
+pub use config::{ConfigError, HostRules, Mode, ToolConfig};
 pub use launch::{DiskProbe, LaunchError, Probe, open_params, process_env};
 pub use profile::{ProfileBinding, SwitchMode, SwitchPolicy};
 

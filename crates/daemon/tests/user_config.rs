@@ -150,3 +150,38 @@ fn relative_configuration_path_is_refused_by_the_binary() {
     assert!(error.contains("--config path refused"), "{error}");
     assert!(!error.contains("sentinel"));
 }
+
+#[test]
+fn refuses_an_installation_with_a_live_daemon_lock() {
+    let path = user_file("daemon-instance", b"");
+    let lock = std::fs::File::options()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .unwrap();
+    lock.try_lock().unwrap();
+    let start = || {
+        Command::new(env!("CARGO_BIN_EXE_ads-daemon"))
+            .arg("--instance-lock")
+            .arg(&path)
+            .arg("--config")
+            .output()
+            .unwrap()
+    };
+    let blocked = start();
+    assert!(!blocked.status.success());
+    assert!(blocked.stdout.is_empty());
+    assert!(
+        String::from_utf8(blocked.stderr)
+            .unwrap()
+            .contains("another daemon")
+    );
+    drop(lock);
+    let available = start();
+    assert!(!available.status.success());
+    assert!(
+        String::from_utf8(available.stderr)
+            .unwrap()
+            .contains("invalid daemon arguments")
+    );
+}

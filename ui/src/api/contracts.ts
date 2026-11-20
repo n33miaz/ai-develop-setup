@@ -1,6 +1,12 @@
-// Ponto único de importação dos tipos das mensagens trocadas com o núcleo.
-// Todos vêm dos tipos gerados dos JSON Schemas (`contracts/generated/ts`); nenhum é escrito à mão.
-// O resto da UI importa daqui, nunca direto de `contracts/`. Só tipos: nada disto entra no bundle.
+// Ponto único de acesso aos tipos e constantes gerados dos JSON Schemas.
+export {
+  INVALID_PARAMS,
+  METHOD_NOT_FOUND,
+  SESSION_CLOSE_PENDING,
+  SESSION_SETUP_FAILED,
+  SUBSCRIPTION_REPLAY_UNAVAILABLE,
+} from '../../../contracts/generated/ts/contract.local-api.error-code.v1.constants'
+
 import type { EventApprovalDeniedV2 } from '../../../contracts/generated/ts/event.approval.denied.v2'
 import type { EventApprovalExpiredV2 } from '../../../contracts/generated/ts/event.approval.expired.v2'
 import type { EventApprovalGrantedV2 } from '../../../contracts/generated/ts/event.approval.granted.v2'

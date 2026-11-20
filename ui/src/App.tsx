@@ -24,6 +24,7 @@ import {
   type HarnessCatalog,
 } from './api'
 
+import { INVALID_PARAMS } from './api/contracts'
 import { sessionInput } from './api/session'
 
 import styles from './App.module.css'
@@ -47,7 +48,6 @@ import type { SessionEvent } from './api'
 import { UpdateNotice } from './pwa/UpdateNotice'
 
 const NO_STREAMS: readonly string[] = []
-const INVALID_PARAMS = -32602
 
 const THEME_LABEL: Record<ThemePreference, MessageKey> = {
   system: 'theme.system',
