@@ -110,6 +110,7 @@ O `stream` de um evento é `<família>/<id>`, e o `<id>` é o da entidade que o 
 | `action` | `action_id` |
 | `review` | `review_id` |
 | `routing` | `task_id` |
+| `queue` | `queue_id` |
 
 `host` e `usage` ficam fora da regra: o stream deles agrupa por máquina ou por tarefa, e nem todo evento dessas famílias leva esse identificador em `data`.
 
@@ -283,6 +284,22 @@ WebSocket em loopback entre a interface (navegador ou casca) e o núcleo. Como a
 
 `server-message` é `anyOf`, não `oneOf`: as duas alternativas são objetos fechados e cada uma exige um campo que a outra recusa (`jsonrpc` na resposta; `type` no evento), então nenhum documento cabe nas duas e `anyOf` aceita exatamente o mesmo que `oneOf` aceitaria. O gerador de Rust só traduz `oneOf` com um campo de valor fixo que distinga as alternativas.
 
+## Fila contínua
+
+Uma fila nasce em `stopped`. Só seu dono autenticado pode alterá-la para `enabled` ou pará-la. O produtor confere a identidade autenticada contra o `owner_id` cadastrado antes de aceitar a mudança e, ao parar, emite `queue.stopped` com esse dono. A fila precisa estar ativa para uma tarefa começar a rodar.
+
+Uma tarefa começa em `queued`, com zero tentativas e um teto positivo que inclui a primeira. A origem identifica pedido manual, issue ou regra de bug. A pasta é identificada por apelido, sem unidade ou separadores. Branch e pull request são referências opcionais.
+
+| Estado atual | Destinos permitidos |
+|---|---|
+| `queued` | `running` se ainda houver tentativa, ou `cancelled` |
+| `running` | `review`, `failed` ou `cancelled` |
+| `review` | `done`, `failed` ou `cancelled` |
+| `failed` | `queued` se ainda houver tentativa |
+| `done`, `cancelled` | nenhum |
+
+Cada entrada em `running` consome uma tentativa. As outras transições preservam a contagem. O produtor confere a mudança contra o registro atual antes de emitir `queue.task_state_changed`, que leva a contagem resultante. A data de atualização deve acompanhar a mudança e ser igual ou posterior à de criação.
+
 ## Atualização
 
 O manifesto (`urn:ads:record:update-manifest:1`) é assinado no CI. A assinatura fica em arquivo à parte e cobre os bytes exatos do arquivo do manifesto, para não depender de forma canônica de JSON; o lançador a confere com a chave pública embutida antes de ler qualquer campo, e só então confere o digest de cada arquivo (ADR 0015).
@@ -305,6 +322,7 @@ O manifesto (`urn:ads:record:update-manifest:1`) é assinado no CI. A assinatura
 | `urn:ads:common:abspath:2` | O mesmo caminho, recusando também, no estilo Windows, nome de dispositivo e nome curto 8.3. Convive com a `:1`. |
 | `urn:ads:common:action-rule:1` | Código estável de uma regra do portão de ações que disparou num plano. |
 | `urn:ads:common:actor:1` | Quem causou um evento ou uma decisão: um aparelho, um agente de IA ou o próprio daemon. |
+| `urn:ads:common:queue-task-state:1` | Estado de uma tarefa da fila. |
 
 ### Envelopes
 
@@ -354,6 +372,14 @@ Os seis comandos estendem `urn:ads:command:request:1` com `allOf`, fixam `method
 | `urn:ads:event:task.completed:1` | A tarefa terminou com entrega; registra se os testes passaram e o digest do diff. |
 | `urn:ads:event:task.failed:1` | A tarefa terminou sem entrega, com um código de erro estável e a indicação de se vale tentar de novo. |
 | `urn:ads:event:task.cancelled:1` | A tarefa foi interrompida por decisão do dono, por teto de custo, por pressão de recursos, por política ou por ter sido substituída. |
+
+### Eventos da fila
+
+| URN | Significado |
+|---|---|
+| `urn:ads:event:queue.task_created:1` | Uma tarefa entrou na fila. |
+| `urn:ads:event:queue.task_state_changed:1` | Uma tarefa mudou de estado. |
+| `urn:ads:event:queue.stopped:1` | O dono parou a fila. |
 
 ### Eventos de aprovação
 
@@ -423,6 +449,8 @@ Os seis comandos estendem `urn:ads:command:request:1` com `allOf`, fixam `method
 | `urn:ads:record:update-manifest:1` | O que o CI publica a cada junção: qual build é, de qual commit saiu e o SHA-256 de cada arquivo. O lançador confere a assinatura do manifesto (arquivo à parte, sobre os bytes exatos deste JSON) com a chave pública embutida e depois o digest de cada arquivo, antes de trocar qualquer coisa. |
 | `urn:ads:record:update-status:1` | Estado visível da auto-atualização, escrito pelo lançador: o que está rodando, a versão anterior guardada, a candidata em andamento, a prova depois da troca, as quedas contadas e as versões bloqueadas. Baixando, conferindo e trocando têm candidata; em prova há prazo; falha traz código de erro. |
 | `urn:ads:record:parameter:1` | Um parâmetro do produto como o núcleo o apresenta: a chave, o tipo, o padrão recomendado, o valor em vigor e a explicação. Todo comportamento com mais de uma escolha razoável é um registro destes. Parâmetro nunca guarda segredo: segredo fica no cofre. |
+| `urn:ads:record:queue-task:1` | Registro de uma tarefa da fila. |
+| `urn:ads:record:task-queue:1` | Identidade, dono e estado da fila. |
 
 ### Contratos entre processos
 

@@ -1,0 +1,22 @@
+{
+  "01-workspace-path.json": {
+    "rule": "A pasta é identificada por apelido, sem unidade nem separadores.",
+    "keyword": "pattern",
+    "instancePath": "/workspace_alias"
+  },
+  "02-negative-attempts.json": {
+    "rule": "A contagem começa em zero.",
+    "keyword": "minimum",
+    "instancePath": "/attempts"
+  },
+  "03-zero-limit.json": {
+    "rule": "O teto inclui ao menos a primeira tentativa.",
+    "keyword": "minimum",
+    "instancePath": "/attempt_limit"
+  },
+  "04-null-branch.json": {
+    "rule": "A branch sem valor é omitida.",
+    "keyword": "type",
+    "instancePath": "/branch"
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "01-wrong-type.json": {
+    "rule": "O tipo é a URN deste evento.",
+    "keyword": "const",
+    "instancePath": "/type"
+  },
+  "02-wrong-stream.json": {
+    "rule": "O stream pertence à família queue.",
+    "keyword": "pattern",
+    "instancePath": "/stream"
+  },
+  "03-invalid-queue-id.json": {
+    "rule": "O identificador da fila é opaco.",
+    "keyword": "pattern",
+    "instancePath": "/data/queue_id"
+  },
+  "04-unknown-state.json": {
+    "rule": "O destino é um estado da tarefa.",
+    "keyword": "enum",
+    "instancePath": "/data/to"
+  },
+  "05-negative-attempts.json": {
+    "rule": "A contagem de tentativas é não negativa.",
+    "keyword": "minimum",
+    "instancePath": "/data/attempts"
+  }
+}

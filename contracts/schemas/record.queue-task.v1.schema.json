@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:record:queue-task:1",
+  "title": "Tarefa da fila",
+  "description": "Retrato versionado de uma tarefa. A pasta é referida por apelido; o teto de tentativas inclui a primeira execução.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "id",
+    "queue_id",
+    "origin",
+    "title",
+    "workspace_alias",
+    "tool",
+    "state",
+    "attempts",
+    "attempt_limit",
+    "created_at",
+    "updated_at"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "id": {
+      "$ref": "urn:ads:common:id:1"
+    },
+    "queue_id": {
+      "$ref": "urn:ads:common:id:1"
+    },
+    "origin": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "manual"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "ref"
+          ],
+          "properties": {
+            "kind": {
+              "const": "issue"
+            },
+            "ref": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]*$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "rule_id"
+          ],
+          "properties": {
+            "kind": {
+              "const": "bug_rule"
+            },
+            "rule_id": {
+              "$ref": "urn:ads:common:id:1"
+            }
+          }
+        }
+      ]
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120,
+      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]*$"
+    },
+    "workspace_alias": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+    },
+    "tool": {
+      "$ref": "urn:ads:common:id:1"
+    },
+    "state": {
+      "$ref": "urn:ads:common:queue-task-state:1"
+    },
+    "attempts": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "attempt_limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "created_at": {
+      "$ref": "urn:ads:common:timestamp:1"
+    },
+    "updated_at": {
+      "$ref": "urn:ads:common:timestamp:1"
+    },
+    "branch": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]*$"
+    },
+    "pull_request": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]*$"
+    }
+  },
+  "examples": [
+    {
+      "version": 1,
+      "id": "task-01",
+      "queue_id": "queue-01",
+      "origin": {
+        "kind": "manual"
+      },
+      "title": "Conferir documentação",
+      "workspace_alias": "docs",
+      "tool": "tool-a",
+      "state": "queued",
+      "attempts": 0,
+      "attempt_limit": 2,
+      "created_at": "2030-01-02T03:04:05Z",
+      "updated_at": "2030-01-02T03:04:05Z"
+    }
+  ]
+}

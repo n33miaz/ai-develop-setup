@@ -1,0 +1,17 @@
+{
+  "01-unknown-state.json": {
+    "rule": "O controle distingue fila parada de fila ativa.",
+    "keyword": "enum",
+    "instancePath": "/state"
+  },
+  "02-invalid-owner.json": {
+    "rule": "O dono é identificado por um identificador opaco.",
+    "keyword": "pattern",
+    "instancePath": "/owner_id"
+  },
+  "03-wrong-version.json": {
+    "rule": "O registro tem versão 1.",
+    "keyword": "const",
+    "instancePath": "/version"
+  }
+}

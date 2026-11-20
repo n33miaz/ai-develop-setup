@@ -20,6 +20,7 @@ pub mod common_actor_v1;
 pub mod common_base64_v1;
 pub mod common_data_class_v1;
 pub mod common_id_v1;
+pub mod common_queue_task_state_v1;
 pub mod common_relpath_v1;
 pub mod common_risk_v1;
 pub mod common_sha256_v1;
@@ -48,6 +49,9 @@ pub mod event_envelope_v1;
 pub mod event_host_alert_acked_v1;
 pub mod event_host_alert_raised_v1;
 pub mod event_host_sample_recorded_v1;
+pub mod event_queue_stopped_v1;
+pub mod event_queue_task_created_v1;
+pub mod event_queue_task_state_changed_v1;
 pub mod event_review_completed_v1;
 pub mod event_review_failed_v1;
 pub mod event_review_requested_v1;
@@ -73,7 +77,9 @@ pub mod record_approval_v1;
 pub mod record_host_event_v1;
 pub mod record_host_sample_v1;
 pub mod record_parameter_v1;
+pub mod record_queue_task_v1;
 pub mod record_task_packet_v1;
+pub mod record_task_queue_v1;
 pub mod record_update_manifest_v1;
 pub mod record_update_status_v1;
 pub mod record_usage_event_v1;
@@ -96,6 +102,7 @@ pub use common_actor_v1::*;
 pub use common_base64_v1::*;
 pub use common_data_class_v1::*;
 pub use common_id_v1::*;
+pub use common_queue_task_state_v1::*;
 pub use common_relpath_v1::*;
 pub use common_risk_v1::*;
 pub use common_sha256_v1::*;
@@ -124,6 +131,9 @@ pub use event_envelope_v1::*;
 pub use event_host_alert_acked_v1::*;
 pub use event_host_alert_raised_v1::*;
 pub use event_host_sample_recorded_v1::*;
+pub use event_queue_stopped_v1::*;
+pub use event_queue_task_created_v1::*;
+pub use event_queue_task_state_changed_v1::*;
 pub use event_review_completed_v1::*;
 pub use event_review_failed_v1::*;
 pub use event_review_requested_v1::*;
@@ -149,7 +159,9 @@ pub use record_approval_v1::*;
 pub use record_host_event_v1::*;
 pub use record_host_sample_v1::*;
 pub use record_parameter_v1::*;
+pub use record_queue_task_v1::*;
 pub use record_task_packet_v1::*;
+pub use record_task_queue_v1::*;
 pub use record_update_manifest_v1::*;
 pub use record_update_status_v1::*;
 pub use record_usage_event_v1::*;
@@ -186,6 +198,10 @@ pub const SCHEMAS: &[(&str, &str)] = &[
     ("common.base64.v1", "urn:ads:common:base64:1"),
     ("common.data-class.v1", "urn:ads:common:data-class:1"),
     ("common.id.v1", "urn:ads:common:id:1"),
+    (
+        "common.queue-task-state.v1",
+        "urn:ads:common:queue-task-state:1",
+    ),
     ("common.relpath.v1", "urn:ads:common:relpath:1"),
     ("common.risk.v1", "urn:ads:common:risk:1"),
     ("common.sha256.v1", "urn:ads:common:sha256:1"),
@@ -268,6 +284,15 @@ pub const SCHEMAS: &[(&str, &str)] = &[
         "event.host.sample_recorded.v1",
         "urn:ads:event:host.sample_recorded:1",
     ),
+    ("event.queue.stopped.v1", "urn:ads:event:queue.stopped:1"),
+    (
+        "event.queue.task_created.v1",
+        "urn:ads:event:queue.task_created:1",
+    ),
+    (
+        "event.queue.task_state_changed.v1",
+        "urn:ads:event:queue.task_state_changed:1",
+    ),
     (
         "event.review.completed.v1",
         "urn:ads:event:review.completed:1",
@@ -323,7 +348,9 @@ pub const SCHEMAS: &[(&str, &str)] = &[
     ("record.host_event.v1", "urn:ads:record:host_event:1"),
     ("record.host_sample.v1", "urn:ads:record:host_sample:1"),
     ("record.parameter.v1", "urn:ads:record:parameter:1"),
+    ("record.queue-task.v1", "urn:ads:record:queue-task:1"),
     ("record.task-packet.v1", "urn:ads:record:task-packet:1"),
+    ("record.task-queue.v1", "urn:ads:record:task-queue:1"),
     (
         "record.update-manifest.v1",
         "urn:ads:record:update-manifest:1",
@@ -353,6 +380,7 @@ pub const PATTERNS: &[&str] = &[
     r"^[A-Z]:\\([^\\]*\\)*[^\\]*~[0-9]+(\.|\\|$)",
     r"^[A-Za-z0-9+/]{43}=$",
     r"^[A-Za-z0-9._-][A-Za-z0-9._/-]*$",
+    r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
     r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
     r"^[A-Za-z0-9_-]{43}$",
     r"^[^\\/$%]*[*?][^\\/$%]*$",
@@ -367,6 +395,7 @@ pub const PATTERNS: &[&str] = &[
     r"^dev-[0-9]{8}-[0-9a-f]{7,12}$",
     r"^host/",
     r"^host\.disk\.free_(gb|pct)$",
+    r"^queue/",
     r"^review/",
     r"^routing/",
     r"^session/",
@@ -398,6 +427,7 @@ pub fn reencode(id: &str, value: Value) -> Option<Result<Value, serde_json::Erro
         "urn:ads:common:base64:1" => support::reencode::<CommonBase64V1>(value),
         "urn:ads:common:data-class:1" => support::reencode::<CommonDataClassV1>(value),
         "urn:ads:common:id:1" => support::reencode::<CommonIdV1>(value),
+        "urn:ads:common:queue-task-state:1" => support::reencode::<CommonQueueTaskStateV1>(value),
         "urn:ads:common:relpath:1" => support::reencode::<CommonRelpathV1>(value),
         "urn:ads:common:risk:1" => support::reencode::<CommonRiskV1>(value),
         "urn:ads:common:sha256:1" => support::reencode::<CommonSha256V1>(value),
@@ -442,6 +472,11 @@ pub fn reencode(id: &str, value: Value) -> Option<Result<Value, serde_json::Erro
         "urn:ads:event:host.sample_recorded:1" => {
             support::reencode::<EventHostSampleRecordedV1>(value)
         }
+        "urn:ads:event:queue.stopped:1" => support::reencode::<EventQueueStoppedV1>(value),
+        "urn:ads:event:queue.task_created:1" => support::reencode::<EventQueueTaskCreatedV1>(value),
+        "urn:ads:event:queue.task_state_changed:1" => {
+            support::reencode::<EventQueueTaskStateChangedV1>(value)
+        }
         "urn:ads:event:review.completed:1" => support::reencode::<EventReviewCompletedV1>(value),
         "urn:ads:event:review.failed:1" => support::reencode::<EventReviewFailedV1>(value),
         "urn:ads:event:review.requested:1" => support::reencode::<EventReviewRequestedV1>(value),
@@ -471,7 +506,9 @@ pub fn reencode(id: &str, value: Value) -> Option<Result<Value, serde_json::Erro
         "urn:ads:record:host_event:1" => support::reencode::<RecordHostEventV1>(value),
         "urn:ads:record:host_sample:1" => support::reencode::<RecordHostSampleV1>(value),
         "urn:ads:record:parameter:1" => support::reencode::<RecordParameterV1>(value),
+        "urn:ads:record:queue-task:1" => support::reencode::<RecordQueueTaskV1>(value),
         "urn:ads:record:task-packet:1" => support::reencode::<RecordTaskPacketV1>(value),
+        "urn:ads:record:task-queue:1" => support::reencode::<RecordTaskQueueV1>(value),
         "urn:ads:record:update-manifest:1" => support::reencode::<RecordUpdateManifestV1>(value),
         "urn:ads:record:update-status:1" => support::reencode::<RecordUpdateStatusV1>(value),
         "urn:ads:record:usage_event:1" => support::reencode::<RecordUsageEventV1>(value),

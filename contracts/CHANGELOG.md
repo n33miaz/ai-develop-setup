@@ -2,6 +2,10 @@
 
 Formato: uma seção por data. Contrato novo, campo opcional acrescentado, versão nova de uma URN e contrato aposentado entram aqui. As regras de versão estão no [README](README.md).
 
+## 2026-11-19
+
+Contratos v1 da fila contínua: registros da tarefa e do controle pelo dono, estado compartilhado da tarefa e eventos de inclusão, mudança de estado e parada.
+
 ## 2026-11-16
 
 Contratos da API local (interface ↔ núcleo), todos `:1`. Nenhum contrato existente foi alterado.

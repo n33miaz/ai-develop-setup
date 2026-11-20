@@ -7,12 +7,18 @@ Tipos Rust de toda mensagem e todo registro, gerados dos JSON Schemas de [`contr
 | Caminho | Conteúdo |
 |---|---|
 | `src/generated/` | Um módulo por Schema mais o índice `mod.rs`. **Gerado, não edite**: `npm run gen:rust` em `contracts/` regrava, e o CI reprova se estiver defasado |
-| `src/support.rs` | A única parte escrita à mão: o erro `ContractError`, os padrões de texto, o `date-time` e o avaliador das regras entre campos |
+| `src/support.rs` | Validação compartilhada pelos tipos gerados: o erro `ContractError`, os padrões de texto, o `date-time` e o avaliador das regras entre campos |
 | `tests/golden.rs` | Para todo Schema: cada dourado válido é lido no tipo gerado e reescrito no mesmo JSON; cada dourado inválido é recusado |
 | `tests/shapes.rs` | O que os dourados não fixam sozinhos: ausente contra `null`, uniões, objeto aberto e validação na construção |
 | [`swap-map.md`](swap-map.md) | Qual tipo gerado substitui cada tipo escrito à mão nos crates consumidores, e a diferença de forma |
 
 Os tipos ficam todos na raiz do crate (`ads_contracts::CommonIdV1`). O nome do tipo de um Schema sai do `$id`, com a versão (`urn:ads:event:session.created:1` é `EventSessionCreatedV1`); o de um trecho interno é o nome do Schema mais o caminho (`EventSessionCreatedV1DataCols`).
+
+## Fila contínua
+
+Os [contratos v1 da fila](../../contracts/README.md#fila-contínua) cobrem a tarefa, o estado da fila e seus eventos. `RecordTaskQueueV1::new_stopped` cria a fila parada e `permits_state_change` compara o dono com a identidade fornecida pela camada de autenticação. `RecordQueueTaskV1::next_attempt_count` confere a transição e devolve a nova contagem sem alterar o registro. Os testes de tabela exercitam o ciclo e o esgotamento das tentativas.
+
+Implementar o agendador, a autenticação, a persistência e a execução fica para entregas futuras.
 
 ## Como cada parte do Schema vira tipo
 

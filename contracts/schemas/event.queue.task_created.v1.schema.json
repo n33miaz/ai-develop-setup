@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:event:queue.task_created:1",
+  "title": "Tarefa incluída na fila",
+  "description": "Registra a inclusão de uma tarefa em queued, com zero tentativas.",
+  "allOf": [
+    {
+      "$ref": "urn:ads:event:envelope:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "type",
+        "stream",
+        "data"
+      ],
+      "properties": {
+        "type": {
+          "const": "urn:ads:event:queue.task_created:1"
+        },
+        "stream": {
+          "type": "string",
+          "pattern": "^queue/"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "queue_id",
+            "task_id"
+          ],
+          "properties": {
+            "queue_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "task_id": {
+              "$ref": "urn:ads:common:id:1"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+      "type": "urn:ads:event:queue.task_created:1",
+      "ts": "2030-01-02T03:04:05Z",
+      "stream": "queue/queue-01",
+      "seq": 1,
+      "actor": {
+        "kind": "daemon",
+        "id": "core-01"
+      },
+      "cause": null,
+      "data_class": "internal",
+      "data": {
+        "queue_id": "queue-01",
+        "task_id": "task-01"
+      }
+    }
+  ]
+}
