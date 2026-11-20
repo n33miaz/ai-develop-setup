@@ -1,6 +1,8 @@
 use ads_adapter_codex::{
     CodexConfig as ToolConfig, ConfigError, DiskProbe, HARNESS_ID, LaunchError, Probe, open_params,
 };
+use ads_core::child_env::{EnvList, EnvPolicyError, NameCase};
+use ads_core::gate::PathError;
 
 const OTHER_HARNESS: &str = "claude";
 const PROGRAM: &str = r"C:\Tools\codex\codex.exe";
@@ -14,5 +16,5 @@ const POISON_EXTRA: &[&str] = &[
 const DENIED_EXTRA: &[&str] = &["Codex_Home", "OPENAI_ORG_ID"];
 const WRONG_HARNESSES: &[&str] = &["claude", "Codex", "CODEX", "harness-a"];
 
-#[path = "../../tool_launch_tests.rs"]
+#[path = "../../../core/src/tool_launch/tests/suite.rs"]
 mod tool_launch_tests;

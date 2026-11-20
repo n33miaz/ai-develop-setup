@@ -4,11 +4,11 @@
 pub mod config;
 pub mod launch;
 
-pub use config::{CodexConfig, ConfigError, Mode};
+pub use config::{Codex, CodexConfig, ConfigError, Mode};
 pub use launch::{DiskProbe, LaunchError, Probe, open_params, process_env};
 
 /// The tool identifier a session request uses to pick this adapter.
-pub const HARNESS_ID: &str = "codex";
+pub const HARNESS_ID: &str = <Codex as ads_core::tool_launch::Harness>::ID;
 
 /// Package name as declared in the manifest.
 pub const fn crate_name() -> &'static str {

@@ -1,14 +1,13 @@
-//! Terminal launch contract exercised through each adapter.
+//! Terminal launch contract, run by the core with its test tool and by each adapter.
 
 use super::{
-    ConfigError, DENIED_EXTRA, DiskProbe, HARNESS_ID, LaunchError, OTHER_HARNESS, POISON_EXTRA,
-    PROGRAM, Probe, ToolConfig, WRONG_HARNESSES, open_params,
+    ConfigError, DENIED_EXTRA, DiskProbe, EnvList, EnvPolicyError, HARNESS_ID, LaunchError,
+    NameCase, OTHER_HARNESS, POISON_EXTRA, PROGRAM, PathError, Probe, ToolConfig, WRONG_HARNESSES,
+    open_params,
 };
 use std::collections::BTreeSet;
 
 use ads_contracts::CommandSessionOpenV1Params;
-use ads_core::child_env::{EnvList, EnvPolicyError, NameCase};
-use ads_core::gate::PathError;
 
 const FOLDER: &str = r"C:\work\scratch";
 
@@ -360,16 +359,17 @@ fn another_tool_table_is_left_to_its_adapter() {
 
 #[test]
 fn a_real_program_and_folder_on_disk_open() {
-    let root =
-        std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{HARNESS_ID}-launch"));
-    let folder = root.join("work");
-    std::fs::create_dir_all(&folder).unwrap();
-    let program = root.join("tool.exe");
-    std::fs::write(&program, b"").unwrap();
+    // The test binary and its folder exist on every system and need nothing written.
+    let program = std::env::current_exe().unwrap();
+    let folder = program.parent().unwrap();
     let text = format!(
-        "[workdirs]\nscratch = '{}'\n[tools.{HARNESS_ID}]\nprogram = '{}'\n",
-        folder.display(),
-        program.display()
+        "[workdirs]
+scratch = {}
+[tools.{HARNESS_ID}]
+program = {}
+",
+        toml_string(&folder.display().to_string()),
+        toml_string(&program.display().to_string())
     );
     let config = ToolConfig::from_toml_str(&text, NameCase::host()).unwrap();
     let params = open_params(
@@ -381,7 +381,17 @@ fn a_real_program_and_folder_on_disk_open() {
     .unwrap();
     assert!(std::path::Path::new(params.program.as_str()).is_file());
 
-    let gone = text.replace("tool.exe", "missing.exe");
+    let missing = folder.join("missing-tool.exe");
+    assert!(!missing.exists());
+    let gone = format!(
+        "[workdirs]
+scratch = {}
+[tools.{HARNESS_ID}]
+program = {}
+",
+        toml_string(&folder.display().to_string()),
+        toml_string(&missing.display().to_string())
+    );
     let config = ToolConfig::from_toml_str(&gone, NameCase::host()).unwrap();
     let result = open_params(
         &config,
