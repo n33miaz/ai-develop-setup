@@ -25,7 +25,13 @@ impl Scratch {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static NEXT: AtomicUsize = AtomicUsize::new(0);
 
-        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
+        // Dentro de .test-tmp/, ignorada pelo git: uma junção para a raiz que sobre de um teste
+        // interrompido não fica solta na árvore do repositório.
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join(".test-tmp");
+        std::fs::create_dir_all(&workspace).expect("could not create .test-tmp");
         let workspace = PathBuf::from(literal(&workspace));
         let base = loop {
             let sequence = NEXT.fetch_add(1, Ordering::Relaxed);
