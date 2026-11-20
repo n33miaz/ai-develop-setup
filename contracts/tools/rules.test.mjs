@@ -50,9 +50,21 @@ test("stream: aceita o stream da entidade de data e recusa o de outra", () => {
 });
 
 test("stream: a passagem identifica a mesma entidade no stream e em data", () => {
-  const [, event] = goldenValid("event.session.handoff.v1")[0];
+  const [, event] = goldenValid("event.session.handoff.v2")[0];
   assert.equal(streamBindingError(event), null);
   assert.match(streamBindingError({ ...event, stream: "handoff/other" }), /data\.handoff_id/);
+});
+
+test("passagem: cada registro aponta para o aceite da própria sessão de origem", () => {
+  const events = new Map(goldenValid("event.session.handoff.v2").map(([, event]) => [event.id, event]));
+  for (const [, record] of goldenValid("record.session-handoff.v2")) {
+    const event = events.get(record.consent.event_id);
+    assert.ok(event);
+    assert.equal(event.actor.kind, "device");
+    assert.equal(event.data.status, "accepted");
+    assert.equal(event.data.handoff_id, record.id);
+    assert.equal(event.data.source_session_id, record.source_session_id);
+  }
 });
 
 test("stream: família fora da tabela não tem regra", () => {

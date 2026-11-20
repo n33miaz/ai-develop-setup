@@ -1,11 +1,11 @@
-//! Decide whether to offer a handoff and validate session lineage.
+//! Session handoff rules.
 
 use std::collections::HashSet;
 use std::num::NonZeroU64;
 
 use ads_contracts::{
-    CommonIdV1, CommonTimestampV1, RecordSessionHandoffV1, RecordSessionHandoffV1Number,
-    RecordSessionHandoffV1Trigger as Trigger,
+    CommonIdV1, CommonTimestampV1, RecordSessionHandoffV2, RecordSessionHandoffV2Number,
+    RecordSessionHandoffV2Trigger as Trigger,
 };
 use serde::{Deserialize, Deserializer, de};
 
@@ -53,6 +53,7 @@ impl HandoffPolicy {
     }
 
     /// Consent must already have been verified for this handoff by the caller.
+    /// For account switches, the caller must first apply the account-switch policy.
     pub fn evaluate(
         &self,
         trigger: Trigger,
@@ -73,6 +74,7 @@ impl HandoffPolicy {
         }
 
         match (self.mode, trigger, consent) {
+            (Mode::Propose, _, Consent::Granted) => Decision::Proceed,
             (
                 Mode::AutoWithConsent,
                 Trigger::ContextLimit | Trigger::AccountSwitch,
@@ -94,8 +96,8 @@ fn deserialize_threshold<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u
     }
 }
 
-fn next_number(current: u64) -> Option<RecordSessionHandoffV1Number> {
-    RecordSessionHandoffV1Number::new(current.checked_add(1)?).ok()
+fn next_number(current: u64) -> Option<RecordSessionHandoffV2Number> {
+    RecordSessionHandoffV2Number::new(current.checked_add(1)?).ok()
 }
 
 pub fn next_session_name(
@@ -119,13 +121,13 @@ pub enum ChainError {
 }
 
 /// Validate a complete chain in order from the first handoff.
-pub fn validate_chain(chain: &[RecordSessionHandoffV1]) -> Result<(), ChainError> {
+pub fn validate_chain(chain: &[RecordSessionHandoffV2]) -> Result<(), ChainError> {
     let Some(first) = chain.first() else {
         return Ok(());
     };
     let mut handoffs = HashSet::new();
     let mut sessions = HashSet::from([first.source_session_id.as_str()]);
-    let mut previous: Option<&RecordSessionHandoffV1> = None;
+    let mut previous: Option<&RecordSessionHandoffV2> = None;
 
     for record in chain {
         if !handoffs.insert(record.id.as_str()) {

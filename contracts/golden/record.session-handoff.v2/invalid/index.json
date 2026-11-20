@@ -1,0 +1,30 @@
+{
+  "number.json": {
+    "rule": "Uma passagem cria no mínimo a sessão n2.",
+    "keyword": "minimum",
+    "instancePath": "/number"
+  },
+  "channel.json": {
+    "rule": "O canal é local ou remoto.",
+    "keyword": "enum",
+    "instancePath": "/consent/channel"
+  },
+  "trigger.json": {
+    "rule": "O gatilho precisa ser um dos três previstos.",
+    "keyword": "enum",
+    "instancePath": "/trigger"
+  },
+  "missing-event-id.json": {
+    "rule": "O identificador do evento de aceite é obrigatório.",
+    "keyword": "required",
+    "instancePath": "/consent",
+    "params": {
+      "missingProperty": "event_id"
+    }
+  },
+  "event-id.json": {
+    "rule": "O identificador do evento de aceite é um ULID.",
+    "keyword": "pattern",
+    "instancePath": "/consent/event_id"
+  }
+}

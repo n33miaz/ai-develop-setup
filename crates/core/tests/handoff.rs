@@ -1,6 +1,9 @@
 use std::num::NonZeroU64;
 
-use ads_contracts::{CommonIdV1, RecordSessionHandoffV1, RecordSessionHandoffV1Trigger as Trigger};
+use ads_contracts::{
+    CommonIdV1, RecordSessionHandoffV2, RecordSessionHandoffV2Number,
+    RecordSessionHandoffV2Trigger as Trigger,
+};
 use ads_core::handoff::{
     ChainError, Consent, ContextUsage, DEFAULT_POLICY, Decision, HandoffPolicy, next_session_name,
     validate_chain,
@@ -43,13 +46,32 @@ fn default_proposes_at_threshold_and_on_other_triggers() {
         Decision::None
     );
     assert_eq!(
-        policy.evaluate(Trigger::ContextLimit, usage(80), Consent::Granted),
+        policy.evaluate(Trigger::ContextLimit, usage(80), Consent::Pending),
         Decision::Propose
     );
     for trigger in [Trigger::AccountSwitch, Trigger::ModelRefusal] {
         assert_eq!(
             policy.evaluate(trigger, None, Consent::Pending),
             Decision::Propose
+        );
+    }
+}
+
+#[test]
+fn default_proceeds_after_consent() {
+    let policy = HandoffPolicy::from_toml(DEFAULT_POLICY).unwrap();
+    for (trigger, usage) in [
+        (Trigger::ContextLimit, usage(80)),
+        (Trigger::AccountSwitch, None),
+        (Trigger::ModelRefusal, None),
+    ] {
+        assert_eq!(
+            policy.evaluate(trigger, usage, Consent::Granted),
+            Decision::Proceed
+        );
+        assert_eq!(
+            policy.evaluate(trigger, usage, Consent::Declined),
+            Decision::None
         );
     }
 }
@@ -94,14 +116,14 @@ fn rejects_invalid_settings() {
     assert!(HandoffPolicy::from_toml("mode = \"auto\"\ncontext_threshold_pct = 80").is_err());
 }
 
-fn chain() -> [RecordSessionHandoffV1; 2] {
+fn chain() -> [RecordSessionHandoffV2; 2] {
     [
         serde_json::from_str(include_str!(
-            "../../../contracts/golden/record.session-handoff.v1/valid/01.json"
+            "../../../contracts/golden/record.session-handoff.v2/valid/01.json"
         ))
         .unwrap(),
         serde_json::from_str(include_str!(
-            "../../../contracts/golden/record.session-handoff.v1/valid/02.json"
+            "../../../contracts/golden/record.session-handoff.v2/valid/02.json"
         ))
         .unwrap(),
     ]
@@ -156,16 +178,22 @@ fn rejects_cycles_and_broken_links() {
 }
 
 #[test]
-fn rejects_lineage_changes_and_sequence_gaps() {
+fn rejects_lineage_changes() {
     let mut records = chain();
     records[1].lineage = CommonIdV1::new("project-b".to_owned()).unwrap();
     assert_eq!(validate_chain(&records), Err(ChainError::Lineage));
+}
 
+#[test]
+fn rejects_a_gap_after_the_first_handoff() {
     let mut records = chain();
-    records[1].number = records[0].number;
+    records[1].number = RecordSessionHandoffV2Number::new(4).unwrap();
     assert_eq!(validate_chain(&records), Err(ChainError::Number));
-    assert_eq!(
-        validate_chain(&chain()[1..]),
-        Err(ChainError::PreviousHandoff)
-    );
+}
+
+#[test]
+fn rejects_a_gap_before_the_first_handoff() {
+    let [mut first, _] = chain();
+    first.number = RecordSessionHandoffV2Number::new(3).unwrap();
+    assert_eq!(validate_chain(&[first]), Err(ChainError::Number));
 }

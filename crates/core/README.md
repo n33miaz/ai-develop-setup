@@ -14,7 +14,7 @@ O [roteador](src/routing.rs) interpreta [routing.toml](../../defaults/routing.to
 
 `handoff` avalia os gatilhos da [ADR 0027](../../docs/adr/0027-session-handoff.md), calcula o próximo nome com o instante UTC recebido e valida a cadeia completa, da primeira passagem em diante. Valida vínculos consecutivos, continuidade da sessão de origem, linhagem, sequência sem saltos e unicidade dos identificadores de passagem e de sessão.
 
-As opções em [`defaults/handoff.toml`](../../defaults/handoff.toml) podem ser trocadas ao carregar outra política. Quem chama fornece a medição, quando disponível, e verifica o consentimento para a passagem específica. A decisão do núcleo não abre sessões.
+As opções em [`defaults/handoff.toml`](../../defaults/handoff.toml) podem ser trocadas ao carregar outra política. Quem chama fornece a medição, quando disponível, e verifica o consentimento para a passagem específica. Em `propose`, o aceite autoriza a continuidade. Para troca de conta, quem chama aplica primeiro a política da ADR 0022. A decisão do núcleo não abre sessões.
 
 ## Fila contínua
 
