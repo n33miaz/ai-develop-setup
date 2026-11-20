@@ -157,7 +157,7 @@ Estado da mitigação, em cada risco:
 - **Teto.** Não se aplica.
 - **Mitigação existente.** [ADR 0005](adr/0005-column-level-encryption.md): cifra autenticada por coluna, chave no cofre do sistema. A cifra (XChaCha20-Poly1305, com dados associados autenticados) está implementada e testada em `crates/storage/src/cipher.rs`, inclusive recusa de chave e de dados associados trocados e diagnóstico sem chave nem texto ([ADR 0021](adr/0021-storage-atomic-file-and-cipher.md), proposta). O log de eventos (`crates/storage/src/log.rs`) grava o `data` de todo evento cifrado, com as colunas em claro da linha como dados associados; o teste da ADR 0005 procura uma frase sentinela no banco, no `-wal` e no `-shm`, reabre e recusa chave errada (`crates/storage/tests/event_log.rs`). Hoje nada sensível chega ao log: nenhum produtor está ligado a ele, o anel de replay fica só em memória e o cliente do daemon não persiste saída nem tem telemetria ([daemon](../crates/daemon/README.md)).
 - **Plano B.** Banco inteiro cifrado (condição de reversão da ADR 0005).
-- **O que falta.** A chave ainda não vem do cofre, que é esqueleto; sem cofre, só os testes injetam chave. Ficam em claro, por decisão da ADR 0005, `id`, `type`, `ts`, `stream`, `seq`, autor, `cause`, classe do dado, `action_id` e `approval_id` (os dois só nos eventos do portão, e o primeiro já está no nome do stream): revelam o ritmo de uso e os nomes dos streams.
+- **O que falta.** A integração da chave com o cofre ainda falta. A composição deve recusar a persistência sensível se o cofre estiver indisponível ou se a plataforma não for Windows. O limite por entrada e a execução do teste local estão no [README do cofre](../crates/adapters/vault/README.md). Ficam em claro, por decisão da ADR 0005, `id`, `type`, `ts`, `stream`, `seq`, autor, `cause`, classe do dado, `action_id` e `approval_id` (os dois só nos eventos do portão, e o primeiro já está no nome do stream): revelam o ritmo de uso e os nomes dos streams.
 
 ### Perda do estado local
 
@@ -342,12 +342,12 @@ Riscos da troca de conta por pasta de perfil ([ADR 0022](adr/0022-account-profil
 ### Código `unsafe`
 
 - **Descrição.** Erro de memória em chamada direta ao sistema.
-- **Impacto.** Falha ou brecha no host de terminais ou no executor de arquivos.
-- **Dono.** `ads-ptyhost` e `ads-adapter-fs`.
+- **Impacto.** Falha ou brecha no host de terminais, no executor de arquivos ou no cofre.
+- **Dono.** `ads-ptyhost`, `ads-adapter-fs` e `ads-adapter-vault`.
 - **Teto.** Orçamento por crate em [unsafe.md](unsafe.md).
 - **Mitigação existente (implementada e testada).** `unsafe_code = "forbid"` no workspace; exceção só em um módulo Windows de cada crate, com cada bloco listado e comentado; o lint reprova a compilação fora deles.
 - **Plano B.** Não há.
-- **O que falta.** O cofre vai precisar de exceção própria quando ganhar código.
+- **O que falta.** Manter as chamadas nativas do cofre dentro do orçamento documentado em [docs/unsafe.md](unsafe.md).
 
 ## Compatibilidade dos contratos da fila contínua
 

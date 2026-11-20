@@ -94,7 +94,7 @@ allow = ["ads-contracts", "ads-core"]
 
 [crates.ads-adapter-vault]
 path = "crates/adapters/vault"
-allow = ["ads-contracts", "ads-core"]
+allow = ["ads-core"]
 
 
 [crates.ads-adapter-collectors]
