@@ -194,7 +194,7 @@ fn refused_by_sqlite(path: &std::path::Path, config: &StorageConfig, expected: S
 }
 
 #[test]
-fn rejects_entire_unknown_schema_without_directory_changes() {
+fn rejects_entire_unknown_schema_keeping_main_file() {
     for sql in [
         "CREATE TABLE extra (x)",
         "CREATE VIEW extra AS SELECT * FROM meta",
@@ -644,19 +644,11 @@ fn pending_product_wal(statements: &[&str]) -> (Vec<u8>, Vec<u8>) {
     pair
 }
 
-/// Refuses and leaves the main file and the WAL byte-identical; `-shm` may appear.
+/// Refuses and leaves the main file, the WAL and every other entry byte-identical;
+/// only a `-shm` may appear.
 fn refused_keeping_pair(path: &std::path::Path, expected: StorageError) {
-    let wal = sibling(path, "-wal");
-    let before = (std::fs::read(path).unwrap(), std::fs::read(&wal).unwrap());
-    assert_eq!(
-        AuditStore::open(path, &StorageConfig::defaults()).unwrap_err(),
-        expected
-    );
-    assert!(
-        std::fs::read(path).unwrap() == before.0,
-        "main file changed"
-    );
-    assert!(std::fs::read(&wal).unwrap() == before.1, "wal changed");
+    assert!(sibling(path, "-wal").exists());
+    refused_by_sqlite(path, &StorageConfig::defaults(), expected);
 }
 
 #[test]
@@ -875,17 +867,63 @@ fn journal_changed_once_then_still_until_deadline_is_corrupt() {
     std::fs::write(&path, []).unwrap();
     let journal = sibling(&path, "-journal");
     std::fs::write(&journal, b"0").unwrap();
+    let begin = std::time::Instant::now();
     std::thread::scope(|scope| {
-        scope.spawn(|| {
+        let writer = scope.spawn(|| {
             std::thread::sleep(std::time::Duration::from_millis(30));
             std::fs::write(&journal, b"01").unwrap();
+            std::time::Instant::now()
         });
-        let config = StorageConfig::from_toml_str("busy_timeout_ms = 600").unwrap();
+        let config = StorageConfig::from_toml_str("busy_timeout_ms = 2000").unwrap();
         let result = AuditStore::open(&path, &config).map(drop);
+        let written = writer.join().unwrap() - begin;
+        assert!(
+            written < std::time::Duration::from_millis(1000),
+            "environment too slow: write landed after {written:?}"
+        );
         assert_eq!(result, Err(StorageError::Corrupt));
     });
     assert_eq!(std::fs::read(&path).unwrap(), b"");
     assert_eq!(std::fs::read(&journal).unwrap(), b"01");
+}
+
+#[test]
+fn journal_changed_only_in_second_half_of_wait_is_busy() {
+    let path = fixture();
+    std::fs::write(&path, []).unwrap();
+    let journal = sibling(&path, "-journal");
+    std::fs::write(&journal, b"0").unwrap();
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            std::thread::sleep(std::time::Duration::from_millis(650));
+            std::fs::write(&journal, b"01").unwrap();
+        });
+        let config = StorageConfig::from_toml_str("busy_timeout_ms = 1000").unwrap();
+        let result = AuditStore::open(&path, &config).map(drop);
+        assert_eq!(result, Err(StorageError::Busy));
+    });
+    assert_eq!(std::fs::read(&path).unwrap(), b"");
+    assert_eq!(std::fs::read(&journal).unwrap(), b"01");
+}
+
+#[test]
+fn empty_wal_left_by_refusal_blocks_a_new_file_once_main_is_moved() {
+    let path = fixture();
+    drop(AuditStore::open(&path, &StorageConfig::defaults()).unwrap());
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch("CREATE TABLE extra (x)")
+        .unwrap();
+    assert!(!sibling(&path, "-wal").exists());
+    refused_by_sqlite(
+        &path,
+        &StorageConfig::defaults(),
+        StorageError::UnsupportedSchema,
+    );
+    assert_eq!(std::fs::read(sibling(&path, "-wal")).unwrap(), b"");
+    std::fs::rename(&path, sibling(&path, ".moved")).unwrap();
+    refused(&path, &short(), StorageError::Corrupt);
+    assert!(!path.exists());
 }
 
 #[test]
