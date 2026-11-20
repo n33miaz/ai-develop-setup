@@ -30,6 +30,10 @@ pub enum StorageError {
     AnchorUnavailable,
     AnchorMissing,
     AnchorMismatch,
+    /// The chain could not be authenticated after an external commit.
+    HistoryChanged {
+        position: i64,
+    },
     /// Ciphertext, nonce or an authenticated clear column was altered.
     Tampered,
     TooLarge,
