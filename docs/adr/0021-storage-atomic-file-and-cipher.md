@@ -129,8 +129,11 @@ esforço, pois movimentos de dados e registradores podem deixar cópias.
 A versão 3 só acrescenta objetos à versão 1: `cipher_key` (identificador, cifra
 e `key_check`, nunca a chave) e `event` (um envelope por linha, `data` cifrado).
 A versão 4 acrescenta `log_genesis` e atualiza o gatilho de continuidade. Logs
-vazios recebem 32 bytes de gênese do gerador aleatório do sistema. Logs existentes mantêm a gênese original
-para preservar a autenticação da primeira linha. A rotação só avança para um
+vazios recebem 32 bytes de gênese do gerador aleatório do sistema. Logs preenchidos na
+versão 3 mantêm a gênese de 32 zeros para preservar a autenticação da primeira linha,
+sem separação entre bancos pela gênese. A migração retorna `LegacyKeyReuse` antes de
+alterar o esquema se um identificador de chave aparecer em mais de um trecho, pois
+a versão 3 permitia esse retorno. A rotação só avança para um
 identificador de chave ainda não usado. Na transação de `append`, uma chave
 já registrada só pode gravar se for a da última linha, quando houver linhas. Bancos das versões 1 e 3 são
 migrados na abertura. A migração roda numa transação `IMMEDIATE`
@@ -196,9 +199,10 @@ válidos.
 O que a cadeia detecta, sem decifrar `data`: alteração de qualquer coluna,
 remoção no meio, reordenação, troca de texto cifrado entre linhas e linha
 acrescentada por quem não tem a chave, inclusive por um `INSERT` simples que passa
-pelos gatilhos. O que não detecta: corte do fim do log e volta de uma cópia
-anterior do arquivo inteiro porque a gênese ainda fica no próprio arquivo. A verificação também depende
-da integridade das chaves ativas. A âncora planejada é o último `position` e `chain`
+pelos gatilhos. A cadeia pode aceitar um fim cortado, uma cópia anterior ou outro
+banco inteiro com a própria gênese. Quem tem uma chave ainda fornecida pelo cofre
+pode cortar o log ao fim do trecho dessa chave e acrescentar linhas autenticadas
+com ela, mantendo o trecho contíguo. A verificação depende da integridade das chaves. A âncora planejada é o último `position` e `chain`
 guardados no cofre a cada `append` do portão e conferidos ao abrir.
 Detectar não é impedir: um `INSERT` simples sem chave é aceito pelo banco e só
 `verify_chain` e `read_stream` o recusam depois. Com os índices únicos do

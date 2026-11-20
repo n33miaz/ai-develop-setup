@@ -108,6 +108,10 @@ fn header(path: &Path) -> Result<Header, StorageError> {
     {
         return Err(StorageError::Corrupt);
     }
+    let pages = u32::from_be_bytes(bytes[28..32].try_into().unwrap());
+    if pages != 0 && bytes[92..96] == bytes[24..28] && u64::from(pages) * page != meta.len() {
+        return Err(StorageError::Corrupt);
+    }
     let version = i32::from_be_bytes(bytes[60..64].try_into().unwrap()) as i64;
     let id = i32::from_be_bytes(bytes[68..72].try_into().unwrap()) as i64;
     check_identity(id, version)?;
@@ -173,6 +177,9 @@ fn inspect(path: &Path, config: &StorageConfig) -> Result<bool, StorageError> {
             if let Header::Product { page } = kind
                 && let Some((id, version)) = crate::snapshot::check_product_wal(path, page)?
             {
+                if i64::from(id) != APPLICATION_ID {
+                    return Err(StorageError::ForeignApplication);
+                }
                 check_identity(i64::from(id), i64::from(version))?;
             }
             if kind == Header::Unmarked {

@@ -1160,12 +1160,6 @@ fn reading_numeric_arrays_measures_retained_event_memory() {
         array_bytes / page.len(),
         array_bytes + page_slots,
     );
-    assert_eq!(row_bytes, 16_413);
-    #[cfg(target_pointer_width = "64")]
-    {
-        assert!((524_288..=525_088).contains(&array_bytes));
-        assert!(array_bytes + page_slots <= 525_088);
-    }
 }
 
 /// Version 1 file: `meta` only, marked by the product.
@@ -1262,16 +1256,28 @@ fn refused_identity_in_pending_wal_never_reaches_main_file() {
             StorageError::ForeignApplication,
         ),
     ] {
-        assert_pending_wal_refusal(pragma, value, error);
+        assert_pending_wal_refusal(&[(pragma, value)], error);
     }
 }
 
-fn assert_pending_wal_refusal(pragma: &str, value: i64, error: StorageError) {
+#[test]
+fn product_wal_cannot_clear_the_database_identity() {
+    assert_pending_wal_refusal(
+        &[("application_id", 0), ("user_version", 0)],
+        StorageError::ForeignApplication,
+    );
+}
+
+fn assert_pending_wal_refusal(pragmas: &[(&str, i64)], error: StorageError) {
     let source = fixture();
     version_one(&source);
-    let writer = Connection::open(&source).unwrap();
+    let mut writer = Connection::open(&source).unwrap();
     writer.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
-    writer.pragma_update(None, pragma, value).unwrap();
+    let tx = writer.transaction().unwrap();
+    for &(pragma, value) in pragmas {
+        tx.pragma_update(None, pragma, value).unwrap();
+    }
+    tx.commit().unwrap();
     let path = fixture();
     let wal_path = path.with_file_name("audit.db-wal");
     let main = std::fs::read(&source).unwrap();

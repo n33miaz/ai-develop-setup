@@ -173,6 +173,25 @@ fn migrate_with(
     if schema(&tx)? != expected_with(steps, version)? {
         return Err(StorageError::UnsupportedSchema);
     }
+    if version == 3 {
+        let reused_key: bool = tx.query_row(
+            "SELECT EXISTS (
+                SELECT key_id
+                FROM (
+                    SELECT key_id, lag(key_id) OVER (ORDER BY position) AS previous_key
+                    FROM event
+                )
+                WHERE key_id IS NOT previous_key
+                GROUP BY key_id
+                HAVING count(*) > 1
+            )",
+            [],
+            |row| row.get(0),
+        )?;
+        if reused_key {
+            return Err(StorageError::LegacyKeyReuse);
+        }
+    }
     if version < SCHEMA_VERSION {
         for step in scripts(steps, version, SCHEMA_VERSION) {
             tx.execute_batch(step)?;
