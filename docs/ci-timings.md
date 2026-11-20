@@ -26,7 +26,7 @@ Os números abaixo vêm do PR que criou o workspace (14/11/2026), lendo `started
 
 - Os filtros dos jobs Windows cobrem os crates que cada job usa, suas dependências transitivas no workspace e os arquivos de origem dos contratos. O teste Python compara os filtros com o grafo produzido por `cargo metadata --no-deps`.
 - Só execuções do mesmo PR se substituem. Cada push na `develop` tem seu próprio grupo de concorrência.
-- O cache Rust usa uma chave compartilhada por sistema, com as diferenças de ambiente preservadas no hash. A casca mantém seu hash próprio por causa de `RUSTFLAGS`. Só a `develop` salva cache. PRs apenas restauram.
+- O cache Rust usa uma chave por sistema no Linux e uma por job no Windows, para cada job gravar as próprias dependências; as diferenças de ambiente ficam no hash. A casca mantém seu hash próprio por causa de `RUSTFLAGS`. Só a `develop` salva cache. PRs apenas restauram.
 - O `pty-windows` testa a biblioteca do núcleo, o ambiente do processo filho e os adaptadores. Os testes de propriedade do portão rodam no Linux.
 - O workflow semanal verifica avisos do RustSec com `cargo deny` nos mesmos alvos do CI e roda `npm audit --audit-level=high` em `ui/` e `contracts/`, incluindo as dependências de desenvolvimento. Os checks completos do `cargo deny` continuam no job `rust`.
 

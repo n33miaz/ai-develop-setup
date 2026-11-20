@@ -324,7 +324,7 @@ jobs:
           rustc --version
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          shared-key: windows
+          shared-key: shell-check
           save-if: ${{ github.ref == 'refs/heads/develop' && github.event_name != 'pull_request' }}
       # O Tauri embute `ui/dist` ao compilar; enquanto a interface não existir, uma página vazia basta.
       - name: Pasta da interface
@@ -391,7 +391,7 @@ jobs:
           rustc --version
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          shared-key: windows
+          shared-key: pty-windows
           save-if: ${{ github.ref == 'refs/heads/develop' && github.event_name != 'pull_request' }}
       - name: Lint do ptyhost e do cliente no Windows (avisos como erro)
         run: cargo clippy --locked -p ads-ptyhost -p ads-daemon -p ads-testkit --all-targets -j 2 -- -D warnings
@@ -430,7 +430,7 @@ jobs:
           rustc --version
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          shared-key: windows
+          shared-key: fs-windows
           save-if: ${{ github.ref == 'refs/heads/develop' && github.event_name != 'pull_request' }}
       - name: Lint do executor no Windows (avisos como erro)
         run: cargo clippy --locked -p ads-adapter-fs --all-targets -- -D warnings
@@ -456,7 +456,7 @@ jobs:
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          shared-key: windows
+          shared-key: storage-windows
           save-if: ${{ github.ref == 'refs/heads/develop' && github.event_name != 'pull_request' }}
       - name: Lint e testes do armazenamento no Windows
         run: |
