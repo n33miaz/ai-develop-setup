@@ -450,9 +450,9 @@ pub enum ReplayRefusal {
     InvalidChange,
     /// The task was created twice or never.
     TaskCreation,
-    /// The core clock reading used at creation was unavailable.
+    /// The policy or core clock reading used at creation was unavailable.
     MissingAdmissionContext,
-    /// A task in the stream fails the loaded admission policy.
+    /// A task in the stream fails the admission policy in force when it was created.
     Admission(AdmissionRefusal),
 }
 
@@ -462,6 +462,12 @@ pub struct ReplayedTask {
     pub state: CommonQueueTaskStateV1,
     pub attempts: u64,
     pub anchor: Option<ClockAnchor>,
+}
+
+/// Trusted inputs used for a creation, looked up independently of the creation event.
+pub struct ReplayAdmissionContext<'a> {
+    pub policy: &'a QueuePolicy,
+    pub now: &'a CommonTimestampV1,
 }
 
 /// Rebuilds the state and the retry budget of one task from the whole stream of its queue,
@@ -477,15 +483,15 @@ pub struct ReplayedTask {
 /// owner. A task change names its channel exactly when a device made it. Agents and the daemon
 /// may still cancel or fail tasks.
 ///
-/// Every creation is checked against the loaded policy and the historical clock reading supplied
-/// by sequence number. Anchors come from the log. The stream cannot establish uniqueness across
-/// queues or verify the supplied clock readings.
+/// Every creation is checked against the policy in force and the clock reading used at that
+/// sequence number. The caller must supply these from trusted history independent of the
+/// creation event, with policy changes ordered against admissions. Anchors come from the log.
+/// The stream cannot establish uniqueness across queues or verify the supplied inputs.
 pub fn replay_task<'a, 'context>(
     task_id: &CommonIdV1,
     log: impl IntoIterator<Item = QueueLogEvent<'a>>,
     owner_at: impl Fn(&CommonIdV1, &CommonTimestampV1) -> Option<CommonIdV1>,
-    policy: &QueuePolicy,
-    now_at: impl Fn(u64) -> Option<&'context CommonTimestampV1>,
+    admission_at: impl Fn(u64) -> Option<ReplayAdmissionContext<'context>>,
 ) -> Result<ReplayedTask, ReplayRefusal> {
     let mut log = log.into_iter();
     let Some(QueueLogEvent::Created(created)) = log.next() else {
@@ -556,10 +562,10 @@ pub fn replay_task<'a, 'context>(
                 if admitted.task_id == task_id && task.is_some() {
                     return Err(ReplayRefusal::TaskCreation);
                 }
-                let now = now_at(seq).ok_or(ReplayRefusal::MissingAdmissionContext)?;
+                let context = admission_at(seq).ok_or(ReplayRefusal::MissingAdmissionContext)?;
                 let inputs = AdmissionInputs {
-                    policy,
-                    now,
+                    policy: context.policy,
+                    now: context.now,
                     anchor: anchor.as_ref(),
                 };
                 check_admission(admitted, admissions.iter().copied(), owner, inputs)

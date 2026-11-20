@@ -516,22 +516,44 @@ fn replay_values(
 }
 
 fn replay_events(events: &[Owned], policy: &QueuePolicy) -> Result<ReplayedTask, ReplayRefusal> {
+    replay_with_policies(events, |_| Some(policy))
+}
+
+fn replay_with_policies<'a>(
+    events: &'a [Owned],
+    policy_at: impl Fn(u64) -> Option<&'a QueuePolicy>,
+) -> Result<ReplayedTask, ReplayRefusal> {
     replay_task(
         &id("task-01"),
         events.iter().map(Owned::as_log),
         registry,
-        policy,
-        |seq| Some(events[(seq - 1) as usize].as_log().ts()),
+        |seq| {
+            Some(ReplayAdmissionContext {
+                policy: policy_at(seq)?,
+                now: events[(seq - 1) as usize].as_log().ts(),
+            })
+        },
     )
 }
 
 #[test]
-fn replay_checks_attempt_ceiling_for_every_creation() {
-    assert_eq!(
+fn replay_rejects_a_forged_creation_above_its_historical_ceiling() {
+    let events = typed(
         Stream::new()
             .admit("task-01", 2)
             .admit("task-02", 3)
-            .replay(),
+            .restart()
+            .numbered(),
+    );
+    let historical = policy();
+    let mut raised = policy();
+    raised.attempt_limit = ads_contracts::RecordQueueTaskV2AttemptLimit::new(3).unwrap();
+    assert_eq!(
+        replay_with_policies(&events, |seq| Some(if seq < 4 {
+            &historical
+        } else {
+            &raised
+        })),
         Err(ReplayRefusal::Admission(AdmissionRefusal::AttemptCeiling))
     );
 }
@@ -634,26 +656,35 @@ fn creation_v3_reads_the_shared_origin_and_alias_alongside_older_versions() {
 }
 
 #[test]
-fn replay_uses_the_loaded_policy_for_every_creation() {
-    let events = typed(
-        Stream::new()
-            .admit("task-01", 2)
-            .admit("task-02", 2)
-            .numbered(),
-    );
-    assert!(replay_events(&events, &windowed()).is_ok());
+fn replay_recovers_a_running_task_after_limits_are_lowered() {
+    let stream = Stream::new()
+        .enabled(OWNER_DEVICE)
+        .admit("task-01", 3)
+        .admit("task-02", 2)
+        .change(DAEMON, "queued", "running", 1)
+        .restart();
+    let mut historical = windowed();
+    historical.attempt_limit = ads_contracts::RecordQueueTaskV2AttemptLimit::new(3).unwrap();
+    let lowered = one_manual();
+    let policy_at = |seq| Some(if seq < 6 { &historical } else { &lowered });
+    let events = typed(Stream(stream.0.clone()).numbered());
+    let restored = replay_with_policies(&events, policy_at).unwrap();
+    let mut saved = task();
+    saved.attempt_limit = historical.attempt_limit;
+    saved.state = restored.state;
+    saved.attempts = RecordQueueTaskV2Attempts::new(restored.attempts).unwrap();
+    assert!(matches!(
+        restore_running_task(&saved, HostProcess::Lost, &lowered),
+        RunningAfterRestart::Fail(data) if data.from == Running && data.attempts.get() == 1
+    ));
+
+    let events = typed(stream.admit("task-03", 2).numbered());
     assert_eq!(
-        replay_events(&events, &one_manual()),
+        replay_with_policies(&events, policy_at),
         Err(ReplayRefusal::Admission(AdmissionRefusal::WindowFull))
     );
     assert_eq!(
-        replay_task(
-            &id("task-01"),
-            events.iter().map(Owned::as_log),
-            registry,
-            &windowed(),
-            |_| None
-        ),
+        replay_with_policies(&events, |_| None),
         Err(ReplayRefusal::MissingAdmissionContext)
     );
 }

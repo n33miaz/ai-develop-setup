@@ -354,3 +354,12 @@ Riscos da troca de conta por pasta de perfil ([ADR 0022](adr/0022-account-profil
 - **Dono.** Núcleo e contratos.
 - **Limite.** O título da tarefa aceita marca combinante que não segue uma letra ou um número. O apelido e a origem já são os tipos comuns em `queue.task_created:3` e `record.queue-task:2`; as versões anteriores repetem as mesmas regras, conferidas contra os tipos comuns por `tools/corpus.test.mjs`.
 - **Plano.** Exigir que marcas combinantes sigam letra ou número em uma versão futura do registro e da criação. Até lá, preservar a leitura das versões existentes.
+
+## Perda do contexto de admissão da fila
+
+- **Descrição.** A política ou o relógio usados numa admissão podem se perder, ou o contexto pode ser associado à criação errada.
+- **Impacto.** Uma fila sem contexto íntegro pode ficar sem replay e deixar uma tarefa em execução sem destino na partida.
+- **Dono.** Núcleo e produtor da fila.
+- **Teto.** A fila afetada. Cada nova admissão fica sujeita aos limites vigentes em [queue.toml](../defaults/queue.toml).
+- **Mitigação existente.** O núcleo exige o contexto histórico e valida cada criação contra ele. Baixar um limite preserva a leitura do histórico íntegro. O produtor ainda precisa persistir o contexto conforme o [README do núcleo](../crates/core/README.md#fila-contínua).
+- **Plano B.** Manter a fila parada e recuperar o contexto do backup íntegro antes de repetir o replay.
