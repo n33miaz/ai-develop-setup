@@ -45,19 +45,16 @@ conferir esquemas estrangeiros com `application_id=0` e tabelas presentes apenas
 no WAL, sem alterar `-shm`. Arquivo já marcado pelo produto não passa pela imagem.
 Dele se lê o `-wal` em fluxo, um quadro por vez: o cabeçalho (magic, versão,
 página e checksum) é conferido, porque o SQLite descartaria em silêncio um WAL
-com cabeçalho danificado. Depois de um quadro completo inválido, um único
-marcador de commit com o salt atual basta para recusar com `Corrupt` se puder
-pertencer a outra transação. O checksum cobre o marcador, mas exclui o salt.
-Se apenas o salt diverge, o checksum válido permite identificar um quadro
-sem marcador de commit e tolerar o commit da mesma transação se a cadeia se
-mantiver até ele. Com checksum inválido, um marcador zerado no quadro da quebra
-pode ser resultado do próprio dano. Uma queda legítima pode deixar esse mesmo
-desenho e exigir quarentena, conforme o reparo no README do crate. Um último
-quadro incompleto e quadros de geração anterior depois dos atuais seguem
-ignorados. Nada liga o WAL ao
-arquivo principal: o SQLite aplica um `-wal` inteiro de outro banco do produto,
-de checksums válidos, e a abertura não percebe; a defesa é a âncora fora do
-arquivo planejada para o log encadeado. Em seguida a inspeção roda numa transação de leitura
+com cabeçalho danificado. Depois de um quadro completo inválido, qualquer
+marcador de commit com o salt atual provoca recusa com `Corrupt`. Uma queda
+pode deixar o mesmo padrão, conforme o reparo no README do crate. O último
+quadro incompleto e a cauda de geração anterior seguem ignorados quando
+nenhum marcador de commit com o salt atual segue a quebra. A verificação mira
+dano acidental. Quem pode escrever no `-wal` pode ocultar commits truncando
+o arquivo, trocando o salt da cauda ou recalculando checksums. O SQLite também
+pode aplicar um WAL inteiro de outro banco do produto se os checksums forem
+válidos. A defesa planejada contra essas adulterações é a âncora fora do
+arquivo para o log encadeado. Em seguida a inspeção roda numa transação de leitura
 consistente na conexão de escrita, com custo que não depende de copiar o banco, e
 a verificação de integridade roda uma vez. A conexão sempre abre com
 `SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE`, desligado só depois que a inspeção passa, sem
