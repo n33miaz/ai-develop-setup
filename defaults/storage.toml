@@ -43,12 +43,16 @@ read_key_candidates = 8
 verify_on_append = "changed"
 
 # Eventos de uma fila de tarefas (stream queue/<id>) guardados no log ancorado.
-# Teto de eventos por fila: recomendado 100000 (1000 admissões com folga para
-# as tentativas e as mudanças de estado). Aceita 1 a 10000000. Atingido, o
-# append seguinte da fila recusa com Full (queue.stopped ainda entra); a leitura nunca recusa pelo tamanho,
-# então baixar o teto só impede gravar e o histórico continua legível.
+# Teto de eventos por fila: recomendado 100000. Conta: 1000 admissões x 2
+# tentativas (attempt_limit) x cerca de 4 eventos por tentativa = 8000, folga
+# de cerca de 12x. Aceita 1 a 10000000. Atingido, o append seguinte da fila
+# recusa com QueueFull (só uma queue.stopped:1 ainda entra); suba este valor e
+# reabra. A leitura nunca recusa pelo tamanho, então baixar o teto só impede
+# gravar e o histórico continua legível; ela guarda o stream inteiro em
+# memória (até este teto vezes max_event_bytes).
 queue_max_events = 100000
-# Retenção dos eventos da fila: "all" é o único valor. O log é só-anexo e
+# Retenção dos eventos da fila: a chave existe para recusar configuração de
+# retenção, não para escolher uma; "all" é o único valor. O log é só-anexo e
 # encadeado, e o replay da fila começa em queue.created; apagar o começo
 # quebraria a cadeia e o replay. Outro valor recusa com Configuration.
 queue_retention = "all"

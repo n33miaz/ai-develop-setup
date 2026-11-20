@@ -367,13 +367,23 @@ Riscos da troca de conta por pasta de perfil ([ADR 0022](adr/0022-account-profil
 
 ## Stream da fila no teto de eventos
 
-- **Descrição.** Ao atingir `queue_max_events` ([storage.toml](../defaults/storage.toml)), o `append` da fila recusa com `Full` todo evento menos `queue.stopped`: nenhuma ativação, admissão nem mudança de estado de tarefa entra, inclusive o fim de uma tarefa em `running`.
+- **Descrição.** Ao atingir `queue_max_events` ([storage.toml](../defaults/storage.toml)), o `append` da fila recusa com `QueueFull` todo evento menos uma única `queue.stopped:1`: nenhuma ativação, admissão nem mudança de estado de tarefa entra, inclusive o fim de uma tarefa em `running`.
 - **Impacto.** A fila para de andar; a tarefa em execução fica em `running` no log até o teto subir. O gasto continua limitado, porque `queued → running` também é recusado.
 - **Dono.** Armazenamento e produtor da fila.
 - **Teto.** `queue_max_events` (padrão 100000, até 10000000) por fila; a leitura nunca recusa pelo tamanho.
-- **Mitigação existente.** A parada da fila ainda entra, então a partida registra a parada de uma fila cheia. Teste `a_lowered_cap_keeps_the_queue_history_readable` em `crates/storage/src/queue_tests.rs`.
-- **Plano B.** O dono sobe `queue_max_events` e reabre, ou cria outra fila. Ao subir `admission_limit`, manter `queue_max_events` acima de `admission_limit` vezes os eventos de uma tarefa (até cerca de 4 por tentativa).
-- **O que falta.** O daemon ainda não grava a fila; a interface precisa explicar o `Full` ao dono quando a ligação existir.
+- **Mitigação existente.** Uma parada da fila ainda entra, então a partida registra a parada de uma fila cheia; o armazenamento recusa a segunda e qualquer outra versão. `QueueFull` é distinto de `Full` (disco cheio), e a mensagem de cada um diz o que fazer. Testes `a_lowered_cap_keeps_the_queue_history_readable` e `over_the_cap_only_one_replayable_stop_enters` em `crates/storage/src/queue_tests.rs`.
+- **Plano B.** O dono sobe `queue_max_events` e reabre, ou cria outra fila. Ao subir `admission_limit`, manter `queue_max_events` acima de `admission_limit` x `attempt_limit` x cerca de 4 eventos por tentativa (padrão: 1000 x 2 x 4 = 8000, folga de cerca de 12x).
+- **O que falta.** O daemon ainda não grava a fila; a interface precisa mostrar a mensagem de `QueueFull` ao dono quando a ligação existir.
+
+## Memória da leitura do stream da fila
+
+- **Descrição.** `read_queue` lê o stream inteiro da fila num único vetor antes do replay. As páginas de `read_page_limit` e `read_page_max_bytes` limitam cada leitura ao banco, não o total guardado em memória.
+- **Impacto.** Uma fila grande ocupa memória proporcional ao seu histórico na partida do daemon; no extremo, a leitura falha por falta de memória e a fila não volta.
+- **Dono.** Armazenamento e produtor da fila.
+- **Teto.** `queue_max_events` x `max_event_bytes` ([storage.toml](../defaults/storage.toml)), mais a expansão dos eventos interpretados: no padrão, 100000 x 1 MiB (cerca de 98 GiB no pior caso teórico); no máximo aceito, 10000000 x 1 MiB. Com eventos de algumas centenas de bytes, a estimativa (ainda não medida) é de dezenas de MiB no padrão.
+- **Mitigação existente.** Padrão de `queue_max_events` em 100000; eventos da fila pequenos por contrato; páginas da leitura limitadas.
+- **Plano B.** Replay incremental, página a página, sem guardar o stream; ou instantâneo autenticado do estado do replay para ler só a cauda.
+- **O que falta.** Medir a memória da leitura com uma fila no teto padrão antes de o daemon ligar a fila.
 
 ## Carimbo adiantado aceito no replay da fila
 
