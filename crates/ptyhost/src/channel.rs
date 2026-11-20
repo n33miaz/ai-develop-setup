@@ -406,75 +406,70 @@ mod tests {
     /// Tells the child process started by `restricted_server` what to do: `<part>|<endpoint>`.
     #[cfg(windows)]
     const RESTRICTED_VARIABLE: &str = "ADS_TEST_RESTRICTED_PIPE";
+    #[cfg(windows)]
+    const HELPER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
-    /// Not a test: the child process of `restricted_server`. It creates the pipe, closes its own
-    /// process or token to everyone but the system account, as a server of another account
-    /// would be, serves one client and reports how many bytes it received.
+    /// Not a test: the child process of `restricted_server`. It creates the pipe and starts
+    /// waiting for a client, closes its own process or token to everyone but the system
+    /// account, as a server of another account would be, then says it is ready, serves one
+    /// client and reports how many bytes it received.
     #[cfg(windows)]
     #[tokio::test]
     #[ignore = "helper run in a child process by the restricted server tests"]
     async fn restricted_server_helper() {
+        use ads_testkit::{Restricted, restrict_own_process};
         use tokio::io::AsyncReadExt;
 
         let spec = std::env::var(RESTRICTED_VARIABLE)
             .expect("helper only: started by the restricted server tests");
         let (part, endpoint) = spec.split_once('|').unwrap();
         let part = match part {
-            "process" => crate::win::Restricted::Process,
-            "token" => crate::win::Restricted::Token,
+            "process" => Restricted::Process,
+            "token" => Restricted::Token,
             other => panic!("unknown part {other}"),
         };
         let sid = crate::win::current_user_sid().unwrap();
         let mut server = crate::win::create_user_pipe(endpoint, &sid, true).unwrap();
-        crate::win::restrict_own_process(part).unwrap();
-        println!("@@ready@@");
-        tokio::time::timeout(std::time::Duration::from_secs(20), server.connect())
-            .await
-            .expect("no client came")
-            .unwrap();
+        {
+            let mut waiting = std::pin::pin!(server.connect());
+            // The wait starts before the client is told to come: a client already gone could
+            // not fail it.
+            tokio::select! {
+                biased;
+                early = &mut waiting => panic!("connected with no client: {early:?}"),
+                () = std::future::ready(()) => {}
+            }
+            restrict_own_process(part).unwrap();
+            println!("@@ready@@");
+            tokio::time::timeout(HELPER_TIMEOUT, waiting)
+                .await
+                .expect("no client came")
+                .unwrap();
+        }
         let mut received = Vec::new();
-        tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            server.read_to_end(&mut received),
-        )
-        .await
-        .expect("the client left the pipe open")
-        .unwrap();
+        tokio::time::timeout(HELPER_TIMEOUT, server.read_to_end(&mut received))
+            .await
+            .expect("the client left the pipe open")
+            .unwrap();
         println!("@@received={}@@", received.len());
     }
 
     /// A pipe served by a child process of this user whose process or token nobody else may
     /// open: the client's own check refuses it at that query, and the child receives no byte.
+    /// The child is killed and reaped on every way out, failures included.
     #[cfg(windows)]
     async fn restricted_server(part: &str, expected: crate::win::PipeQuery) {
-        use std::io::BufRead;
-
         let endpoint = test_endpoint(&format!("restricted-{part}"));
-        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "channel::tests::restricted_server_helper",
-                "--ignored",
-                "--nocapture",
-                "--test-threads=1",
-            ])
-            .env(RESTRICTED_VARIABLE, format!("{part}|{endpoint}"))
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
-        let mut lines = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
-        let wait_for = move |token: &str| -> (String, _) {
-            for line in lines.by_ref() {
-                let line = line.unwrap();
-                if let Some(at) = line.find(token) {
-                    return (line[at + token.len()..].to_owned(), lines);
-                }
-            }
-            panic!("the helper ended without {token}");
-        };
-        let (_, rest) = tokio::task::spawn_blocking(move || wait_for("@@ready@@"))
-            .await
-            .unwrap();
+        let mut helper = ads_testkit::HelperProcess::start(
+            "channel::tests::restricted_server_helper",
+            RESTRICTED_VARIABLE,
+            &format!("{part}|{endpoint}"),
+        )
+        .unwrap();
+        assert!(
+            helper.wait_for("@@ready@@", HELPER_TIMEOUT).is_some(),
+            "the helper never got ready"
+        );
 
         let mut failed = None;
         let result = connect_checked(&endpoint, |pipe| {
@@ -490,23 +485,20 @@ mod tests {
             "{result:?}"
         );
         assert_eq!(failed, Some(expected));
+        drop(result);
 
-        // Read to the end: the helper still writes its summary after the count.
-        let received = tokio::task::spawn_blocking(move || {
-            rest.map(Result::unwrap)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .find_map(|line| {
-                    let at = line.find("@@received=")?;
-                    let tail = &line[at + "@@received=".len()..];
-                    tail.split("@@").next().map(str::to_owned)
-                })
-                .expect("the helper did not report what it received")
+        // Off the runtime thread: the runtime has to keep running to close the refused stream.
+        let (helper, received) = tokio::task::spawn_blocking(move || {
+            let received = helper.wait_for("@@received=", HELPER_TIMEOUT);
+            (helper, received)
         })
         .await
         .unwrap();
-        assert_eq!(received, "0");
-        assert!(child.wait().unwrap().success());
+        assert_eq!(received.as_deref(), Some("0"), "bytes reached the pipe");
+        let status = helper
+            .finish(HELPER_TIMEOUT)
+            .expect("the helper did not end");
+        assert!(status.success(), "{status}");
     }
 
     #[cfg(windows)]

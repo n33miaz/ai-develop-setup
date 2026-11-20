@@ -50,13 +50,17 @@ fn config_for(endpoint: &str) -> HostConfig {
     HostConfig::from_toml_str(&format!("channel_path = '{endpoint}'\n")).unwrap()
 }
 
-/// Not a test: the child process of `restricted_server`. It creates the pipe, closes its own
-/// process or token to everyone but the system account, as a server of another account would
-/// be, serves one client and reports how many bytes it received.
+const HELPER_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Not a test: the child process of `restricted_server`. It creates the pipe and starts waiting
+/// for a client, closes its own process or token to everyone but the system account, as a
+/// server of another account would be, then says it is ready, serves one client and reports
+/// how many bytes it received.
 #[tokio::test]
 #[ignore = "helper run in a child process by the restricted server tests"]
 async fn restricted_server_helper() {
-    use ads_ptyhost::win::{Restricted, create_user_pipe, current_user_sid, restrict_own_process};
+    use ads_ptyhost::win::{create_user_pipe, current_user_sid};
+    use ads_testkit::{Restricted, restrict_own_process};
     use tokio::io::AsyncReadExt;
 
     let spec = std::env::var(RESTRICTED_VARIABLE)
@@ -68,16 +72,26 @@ async fn restricted_server_helper() {
         other => panic!("unknown part {other}"),
     };
     let mut server = create_user_pipe(endpoint, &current_user_sid().unwrap(), true).unwrap();
-    restrict_own_process(part).unwrap();
-    println!("@@ready@@");
-    tokio::time::timeout(Duration::from_secs(20), server.connect())
-        .await
-        .expect("no client came")
-        .unwrap();
+    {
+        let mut waiting = std::pin::pin!(server.connect());
+        // The wait starts before the client is told to come: a client already gone could not
+        // fail it.
+        tokio::select! {
+            biased;
+            early = &mut waiting => panic!("connected with no client: {early:?}"),
+            () = std::future::ready(()) => {}
+        }
+        restrict_own_process(part).unwrap();
+        println!("@@ready@@");
+        tokio::time::timeout(HELPER_TIMEOUT, waiting)
+            .await
+            .expect("no client came")
+            .unwrap();
+    }
     let mut received = Vec::new();
     // A client that got through sends `host.hello` and waits; the test then drops it, and the
     // bytes are counted here all the same.
-    tokio::time::timeout(Duration::from_secs(20), server.read_to_end(&mut received))
+    tokio::time::timeout(HELPER_TIMEOUT, server.read_to_end(&mut received))
         .await
         .expect("the client left the pipe open")
         .unwrap();
@@ -86,34 +100,19 @@ async fn restricted_server_helper() {
 
 /// The public entry against a pipe served by a child process of this user whose process or
 /// token nobody else may open: refused with `NotOwnedByUser`, and the server receives no byte,
-/// so `host.hello` never left.
+/// so `host.hello` never left. The child is killed and reaped on every way out.
 async fn restricted_server(part: &str) {
-    use std::io::BufRead;
-
     let endpoint = pipe_endpoint(part);
-    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "restricted_server_helper",
-            "--ignored",
-            "--nocapture",
-            "--test-threads=1",
-        ])
-        .env(RESTRICTED_VARIABLE, format!("{part}|{endpoint}"))
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut lines = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
-    let lines = tokio::task::spawn_blocking(move || {
-        let ready = lines
-            .by_ref()
-            .map(Result::unwrap)
-            .any(|line| line.contains("@@ready@@"));
-        assert!(ready, "the helper ended before serving");
-        lines
-    })
-    .await
+    let mut helper = ads_testkit::HelperProcess::start(
+        "restricted_server_helper",
+        RESTRICTED_VARIABLE,
+        &format!("{part}|{endpoint}"),
+    )
     .unwrap();
+    assert!(
+        helper.wait_for("@@ready@@", HELPER_TIMEOUT).is_some(),
+        "the helper never got ready"
+    );
 
     let config = config_for(&endpoint);
     let client = tokio::spawn(async move {
@@ -127,23 +126,18 @@ async fn restricted_server(part: &str) {
         .unwrap();
     assert_eq!(refused, Some(ClientError::NotOwnedByUser));
 
-    // Read to the end: the helper still writes its summary after the count.
-    let received = tokio::task::spawn_blocking(move || {
-        lines
-            .map(Result::unwrap)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .find_map(|line| {
-                let at = line.find("@@received=")?;
-                let tail = &line[at + "@@received=".len()..];
-                tail.split("@@").next().map(str::to_owned)
-            })
-            .expect("the helper did not report what it received")
+    // Off the runtime thread: the runtime has to keep running to close the refused stream.
+    let (helper, received) = tokio::task::spawn_blocking(move || {
+        let received = helper.wait_for("@@received=", HELPER_TIMEOUT);
+        (helper, received)
     })
     .await
     .unwrap();
-    assert_eq!(received, "0", "bytes reached the pipe");
-    assert!(child.wait().unwrap().success());
+    assert_eq!(received.as_deref(), Some("0"), "bytes reached the pipe");
+    let status = helper
+        .finish(HELPER_TIMEOUT)
+        .expect("the helper did not end");
+    assert!(status.success(), "{status}");
 }
 
 #[tokio::test]

@@ -82,8 +82,8 @@ Como rodar: `cargo test -p ads-ptyhost --test pipe_owner --no-run` mostra o cami
 
 Há dois jeitos de recusar, e o teste distingue os dois:
 
-- `unavailable`: a lista de acesso do pipe barra a abertura. O host só deixa entrar o próprio usuário, então o host de outra conta nem chega a ser consultado.
-- `refused`: a abertura passa, e a recusa vem depois de ler quem serve o pipe (`NotOwnedByUser`), sem nenhum byte enviado.
+- `unavailable`: a lista de acesso do pipe barra a abertura, com acesso negado (`ERROR_ACCESS_DENIED`). O host só deixa entrar o próprio usuário, então o host de outra conta nem chega a ser consultado. Só um pipe que existe responde acesso negado: um endpoint errado (não encontrado) ou ocupado faz o teste falhar.
+- `refused`: a abertura passa e a conferência recusa (`NotOwnedByUser`), sem nenhum byte enviado: ou uma das consultas falha (abrir o processo ou o token do servidor, ler o dono do pipe), ou a identidade lida não é a do usuário.
 
 Resultado esperado pelo código, ainda não conferido na máquina:
 

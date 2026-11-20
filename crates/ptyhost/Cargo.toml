@@ -14,11 +14,6 @@ serde_json = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync"] }
 toml = { workspace = true }
 
-[features]
-# Helpers that only tests use: `win::restrict_own_process`, to stand in for a server of another
-# account. Never enabled by a normal build; the daemon turns it on for its tests only.
-test-support = []
-
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = [
   "Win32_Foundation",
@@ -31,6 +26,7 @@ windows = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
+ads-testkit = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 
 # Copia dos lints do workspace com `unsafe_code` em "deny" no lugar de "forbid": as chamadas do sistema

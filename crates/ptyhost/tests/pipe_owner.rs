@@ -151,6 +151,8 @@ async fn repeated_query_failures_refuse_and_release_every_handle() {
 // Manual checks: they need a second account or another elevation level. How to run them and
 // the expected results are in the README, "Testes manuais do dono do pipe".
 
+/// What opening a pipe whose access list leaves the user out returns.
+const ERROR_ACCESS_DENIED: i32 = 5;
 const ENDPOINT_VARIABLE: &str = "ADS_PIPE_OWNER_ENDPOINT";
 const CLIENT_VARIABLE: &str = "ADS_PIPE_OWNER_CLIENT_SID";
 const EXPECT_VARIABLE: &str = "ADS_PIPE_OWNER_EXPECT";
@@ -208,12 +210,17 @@ async fn connect_to_a_prepared_server() {
             "{:?}",
             result.err()
         ),
-        // The access list of the pipe keeps the client out before any identity is read.
-        "unavailable" => assert!(
-            matches!(result, Err(ConnectError::Unavailable(_))),
-            "{:?}",
-            result.err()
-        ),
+        // The access list of the pipe keeps the client out before any identity is read. Only
+        // a pipe that exists answers "access denied": a wrong endpoint answers "not found" and
+        // fails here, and a busy one ("all instances busy") too.
+        "unavailable" => match result {
+            Err(ConnectError::Unavailable(error)) => assert_eq!(
+                error.raw_os_error(),
+                Some(ERROR_ACCESS_DENIED),
+                "not refused by the access list: {error}"
+            ),
+            other => panic!("expected access denied, got {:?}", other.err()),
+        },
         other => panic!(
             "{EXPECT_VARIABLE} must be `accepted`, `refused` or `unavailable`, not `{other}`"
         ),
