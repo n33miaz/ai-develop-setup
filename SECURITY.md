@@ -18,12 +18,12 @@ Vale para o código e a configuração deste repositório. Falhas em ferramentas
 
 ## Superfície e modelo de ameaças
 
-O modelo considera páginas no navegador, programas locais, outras contas na máquina e adulteração do banco local.
+O modelo considera páginas no navegador, programas locais sem o token por execução, outras contas na máquina e adulteração do banco local.
 A API em loopback verifica `Host`, `Origin` e o token por execução.
 No Windows, o pipe é restrito ao usuário e o cliente confere quem serve o canal.
 A abertura de ferramentas filtra o ambiente do processo filho.
 O log de eventos usa cifra autenticada e encadeamento por HMAC. A chave ainda não vem do cofre.
-O modelo exclui o administrador da máquina e malware rodando na mesma conta do usuário.
+O administrador da máquina fica fora do modelo. O que já existe e o que falta contra programas da mesma conta do usuário está nos riscos.
 Veja as mitigações e limites em [Riscos e mitigações](docs/risks.md).
 
 ## Se você achar um segredo no repositório

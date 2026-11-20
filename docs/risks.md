@@ -324,7 +324,6 @@ Riscos da troca de conta por pasta de perfil ([ADR 0022](adr/0022-account-profil
 - **Dono.** Mantenedor e CI.
 - **Teto.** Não se aplica.
 - **Mitigação existente.** Actions fixadas por SHA de commit em `.github/workflows/`; `Cargo.lock` e `package-lock.json` versionados e usados com `--locked` e `npm ci --ignore-scripts`; avisos de segurança pelo `cargo deny`; CodeQL e Scorecard semanais, só avisando ([ADR 0013](adr/0013-only-fast-checks-block.md), `.github/workflows/weekly.yml`).
-- **Atualizações.** [Dependabot](../.github/dependabot.yml) tem configuração semanal para Cargo, npm na interface e nos contratos, e GitHub Actions.
 - **Plano B.** Condição de reversão da ADR 0013 (a análise passa a bloquear).
 - **O que falta.** O job de revisão de dependências por PR está só descrito em comentário no `ci.yml`.
 

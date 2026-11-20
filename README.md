@@ -15,9 +15,9 @@ O fluxo completo de terminais usa ConPTY no Windows 10/11. O modo de exemplo é 
 | Ferramenta | Versão ou requisito | Referência no repositório |
 |---|---|---|
 | Rust via rustup | Toolchain 1.96.0, mínimo 1.96 | [rust-toolchain.toml](rust-toolchain.toml), [Cargo.toml](Cargo.toml) |
-| Build Tools do MSVC | Ferramentas C++ para compilar o SQLite embutido pelo recurso `bundled` de `rusqlite` | [Cargo.toml](Cargo.toml) |
+| Build Tools do MSVC | Ferramentas C++ do Windows: o Rust usa o linker delas em todos os crates, e o SQLite embutido (`rusqlite` com `bundled`) é compilado com elas | [Cargo.toml](Cargo.toml) |
 | Node.js com npm | Mínimo 24, usado pelo CI de contratos. O desenvolvimento da interface e o CI dela usam a versão de [ui/.node-version](ui/.node-version) | [ui/package.json](ui/package.json), [contracts/package.json](contracts/package.json), [CI](.github/workflows/ci.yml) |
-| Python | 3, para as verificações do repositório | [tools/check_deps.py](tools/check_deps.py), [CI](.github/workflows/ci.yml) |
+| Python | 3.11 ou mais novo (`tomllib`), para as verificações do repositório | [tools/check_deps.py](tools/check_deps.py), [CI](.github/workflows/ci.yml) |
 | Bash | Git Bash no Windows para o hook e o script de commit | [.githooks/commit-msg](.githooks/commit-msg), [tools/commit-as-agent.sh](tools/commit-as-agent.sh) |
 | Ferramenta de linha de comando de IA | Opcional para a demonstração. Instale uma das ferramentas compatíveis para abrir um terminal real | [README do daemon](crates/daemon/README.md) |
 
