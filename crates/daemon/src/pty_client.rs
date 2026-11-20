@@ -348,15 +348,14 @@ impl PtyCommands {
         }
     }
 
+    /// A stopped client answers `Disconnected`, whatever stopped it; `next` reports the cause.
+    /// `Capacity` here means only a full queue, with the client still running.
     async fn call(&self, call: Call) -> Result<ResultBody, ClientError> {
         let (reply, answer) = oneshot::channel();
         if self.commands.send(Command { call, reply }).await.is_err() {
-            return Err(self.failure().await);
+            return Err(ClientError::Disconnected);
         }
-        match answer.await {
-            Ok(result) => result,
-            Err(_) => Err(self.failure().await),
-        }
+        answer.await.unwrap_or(Err(ClientError::Disconnected))
     }
     pub async fn open(&self, params: OpenParams) -> Result<(), ClientError> {
         match self.call(Call::Open(params)).await? {

@@ -394,10 +394,11 @@ async fn event_queue_overflow_is_explicit_and_keeps_consumed_sequence_usable() {
         }
     })
     .await;
-    // Wait for the worker to observe the full queue, without consuming its first event.
+    // Wait for the worker to stop on the full queue, without consuming its first event; calls then
+    // answer Disconnected and only next() reports the cause.
     bounded(async {
         loop {
-            if client.list().await == Err(ClientError::Capacity) {
+            if client.list().await == Err(ClientError::Disconnected) {
                 break;
             }
             tokio::task::yield_now().await;

@@ -1084,6 +1084,28 @@ async fn scripted_fixture(
                 held = true;
                 continue;
             }
+            if method == "subscribe" && target == "host-lost-on-subscribe" {
+                // The host goes away after opening the terminal, before answering the subscription.
+                break;
+            }
+            if method == "subscribe" && target == "flood-on-subscribe" {
+                // The host stops reading and keeps asking for resubscriptions: the client's
+                // outgoing queue fills and the client stops.
+                let notice = wire::encode_json(&wire::Notification::SubscriptionClosed(
+                    wire::SubscriptionClosed {
+                        session_id: wire::SessionId::new("x").unwrap(),
+                        last_seq: 0,
+                        reason: wire::CloseReason::SlowSubscriber,
+                    },
+                ))
+                .unwrap();
+                while far.write_all(&notice).await.is_ok() {}
+                break;
+            }
+            if method == "subscribe" && target == "busy-on-open" {
+                // Resubscriptions stay unanswered and take every pending call of the client.
+                continue;
+            }
             if method == "close" && target.ends_with("drop-close") && !dropped {
                 // The first close never gets a reply, as if the host stalled on it.
                 dropped = true;
@@ -1186,6 +1208,22 @@ async fn scripted_fixture(
                 // The first close reply waits until the test saw the terminal event processed.
                 released = true;
                 peer_release.notified().await;
+            }
+            if matches!(request.call, Call::Open(_)) && target == "busy-on-open" {
+                for name in ["x", "y"] {
+                    far.write_all(
+                        &wire::encode_json(&wire::Notification::SubscriptionClosed(
+                            wire::SubscriptionClosed {
+                                session_id: wire::SessionId::new(name).unwrap(),
+                                last_seq: 0,
+                                reason: wire::CloseReason::SlowSubscriber,
+                            },
+                        ))
+                        .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                }
             }
             if let Call::Write(params) = &request.call {
                 if target == "stall" {
@@ -3179,6 +3217,60 @@ async fn a_client_that_never_lists_tools_only_receives_first_version_frames() {
         call(&mut ws, "session.close", json!({"session_id": "legacy"})).await["result"]["accepted"],
         true
     );
+}
+
+#[tokio::test]
+async fn host_lost_during_setup_answers_unavailable() {
+    // Either the channel drops, or the client stops on its own full queue: the service ends.
+    for target in ["host-lost-on-subscribe", "flood-on-subscribe"] {
+        let (mut f, _) =
+            refusing_fixture("", target, ads_ptyhost::wire::ErrorCode::InternalError, 0).await;
+        let mut ws = authenticated(&f).await;
+        transmit(&mut ws, &command("session.open", open_params("session"))).await;
+        // The command itself stops the service, instead of a later turn of the loop.
+        assert_eq!(
+            bounded(&mut f.api).await.unwrap(),
+            Err(ApiError::Unavailable),
+            "{target}"
+        );
+        // The connection may close before the reply goes out; a reply that does says unavailable.
+        if let Some(Ok(Message::Text(text))) = bounded(ws.next()).await {
+            let reply: Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(reply["error"]["code"], -32603, "{target}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn full_host_queue_during_setup_keeps_the_service() {
+    let (f, calls) = refusing_fixture(
+        "",
+        "busy-on-open",
+        ads_ptyhost::wire::ErrorCode::InternalError,
+        0,
+    )
+    .await;
+    let mut ws = authenticated(&f).await;
+    // The client refuses the subscription itself: setup failed, close scheduled, service alive.
+    assert_eq!(
+        call(&mut ws, "session.open", open_params("session")).await["error"]["code"],
+        -32014
+    );
+    wait_until(|| calls.lock().unwrap().len() >= 4).await;
+    assert_eq!(
+        &*calls.lock().unwrap(),
+        &["hello", "open", "subscribe", "subscribe"]
+    );
+    assert_eq!(
+        call(
+            &mut ws,
+            "events.subscribe",
+            json!({"stream": "session/alive", "after_seq": 0})
+        )
+        .await["result"]["accepted"],
+        true
+    );
+    assert!(!f.api.is_finished());
 }
 
 #[tokio::test]

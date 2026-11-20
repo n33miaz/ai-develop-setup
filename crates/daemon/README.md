@@ -171,8 +171,9 @@ durante as tentativas e `-32013` depois delas, até um `session.close` confirmad
 retido. Cada tentativa vale só para a instância da sessão que a gerou e é
 descartada quando a vaga é devolvida. Se um `open` falhar depois de o host abrir o
 terminal, seja pelo prazo, seja por recusa do host ou do registro, a resposta é
-sempre `-32014` (`session setup failed`); só uma falha que encerra o serviço, como
-a perda do host, responde `-32603`. Recusas anteriores ao terminal aberto mantêm o próprio código.
+sempre `-32014` (`session setup failed`), inclusive com a fila de pedidos do cliente do host
+cheia; só uma falha que encerra o serviço, como a perda do host ou a parada do cliente dele por
+qualquer causa, responde `-32603`. Recusas anteriores ao terminal aberto mantêm o próprio código.
 Com `-32014`, o fechamento vai para a mesma fila, com prazo próprio por tentativa;
 o registro e a vaga ficam até o host confirmar, e então o id volta a ser aceito.
 A conexão que abriu não recebe nenhum evento dessa sessão: os eventos só seguem
@@ -295,7 +296,9 @@ limites do host. Não há salto silencioso quando o replay foi descartado. Após
 do host; `queue_capacity` usa `subscriber_queue_chunks`. Este último limita a fila
 de eventos, a fila de comandos e o número de pedidos pendentes. Para consumidores comuns, uma fila de eventos
 cheia encerra a conexão com `Capacity`; o consumidor drena os eventos já guardados
-e reconecta com a última sequência consumida. A composição da API habilita contrapressão nessa fila e a consome também ao
+e reconecta com a última sequência consumida. Depois que o cliente para, qualquer que seja a
+causa, toda chamada responde `Disconnected`, e só `next` informa a causa; numa chamada,
+`Capacity` significa apenas fila de pedidos cheia, com o cliente ainda ativo. A composição da API habilita contrapressão nessa fila e a consome também ao
 esperar respostas, preservando o canal sob rajadas de saída. A memória é limitada pelo produto do
 limite de quadro pelo tamanho das filas, além dos comandos fornecidos pelo chamador.
 Erros guardam apenas categorias, códigos e limites; mensagens do host e payloads
