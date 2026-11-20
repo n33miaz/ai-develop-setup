@@ -70,6 +70,16 @@ impl std::error::Error for ConnectError {}
 /// after confirming that the current user serves the pipe (`win::check_pipe_server`): anyone can
 /// create a pipe with this name before the host starts.
 /// Must be called inside a Tokio runtime with I/O enabled.
+///
+/// The check cannot be swapped from outside this crate:
+///
+/// ```compile_fail
+/// use ads_ptyhost::channel::connect_checked;
+/// ```
+///
+/// ```compile_fail
+/// use ads_ptyhost::win::check_pipe_server_as;
+/// ```
 #[cfg(windows)]
 pub async fn connect(endpoint: &str) -> Result<ClientStream, ConnectError> {
     connect_checked(endpoint, crate::win::check_pipe_server)
@@ -84,11 +94,10 @@ pub async fn connect(endpoint: &str) -> Result<ClientStream, ConnectError> {
         .map_err(ConnectError::Unavailable)
 }
 
-/// `connect` with the check of who serves the pipe given by the caller, so tests can refuse a
-/// pipe. Passing a check that always succeeds removes the protection: use `connect`.
+/// `connect` with the check of who serves the pipe given by the caller; private, so only the
+/// tests of this crate can pass another check.
 #[cfg(windows)]
-#[doc(hidden)]
-pub fn connect_checked(
+pub(crate) fn connect_checked(
     endpoint: &str,
     check: impl FnOnce(std::os::windows::io::RawHandle) -> io::Result<()>,
 ) -> Result<ClientStream, ConnectError> {
@@ -392,5 +401,123 @@ mod tests {
         let endpoint = test_endpoint("twice");
         let _first = Listener::bind(&endpoint).unwrap();
         assert!(Listener::bind(&endpoint).is_err());
+    }
+
+    /// Tells the child process started by `restricted_server` what to do: `<part>|<endpoint>`.
+    #[cfg(windows)]
+    const RESTRICTED_VARIABLE: &str = "ADS_TEST_RESTRICTED_PIPE";
+
+    /// Not a test: the child process of `restricted_server`. It creates the pipe, closes its own
+    /// process or token to everyone but the system account, as a server of another account
+    /// would be, serves one client and reports how many bytes it received.
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "helper run in a child process by the restricted server tests"]
+    async fn restricted_server_helper() {
+        use tokio::io::AsyncReadExt;
+
+        let spec = std::env::var(RESTRICTED_VARIABLE)
+            .expect("helper only: started by the restricted server tests");
+        let (part, endpoint) = spec.split_once('|').unwrap();
+        let part = match part {
+            "process" => crate::win::Restricted::Process,
+            "token" => crate::win::Restricted::Token,
+            other => panic!("unknown part {other}"),
+        };
+        let sid = crate::win::current_user_sid().unwrap();
+        let mut server = crate::win::create_user_pipe(endpoint, &sid, true).unwrap();
+        crate::win::restrict_own_process(part).unwrap();
+        println!("@@ready@@");
+        tokio::time::timeout(std::time::Duration::from_secs(20), server.connect())
+            .await
+            .expect("no client came")
+            .unwrap();
+        let mut received = Vec::new();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            server.read_to_end(&mut received),
+        )
+        .await
+        .expect("the client left the pipe open")
+        .unwrap();
+        println!("@@received={}@@", received.len());
+    }
+
+    /// A pipe served by a child process of this user whose process or token nobody else may
+    /// open: the client's own check refuses it at that query, and the child receives no byte.
+    #[cfg(windows)]
+    async fn restricted_server(part: &str, expected: crate::win::PipeQuery) {
+        use std::io::BufRead;
+
+        let endpoint = test_endpoint(&format!("restricted-{part}"));
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "channel::tests::restricted_server_helper",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(RESTRICTED_VARIABLE, format!("{part}|{endpoint}"))
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut lines = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
+        let wait_for = move |token: &str| -> (String, _) {
+            for line in lines.by_ref() {
+                let line = line.unwrap();
+                if let Some(at) = line.find(token) {
+                    return (line[at + token.len()..].to_owned(), lines);
+                }
+            }
+            panic!("the helper ended without {token}");
+        };
+        let (_, rest) = tokio::task::spawn_blocking(move || wait_for("@@ready@@"))
+            .await
+            .unwrap();
+
+        let mut failed = None;
+        let result = connect_checked(&endpoint, |pipe| {
+            let checked = crate::win::check_pipe_server(pipe);
+            failed = checked
+                .as_ref()
+                .err()
+                .and_then(crate::win::PipeQueryFailed::of);
+            checked
+        });
+        assert!(
+            matches!(result, Err(ConnectError::NotOwnedByUser)),
+            "{result:?}"
+        );
+        assert_eq!(failed, Some(expected));
+
+        // Read to the end: the helper still writes its summary after the count.
+        let received = tokio::task::spawn_blocking(move || {
+            rest.map(Result::unwrap)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .find_map(|line| {
+                    let at = line.find("@@received=")?;
+                    let tail = &line[at + "@@received=".len()..];
+                    tail.split("@@").next().map(str::to_owned)
+                })
+                .expect("the helper did not report what it received")
+        })
+        .await
+        .unwrap();
+        assert_eq!(received, "0");
+        assert!(child.wait().unwrap().success());
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_server_whose_process_cannot_be_opened_is_refused() {
+        restricted_server("process", crate::win::PipeQuery::OpenProcess).await;
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_server_whose_token_cannot_be_opened_is_refused() {
+        restricted_server("token", crate::win::PipeQuery::OpenToken).await;
     }
 }

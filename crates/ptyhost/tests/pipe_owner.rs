@@ -1,17 +1,18 @@
-//! The check of who serves the pipe, failing over and over on real queries, refuses every time
-//! and releases every handle it opened. The handle count is per process, so this binary holds
-//! the one test that counts; the others are manual and ignored (see each one).
+//! The check of who serves the pipe, through the public entries, failing over and over on real
+//! queries: it refuses every time, names the query that failed and releases every handle it
+//! opened. The handle count is per process, so this binary holds the one test that counts; the
+//! others are manual and ignored.
 #![cfg(windows)]
 
 use std::io;
 use std::os::windows::fs::OpenOptionsExt;
-use std::os::windows::io::{AsRawHandle, RawHandle};
+use std::os::windows::io::AsRawHandle;
 use std::time::{Duration, Instant};
 
-use ads_ptyhost::channel::{ConnectError, connect, connect_checked};
+use ads_ptyhost::channel::{ConnectError, connect};
 use ads_ptyhost::win::{
-    LocalUser, check_pipe_server, check_pipe_server_as, create_user_pipe, current_user_sid,
-    own_handle_count, pipe_server,
+    LocalUser, PipeQuery, PipeQueryFailed, check_pipe_server, create_user_pipe, current_user_sid,
+    is_own_server, local_user, own_handle_count, pipe_server,
 };
 use tokio::io::AsyncReadExt;
 
@@ -31,6 +32,12 @@ fn endpoint(label: &str, cycle: usize) -> String {
     )
 }
 
+fn file_endpoint(cycle: usize) -> String {
+    let name = format!("pipe-owner-file-{}-{cycle}", std::process::id());
+    let path = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
+    path.to_str().unwrap().to_owned()
+}
+
 fn stranger() -> LocalUser {
     LocalUser {
         user: "S-1-5-21-1000-2000-3000-1002".to_owned(),
@@ -38,64 +45,58 @@ fn stranger() -> LocalUser {
     }
 }
 
-/// A client refused by `check` on a fresh pipe: the server saw it connect and received nothing.
-async fn refused_on_a_real_pipe(
-    label: &str,
-    cycle: usize,
-    check: impl FnOnce(RawHandle) -> io::Result<()>,
-) {
-    let endpoint = endpoint(label, cycle);
-    let mut server = create_user_pipe(&endpoint, &current_user_sid().unwrap(), true).unwrap();
-    {
-        let mut waiting = std::pin::pin!(server.connect());
-        // Waiting before the client opens, so a client already gone cannot fail the wait.
-        tokio::select! {
-            biased;
-            early = &mut waiting => panic!("connected with no client: {early:?}"),
-            () = std::future::ready(()) => {}
-        }
-        let result = connect_checked(&endpoint, check);
-        assert!(
-            matches!(result, Err(ConnectError::NotOwnedByUser)),
-            "{label}: {result:?}"
-        );
-        tokio::time::timeout(IO_TIMEOUT, waiting)
-            .await
-            .expect("the server never saw the client")
-            .unwrap();
-    }
-    let mut received = Vec::new();
-    tokio::time::timeout(IO_TIMEOUT, server.read_to_end(&mut received))
-        .await
-        .expect("the refused client left the pipe open")
-        .unwrap();
-    assert!(received.is_empty(), "{label}: {} bytes", received.len());
-}
-
-/// One pass through each way the queries fail.
+/// One pass through each way the check fails.
 async fn cycle(cycle: usize, not_a_pipe: &std::fs::File) {
     // The first query fails: the handle given is not a pipe.
-    refused_on_a_real_pipe("first", cycle, |_| {
-        check_pipe_server(not_a_pipe.as_raw_handle())
-    })
-    .await;
-
-    // Every query succeeds and the identity does not match: the server process, its token and
-    // the pipe's descriptor were all opened before the refusal.
-    let stranger = stranger();
-    refused_on_a_real_pipe("whole", cycle, |pipe| check_pipe_server_as(&stranger, pipe)).await;
+    let error = check_pipe_server(not_a_pipe.as_raw_handle()).unwrap_err();
+    assert_eq!(
+        PipeQueryFailed::of(&error),
+        Some(PipeQuery::ServerProcess),
+        "{error}"
+    );
 
     // The last query fails: a client that may read the pipe's attributes but not its owner
-    // finds the server process and its token, then cannot read who owns the pipe.
-    let endpoint = endpoint("owner", cycle);
-    let _server = create_user_pipe(&endpoint, &current_user_sid().unwrap(), true).unwrap();
+    // opens the server process and its token, then cannot read who owns the pipe.
+    let owner_endpoint = endpoint("owner", cycle);
+    let _server = create_user_pipe(&owner_endpoint, &current_user_sid().unwrap(), true).unwrap();
     let limited = std::fs::OpenOptions::new()
         .access_mode(FILE_READ_ATTRIBUTES)
-        .open(&endpoint)
+        .open(&owner_endpoint)
         .unwrap();
-    let error = pipe_server(limited.as_raw_handle()).unwrap_err();
+    let error = check_pipe_server(limited.as_raw_handle()).unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
-    assert!(check_pipe_server(limited.as_raw_handle()).is_err());
+    assert_eq!(
+        PipeQueryFailed::of(&error),
+        Some(PipeQuery::ObjectOwner),
+        "{error}"
+    );
+
+    // Every query succeeds and reads this user; the decision refuses another identity.
+    let whole_endpoint = endpoint("whole", cycle);
+    let _whole = create_user_pipe(&whole_endpoint, &current_user_sid().unwrap(), true).unwrap();
+    let client = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&whole_endpoint)
+        .unwrap();
+    let local = local_user().unwrap();
+    let read = pipe_server(client.as_raw_handle()).unwrap();
+    assert_eq!(read.process_user, local.user);
+    assert!(
+        read.object_owner == local.user || read.object_owner == local.default_owner,
+        "{read:?} {local:?}"
+    );
+    assert!(!is_own_server(&stranger(), &read));
+
+    // The public entry, refused by a regular file at the endpoint (it opens like a pipe and
+    // nobody can be shown to serve it): the stream it opened is dropped.
+    let file = file_endpoint(cycle);
+    std::fs::write(&file, b"").unwrap();
+    let result = connect(&file).await;
+    assert!(
+        matches!(result, Err(ConnectError::NotOwnedByUser)),
+        "{result:?}"
+    );
 }
 
 /// Waits for the handle count to stop moving at or below `limit` and returns it.
@@ -138,6 +139,12 @@ async fn repeated_query_failures_refuse_and_release_every_handle() {
         cycle(index, &not_a_pipe).await;
     }
     let after = settle(before).await;
+    // Nothing reached the refused endpoints; each file goes once its handle is closed.
+    for index in 0..WARMUP_CYCLES + CYCLES {
+        let file = file_endpoint(index);
+        assert!(std::fs::read(&file).unwrap().is_empty(), "{file}");
+        std::fs::remove_file(&file).unwrap();
+    }
     println!("pipe owner refusals: {CYCLES} cycles; handles before: {before}, after: {after}");
 }
 
@@ -186,7 +193,7 @@ async fn serve_for_another_account() {
 }
 
 /// Client side: connects to `ADS_PIPE_OWNER_ENDPOINT` with the real check and compares with
-/// `ADS_PIPE_OWNER_EXPECT` (`accepted` or `refused`, from the table in the README).
+/// `ADS_PIPE_OWNER_EXPECT` (`accepted`, `refused` or `unavailable`, from the table in the README).
 #[tokio::test]
 #[ignore = "manual: needs a server of another account or elevation level, see the ptyhost README"]
 async fn connect_to_a_prepared_server() {
@@ -201,6 +208,14 @@ async fn connect_to_a_prepared_server() {
             "{:?}",
             result.err()
         ),
-        other => panic!("{EXPECT_VARIABLE} must be `accepted` or `refused`, not `{other}`"),
+        // The access list of the pipe keeps the client out before any identity is read.
+        "unavailable" => assert!(
+            matches!(result, Err(ConnectError::Unavailable(_))),
+            "{:?}",
+            result.err()
+        ),
+        other => panic!(
+            "{EXPECT_VARIABLE} must be `accepted`, `refused` or `unavailable`, not `{other}`"
+        ),
     }
 }

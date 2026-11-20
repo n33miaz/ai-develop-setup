@@ -62,25 +62,37 @@ O contrato está em [`contracts/README.md`](../../contracts/README.md). O que es
 - Não há teto para o número de conexões nem de assinaturas vivas ao mesmo tempo, nem prazo para um pedido que espera pelo terminal: um terminal que nunca responde segura a conexão que pediu e uma thread de trabalho até a sessão ser encerrada.
 - Fora do Windows, sem `XDG_RUNTIME_DIR` o processo só sobe com `channel_path` preenchido.
 - Fora do Windows, o cliente não confere quem serve o socket: a proteção é a pasta `XDG_RUNTIME_DIR`, só do usuário. Com `channel_path` apontando para outro lugar, quem escolhe o caminho responde por ele.
-- A recusa de um pipe servido por outro usuário não tem teste automático com duas contas. Os testes conferem a decisão com identificadores sintéticos, o pipe do próprio host passando, e a recusa de um pipe real lido pelas consultas reais e comparado com outra identidade, por uma sonda injetada e por um arquivo comum no lugar do pipe (abre, mas ninguém o serve), sempre com o servidor vendo o cliente chegar e sair sem nenhum byte. Falhas repetidas das consultas (na primeira, depois de abrir processo e token, e a recusa com todas bem-sucedidas) não deixam handle aberto (`tests/pipe_owner.rs`). Os casos com outra conta (servidor de outra conta com lista de acesso que deixa o usuário entrar) e a matriz de elevação ficam em testes ignorados no mesmo arquivo ([testes manuais](#testes-manuais-do-dono-do-pipe)); ainda não foram rodados. Um processo de outro usuário servindo um pipe de dono aceito só tem o teste sintético; um processo do usuário com outro dono está na matriz (host elevado, cliente não elevado). Um administrador da máquina passa por qualquer uma dessas conferências e está fora do que elas protegem.
-- Um host iniciado elevado (de um terminal de administrador) pode dar o pipe ao grupo de administradores; um cliente não elevado do mesmo usuário recusa esse pipe, porque o dono padrão dele é o próprio usuário. Host e cliente precisam rodar no mesmo nível.
+- A recusa de um pipe servido por outro usuário não tem teste automático com duas contas. O que os testes conferem, sempre sem nenhum byte chegando ao servidor:
+  - a decisão, com identificadores sintéticos, e o pipe do próprio host passando;
+  - um servidor filho, do mesmo usuário, que fecha o próprio processo ou o próprio token a todos menos à conta do sistema, como estaria o servidor de outra conta: o cliente recusa na abertura do processo ou do token, pela entrada pública do daemon, e o servidor não recebe o `host.hello`;
+  - um pipe real lido pelas consultas reais e comparado com outra identidade (a recusa vem da comparação, não de uma consulta que falhou), e um arquivo comum no lugar do pipe (abre, mas ninguém o serve);
+  - falhas repetidas em cada consulta, inclusive depois de abrir processo e token, que nomeiam a consulta que falhou e não deixam handle aberto (`tests/pipe_owner.rs` e os testes de `src/win.rs`).
+
+  Os casos com outra conta e a matriz de elevação ficam em testes manuais, ignorados por padrão e ainda não rodados ([testes manuais](#testes-manuais-do-dono-do-pipe)). Um processo de outro usuário servindo um pipe de dono aceito só tem o teste sintético. Um administrador da máquina passa por qualquer uma dessas conferências e está fora do que elas protegem.
+- Um host iniciado elevado (de um terminal de administrador) pode dar o pipe ao grupo de administradores; um cliente não elevado do mesmo usuário recusa esse pipe, porque o dono padrão dele é o próprio usuário. Na direção contrária, um cliente elevado aceita o pipe de um host não elevado do mesmo usuário, cujo dono é o próprio usuário. Isso é o que o código decide; na máquina, ainda não foi conferido.
 
 ## Testes manuais do dono do pipe
 
 Dois testes de `tests/pipe_owner.rs` são ignorados por padrão, porque pedem outra conta ou outro nível de elevação. Sem as variáveis que leem, falham com a instrução de onde está este texto.
 
-- `serve_for_another_account`, rodado pela outra conta: cria `ADS_PIPE_OWNER_ENDPOINT` (por exemplo `\.\pipe\ads-owner-check`) com lista de acesso que deixa entrar `ADS_PIPE_OWNER_CLIENT_SID` (o identificador do usuário cliente, de `whoami /user`), espera um cliente por até dois minutos e falha se receber qualquer byte.
-- `connect_to_a_prepared_server`, rodado pelo usuário: conecta em `ADS_PIPE_OWNER_ENDPOINT` com a conferência real e compara com `ADS_PIPE_OWNER_EXPECT` (`accepted` ou `refused`).
+- `serve_for_another_account`, rodado pela outra conta: cria `ADS_PIPE_OWNER_ENDPOINT` (por exemplo `\\.\pipe\ads-owner-check`) com lista de acesso que deixa entrar `ADS_PIPE_OWNER_CLIENT_SID` (o identificador do usuário cliente, de `whoami /user`), espera um cliente por até dois minutos e falha se receber qualquer byte.
+- `connect_to_a_prepared_server`, rodado pelo usuário: conecta em `ADS_PIPE_OWNER_ENDPOINT` com a conferência real e compara com `ADS_PIPE_OWNER_EXPECT`.
 
-Como rodar: `cargo test -p ads-ptyhost --test pipe_owner --no-run` mostra o caminho do binário; copie-o para uma pasta que a outra conta leia e execute. A outra conta roda o binário copiado com `--ignored --exact serve_for_another_account` num terminal aberto com `runas /user:<conta> cmd`; o usuário roda `cargo test -p ads-ptyhost --test pipe_owner -- --ignored --exact connect_to_a_prepared_server`. Nas linhas com host do próprio usuário, o servidor é o `ads-ptyhost` com `channel_path` igual ao endpoint.
+Como rodar: `cargo test -p ads-ptyhost --test pipe_owner --no-run` mostra o caminho do binário; copie-o para uma pasta que a outra conta leia e execute. A outra conta roda o binário copiado com `--ignored --exact serve_for_another_account` num terminal aberto com `runas /user:<conta> cmd`; o usuário roda `cargo test -p ads-ptyhost --test pipe_owner -- --ignored --exact connect_to_a_prepared_server`. Nas linhas com host, o servidor é o `ads-ptyhost` com `channel_path` igual ao endpoint.
+
+Há dois jeitos de recusar, e o teste distingue os dois:
+
+- `unavailable`: a lista de acesso do pipe barra a abertura. O host só deixa entrar o próprio usuário, então o host de outra conta nem chega a ser consultado.
+- `refused`: a abertura passa, e a recusa vem depois de ler quem serve o pipe (`NotOwnedByUser`), sem nenhum byte enviado.
 
 Resultado esperado pelo código, ainda não conferido na máquina:
 
-| Servidor | Cliente | Resultado |
+| Servidor | Cliente | `ADS_PIPE_OWNER_EXPECT` |
 |---|---|---|
-| `serve_for_another_account`, de outra conta | qualquer | `refused` |
+| `serve_for_another_account`, de outra conta comum | qualquer | `refused` |
+| `serve_for_another_account`, de outro administrador, elevado (dono: grupo de administradores) | elevado | `refused` |
+| host de outra conta, elevado ou não | qualquer | `unavailable` |
 | host do usuário, não elevado | não elevado | `accepted` |
 | host do usuário, elevado | elevado | `accepted` |
 | host do usuário, elevado, com o pipe dado ao grupo de administradores | não elevado | `refused` |
 | host do usuário, não elevado | elevado | `accepted` |
-| host de outro administrador, elevado | elevado | `refused` |

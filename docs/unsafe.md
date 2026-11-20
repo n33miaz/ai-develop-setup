@@ -6,7 +6,7 @@ Exceção prevista, ainda não usada: `ads-adapter-vault` vai precisar de chamad
 
 | Crate | Blocos `unsafe` | Motivo |
 |---|---|---|
-| `ads-ptyhost` | 30 | chamadas da API do Windows, listadas abaixo |
+| `ads-ptyhost` | 36 | chamadas da API do Windows, listadas abaixo |
 | `ads-adapter-fs` | 4 | chamadas da API do Windows para abrir, mover e apagar por identificador aberto, listadas abaixo; no Linux as mesmas operações vêm do `rustix`, sem `unsafe` |
 | `ads-storage` | 0 | SQLite e cifra pelas APIs seguras das dependências; herda `forbid` |
 | demais | 0 | nenhum |
@@ -30,9 +30,10 @@ Cada bloco é uma única operação (uma chamada da API do Windows pelo crate `w
 | `process_token` | 2 | `OpenProcessToken` (só `TOKEN_QUERY`), `OwnedHandle::from_raw_handle` | abrir para leitura o token de um processo: o próprio ou o do servidor de um pipe |
 | `token_sid` | 2 | `GetTokenInformation`, leitura do ponteiro inicial do `TOKEN_USER` ou `TOKEN_OWNER` preenchido | ler o usuário de um token ou o dono que ele dá aos objetos que cria |
 | `own_token` | 1 | `GetCurrentProcess` | pseudo handle do próprio processo, sempre válido; daí saem o usuário (para nomear o canal e restringi-lo a ele) e o dono padrão |
-| `pipe_server` | 3 | `GetNamedPipeServerProcessId`, `OpenProcess` (só `PROCESS_QUERY_LIMITED_INFORMATION`), `OwnedHandle::from_raw_handle` | o cliente descobrir qual processo serve o pipe que abriu, para ler o usuário dele |
+| `pipe_server_after` | 3 | `GetNamedPipeServerProcessId`, `OpenProcess` (só `PROCESS_QUERY_LIMITED_INFORMATION`), `OwnedHandle::from_raw_handle` | o cliente descobrir qual processo serve o pipe que abriu, para ler o usuário dele |
 | `object_owner_sid` | 1 | `GetSecurityInfo` (só o dono) | ler o dono do objeto do pipe, posto por quem criou o nome |
 | `create_user_pipe` | 2 | `ConvertStringSecurityDescriptorToSecurityDescriptorW`, `ServerOptions::create_with_security_attributes_raw` (do `tokio`) | criar o named pipe com lista de acesso de uma entrada só, a do usuário atual |
+| `restrict_own_process` (só em testes: `cfg(test)` ou a feature `test-support`, que o build normal não liga) | 6 | `ConvertStringSecurityDescriptorToSecurityDescriptorW`, `GetSecurityDescriptorDacl`, `GetCurrentProcess`, `OpenProcessToken` (só `WRITE_DAC`), `OwnedHandle::from_raw_handle`, `SetSecurityInfo` | um processo filho de teste fechar o próprio processo ou token aos outros processos do usuário, no lugar do servidor de outra conta |
 | `access_list_text` | 2 | `GetSecurityInfo`, `ConvertSecurityDescriptorToStringSecurityDescriptorW` | ler a lista de acesso de um objeto (prova de que só o usuário abre o canal) |
 
 ## `ads-adapter-fs` (`crates/adapters/fs/src/sys/windows.rs`)

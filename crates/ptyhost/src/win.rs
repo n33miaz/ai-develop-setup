@@ -292,22 +292,100 @@ pub struct PipeServer {
     pub object_owner: String,
 }
 
+/// The queries that read who serves a pipe, in the order they run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PipeQuery {
+    /// The id of the process that holds the server end.
+    ServerProcess,
+    /// Opening that process.
+    OpenProcess,
+    /// Opening its token.
+    OpenToken,
+    /// Reading the user of the token.
+    ProcessUser,
+    /// Reading the owner of the pipe object.
+    ObjectOwner,
+}
+
+/// Which query failed, and why. Carried inside the `io::Error` that `pipe_server` returns.
+#[derive(Debug)]
+pub struct PipeQueryFailed {
+    pub query: PipeQuery,
+    pub source: io::Error,
+}
+
+impl std::fmt::Display for PipeQueryFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}: {}", self.query, self.source)
+    }
+}
+
+impl std::error::Error for PipeQueryFailed {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+impl PipeQueryFailed {
+    /// The failed query, when `error` came from `pipe_server`.
+    pub fn of(error: &io::Error) -> Option<PipeQuery> {
+        error
+            .get_ref()
+            .and_then(|inner| inner.downcast_ref::<Self>())
+            .map(|failed| failed.query)
+    }
+}
+
 /// Reads who serves the pipe behind `pipe`, a client handle opened with read access.
 /// A normal account is denied another user's process or token, so a stranger's server comes
-/// back as an error.
+/// back as an error, which names the query that failed (`PipeQueryFailed::of`).
 pub fn pipe_server(pipe: RawHandle) -> io::Result<PipeServer> {
+    pipe_server_after(pipe, |_| Ok(()))
+}
+
+/// `pipe_server` calling `after` once each query has succeeded; an error from `after` stops it
+/// there, dropping what the query returned, as if it had failed. Only tests pass anything but `Ok`.
+fn pipe_server_after(
+    pipe: RawHandle,
+    mut after: impl FnMut(PipeQuery) -> io::Result<()>,
+) -> io::Result<PipeServer> {
     let mut process_id = 0_u32;
     // SAFETY: the caller's handle is only read; `process_id` outlives the call.
-    unsafe { GetNamedPipeServerProcessId(HANDLE(pipe), &raw mut process_id) }?;
+    let found = unsafe { GetNamedPipeServerProcessId(HANDLE(pipe), &raw mut process_id) };
+    checked(
+        &mut after,
+        PipeQuery::ServerProcess,
+        found.map_err(io::Error::from),
+    )?;
     // SAFETY: the call only returns a new handle, with the least access that reads a token.
-    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id) }?;
-    // SAFETY: `process` was just opened, is valid and has no other owner.
-    let process = unsafe { OwnedHandle::from_raw_handle(process.0) };
-    let token = process_token(HANDLE(process.as_raw_handle()))?;
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id) }
+        .map(|raw| {
+            // SAFETY: `raw` was just opened, is valid and has no other owner.
+            unsafe { OwnedHandle::from_raw_handle(raw.0) }
+        })
+        .map_err(io::Error::from);
+    let process = checked(&mut after, PipeQuery::OpenProcess, process)?;
+    let token = process_token(HANDLE(process.as_raw_handle()));
+    let token = checked(&mut after, PipeQuery::OpenToken, token)?;
+    let process_user = token_sid(&token, TokenUser);
+    let process_user = checked(&mut after, PipeQuery::ProcessUser, process_user)?;
+    let object_owner = checked(&mut after, PipeQuery::ObjectOwner, object_owner_sid(pipe))?;
     Ok(PipeServer {
-        process_user: token_sid(&token, TokenUser)?,
-        object_owner: object_owner_sid(pipe)?,
+        process_user,
+        object_owner,
     })
+}
+
+/// The result of one query of `pipe_server_after`, with the query named in its error.
+fn checked<T>(
+    after: &mut impl FnMut(PipeQuery) -> io::Result<()>,
+    query: PipeQuery,
+    result: io::Result<T>,
+) -> io::Result<T> {
+    let wrap = |source: io::Error| io::Error::new(source.kind(), PipeQueryFailed { query, source });
+    let value = result.map_err(wrap)?;
+    after(query).map_err(wrap)?;
+    Ok(value)
 }
 
 /// The owner of a kernel object, as a security identifier in text form.
@@ -354,10 +432,9 @@ pub fn check_pipe_server(pipe: RawHandle) -> io::Result<()> {
     check_pipe_server_as(&local_user()?, pipe)
 }
 
-/// `check_pipe_server` against a given identity instead of the current one: the queries of the
-/// pipe are the real ones. Tests use it to have a real pipe refused without a second account.
-#[doc(hidden)]
-pub fn check_pipe_server_as(local: &LocalUser, pipe: RawHandle) -> io::Result<()> {
+/// `check_pipe_server` against a given identity, with the real queries of the pipe. Only tests
+/// pass another identity, to have a real pipe refused without a second account.
+pub(crate) fn check_pipe_server_as(local: &LocalUser, pipe: RawHandle) -> io::Result<()> {
     if is_own_server(local, &pipe_server(pipe)?) {
         Ok(())
     } else {
@@ -402,6 +479,88 @@ pub fn create_user_pipe(name: &str, user_sid: &str, first: bool) -> io::Result<N
             .reject_remote_clients(true)
             .create_with_security_attributes_raw(name, (&raw mut attributes).cast())
     }
+}
+
+/// What `restrict_own_process` closes to every other process.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Restricted {
+    /// The process object: opening it to query fails.
+    Process,
+    /// Its token: opening it to read the user fails.
+    Token,
+}
+
+/// Replaces the access list of this process, or of its token, with one that lets in only the
+/// system account. Other processes of the same user can then no longer open it, as with a
+/// server of another account; handles opened before keep working. Tests run it in a child
+/// process made for that, never in the test process itself.
+#[cfg(any(test, feature = "test-support"))]
+pub fn restrict_own_process(part: Restricted) -> io::Result<()> {
+    use windows::Win32::Security::Authorization::SetSecurityInfo;
+    use windows::Win32::Security::{
+        ACL, GetSecurityDescriptorDacl, PROTECTED_DACL_SECURITY_INFORMATION, TOKEN_ACCESS_MASK,
+    };
+    /// `WRITE_DAC`: the only access needed to replace the list.
+    const WRITE_DAC: TOKEN_ACCESS_MASK = TOKEN_ACCESS_MASK(0x0004_0000);
+
+    let rule: Vec<u16> = "D:P(A;;GA;;;SY)".encode_utf16().chain([0]).collect();
+    let mut descriptor = PSECURITY_DESCRIPTOR::default();
+    // SAFETY: `rule` is a terminated wide string alive during the call; `descriptor` receives
+    // a new allocation.
+    unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            PCWSTR(rule.as_ptr()),
+            SDDL_REVISION_1,
+            &raw mut descriptor,
+            None,
+        )
+    }?;
+    let _memory = LocalMemory(descriptor.0);
+    let mut present = windows::core::BOOL::default();
+    let mut defaulted = windows::core::BOOL::default();
+    let mut list: *mut ACL = std::ptr::null_mut();
+    // SAFETY: `descriptor` is allocated until `_memory` drops; `list` receives a pointer into it.
+    unsafe {
+        GetSecurityDescriptorDacl(
+            descriptor,
+            &raw mut present,
+            &raw mut list,
+            &raw mut defaulted,
+        )
+    }?;
+
+    // SAFETY: the call only returns the pseudo handle of the current process, always valid.
+    let current = unsafe { GetCurrentProcess() };
+    let token;
+    let target = match part {
+        Restricted::Process => current,
+        Restricted::Token => {
+            let mut raw = HANDLE::default();
+            // SAFETY: the pseudo handle is always valid; `raw` outlives the call.
+            unsafe { OpenProcessToken(current, WRITE_DAC, &raw mut raw) }?;
+            // SAFETY: `raw` was just opened, is valid and has no other owner.
+            token = unsafe { OwnedHandle::from_raw_handle(raw.0) };
+            HANDLE(token.as_raw_handle())
+        }
+    };
+    // SAFETY: `target` stays open during the call; `list` points into `descriptor`, still
+    // allocated, and the call copies it.
+    let status = unsafe {
+        SetSecurityInfo(
+            target,
+            SE_KERNEL_OBJECT,
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            None,
+            None,
+            Some(list.cast_const()),
+            None,
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return Err(io::Error::from_raw_os_error(status.0 as i32));
+    }
+    Ok(())
 }
 
 /// The access list of a kernel object, in the system's text form (proof of who can open it).
@@ -522,5 +681,81 @@ mod tests {
         let local = local_user().unwrap();
         assert_eq!(local.user, current_user_sid().unwrap());
         assert!(local.default_owner.starts_with("S-1-"), "{local:?}");
+    }
+
+    const QUERIES: [PipeQuery; 5] = [
+        PipeQuery::ServerProcess,
+        PipeQuery::OpenProcess,
+        PipeQuery::OpenToken,
+        PipeQuery::ProcessUser,
+        PipeQuery::ObjectOwner,
+    ];
+    /// Failures per query; a handle kept by each one would raise the count by this much.
+    const FAILURES: u32 = 200;
+
+    /// A failure right after each query refuses the pipe, names that query, and releases what
+    /// the queries before it opened. Other tests of this binary run alongside and open handles
+    /// of their own, so the margin is half of what one leaked handle per failure would add.
+    #[tokio::test]
+    async fn a_failure_after_each_query_refuses_and_releases() {
+        use std::os::windows::io::AsRawHandle;
+
+        let endpoint = format!(r"\\.\pipe\ads-ptyhost-win-unit-{}", std::process::id());
+        let _server = create_user_pipe(&endpoint, &current_user_sid().unwrap(), true).unwrap();
+        let client = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&endpoint)
+            .unwrap();
+        let pipe = client.as_raw_handle();
+        let fail_after = |failing: PipeQuery| {
+            let error = pipe_server_after(pipe, |done| {
+                if done == failing {
+                    Err(io::Error::other("injected"))
+                } else {
+                    Ok(())
+                }
+            })
+            .unwrap_err();
+            assert_eq!(PipeQueryFailed::of(&error), Some(failing), "{error}");
+        };
+        QUERIES.into_iter().for_each(fail_after);
+
+        let before = own_handle_count().unwrap();
+        for _ in 0..FAILURES {
+            QUERIES.into_iter().for_each(fail_after);
+        }
+        let after = own_handle_count().unwrap();
+        assert!(
+            after < before + FAILURES / 2,
+            "handle count grew from {before} to {after}"
+        );
+    }
+
+    /// Every query succeeds on the host's own pipe and reads this user; the refusal for another
+    /// identity comes from the comparison, not from a failed query.
+    #[tokio::test]
+    async fn a_refusal_for_another_identity_comes_from_the_comparison() {
+        use std::os::windows::io::AsRawHandle;
+
+        let endpoint = format!(r"\\.\pipe\ads-ptyhost-win-whole-{}", std::process::id());
+        let _server = create_user_pipe(&endpoint, &current_user_sid().unwrap(), true).unwrap();
+        let client = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&endpoint)
+            .unwrap();
+        let local = local_user().unwrap();
+        let read = pipe_server(client.as_raw_handle()).unwrap();
+        assert_eq!(read.process_user, local.user);
+        assert!(
+            read.object_owner == local.user || read.object_owner == local.default_owner,
+            "{read:?} {local:?}"
+        );
+        assert!(check_pipe_server(client.as_raw_handle()).is_ok());
+
+        let error = check_pipe_server_as(&me(OTHER), client.as_raw_handle()).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(PipeQueryFailed::of(&error), None, "{error}");
     }
 }

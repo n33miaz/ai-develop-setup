@@ -125,32 +125,16 @@ impl Drop for PtyClient {
     }
 }
 
-fn connect_error(error: ConnectError) -> ClientError {
-    match error {
-        ConnectError::NotOwnedByUser => ClientError::NotOwnedByUser,
-        ConnectError::Unavailable(_) => ClientError::Transport,
-    }
-}
-
 impl PtyClient {
     pub async fn connect(host: &HostConfig, config: ClientConfig) -> Result<Self, ClientError> {
         let endpoint = channel::endpoint(host).map_err(|_| ClientError::Transport)?;
         // On Windows the channel checks who serves the pipe before handing the stream over.
-        let stream = channel::connect(&endpoint).await.map_err(connect_error)?;
-        Self::over(stream, config).await
-    }
-
-    /// `connect` with the check of who serves the pipe given by the caller, so tests can have a
-    /// real pipe refused. Passing a check that always succeeds removes the protection.
-    #[cfg(windows)]
-    #[doc(hidden)]
-    pub async fn connect_checked(
-        host: &HostConfig,
-        config: ClientConfig,
-        check: impl FnOnce(std::os::windows::io::RawHandle) -> std::io::Result<()>,
-    ) -> Result<Self, ClientError> {
-        let endpoint = channel::endpoint(host).map_err(|_| ClientError::Transport)?;
-        let stream = channel::connect_checked(&endpoint, check).map_err(connect_error)?;
+        let stream = channel::connect(&endpoint)
+            .await
+            .map_err(|error| match error {
+                ConnectError::NotOwnedByUser => ClientError::NotOwnedByUser,
+                ConnectError::Unavailable(_) => ClientError::Transport,
+            })?;
         Self::over(stream, config).await
     }
 
