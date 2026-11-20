@@ -3,6 +3,15 @@ export const ptBR = {
 
   'session.commandFailed':
     'Não foi possível executar o comando da sessão. Confira a conexão e a configuração do núcleo.',
+  'session.close': 'Fechar sessão',
+  'session.state.closing': 'Fechando',
+  'session.state.ended': 'Encerrada',
+  'session.state.setupFailed': 'Falhou ao iniciar',
+  'session.notice.closing':
+    'O núcleo não conseguiu fechar esta sessão sozinho. Feche-a para liberar a vaga.',
+  'session.notice.ended':
+    'O núcleo encerrou as atualizações desta sessão. A conexão continua ativa.',
+  'session.notice.setupFailed': 'A sessão não terminou de iniciar a tempo. O núcleo vai fechá-la.',
 
   'notice.live': 'Conexão ao núcleo local. As sessões exibem os eventos recebidos.',
   'app.title': 'ai-develop-setup',
@@ -53,6 +62,16 @@ export const en: Record<MessageKey, string> = {
 
   'session.commandFailed':
     'Could not execute the session command. Check the connection and core configuration.',
+  'session.close': 'Close session',
+  'session.state.closing': 'Closing',
+  'session.state.ended': 'Ended',
+  'session.state.setupFailed': 'Failed to start',
+  'session.notice.closing':
+    'The core could not close this session on its own. Close it to free its slot.',
+  'session.notice.ended':
+    'The core ended updates for this session. The connection is still active.',
+  'session.notice.setupFailed':
+    'The session did not finish starting in time. The core will close it.',
 
   'notice.live': 'Local core connection. Sessions display received events.',
   'app.title': 'ai-develop-setup',

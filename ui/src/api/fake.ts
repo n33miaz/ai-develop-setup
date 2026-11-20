@@ -1,4 +1,10 @@
-import { CoreClientError, type ConnectionState, type CoreClient, type Unsubscribe } from './client'
+import {
+  CoreClientError,
+  type ConnectionState,
+  type CoreClient,
+  type SubscriptionEndCode,
+  type Unsubscribe,
+} from './client'
 import type { CommandResponseV2, CommonActorV1, EventDraft, EventEnvelopeV1 } from './contracts'
 import { newUlid } from './ulid'
 
@@ -6,12 +12,15 @@ import { newUlid } from './ulid'
 export interface FakeCoreClient extends CoreClient {
   /** Grava um evento no fluxo (como se o núcleo o tivesse produzido) e entrega aos assinantes. */
   emit(draft: EventDraft): EventEnvelopeV1
+  /** Encerra as assinaturas vivas do fluxo com o código dado, sem derrubar a conexão. */
+  end(stream: string, code: SubscriptionEndCode): void
 }
 
 interface Subscription {
   stream: string
   lastDelivered: number
   onEvent: (event: EventEnvelopeV1) => void
+  onEnd?: ((code: SubscriptionEndCode) => void) | undefined
 }
 
 const FAKE_ACTOR: CommonActorV1 = { kind: 'daemon', id: 'fake-core' }
@@ -113,9 +122,9 @@ export function createFakeCoreClient(): FakeCoreClient {
       setState('disconnected')
     },
 
-    subscribe(stream, afterSeq, onEvent): Unsubscribe {
+    subscribe(stream, afterSeq, onEvent, onEnd): Unsubscribe {
       if (state !== 'connected') throw notConnected()
-      const subscription: Subscription = { stream, lastDelivered: afterSeq, onEvent }
+      const subscription: Subscription = { stream, lastDelivered: afterSeq, onEvent, onEnd }
       subscriptions.add(subscription)
       deliver(subscription)
       return () => subscriptions.delete(subscription)
@@ -136,5 +145,13 @@ export function createFakeCoreClient(): FakeCoreClient {
     },
 
     emit: append,
+
+    end(stream, code) {
+      for (const subscription of [...subscriptions]) {
+        if (!isLive(subscription) || subscription.stream !== stream) continue
+        subscriptions.delete(subscription)
+        subscription.onEnd?.(code)
+      }
+    },
   }
 }

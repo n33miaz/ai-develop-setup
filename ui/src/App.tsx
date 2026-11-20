@@ -12,9 +12,12 @@ import {
   decodeBase64,
   newCommand,
   newUlid,
+  SESSION_CLOSE_PENDING,
+  SESSION_SETUP_TIMED_OUT,
   useConnectionState,
   type CoreClient,
   type EventEnvelopeV1,
+  type SubscriptionEndCode,
 } from './api'
 
 import { sessionInput } from './api/session'
@@ -25,7 +28,7 @@ import { Sidebar } from './components/Sidebar/Sidebar'
 import { eventByteSource, staticByteSource } from './components/Terminal/byteSource'
 import { Terminal } from './components/Terminal/Terminal'
 import { useT, type MessageKey, type Translate } from './i18n'
-import { sessionsFrom, tasksFrom } from './model/views'
+import { sessionsFrom, tasksFrom, type SessionStatus, type SessionView } from './model/views'
 import { sampleEvents, sampleOutput, type SampleEvents } from './sample/data'
 import type { ThemePreference } from './theme/theme'
 import { useTheme } from './theme/useTheme'
@@ -38,6 +41,40 @@ const THEME_LABEL: Record<ThemePreference, MessageKey> = {
   system: 'theme.system',
   light: 'theme.light',
   dark: 'theme.dark',
+}
+
+const SESSION_NOTICE: Record<SessionStatus, MessageKey> = {
+  closing: 'session.notice.closing',
+  ended: 'session.notice.ended',
+  setupFailed: 'session.notice.setupFailed',
+}
+
+/** Estado de cada sessão que não vem de evento. `closed`: o `session.close` foi aceito. */
+type SessionStatuses = Readonly<Record<string, SessionStatus | 'closed'>>
+
+function nextStatus(
+  current: SessionStatus | 'closed' | undefined,
+  next: SessionStatus | 'closed',
+): SessionStatus | 'closed' | undefined {
+  // Fechada fica fechada; o fim de outra assinatura não esconde um fechamento ainda pendente.
+  if (current === 'closed') return current
+  if (current === 'closing' && next === 'ended') return current
+  return next
+}
+
+/** Junta o estado local às sessões dos eventos; fechamento pendente ou falha aparecem mesmo sem `session.created`. */
+function withStatuses(sessions: SessionView[], statuses: SessionStatuses): SessionView[] {
+  const views: SessionView[] = []
+  for (const session of sessions) {
+    const status = statuses[session.id]
+    if (status === 'closed') continue
+    views.push(status ? { ...session, status } : session)
+  }
+  for (const [id, status] of Object.entries(statuses)) {
+    if (status !== 'closing' && status !== 'setupFailed') continue
+    if (!sessions.some((session) => session.id === id)) views.push({ id, activity: 'idle', status })
+  }
+  return views
 }
 
 const TERMINAL_ID = 'terminal'
@@ -104,6 +141,29 @@ export function App({
 
   const [liveEvents, setLiveEvents] = useState<SessionEvent[]>([])
 
+  const [statuses, setStatuses] = useState<SessionStatuses>({})
+
+  const [closing, setClosing] = useState(false)
+
+  const markSession = useCallback((id: string, status: SessionStatus | 'closed') => {
+    setStatuses((previous) => {
+      const next = nextStatus(previous[id], status)
+      return next === previous[id] || next === undefined ? previous : { ...previous, [id]: next }
+    })
+  }, [])
+
+  // Só a assinatura termina: a conexão continua e as outras sessões seguem recebendo eventos.
+  const endSession = useCallback(
+    (stream: string) => (code: SubscriptionEndCode) => {
+      if (!stream.startsWith('session/')) return
+      markSession(
+        stream.slice('session/'.length),
+        code === SESSION_CLOSE_PENDING ? 'closing' : 'ended',
+      )
+    },
+    [markSession],
+  )
+
   const receiveSession = useCallback((event: EventEnvelopeV1) => {
     if (
       ![
@@ -140,18 +200,20 @@ export function App({
   useEffect(() => {
     if (!live || connection !== 'connected') return
 
-    const unsubscribe = sessionStreams.map((stream) => client.subscribe(stream, 0, receiveSession))
+    const unsubscribe = sessionStreams.map((stream) =>
+      client.subscribe(stream, 0, receiveSession, endSession(stream)),
+    )
 
     return () => {
       for (const stop of unsubscribe) stop()
     }
-  }, [client, live, connection, sessionStreams, receiveSession])
+  }, [client, live, connection, sessionStreams, receiveSession, endSession])
 
   const { tasks, sessions } = useMemo(() => {
-    if (live) return { tasks: [], sessions: sessionsFrom(liveEvents) }
+    if (live) return { tasks: [], sessions: withStatuses(sessionsFrom(liveEvents), statuses) }
     const replayed = events(t)
     return { tasks: tasksFrom(replayed.tasks), sessions: sessionsFrom(replayed.sessions) }
-  }, [events, t, live, liveEvents])
+  }, [events, t, live, liveEvents, statuses])
   const [chosenSessionId, setChosenSessionId] = useState<string | null>(null)
 
   // Seleção sempre válida: a escolhida enquanto existir, senão a primeira, senão nenhuma.
@@ -209,7 +271,8 @@ export function App({
     setChosenSessionId(id)
 
     try {
-      const stop = client.subscribe(`session/${id}`, 0, receiveSession)
+      const stream = `session/${id}`
+      const stop = client.subscribe(stream, 0, receiveSession, endSession(stream))
 
       openedSubscriptions.current.push(stop)
 
@@ -222,11 +285,29 @@ export function App({
         }),
       )
 
-      if (response.error) reportError()
+      if (response.error?.code === SESSION_SETUP_TIMED_OUT) markSession(id, 'setupFailed')
+      else if (response.error) reportError()
     } catch {
       reportError()
     } finally {
       setOpening(false)
+    }
+  }
+
+  const close = async (id: string) => {
+    setClosing(true)
+
+    setWarning(false)
+
+    try {
+      const response = await client.send(newCommand('session.close', { session_id: id }))
+
+      if (response.error) reportError()
+      else markSession(id, 'closed')
+    } catch {
+      reportError()
+    } finally {
+      setClosing(false)
     }
   }
 
@@ -273,6 +354,24 @@ export function App({
       )}
 
       {warning && <p role="alert">{t('session.commandFailed')}</p>}
+
+      {session?.status && (
+        <div className={styles.status} role="status">
+          <p>{t(SESSION_NOTICE[session.status])}</p>
+          {session.status === 'closing' && (
+            <button
+              type="button"
+              className={styles.button}
+              disabled={connection !== 'connected' || closing}
+              onClick={() => {
+                void close(session.id)
+              }}
+            >
+              {t('session.close')}
+            </button>
+          )}
+        </div>
+      )}
 
       <p className={styles.notice}>{t(live ? 'notice.live' : 'notice.wip')}</p>
       <UpdateNotice className={styles.notice} />

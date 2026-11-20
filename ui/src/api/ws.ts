@@ -1,4 +1,10 @@
-import { CoreClientError, type ConnectionState, type CoreClient } from './client'
+import {
+  CoreClientError,
+  isSubscriptionEndCode,
+  type ConnectionState,
+  type CoreClient,
+  type SubscriptionEndCode,
+} from './client'
 import { newCommand } from './command'
 import type { CommandRequestV1, CommandResponseV2, EventEnvelopeV1 } from './contracts'
 import { isLocalCommand, isServerMessage } from './wire'
@@ -41,11 +47,16 @@ export function createWsCoreClient({
     string,
     { resolve: (response: CommandResponseV2) => void; reject: (error: Error) => void }
   >()
-  const subscriptions = new Set<{
+  interface Subscription {
     stream: string
     seq: number
     onEvent: (event: EventEnvelopeV1) => void
-  }>()
+    onEnd?: (code: SubscriptionEndCode) => void
+  }
+  const subscriptions = new Set<Subscription>()
+  // O resultado final de uma assinatura chega como resposta ao id do `events.subscribe`, mesmo
+  // depois de ela ter sido aceita; por isso o id continua ligado à assinatura enquanto ela vive.
+  const subscriptionRequests = new Map<string, Subscription>()
   const unavailable = () => new CoreClientError('not_connected', 'core disconnected')
   const setState = (next: ConnectionState) => {
     if (state === next) return
@@ -59,10 +70,18 @@ export function createWsCoreClient({
     rejectConnection?.(unavailable())
     rejectConnection = null
     subscriptions.clear()
+    subscriptionRequests.clear()
     for (const request of pending.values()) request.reject(unavailable())
     pending.clear()
     setState('disconnected')
     previous?.close()
+  }
+  function endSubscription(id: string, code: SubscriptionEndCode) {
+    const subscription = subscriptionRequests.get(id)
+    subscriptionRequests.delete(id)
+    if (!subscription || !subscriptions.has(subscription)) return
+    subscriptions.delete(subscription)
+    subscription.onEnd?.(code)
   }
   function transmit(command: CommandRequestV1): Promise<CommandResponseV2> {
     if (!isLocalCommand(command)) return Promise.reject(new Error('invalid local command'))
@@ -142,6 +161,15 @@ export function createWsCoreClient({
               response.error = { code: response.error.code, message: 'command rejected' }
             const request = pending.get(response.id)
             pending.delete(response.id)
+            if (subscriptionRequests.has(response.id) && response.error) {
+              // Só esta assinatura termina; outro erro tardio dela não tem como ser explicado.
+              if (isSubscriptionEndCode(response.error.code))
+                endSubscription(response.id, response.error.code)
+              else if (!request) {
+                fail()
+                return
+              }
+            }
             request?.resolve(response)
           } else {
             const event = value
@@ -177,18 +205,22 @@ export function createWsCoreClient({
     send(command) {
       return state === 'connected' ? transmit(command) : Promise.reject(unavailable())
     },
-    subscribe(stream, afterSeq, onEvent) {
+    subscribe(stream, afterSeq, onEvent, onEnd) {
       if (state !== 'connected') throw unavailable()
-      const subscription = { stream, seq: afterSeq, onEvent }
+      const subscription: Subscription = { stream, seq: afterSeq, onEvent }
+      if (onEnd) subscription.onEnd = onEnd
+      const command = newCommand('events.subscribe', { stream, after_seq: afterSeq })
       subscriptions.add(subscription)
-      void transmit(newCommand('events.subscribe', { stream, after_seq: afterSeq })).then(
+      subscriptionRequests.set(command.id, subscription)
+      void transmit(command).then(
         (response) => {
-          if (!response.result) disconnect()
+          if (response.error && !isSubscriptionEndCode(response.error.code)) disconnect()
         },
         () => undefined,
       )
       return () => {
         subscriptions.delete(subscription)
+        subscriptionRequests.delete(command.id)
       }
     },
   }

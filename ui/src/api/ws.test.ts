@@ -207,6 +207,78 @@ describe('local WebSocket client', () => {
     socket.receive(event(5))
     expect(seen).toEqual([3, 4])
   })
+  it('ends only the subscription answered later with -32004 and keeps the connection', async () => {
+    const { client, socket } = await connected()
+    const seen: string[] = []
+    const ended: number[] = []
+    client.subscribe(
+      'session/session-a',
+      0,
+      (event) => seen.push(event.stream),
+      (code) => ended.push(code),
+    )
+    client.subscribe('session/session-b', 0, (event) => seen.push(event.stream))
+    socket.answer(1)
+    socket.answer(2)
+    socket.receive({
+      jsonrpc: '2.0',
+      id: socket.sent[1]?.id,
+      error: { code: -32004, message: 'replay unavailable' },
+    })
+    socket.receive(event(1))
+    socket.receive(event(1, 'session/session-b'))
+    expect(ended).toEqual([-32004])
+    expect(seen).toEqual(['session/session-b'])
+    expect(client.getState()).toBe('connected')
+  })
+  it('reports a pending close on subscribe without disconnecting', async () => {
+    const { client, socket } = await connected()
+    const ended: number[] = []
+    client.subscribe(
+      'session/session-a',
+      0,
+      () => undefined,
+      (code) => ended.push(code),
+    )
+    socket.receive({
+      jsonrpc: '2.0',
+      id: socket.sent[1]?.id,
+      error: { code: -32013, message: 'session close pending' },
+    })
+    await Promise.resolve()
+    expect(ended).toEqual([-32013])
+    expect(client.getState()).toBe('connected')
+  })
+  it('ignores the end of a subscription already cancelled', async () => {
+    const { client, socket } = await connected()
+    const ended: number[] = []
+    const stop = client.subscribe(
+      'session/session-a',
+      0,
+      () => undefined,
+      (code) => ended.push(code),
+    )
+    socket.answer(1)
+    stop()
+    socket.receive({
+      jsonrpc: '2.0',
+      id: socket.sent[1]?.id,
+      error: { code: -32004, message: 'replay unavailable' },
+    })
+    expect(ended).toEqual([])
+    expect(client.getState()).toBe('connected')
+  })
+  it('still disconnects when a subscription is refused for another reason', async () => {
+    const { client, socket } = await connected()
+    client.subscribe('session/session-a', 0, () => undefined)
+    socket.receive({
+      jsonrpc: '2.0',
+      id: socket.sent[1]?.id,
+      error: { code: -32602, message: 'invalid command' },
+    })
+    await Promise.resolve()
+    expect(client.getState()).toBe('disconnected')
+  })
   it('rejects pending requests and announces disconnection on transport failure', async () => {
     const { client, socket } = await connected()
     const states: string[] = []

@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { StrictMode } from 'react'
 import { describe, expect, it, vi } from 'vitest'
-import { createFakeCoreClient } from './api'
+import { createFakeCoreClient, type FakeCoreClient } from './api'
 import { isLocalCommand } from './api/wire'
 import { App } from './App'
 import { createTranslator, I18nContext } from './i18n'
@@ -103,5 +103,129 @@ describe('opening sessions', () => {
     fireEvent.click(button)
     expect(await screen.findByRole('alert')).toHaveTextContent(t('session.commandFailed'))
     expect(screen.queryByText('private server details')).not.toBeInTheDocument()
+  })
+})
+
+describe('sessions the core cannot keep', () => {
+  function created(client: FakeCoreClient, id: string, name: string) {
+    client.emit({
+      type: 'urn:ads:event:session.created:1',
+      stream: `session/${id}`,
+      data: { session_id: id, harness: 'claude', display_name: name },
+    })
+  }
+
+  it('shows a pending close and sends session.close from its button', async () => {
+    const client = createFakeCoreClient()
+    const send = vi.spyOn(client, 'send')
+    const t = createTranslator('pt-BR')
+    render(
+      <I18nContext value={t}>
+        <App client={client} live sessionStreams={['session/session-a']} />
+      </I18nContext>,
+    )
+    await waitFor(() => {
+      expect(client.getState()).toBe('connected')
+    })
+    act(() => {
+      created(client, 'session-a', 'Sessão A')
+      client.end('session/session-a', -32013)
+    })
+    expect(screen.getByRole('button', { name: /Sessão A/ })).toHaveTextContent(
+      t('session.state.closing'),
+    )
+    expect(screen.getByText(t('session.notice.closing'))).toBeInTheDocument()
+    expect(client.getState()).toBe('connected')
+    fireEvent.click(screen.getByRole('button', { name: t('session.close') }))
+    await waitFor(() => {
+      expect(screen.getByText(t('sessions.empty'))).toBeInTheDocument()
+    })
+    const command = send.mock.calls.at(-1)?.[0]
+    expect(command).toMatchObject({
+      method: 'session.close',
+      params: { session_id: 'session-a' },
+    })
+    expect(command && isLocalCommand(command)).toBe(true)
+    expect(screen.queryByText(t('session.notice.closing'))).not.toBeInTheDocument()
+  })
+
+  it('keeps the close button when the core refuses session.close', async () => {
+    const client = createFakeCoreClient()
+    const t = createTranslator('en')
+    render(
+      <I18nContext value={t}>
+        <App client={client} live sessionStreams={['session/session-a']} />
+      </I18nContext>,
+    )
+    await waitFor(() => {
+      expect(client.getState()).toBe('connected')
+    })
+    act(() => {
+      created(client, 'session-a', 'Session A')
+      client.end('session/session-a', -32013)
+    })
+    vi.spyOn(client, 'send').mockImplementation((command) =>
+      Promise.resolve({
+        jsonrpc: '2.0',
+        id: command.id,
+        error: { code: -32603, message: 'service unavailable' },
+      }),
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Close session' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(t('session.commandFailed'))
+    expect(screen.getByRole('button', { name: 'Close session' })).toBeInTheDocument()
+  })
+
+  it('marks a session whose subscription ended without losing the connection', async () => {
+    const client = createFakeCoreClient()
+    const t = createTranslator('en')
+    render(
+      <I18nContext value={t}>
+        <App client={client} live sessionStreams={['session/session-a', 'session/session-b']} />
+      </I18nContext>,
+    )
+    await waitFor(() => {
+      expect(client.getState()).toBe('connected')
+    })
+    act(() => {
+      created(client, 'session-a', 'Session A')
+      created(client, 'session-b', 'Session B')
+      client.end('session/session-a', -32004)
+    })
+    expect(screen.getByRole('button', { name: /Session A/ })).toHaveTextContent('Ended')
+    expect(screen.getByText(t('session.notice.ended'))).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: t('session.close') })).not.toBeInTheDocument()
+    expect(client.getState()).toBe('connected')
+    act(() => {
+      client.emit({
+        type: 'urn:ads:event:session.activity_changed:1',
+        stream: 'session/session-b',
+        data: { session_id: 'session-b', activity: 'idle' },
+      })
+    })
+    expect(screen.getByRole('button', { name: /Session B/ })).toHaveTextContent('Idle')
+  })
+
+  it('shows a session that timed out while starting', async () => {
+    const client = createFakeCoreClient()
+    vi.spyOn(client, 'send').mockImplementation((command) =>
+      Promise.resolve({
+        jsonrpc: '2.0',
+        id: command.id,
+        error: { code: -32014, message: 'session setup timed out' },
+      }),
+    )
+    const t = createTranslator('pt-BR')
+    render(
+      <I18nContext value={t}>
+        <App client={client} live harnesses={['claude']} />
+      </I18nContext>,
+    )
+    const button = screen.getByRole('button', { name: 'Abrir claude' })
+    await waitFor(() => expect(button).toBeEnabled())
+    fireEvent.click(button)
+    expect(await screen.findByText(t('session.notice.setupFailed'))).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Falhou ao iniciar/ })).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 })

@@ -1,5 +1,11 @@
 import { useT, type MessageKey } from '../../i18n'
-import type { SessionActivity, SessionView, TaskState, TaskView } from '../../model/views'
+import type {
+  SessionActivity,
+  SessionStatus,
+  SessionView,
+  TaskState,
+  TaskView,
+} from '../../model/views'
 import styles from './Sidebar.module.css'
 
 interface SidebarProps {
@@ -23,6 +29,12 @@ const TASK_STATE: Record<TaskState, MessageKey> = {
 const SESSION_ACTIVITY: Record<SessionActivity, MessageKey> = {
   active: 'session.state.active',
   idle: 'session.state.idle',
+}
+
+const SESSION_STATUS: Record<SessionStatus, MessageKey> = {
+  closing: 'session.state.closing',
+  ended: 'session.state.ended',
+  setupFailed: 'session.state.setupFailed',
 }
 
 /**
@@ -81,9 +93,17 @@ export function Sidebar({
                   }}
                 >
                   <span className={styles.name}>{session.displayName ?? t('session.unnamed')}</span>
-                  <span className={styles.state} data-activity={session.activity}>
+                  <span
+                    className={styles.state}
+                    data-activity={session.activity}
+                    data-status={session.status}
+                  >
                     <span className={styles.dot} aria-hidden="true" />
-                    {t(SESSION_ACTIVITY[session.activity])}
+                    {t(
+                      session.status
+                        ? SESSION_STATUS[session.status]
+                        : SESSION_ACTIVITY[session.activity],
+                    )}
                   </span>
                 </button>
               </li>
