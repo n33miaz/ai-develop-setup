@@ -1054,6 +1054,34 @@ fn admission_refuses_a_stamp_ahead_of_the_core_clock_or_behind_the_log() {
     );
 }
 
+fn manual_at(task: &str, at: &str, seq: u64) -> EventQueueTaskCreatedV1 {
+    with_seq(admitted(task, manual(&format!("request-{task}")), at), seq)
+}
+
+fn one_manual() -> QueuePolicy {
+    QueuePolicy {
+        manual_window_admissions: NonZeroUsize::new(1).unwrap(),
+        ..windowed()
+    }
+}
+
+/// owner-01 re-anchors queue-01 from device-01 at `at`, through `seq`, the last of the stream.
+fn owner_anchor(at: &str, seq: u64) -> ClockAnchor {
+    let owner = device("device-01", "owner-01", Tray);
+    let queue = new_stopped(id("queue-01"), &owner);
+    reanchor_admission_clock(&queue, Some(&owner), &ts(at), seq, seq).unwrap()
+}
+
+/// Admits at the candidate's own instant with `anchor`.
+fn admit_anchored(
+    candidate: &EventQueueTaskCreatedV1,
+    history: &[EventQueueTaskCreatedV1],
+    policy: &QueuePolicy,
+    anchor: &ClockAnchor,
+) -> Result<(), AdmissionRefusal> {
+    admit_as_owner(candidate, history, policy, &candidate.ts, Some(anchor))
+}
+
 #[test]
 fn the_owner_reanchors_the_queue_after_the_core_clock_ran_ahead() {
     use AdmissionRefusal::{BehindLastAdmission, ForeignAnchor, OriginRepeated, WindowFull};
@@ -1061,14 +1089,11 @@ fn the_owner_reanchors_the_queue_after_the_core_clock_ran_ahead() {
     let queue = new_stopped(id("queue-01"), &owner);
     let policy = windowed();
     // Admitted while the core clock read 2031, then the clock is corrected.
-    let ahead = with_seq(
-        admitted("task-01", manual("request-01"), "2031-06-01T00:00:00Z"),
-        2,
-    );
+    let ahead = manual_at("task-01", "2031-06-01T00:00:00Z", 2);
     assert_eq!(admit_as_owner(&ahead, [], &policy, &ahead.ts, None), Ok(()));
     let history = [ahead];
     let now = ts("2030-01-02T03:30:00Z");
-    let next = admitted("task-02", manual("request-02"), "2030-01-02T03:30:00Z");
+    let next = manual_at("task-02", "2030-01-02T03:30:00Z", 4);
     assert_eq!(
         admit_as_owner(&next, &history, &policy, &now, None),
         Err(BehindLastAdmission),
@@ -1076,59 +1101,187 @@ fn the_owner_reanchors_the_queue_after_the_core_clock_ran_ahead() {
     );
 
     assert_eq!(
-        reanchor_admission_clock(&queue, None, &now, 2),
+        reanchor_admission_clock(&queue, None, &now, 2, 2),
         Err(QueueRefusal::Unauthenticated)
     );
     let stranger = device("device-02", "owner-02", Tray);
     assert_eq!(
-        reanchor_admission_clock(&queue, Some(&stranger), &now, 2),
+        reanchor_admission_clock(&queue, Some(&stranger), &now, 2, 2),
         Err(QueueRefusal::NotOwner)
     );
-    let anchor = reanchor_admission_clock(&queue, Some(&owner), &now, 2).unwrap();
+    for (through, last) in [(3, 2), (u64::MAX, 2), (1, 2)] {
+        assert_eq!(
+            reanchor_admission_clock(&queue, Some(&owner), &now, through, last),
+            Err(QueueRefusal::StaleSeq),
+            "{through} {last}"
+        );
+    }
+    let anchor = reanchor_admission_clock(&queue, Some(&owner), &now, 2, 2).unwrap();
     assert_eq!(
-        (&anchor.queue_id, &anchor.owner_id, &anchor.device_id),
+        (anchor.queue_id(), anchor.owner_id(), anchor.device_id()),
         (&id("queue-01"), &id("owner-01"), &id("device-01"))
     );
     assert_eq!(
-        (anchor.via, &anchor.at, anchor.through_seq),
+        (anchor.via(), anchor.at(), anchor.through_seq()),
         (Tray, &now, 2)
     );
-    let admit = |candidate: &EventQueueTaskCreatedV1,
-                 history: &[EventQueueTaskCreatedV1],
-                 policy: &QueuePolicy| {
-        admit_as_owner(candidate, history, policy, &candidate.ts, Some(&anchor))
-    };
-    assert_eq!(admit(&next, &history, &policy), Ok(()));
+    assert_eq!(admit_anchored(&next, &history, &policy, &anchor), Ok(()));
 
     // The anchored admission still counts, at the anchor, and keeps its origin.
-    let one_manual = QueuePolicy {
-        manual_window_admissions: NonZeroUsize::new(1).unwrap(),
-        ..windowed()
-    };
-    assert_eq!(admit(&next, &history, &one_manual), Err(WindowFull));
-    let window_later = admitted("task-02", manual("request-02"), "2030-01-02T04:30:00Z");
-    assert_eq!(admit(&window_later, &history, &one_manual), Ok(()));
-    let same_origin = admitted("task-02", manual("request-01"), "2030-01-02T03:30:00Z");
-    assert_eq!(admit(&same_origin, &history, &policy), Err(OriginRepeated));
+    assert_eq!(
+        admit_anchored(&next, &history, &one_manual(), &anchor),
+        Err(WindowFull)
+    );
+    let window_later = manual_at("task-02", "2030-01-02T04:30:00Z", 4);
+    assert_eq!(
+        admit_anchored(&window_later, &history, &one_manual(), &anchor),
+        Ok(())
+    );
+    let mut same_origin = serde_json::to_value(&next).unwrap();
+    same_origin["data"]["origin"]["request_id"] = "request-task-01".into();
+    let same_origin = serde_json::from_value(same_origin).unwrap();
+    assert_eq!(
+        admit_anchored(&same_origin, &history, &policy, &anchor),
+        Err(OriginRepeated)
+    );
 
     // An admission after the anchor is not moved by it.
     let after_anchor = [
         history[0].clone(),
-        with_seq(
-            admitted("task-03", manual("request-03"), "2031-06-01T00:00:00Z"),
-            3,
-        ),
+        manual_at("task-03", "2031-06-01T00:00:00Z", 3),
     ];
     assert_eq!(
-        admit(&next, &after_anchor, &policy),
+        admit_anchored(&next, &after_anchor, &policy, &anchor),
         Err(BehindLastAdmission)
     );
 
-    let mut foreign = anchor.clone();
-    foreign.queue_id = id("queue-02");
+    for (queue_id, owner_id) in [("queue-02", "owner-01"), ("queue-01", "owner-02")] {
+        let mut foreign = anchor.clone();
+        foreign.queue_id = id(queue_id);
+        foreign.owner_id = id(owner_id);
+        assert_eq!(
+            admit_as_owner(&next, &history, &policy, &now, Some(&foreign)),
+            Err(ForeignAnchor),
+            "{queue_id} {owner_id}"
+        );
+    }
+}
+
+#[test]
+fn an_anchor_never_covers_the_candidate_or_later_admissions() {
+    use AdmissionRefusal::{AnchorAfterCandidate, WindowFull};
+    let ahead = manual_at("task-01", "2031-06-01T00:00:00Z", 2);
+    let anchor = owner_anchor("2030-01-02T03:30:00Z", 2);
+    let mut beyond = anchor.clone();
+    beyond.through_seq = u64::MAX;
+
+    // Requests every 20 minutes for three hours: the legitimate anchor lets one in per hour,
+    // and one that covers the rest of the stream is refused at once.
+    let mut history = vec![ahead];
+    let mut admitted_at = Vec::new();
+    for step in 0..9u64 {
+        let minutes = 31 + step * 20;
+        let at = format!("2030-01-02T{:02}:{:02}:00Z", 3 + minutes / 60, minutes % 60);
+        let seq = history.len() as u64 + 2;
+        let candidate = manual_at(&format!("task-{seq:02}"), &at, seq);
+        assert_eq!(
+            admit_anchored(&candidate, &history, &one_manual(), &beyond),
+            Err(AnchorAfterCandidate),
+            "{at}"
+        );
+        match admit_anchored(&candidate, &history, &one_manual(), &anchor) {
+            Ok(()) => {
+                admitted_at.push(minutes);
+                history.push(candidate);
+            }
+            refusal => assert_eq!(refusal, Err(WindowFull), "{at}"),
+        }
+    }
     assert_eq!(
-        admit_as_owner(&next, &history, &policy, &now, Some(&foreign)),
-        Err(ForeignAnchor)
+        admitted_at,
+        [91, 151],
+        "one request per window after the anchor"
+    );
+
+    let covering = owner_anchor("2030-01-02T03:30:00Z", 3);
+    let candidate = manual_at("task-03", "2030-01-02T03:31:00Z", 3);
+    assert_eq!(
+        admit_anchored(&candidate, &history[..1], &windowed(), &covering),
+        Err(AnchorAfterCandidate)
+    );
+}
+
+#[test]
+fn an_anchor_ahead_of_the_clock_is_refused_and_an_old_one_keeps_the_window() {
+    use AdmissionRefusal::{AnchorAheadOfClock, WindowFull};
+    let ahead = manual_at("task-01", "2031-06-01T00:00:00Z", 2);
+    let candidate = manual_at("task-02", "2030-01-02T03:30:00Z", 3);
+    let early = owner_anchor("2031-01-01T00:00:00Z", 2);
+    assert_eq!(
+        admit_anchored(
+            &candidate,
+            std::slice::from_ref(&ahead),
+            &windowed(),
+            &early
+        ),
+        Err(AnchorAheadOfClock)
+    );
+    let within_skew = owner_anchor("2030-01-02T03:30:05Z", 2);
+    assert_eq!(
+        admit_anchored(
+            &candidate,
+            std::slice::from_ref(&ahead),
+            &windowed(),
+            &within_skew
+        ),
+        Ok(())
+    );
+
+    // An old instant does not move ordinary creations out of the window.
+    let ordinary = [
+        manual_at("task-01", "2030-01-02T03:00:00Z", 2),
+        manual_at("task-02", "2030-01-02T03:10:00Z", 3),
+    ];
+    let old = owner_anchor("1970-01-01T00:00:00Z", 3);
+    let third = manual_at("task-03", "2030-01-02T03:20:00Z", 4);
+    assert_eq!(
+        admit_anchored(&third, &ordinary, &windowed(), &old),
+        Err(WindowFull)
+    );
+}
+
+#[test]
+fn a_second_anchor_covers_the_creations_of_the_first() {
+    use AdmissionRefusal::{BehindLastAdmission, WindowFull};
+    let first = owner_anchor("2030-01-02T03:30:00Z", 2);
+    let mut history = vec![manual_at("task-01", "2031-06-01T00:00:00Z", 2)];
+    let after_first = manual_at("task-03", "2030-01-02T03:30:00Z", 3);
+    assert_eq!(
+        admit_anchored(&after_first, &history, &windowed(), &first),
+        Ok(())
+    );
+    history.push(after_first);
+    // The clock runs ahead again, and is corrected again.
+    history.push(manual_at("task-04", "2032-01-01T00:00:00Z", 4));
+    let next = manual_at("task-05", "2030-01-02T03:50:00Z", 5);
+    let wide = QueuePolicy {
+        manual_window_admissions: NonZeroUsize::new(4).unwrap(),
+        ..windowed()
+    };
+    assert_eq!(
+        admit_anchored(&next, &history, &wide, &first),
+        Err(BehindLastAdmission)
+    );
+    let second = owner_anchor("2030-01-02T03:50:00Z", 4);
+    assert_eq!(admit_anchored(&next, &history, &wide, &second), Ok(()));
+    let three = QueuePolicy {
+        manual_window_admissions: NonZeroUsize::new(3).unwrap(),
+        ..windowed()
+    };
+    assert_eq!(
+        admit_anchored(&next, &history, &three, &second),
+        Err(WindowFull),
+        "the creations of both jumps still fill the window"
     );
 }
 

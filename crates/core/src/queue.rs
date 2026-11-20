@@ -147,6 +147,8 @@ pub enum QueueRefusal {
     NotOwner,
     RemoteEnable,
     Unchanged,
+    /// The `seq` the owner acted on is not the last one of the stream.
+    StaleSeq,
 }
 
 pub fn new_stopped(id: CommonIdV1, owner: &AuthenticatedDevice) -> RecordTaskQueueV1 {
@@ -513,6 +515,11 @@ pub enum AdmissionRefusal {
     ManualNotOwnerDevice,
     /// The clock anchor belongs to another queue or another owner.
     ForeignAnchor,
+    /// The clock anchor covers the candidate itself or later events, so it would move
+    /// admissions made after the owner acted.
+    AnchorAfterCandidate,
+    /// The clock anchor is more than `clock_skew_seconds` ahead of the core clock.
+    AnchorAheadOfClock,
     /// An instant could not be read.
     UnreadableInstant,
     /// The stamp is more than `clock_skew_seconds` ahead of the core clock.
@@ -533,11 +540,13 @@ pub enum AdmissionRefusal {
 }
 
 /// Owner action that re-anchors the admission clock of a queue after the core clock ran ahead.
-/// Earlier admissions of the queue, up to `through_seq`, stamped after `at` count as admitted at
-/// `at`: they keep their origin reserved and fill the window that follows the anchor.
+/// Earlier admissions of the queue, up to `through_seq`, stamped after `at` and still ahead of
+/// the core clock count as admitted at `at`: they keep their origin reserved and fill the window
+/// that follows the anchor. The admission refuses an anchor that covers the candidate or a later
+/// `seq`, or whose `at` is ahead of the core clock.
 ///
-/// Only `reanchor_admission_clock` builds one, from a device of the owner: an anchor stamped long
-/// ago would otherwise empty every window. Reading one back from the log arrives with its event.
+/// Only `reanchor_admission_clock` builds one, from a device of the owner. Reading one back from
+/// the log arrives with its event.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClockAnchor {
     queue_id: CommonIdV1,
@@ -576,17 +585,24 @@ impl ClockAnchor {
     }
 }
 
-/// Builds the anchor from the owner action. Recording it needs an event the contracts do not
-/// have yet, so until then the caller keeps it.
+/// Builds the anchor from the owner action. `now` is the core clock when the owner acts, with
+/// the same contract as `created.ts`; `through_seq` is the `seq` the owner acted on, and
+/// `stream_last_seq` the last `seq` of the queue stream read from storage, which must be equal.
+/// Recording the anchor needs an event the contracts do not have yet, so until then the caller
+/// keeps it.
 pub fn reanchor_admission_clock(
     queue: &RecordTaskQueueV1,
     device: Option<&AuthenticatedDevice>,
     now: &CommonTimestampV1,
     through_seq: u64,
+    stream_last_seq: u64,
 ) -> Result<ClockAnchor, QueueRefusal> {
     let device = device.ok_or(QueueRefusal::Unauthenticated)?;
     if device.owner_id != queue.owner_id {
         return Err(QueueRefusal::NotOwner);
+    }
+    if through_seq != stream_last_seq {
+        return Err(QueueRefusal::StaleSeq);
     }
     Ok(ClockAnchor {
         queue_id: queue.id.clone(),
@@ -649,6 +665,15 @@ pub fn can_admit_task<'a>(
     if manual && !authored_by_owner(created, context) {
         return Err(Refusal::ManualNotOwnerDevice);
     }
+    let (Some(stamp), Some(clock)) = (epoch_seconds(&created.ts), epoch_seconds(context.now))
+    else {
+        return Err(Refusal::UnreadableInstant);
+    };
+    let seconds = |value: u64| i64::try_from(value).unwrap_or(i64::MAX);
+    let latest_now = clock.saturating_add(seconds(policy.clock_skew_seconds));
+    if stamp > latest_now {
+        return Err(Refusal::AheadOfClock);
+    }
     let anchor = match context.anchor {
         Some(anchor)
             if anchor.queue_id != created.data.queue_id
@@ -656,20 +681,18 @@ pub fn can_admit_task<'a>(
         {
             return Err(Refusal::ForeignAnchor);
         }
-        Some(anchor) => Some((
-            anchor.through_seq,
-            epoch_seconds(&anchor.at).ok_or(Refusal::UnreadableInstant)?,
-        )),
+        Some(anchor) if anchor.through_seq >= created.seq.get() => {
+            return Err(Refusal::AnchorAfterCandidate);
+        }
+        Some(anchor) => {
+            let at = epoch_seconds(&anchor.at).ok_or(Refusal::UnreadableInstant)?;
+            if at > latest_now {
+                return Err(Refusal::AnchorAheadOfClock);
+            }
+            Some((anchor.through_seq, at))
+        }
         None => None,
     };
-    let (Some(stamp), Some(clock)) = (epoch_seconds(&created.ts), epoch_seconds(context.now))
-    else {
-        return Err(Refusal::UnreadableInstant);
-    };
-    let seconds = |value: u64| i64::try_from(value).unwrap_or(i64::MAX);
-    if stamp > clock.saturating_add(seconds(policy.clock_skew_seconds)) {
-        return Err(Refusal::AheadOfClock);
-    }
     let latest_prior = stamp.saturating_add(seconds(policy.clock_rewind_seconds));
     let window = seconds(policy.window_seconds.get());
     let rule = bug_rule(&created.data.origin);
@@ -694,8 +717,10 @@ pub fn can_admit_task<'a>(
         {
             return Err(Refusal::OriginRepeated);
         }
+        // The anchor moves only covered creations still ahead of the clock, so an old anchor
+        // never takes an ordinary creation out of the window.
         let then = epoch_seconds(&prior.ts).map(|then| match anchor {
-            Some((through, at)) if prior.seq.get() <= through => then.min(at),
+            Some((through, at)) if prior.seq.get() <= through && then > latest_now => then.min(at),
             _ => then,
         });
         if then.is_some_and(|then| then > latest_prior) {
