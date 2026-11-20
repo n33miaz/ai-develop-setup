@@ -209,8 +209,19 @@ em cada `append`. A abertura e o próximo `append` conferem essa âncora.
 Sob o lock de escrita, uma mudança em `PRAGMA data_version` também exige
 nova autenticação da cadeia antes de gravar
 ([log de eventos](../../crates/storage/README.md#log-de-eventos)).
-Detectar não é impedir: um `INSERT` simples sem chave é aceito pelo banco e só
-`verify_chain` e `read_stream` o recusam depois. Com os índices únicos do
+Esse valor só muda quando outra conexão SQLite confirma uma transação. Uma
+escrita feita direto nos bytes do arquivo não o muda. No modo padrão
+(`verify_on_append = "changed"`), uma linha alterada assim passa pelo `append`
+e a âncora avança. Ela só é detectada na próxima abertura ancorada ou em
+`verify_chain`. O modo `"always"` reautentica a cadeia em todo `append`, depois
+de descartar o cache de páginas da conexão, e recusa esse caso antes de mover a
+âncora. O custo é proporcional ao histórico a cada gravação, dentro do lock de
+escrita. O padrão fica em `"changed"` porque esse caminho exige escrita direta
+no arquivo, e a abertura seguinte o detecta.
+Detectar não é impedir: um `INSERT` simples sem chave é aceito pelo banco.
+Quem o recusa depois são `verify_chain`, `read_stream`, a próxima abertura
+ancorada e o `append` que reautentica a cadeia (após commit de outra conexão,
+ou sempre com `"always"`). Com os índices únicos do
 portão, uma linha assim pode ocupar a vaga de uma licença (um `action.started`
 forjado) e bloquear a verdadeira: negação, não uso duplo. A ponte deve conferir
 o HMAC da linha com que colidiu antes de confiar no conflito do índice.

@@ -9,7 +9,7 @@ pub mod log;
 mod migrate;
 pub mod open;
 mod snapshot;
-pub use config::StorageConfig;
+pub use config::{StorageConfig, VerifyOnAppend};
 pub use error::StorageError;
 pub use log::{EventLog, Position, StoredEvent};
 pub use open::AuditStore;

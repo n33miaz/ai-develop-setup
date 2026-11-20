@@ -217,6 +217,140 @@ fn append_accepts_authenticated_history_from_another_connection() {
     assert_eq!(anchored(&path, &anchor).unwrap().verify_chain(), Ok(2));
 }
 
+fn anchored_with(path: &Path, anchor: &MemoryAnchor, config: &str) -> EventLog {
+    EventLog::open(
+        path,
+        &StorageConfig::from_toml_str(config).unwrap(),
+        keys("key-a", 1),
+        Box::new(anchor.clone()),
+    )
+    .unwrap()
+}
+
+/// Flips one byte of a stored blob straight in the file, outside SQLite.
+fn flip_in_file(path: &Path, blob: &[u8]) {
+    use std::io::{Seek, SeekFrom, Write};
+    let bytes = std::fs::read(path).unwrap();
+    let starts: Vec<usize> = bytes
+        .windows(blob.len())
+        .enumerate()
+        .filter(|(_, window)| *window == blob)
+        .map(|(start, _)| start)
+        .collect();
+    assert_eq!(starts.len(), 1);
+    let at = starts[0] + blob.len() / 2;
+    let mut file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+    file.seek(SeekFrom::Start(u64::try_from(at).unwrap()))
+        .unwrap();
+    file.write_all(&[bytes[at] ^ 0x01]).unwrap();
+    file.sync_all().unwrap();
+}
+
+#[test]
+fn a_direct_file_write_is_refused_on_append_only_when_always() {
+    for always in [false, true] {
+        let path = fixture();
+        let anchor = MemoryAnchor::default();
+        let config = if always {
+            "verify_on_append = 'always'"
+        } else {
+            ""
+        };
+        let mut log = anchored_with(&path, &anchor, config);
+        // One row per page, so the next append does not rewrite row 2's page.
+        let filler = "x".repeat(2500);
+        for seq in 1..=3 {
+            log.append(&event(
+                "task/t1",
+                seq,
+                seq,
+                serde_json::json!({ "f": filler }),
+            ))
+            .unwrap();
+        }
+        drop(log);
+        let wal = path.with_extension("db-wal");
+        assert!(std::fs::metadata(&wal).map_or(true, |m| m.len() == 0));
+        let blob = data_ct(&path, 2);
+        // Opening verifies the chain, which also loads its pages into the cache.
+        let mut log = anchored_with(&path, &anchor, config);
+        let before = anchor.0.lock().unwrap().commitment;
+        flip_in_file(&path, &blob);
+
+        let next = event("task/t1", 4, 4, serde_json::json!({}));
+        if always {
+            for _ in 0..2 {
+                assert_eq!(
+                    log.append(&next),
+                    Err(StorageError::HistoryChanged { position: 2 })
+                );
+                assert_eq!(anchor.0.lock().unwrap().commitment, before);
+                assert_eq!(log.head(&next.stream), Ok(3));
+            }
+        } else {
+            // The documented limit: the default mode lets this append through,
+            // and the next anchored open is what refuses the history.
+            assert_eq!(log.append(&next).unwrap().get(), 4);
+            drop(log);
+            assert_eq!(
+                EventLog::open(
+                    &path,
+                    &StorageConfig::defaults(),
+                    keys("key-a", 1),
+                    Box::new(anchor.clone()),
+                )
+                .unwrap_err(),
+                StorageError::ChainBroken { position: 2 }
+            );
+        }
+    }
+}
+
+#[test]
+fn append_refuses_a_schema_changed_on_an_open_connection() {
+    let path = fixture();
+    let anchor = MemoryAnchor::default();
+    let mut log = anchored(&path, &anchor).unwrap();
+    log.append(&event("task/t1", 1, 1, serde_json::json!({})))
+        .unwrap();
+    let before = anchor.0.lock().unwrap().commitment;
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch("DROP TRIGGER event_no_update")
+        .unwrap();
+    let next = event("task/t1", 2, 2, serde_json::json!({}));
+    assert_eq!(log.append(&next), Err(StorageError::UnsupportedSchema));
+    assert_eq!(anchor.0.lock().unwrap().commitment, before);
+    assert_eq!(log.head(&next.stream), Ok(1));
+}
+
+#[test]
+fn append_reports_a_key_rotated_elsewhere_as_unavailable_not_as_tampering() {
+    let path = fixture();
+    let anchor = MemoryAnchor::default();
+    let mut first = anchored(&path, &anchor).unwrap();
+    first
+        .append(&event("task/t1", 1, 1, serde_json::json!({})))
+        .unwrap();
+    let mut rotated = EventLog::open(
+        &path,
+        &StorageConfig::defaults(),
+        Box::new(Keys {
+            current: ("key-b", 3),
+            older: vec![("key-a", 1)],
+        }),
+        Box::new(anchor.clone()),
+    )
+    .unwrap();
+    rotated
+        .append(&event("task/t1", 2, 2, serde_json::json!({})))
+        .unwrap();
+    let before = anchor.0.lock().unwrap().commitment;
+    let next = event("task/t1", 3, 3, serde_json::json!({}));
+    assert_eq!(first.append(&next), Err(StorageError::KeyUnavailable));
+    assert_eq!(anchor.0.lock().unwrap().commitment, before);
+}
+
 #[test]
 fn anchored_open_and_recovery_refuse_a_missing_middle_row() {
     let path = fixture();

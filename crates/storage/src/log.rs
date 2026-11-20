@@ -6,6 +6,7 @@ use crate::{
         ReanchorPlan,
     },
     cipher::{self, AssociatedData, ChainKey, Ciphertext, KeyId, KeyProvider, SecretKey},
+    config::VerifyOnAppend,
     migrate::{expected_schema, schema},
     open::SCHEMA_VERSION,
 };
@@ -424,6 +425,38 @@ fn data_version(tx: &Transaction<'_>) -> Result<i64, StorageError> {
     Ok(tx.pragma_query_value(None, "data_version", |row| row.get(0))?)
 }
 
+/// A row whose registered key this provider cannot supply is a key problem
+/// (another process rotated to a key this one does not hold), not tampering.
+fn changed_history(
+    tx: &rusqlite::Connection,
+    keys: &dyn KeyProvider,
+    position: i64,
+) -> StorageError {
+    let key_id: Option<String> = match tx
+        .query_row(
+            "SELECT key_id FROM event WHERE position = ?1",
+            [position],
+            |r| r.get(0),
+        )
+        .optional()
+    {
+        Ok(key_id) => key_id,
+        Err(error) => return error.into(),
+    };
+    let unknown = key_id
+        .and_then(|id| KeyId::new(&id).ok())
+        .map(|id| match registered(tx, &id) {
+            Ok(Some(_)) => matches!(keys.by_id(&id), Err(cipher::CipherError::KeyUnavailable)),
+            _ => false,
+        })
+        .unwrap_or(false);
+    if unknown {
+        StorageError::KeyUnavailable
+    } else {
+        StorageError::HistoryChanged { position }
+    }
+}
+
 fn check_log_schema(tx: &Transaction<'_>) -> Result<(), StorageError> {
     if schema(tx)? != expected_schema(SCHEMA_VERSION)? {
         return Err(StorageError::UnsupportedSchema);
@@ -447,6 +480,8 @@ impl EventLog {
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let version = data_version(&tx)?;
+        // `migrate` checked the schema in another transaction; this one covers
+        // the window between them, under the lock the chain is verified in.
         check_log_schema(&tx)?;
         let stored = anchor.read()?;
         let actual = commitment(&tx)?;
@@ -560,8 +595,12 @@ impl EventLog {
     /// `AnchorUnavailable`: restore access to the vault before trying again.
     /// `AnchorMissing`: the vault entry is absent. Stop and follow recovery.
     /// `AnchorMismatch`: the vault and database differ. Stop and follow recovery.
-    /// `HistoryChanged`: the chain failed verification after an external commit.
-    /// Stop and follow recovery.
+    /// `HistoryChanged`: the chain failed the check this append ran (after an
+    /// external commit, or on every append with `verify_on_append = "always"`).
+    /// Stop and follow recovery. `UnsupportedSchema`: the schema changed under
+    /// that same check; stop and check the database. `KeyUnavailable`: that check
+    /// met a registered key this provider cannot supply (another process
+    /// rotated); give this provider the key and reopen.
     /// `Constraint`: the database refused the row (repeated `id`, or a trigger);
     /// do not retry unchanged. `InvalidEvent`: `type` or stream family over its
     /// bound, or a gate event whose `action_id`/`approval_id` disagree with its
@@ -603,13 +642,21 @@ impl EventLog {
                 Some(_) => return Err(StorageError::AnchorMismatch),
                 None => return Err(StorageError::AnchorMissing),
             }
-            // This connection's own commits do not change its data_version.
+            // This connection's own commits do not change its data_version, and
+            // neither does a write made straight to the file's bytes: only
+            // `Always` catches the latter before the anchor moves.
             let version = data_version(&tx)?;
-            if version != self.verified_data_version {
+            let always = self.config.verify_on_append == VerifyOnAppend::Always;
+            if always || version != self.verified_data_version {
                 check_log_schema(&tx)?;
+                if always {
+                    // Drop cached pages so the check reads what the file holds now.
+                    tx.pragma_query_value(None, "shrink_memory", |_| Ok(()))
+                        .optional()?;
+                }
                 verify_in(&tx, &*self.keys).map_err(|error| match error {
                     StorageError::ChainBroken { position } => {
-                        StorageError::HistoryChanged { position }
+                        changed_history(&tx, &*self.keys, position)
                     }
                     other => other,
                 })?;

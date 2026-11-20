@@ -243,9 +243,11 @@ fn settle(path: &Path, config: &StorageConfig) -> Result<bool, StorageError> {
 
 /// Functions the product's statements, `CHECK`s and triggers call.
 const FUNCTIONS: [&str; 5] = ["coalesce", "length", "max", "substr", "zeroblob"];
-/// Pragmas the product reads back after migration (`verify_pragmas`).
-const PRAGMAS: [&str; 9] = [
+/// Pragmas the product reads back after migration (`verify_pragmas`), plus
+/// `data_version` and `shrink_memory` for the check before an anchored append.
+const PRAGMAS: [&str; 10] = [
     "data_version",
+    "shrink_memory",
     "user_version",
     "journal_mode",
     "synchronous",

@@ -12,6 +12,16 @@ pub struct StorageConfig {
     pub(crate) read_key_candidates: u32,
     pub(crate) read_page_limit: u32,
     pub(crate) read_page_max_bytes: usize,
+    pub(crate) verify_on_append: VerifyOnAppend,
+}
+
+/// When an anchored `append` authenticates the stored chain again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerifyOnAppend {
+    /// Only after another connection committed (`PRAGMA data_version` moved).
+    Changed,
+    /// Before every append, at a cost proportional to the stored bytes.
+    Always,
 }
 
 #[derive(Deserialize)]
@@ -27,6 +37,7 @@ struct Layer {
     encryption: Option<String>,
     cipher: Option<String>,
     journal_mode: Option<String>,
+    verify_on_append: Option<String>,
 }
 
 impl StorageConfig {
@@ -63,8 +74,14 @@ impl StorageConfig {
             .or(base.read_page_max_bytes)
             .filter(|n| (max_event_bytes..=268_435_456).contains(n))
             .ok_or(StorageError::Configuration)?;
+        let verify_on_append = match over.verify_on_append.or(base.verify_on_append).as_deref() {
+            Some("changed") => VerifyOnAppend::Changed,
+            Some("always") => VerifyOnAppend::Always,
+            _ => return Err(StorageError::Configuration),
+        };
         Ok(Self {
             busy_timeout_ms,
+            verify_on_append,
             inspection_max_bytes: over
                 .inspection_max_bytes
                 .or(base.inspection_max_bytes)
@@ -103,6 +120,9 @@ impl StorageConfig {
     }
     pub fn read_page_max_bytes(&self) -> usize {
         self.read_page_max_bytes
+    }
+    pub fn verify_on_append(&self) -> VerifyOnAppend {
+        self.verify_on_append
     }
 }
 
@@ -143,7 +163,17 @@ read_page_limit = 1",
                 .read_key_candidates,
             0
         );
+        assert_eq!(base.verify_on_append(), VerifyOnAppend::Changed);
+        assert_eq!(
+            StorageConfig::from_toml_str("verify_on_append = 'always'")
+                .unwrap()
+                .verify_on_append(),
+            VerifyOnAppend::Always
+        );
         for text in [
+            "verify_on_append = 'never'",
+            "verify_on_append = 'Always'",
+            "verify_on_append = 1",
             "read_key_candidates = 129",
             "unknown = 1",
             "inspection_max_bytes = 511",
