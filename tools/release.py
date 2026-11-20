@@ -1,14 +1,15 @@
 """Numera e poda os pré-lançamentos de desenvolvimento (ADR 0025).
 
-Só calcula, a partir de inventários em arquivo; quem cria e apaga releases e tags é o workflow `prerelease.yml`.
+Só calcula, a partir de inventários em arquivo, e roda só em jobs de leitura; quem cria e apaga releases e tags é o
+workflow `prerelease.yml`, em jobs que não executam código do repositório.
 
   python3 tools/release.py config
-  python3 tools/release.py next --sha S [--date AAAAMMDD] --tags T --merged M --points-at P
-  python3 tools/release.py prune --releases R --tags T [--require TAG]
+  python3 tools/release.py next --sha S [--date AAAAMMDD] --releases R --tags T --merged M --points-at P
+  python3 tools/release.py prune --releases R --remote-tags RT [--require TAG --require-sha S]
 
-`--tags`, `--merged` e `--points-at` têm um nome de tag por linha (todas as tags; as alcançáveis a partir do commit;
-as que apontam para ele). `--releases` tem um objeto JSON por linha: {"tagName", "isPrerelease", "isDraft"}.
-Configuração inválida termina com código 2; entrada inválida, com 1.
+`--tags`, `--merged` e `--points-at` têm um nome de tag por linha (todas; alcançáveis a partir do commit; apontando
+para ele). `--remote-tags` tem "nome commit" por linha. `--releases` tem um objeto JSON por linha:
+{"id", "tagName", "isPrerelease", "isDraft"}. Configuração inválida termina com código 2; entrada inválida, com 1.
 """
 
 import argparse
@@ -90,21 +91,36 @@ def parse_date(text):
     return text
 
 
-def next_release(config, sha, date, tags, merged, points_at):
-    """O que publicar para `sha`: nada se ele já tem tag do canal; senão a próxima tag do dia na versão base.
+def published_tags(config, releases):
+    """Tags do canal com pré-lançamento publicado (nem rascunho, nem estável)."""
+    pattern = tag_pattern(config)
+    return {
+        release["tagName"]
+        for release in releases
+        if isinstance(release.get("tagName"), str)
+        and pattern.match(release["tagName"])
+        and release.get("isPrerelease") is True
+        and release.get("isDraft") is False
+    }
 
-    A tag anterior (ponto de partida das notas) é a mais nova do canal alcançável a partir do commit."""
+
+def next_release(config, sha, date, releases, tags, merged, points_at):
+    """O que publicar para `sha`: nada se ele já tem pré-lançamento publicado; senão a próxima tag livre do dia.
+
+    `N` é o maior sufixo do dia na versão base entre todas as tags, mais um, para nunca colidir com uma existente.
+    A base das notas é o pré-lançamento publicado mais novo alcançável a partir do commit."""
     if not SHA.match(sha):
         raise ValueError("commit deve ser hexadecimal minúsculo de 7 a 40 caracteres")
     date = parse_date(date)
-    existing = channel_tags(config, points_at)
+    published = published_tags(config, releases)
+    existing = [item for item in channel_tags(config, points_at) if item[1] in published]
     if existing:
         return {"publish": "no", "existing": max(existing)[1]}
     base = tuple(int(part) for part in config["base_version"].split("."))
     same_day = [key[4] for key, _ in channel_tags(config, tags) if key[:3] == base and key[3] == date]
     number = max(same_day, default=0) + 1
     prerelease = "%s-%s.%s.%d" % (config["base_version"], config["channel"], date, number)
-    reachable = channel_tags(config, merged)
+    reachable = [item for item in channel_tags(config, merged) if item[1] in published]
     return {
         "publish": "yes",
         "tag": config["tag_prefix"] + prerelease,
@@ -113,37 +129,51 @@ def next_release(config, sha, date, tags, merged, points_at):
     }
 
 
-def prune_plan(config, releases, tags, require=""):
-    """Releases e tags a apagar para sobrarem só os `keep` pré-lançamentos publicados mais novos do canal.
+def prune_plan(config, releases, remote_tags, require="", require_sha=""):
+    """Alvos da poda: (id da release, tag, commit da tag ou "-") dos pré-lançamentos publicados do canal além dos
+    `keep` mais novos, mais as tags do canal sem release, só relatadas.
 
-    Nunca toca rascunho, release estável, release ou tag de outro canal, nem os mantidos. Tags do canal sem
-    release (sobras de uma poda interrompida) também saem, desde que fora dos mantidos."""
+    Nunca entra rascunho, release estável ou de outro canal. A recém-publicada tem de estar entre as mantidas, e a
+    tag dela tem de apontar para o commit esperado."""
     pattern = tag_pattern(config)
-    published, protected = [], set()
+    refs = dict(remote_tags)
+    by_tag = {}
     for release in releases:
         tag = release.get("tagName")
         if not isinstance(tag, str) or not pattern.match(tag):
             continue
         if release.get("isPrerelease") is True and release.get("isDraft") is False:
-            published.append(tag)
-        else:
-            protected.add(tag)
-    ordered = [tag for _, tag in sorted(channel_tags(config, published), reverse=True)]
-    kept = set(ordered[: config["keep"]])
-    if require and require not in kept:
-        raise ValueError("a release %s não está publicada entre as mais novas do canal" % require)
-    delete_releases = ordered[config["keep"] :]
-    delete_tags = sorted(
-        (tag for _, tag in channel_tags(config, tags) if tag not in kept and tag not in protected),
-        key=lambda tag: channel_tags(config, [tag])[0][0],
-        reverse=True,
+            if not isinstance(release.get("id"), int) or isinstance(release.get("id"), bool):
+                raise ValueError("release %s sem id numérico" % tag)
+            by_tag[tag] = release["id"]
+    ordered = [tag for _, tag in sorted(channel_tags(config, by_tag), reverse=True)]
+    kept = ordered[: config["keep"]]
+    if require:
+        if require not in kept:
+            raise ValueError("a release %s não está publicada entre as mais novas do canal" % require)
+        if refs.get(require) != require_sha:
+            raise ValueError("a tag %s não aponta para %s" % (require, require_sha or "o commit esperado"))
+    targets = [(by_tag[tag], tag, refs.get(tag, "-")) for tag in ordered[config["keep"] :]]
+    with_release = {tag for release in releases if isinstance((tag := release.get("tagName")), str)}
+    orphans = sorted(
+        (item for item in channel_tags(config, refs) if item[1] not in with_release), reverse=True
     )
-    return delete_releases, delete_tags
+    return targets, [tag for _, tag in orphans]
 
 
 def read_lines(path):
     with open(path, encoding="utf-8") as handle:
         return [line.strip() for line in handle if line.strip()]
+
+
+def read_remote_tags(path):
+    pairs = []
+    for line in read_lines(path):
+        parts = line.split()
+        if len(parts) != 2 or not re.fullmatch(r"[0-9a-f]{40}", parts[1]):
+            raise ValueError("cada linha de tags remotas deve ser \"nome commit\"")
+        pairs.append((parts[0], parts[1]))
+    return pairs
 
 
 def read_releases(path):
@@ -163,13 +193,15 @@ def main(argv=None):
     nxt = sub.add_parser("next")
     nxt.add_argument("--sha", required=True)
     nxt.add_argument("--date", default=datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d"))
+    nxt.add_argument("--releases", required=True)
     nxt.add_argument("--tags", required=True)
     nxt.add_argument("--merged", required=True)
     nxt.add_argument("--points-at", required=True)
     prune = sub.add_parser("prune")
     prune.add_argument("--releases", required=True)
-    prune.add_argument("--tags", required=True)
+    prune.add_argument("--remote-tags", required=True)
     prune.add_argument("--require", default="")
+    prune.add_argument("--require-sha", default="")
     args = parser.parse_args(argv)
 
     try:
@@ -187,6 +219,7 @@ def main(argv=None):
                 config,
                 args.sha,
                 args.date,
+                read_releases(args.releases),
                 read_lines(args.tags),
                 read_lines(args.merged),
                 read_lines(args.points_at),
@@ -194,11 +227,17 @@ def main(argv=None):
             for key, value in result.items():
                 print("%s=%s" % (key, value))
         else:
-            releases, tags = prune_plan(config, read_releases(args.releases), read_lines(args.tags), args.require)
-            for tag in releases:
-                print("release %s" % tag)
-            for tag in tags:
-                print("tag %s" % tag)
+            targets, orphans = prune_plan(
+                config,
+                read_releases(args.releases),
+                read_remote_tags(args.remote_tags),
+                args.require,
+                args.require_sha,
+            )
+            for release_id, tag, sha in targets:
+                print("delete %d %s %s" % (release_id, tag, sha))
+            for tag in orphans:
+                print("orphan %s" % tag)
     except (OSError, ValueError) as error:
         print("entrada inválida: %s" % error, file=sys.stderr)
         return 1
