@@ -4,7 +4,7 @@ use std::num::{NonZeroU64, NonZeroUsize};
 
 use ads_contracts::{
     CommonActorV1, CommonActorV1Kind, CommonIdV1, CommonQueueTaskOriginV1, CommonQueueTaskStateV1,
-    CommonTimestampV1, CommonUlidV1, EventQueueClockReanchoredV1, EventQueueClockReanchoredV1Data,
+    CommonTimestampV1, EventQueueClockReanchoredV1, EventQueueClockReanchoredV1Data,
     EventQueueClockReanchoredV1DataVia, EventQueueCreatedV1, EventQueueCreatedV1DataVia,
     EventQueueEnabledV1, EventQueueEnabledV1Data, EventQueueEnabledV1DataVia,
     EventQueuePolicyChangedV1, EventQueuePolicyChangedV1Data, EventQueuePolicyChangedV1DataPolicy,
@@ -433,10 +433,6 @@ impl<'a> QueueLogEvent<'a> {
         each_event!(self, event => event.seq.get())
     }
 
-    fn id(self) -> &'a CommonUlidV1 {
-        each_event!(self, event => &event.id)
-    }
-
     fn stream(self) -> &'a str {
         each_event!(self, event => event.stream.as_str())
     }
@@ -485,10 +481,6 @@ pub enum ReplayRefusal {
     MissingInitialPolicy,
     /// The policy cannot be represented by the current core.
     InvalidPolicy,
-    /// The core clock reading used at creation was unavailable.
-    MissingAdmissionClock,
-    /// The clock reading belongs to a different creation.
-    AdmissionClockMismatch,
     /// A task in the stream fails the admission policy in force when it was created.
     Admission(AdmissionRefusal),
 }
@@ -500,13 +492,6 @@ pub struct ReplayedTask {
     pub attempts: u64,
     pub anchor: Option<ClockAnchor>,
     pub policy: QueuePolicy,
-}
-
-/// Core clock reading captured at admission and stored with the creation's event ID.
-#[derive(Debug, Clone, Copy)]
-pub struct ReplayAdmissionClock<'a> {
-    pub event_id: &'a CommonUlidV1,
-    pub now: &'a CommonTimestampV1,
 }
 
 /// Rebuilds the state and the retry budget of one task from the whole stream of its queue,
@@ -524,15 +509,13 @@ pub struct ReplayAdmissionClock<'a> {
 ///
 /// Replay starts with the policy loaded when the queue was created, if available. Owner
 /// policy events set the policy for subsequent events. Each creation requires a policy.
-/// The caller reads the trusted admission clock by event ID, independently of the creation's
-/// timestamp. Anchors come from the log.
-/// The stream cannot establish uniqueness across queues or authenticate the supplied clock.
-pub fn replay_task<'a, 'clock>(
+/// Each creation supplies its clock through the logged timestamp. Anchors come from the log.
+/// The stream cannot establish uniqueness across queues.
+pub fn replay_task<'a>(
     task_id: &CommonIdV1,
     log: impl IntoIterator<Item = QueueLogEvent<'a>>,
     owner_at: impl Fn(&CommonIdV1, &CommonTimestampV1) -> Option<CommonIdV1>,
     initial_policy: Option<&QueuePolicy>,
-    clock_at: impl Fn(&CommonUlidV1) -> Option<ReplayAdmissionClock<'clock>>,
 ) -> Result<ReplayedTask, ReplayRefusal> {
     let mut log = log.into_iter();
     let Some(QueueLogEvent::Created(created)) = log.next() else {
@@ -614,13 +597,9 @@ pub fn replay_task<'a, 'clock>(
                     return Err(ReplayRefusal::TaskCreation);
                 }
                 let policy = policy.as_ref().ok_or(ReplayRefusal::MissingInitialPolicy)?;
-                let clock = clock_at(event.id()).ok_or(ReplayRefusal::MissingAdmissionClock)?;
-                if clock.event_id != event.id() {
-                    return Err(ReplayRefusal::AdmissionClockMismatch);
-                }
                 let inputs = AdmissionInputs {
                     policy,
-                    now: clock.now,
+                    now: admitted.ts,
                     anchor: anchor.as_ref(),
                 };
                 check_admission(admitted, admissions.iter().copied(), owner, inputs)
