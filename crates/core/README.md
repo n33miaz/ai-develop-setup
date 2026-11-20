@@ -28,6 +28,7 @@ O replay (`replay_task`) recebe o stream inteiro da fila, a partir de `queue.cre
 - todo pedido manual, de qualquer tarefa da fila, foi criado por um aparelho do dono;
 - a tarefa só entra em `running` com a fila ligada naquele ponto do log;
 - `review → done` foi aceito por um aparelho do dono.
+- a mudança de estado da tarefa leva o canal (`via`) quando o ator é um aparelho, e só nesse caso (`ActorChannel`).
 
 O agente e o daemon continuam podendo reprovar e cancelar tarefas. O replay confere a coerência dos atores que o log declara, não a autenticidade deles: o log não é assinado por aparelho, e uma linha forjada é recusada pela cadeia HMAC do armazenamento ([ADR 0021](../../docs/adr/0021-storage-atomic-file-and-cipher.md)). O replay protege contra erro do produtor e contra log montado de forma errada.
 

@@ -1579,3 +1579,29 @@ fn an_older_policy_file_loads_with_the_bundled_window_limits() {
     assert_eq!(older.clock_rewind_seconds, bundled.clock_rewind_seconds);
     assert!(toml::from_str::<QueuePolicy>("attempt_limit = 3\n").is_err());
 }
+
+#[test]
+fn replay_requires_a_channel_exactly_for_device_changes() {
+    let mut daemon_with_channel = Stream::new().started().numbered();
+    daemon_with_channel[3]["data"]["via"] = "tray".into();
+    assert_eq!(
+        replay_values(daemon_with_channel),
+        Err(ReplayRefusal::ActorChannel)
+    );
+    let mut device_without_channel = Stream::new()
+        .started()
+        .change(OWNER_DEVICE, "running", "cancelled", 1)
+        .numbered();
+    device_without_channel[4]["data"]
+        .as_object_mut()
+        .unwrap()
+        .remove("via");
+    assert_eq!(
+        replay_values(device_without_channel),
+        Err(ReplayRefusal::ActorChannel)
+    );
+    let cancelled = Stream::new()
+        .started()
+        .change(OWNER_DEVICE, "running", "cancelled", 1);
+    assert_eq!(cancelled.replay(), Ok((Cancelled, 1)));
+}

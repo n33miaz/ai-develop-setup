@@ -373,6 +373,8 @@ pub enum ReplayRefusal {
     NotOwnerDevice,
     /// The task entered `running` while the queue was stopped.
     QueueStopped,
+    /// A task change names a channel (`via`) without a device actor, or a device acted without one.
+    ActorChannel,
     /// The change does not follow the current state or the attempt count.
     InvalidChange,
     /// The task was created twice or never.
@@ -401,7 +403,8 @@ pub struct ReplayedTask {
 /// Every device actor belongs to the queue owner; creating, enabling and owner stops come from
 /// such a device, and so do the manual requests of every task of the queue; a task enters
 /// `running` only while the queue is enabled; and `review → done` is accepted by a device of the
-/// owner. Agents and the daemon may still cancel or fail tasks.
+/// owner. A task change names its channel exactly when a device made it. Agents and the daemon
+/// may still cancel or fail tasks.
 ///
 /// Every creation is checked against the loaded policy and the historical clock reading supplied
 /// by sequence number. Anchors come from the log. The stream cannot establish uniqueness across
@@ -501,6 +504,9 @@ pub fn replay_task<'a, 'context>(
                 let (state, attempts, limit) = task.as_mut().ok_or(ReplayRefusal::TaskCreation)?;
                 if change.data.from != *state {
                     return Err(ReplayRefusal::InvalidChange);
+                }
+                if change.data.via.is_some() != (change.actor.kind == CommonActorV1Kind::Device) {
+                    return Err(ReplayRefusal::ActorChannel);
                 }
                 if change.data.to == Running {
                     if queue_state != Enabled {
