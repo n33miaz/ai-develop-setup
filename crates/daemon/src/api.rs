@@ -34,7 +34,8 @@ pub enum ApiError {
     Replay,
     Unavailable,
     ClosePending,
-    SetupTimeout,
+    /// A preparação de um `session.open` já aberto no host falhou; o fechamento fica agendado.
+    SetupFailed,
     /// Prazo do host esgotado num comando; o efeito é incerto e o serviço encerra.
     HostTimeout,
     Host(ErrorCode),
@@ -51,7 +52,7 @@ impl ApiError {
             Self::Replay => -32004,
             Self::Unavailable => -32603,
             Self::ClosePending => -32013,
-            Self::SetupTimeout => -32014,
+            Self::SetupFailed => -32014,
             Self::HostTimeout => -32603,
             Self::Host(code) => code.number(),
         }
@@ -67,7 +68,7 @@ impl ApiError {
             Self::Replay => "replay unavailable",
             Self::Unavailable => "service unavailable",
             Self::ClosePending => "session close pending",
-            Self::SetupTimeout => "session setup timed out",
+            Self::SetupFailed => "session setup failed",
             Self::HostTimeout => "service unavailable",
             Self::Host(_) => "host refused command",
         }
@@ -359,12 +360,17 @@ impl Service {
                     #[cfg(test)]
                     self.before_setup.pass().await;
                     self.log.lock().await.append(id, "created", json!({"session_id": id, "task_id": null, "harness": params["harness"], "mode": "interactive", "cols": params["cols"], "rows": params["rows"], "workdir_alias": params["workdir_alias"]}), cause)?;
-                    self.wait_host(host.subscribe(request.session_id.clone(), Some(0)), deadline).await
-                        // O prazo vence aqui, no caminho que guarda o registro e agenda o fechamento.
-                        .map_err(|e| if e == ApiError::HostTimeout { ApiError::SetupTimeout } else { e })?;
+                    self.wait_host(host.subscribe(request.session_id.clone(), Some(0)), deadline).await?;
                     Ok(())
                 }.await;
                 if let Err(error) = setup {
+                    // Qualquer falha aqui, inclusive o prazo, tem o mesmo desfecho: registro guardado e fechamento
+                    // agendado. Só o host perdido continua derrubando o serviço.
+                    let error = if error == ApiError::Unavailable {
+                        error
+                    } else {
+                        ApiError::SetupFailed
+                    };
                     // O host já abriu o terminal: o fechamento segue pela fila, com prazo próprio por tentativa,
                     // e o registro fica até o host confirmar. Esperar aqui deixaria o prazo do comando derrubar o serviço.
                     if let Some(session) = self.sessions.get_mut(id) {
@@ -1421,7 +1427,7 @@ mod tests {
         .await
         .unwrap();
         tokio::time::resume();
-        assert_eq!(result.map(|_| ()), Err(ApiError::SetupTimeout));
+        assert_eq!(result.map(|_| ()), Err(ApiError::SetupFailed));
         assert_eq!(api.service.retries.len(), 1);
         let mut other = params.clone();
         other["session_id"] = json!("other");
@@ -1569,7 +1575,7 @@ mod tests {
                 )
                 .await
                 .map(|_| ()),
-            Err(ApiError::Capacity)
+            Err(ApiError::SetupFailed)
         );
         // The record stays until the queued close is confirmed by the host.
         assert!(!backend.terminals()[0].was_killed());
