@@ -38,6 +38,8 @@ pub struct QueuePolicy {
     pub clock_skew_seconds: u64,
     #[serde(default = "default_clock_rewind_seconds")]
     pub clock_rewind_seconds: u64,
+    #[serde(default = "default_host_confirm_seconds")]
+    pub host_confirm_seconds: NonZeroU64,
 }
 
 /// Reads one key of the bundled defaults, which a test loads in full.
@@ -72,6 +74,10 @@ fn default_clock_skew_seconds() -> u64 {
 
 fn default_clock_rewind_seconds() -> u64 {
     bundled_default("clock_rewind_seconds")
+}
+
+fn default_host_confirm_seconds() -> NonZeroU64 {
+    bundled_default("host_confirm_seconds")
 }
 
 /// Channel through which a device acted, independent of the event that records it.
@@ -212,11 +218,16 @@ pub fn restore_stopped(
     automatic_stop(&persisted, AutomaticStop::Restart, was_enabled)
 }
 
-/// Whether the terminal host still runs the process of a task when the core starts.
+/// What the terminal host says, when the core starts, about the session of a running task. The
+/// caller pairs the task with its session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostProcess {
+    /// The host lists the session and its process still runs.
     Kept,
+    /// The host answered: the session ended or is not listed.
     Lost,
+    /// The host has not answered yet, for `waited_seconds` since the core started asking.
+    Unconfirmed { waited_seconds: u64 },
 }
 
 /// What the start does with a task, with the data of the change to append, if any.
@@ -224,24 +235,48 @@ pub enum HostProcess {
 pub enum RunningAfterRestart {
     /// No change: the task is not running, or the host kept its process and the attempt goes on.
     Keep,
+    /// The task stays `running` in the log, but nothing moves it until the host answers or
+    /// `host_confirm_seconds` pass: the caller asks again and appends nothing.
+    AwaitHost,
     /// `running → failed` with the same count, because the interrupted attempt was already counted.
     Fail(EventQueueTaskStateChangedV1Data),
+    /// `running → failed` with the same count after the host stayed silent for
+    /// `host_confirm_seconds`. The process may still run: the caller ends the session as soon as
+    /// the host lists it, before the task starts again.
+    Abandon(EventQueueTaskStateChangedV1Data),
     /// `running → cancelled` with the recorded count, for a running task whose count is
-    /// inconsistent; a process the host kept is ended by the caller.
+    /// inconsistent; a process the host kept, or lists later, is ended by the caller.
     Cancel(EventQueueTaskStateChangedV1Data),
 }
 
-/// Decides, on start, the fate of a task whose last recorded state is `running`.
-pub fn restore_running_task(task: &RecordQueueTaskV2, host: HostProcess) -> RunningAfterRestart {
+/// Decides, on start, the fate of a task whose last recorded state is `running`. The caller passes
+/// the state and count rebuilt by `replay_task`, so a crash between the log and the record is
+/// covered.
+pub fn restore_running_task(
+    task: &RecordQueueTaskV2,
+    host: HostProcess,
+    policy: &QueuePolicy,
+) -> RunningAfterRestart {
     if task.state != Running {
         return RunningAfterRestart::Keep;
     }
     let attempts = task.attempts.get();
     let consistent = attempts >= 1 && attempts <= task.attempt_limit.get().into();
-    let to = match (consistent, host) {
+    let abandoned = match (consistent, host) {
+        (false, _) => None,
         (true, HostProcess::Kept) => return RunningAfterRestart::Keep,
-        (true, HostProcess::Lost) => Failed,
-        (false, _) => Cancelled,
+        (true, HostProcess::Lost) => Some(false),
+        (true, HostProcess::Unconfirmed { waited_seconds })
+            if waited_seconds < policy.host_confirm_seconds.get() =>
+        {
+            return RunningAfterRestart::AwaitHost;
+        }
+        (true, HostProcess::Unconfirmed { .. }) => Some(true),
+    };
+    let to = if abandoned.is_some() {
+        Failed
+    } else {
+        Cancelled
     };
     let data = EventQueueTaskStateChangedV1Data::new(EventQueueTaskStateChangedV1DataFields {
         queue_id: task.queue_id.clone(),
@@ -253,10 +288,10 @@ pub fn restore_running_task(task: &RecordQueueTaskV2, host: HostProcess) -> Runn
         via: None,
     })
     .expect("running to failed or cancelled is an allowed change");
-    if to == Failed {
-        RunningAfterRestart::Fail(data)
-    } else {
-        RunningAfterRestart::Cancel(data)
+    match abandoned {
+        Some(false) => RunningAfterRestart::Fail(data),
+        Some(true) => RunningAfterRestart::Abandon(data),
+        None => RunningAfterRestart::Cancel(data),
     }
 }
 

@@ -1034,15 +1034,57 @@ fn replay_lets_a_kept_task_finish_after_a_restart() {
 }
 
 #[test]
+fn a_running_task_waits_for_the_host_and_is_abandoned_after_the_deadline() {
+    let mut task = task();
+    task.state = Running;
+    task.attempts = RecordQueueTaskV2Attempts::new(1).unwrap();
+    let policy = policy();
+    let deadline = policy.host_confirm_seconds.get();
+    for waited_seconds in [0, deadline - 1] {
+        assert_eq!(
+            restore_running_task(&task, HostProcess::Unconfirmed { waited_seconds }, &policy),
+            RunningAfterRestart::AwaitHost,
+            "{waited_seconds}"
+        );
+    }
+    for waited_seconds in [deadline, deadline + 1] {
+        let RunningAfterRestart::Abandon(data) =
+            restore_running_task(&task, HostProcess::Unconfirmed { waited_seconds }, &policy)
+        else {
+            panic!("the deadline abandons the task: {waited_seconds}");
+        };
+        assert_eq!((data.from, data.to), (Running, Failed));
+        assert_eq!(data.attempts.get(), 1, "no new attempt");
+        assert_eq!(data.via, None);
+    }
+    let mut values = Stream::new().started().restart().numbered();
+    let RunningAfterRestart::Abandon(data) = restore_running_task(
+        &task,
+        HostProcess::Unconfirmed {
+            waited_seconds: deadline,
+        },
+        &policy,
+    ) else {
+        unreachable!();
+    };
+    let mut failed = values[3].clone();
+    failed["seq"] = 6.into();
+    failed["data"] = serde_json::to_value(&data).unwrap();
+    values.push(failed);
+    assert_eq!(replay_values(values), Ok((Failed, 1)));
+}
+
+#[test]
 fn a_restart_keeps_fails_or_cancels_the_running_task() {
     let mut task = task();
     task.state = Running;
     task.attempts = RecordQueueTaskV2Attempts::new(1).unwrap();
     assert_eq!(
-        restore_running_task(&task, HostProcess::Kept),
+        restore_running_task(&task, HostProcess::Kept, &policy()),
         RunningAfterRestart::Keep
     );
-    let RunningAfterRestart::Fail(data) = restore_running_task(&task, HostProcess::Lost) else {
+    let RunningAfterRestart::Fail(data) = restore_running_task(&task, HostProcess::Lost, &policy())
+    else {
         panic!("a lost process fails the task");
     };
     assert_eq!((data.from, data.to), (Running, Failed));
@@ -1053,16 +1095,21 @@ fn a_restart_keeps_fails_or_cancels_the_running_task() {
     let mut at_ceiling = task.clone();
     at_ceiling.attempts = RecordQueueTaskV2Attempts::new(2).unwrap();
     assert!(matches!(
-        restore_running_task(&at_ceiling, HostProcess::Lost),
+        restore_running_task(&at_ceiling, HostProcess::Lost, &policy()),
         RunningAfterRestart::Fail(data) if data.attempts.get() == 2
     ));
     for (state, attempts) in [(Queued, 0), (Review, 1), (Failed, 1)] {
         let mut other = task.clone();
         other.state = state;
         other.attempts = RecordQueueTaskV2Attempts::new(attempts).unwrap();
-        for host in [HostProcess::Kept, HostProcess::Lost] {
+        for host in [
+            HostProcess::Kept,
+            HostProcess::Lost,
+            HostProcess::Unconfirmed { waited_seconds: 0 },
+            HostProcess::Unconfirmed { waited_seconds: 60 },
+        ] {
             assert_eq!(
-                restore_running_task(&other, host),
+                restore_running_task(&other, host, &policy()),
                 RunningAfterRestart::Keep
             );
         }
@@ -1070,8 +1117,13 @@ fn a_restart_keeps_fails_or_cancels_the_running_task() {
     for attempts in [0, 3] {
         let mut inconsistent = task.clone();
         inconsistent.attempts = RecordQueueTaskV2Attempts::new(attempts).unwrap();
-        for host in [HostProcess::Kept, HostProcess::Lost] {
-            let RunningAfterRestart::Cancel(data) = restore_running_task(&inconsistent, host)
+        for host in [
+            HostProcess::Kept,
+            HostProcess::Lost,
+            HostProcess::Unconfirmed { waited_seconds: 0 },
+        ] {
+            let RunningAfterRestart::Cancel(data) =
+                restore_running_task(&inconsistent, host, &policy())
             else {
                 panic!("an inconsistent count cancels the task: {attempts} {host:?}");
             };
@@ -1586,6 +1638,7 @@ fn queue_policy_validates_configured_limits() {
     assert_eq!(policy.bug_rule_window_admissions.get(), 3);
     assert_eq!(policy.clock_skew_seconds, 5);
     assert_eq!(policy.clock_rewind_seconds, 300);
+    assert_eq!(policy.host_confirm_seconds.get(), 60);
     for (key, value) in [
         ("attempt_limit", "0"),
         ("attempt_limit", "11"),
@@ -1596,6 +1649,7 @@ fn queue_policy_validates_configured_limits() {
         ("bug_rule_window_admissions", "0"),
         ("clock_skew_seconds", "-1"),
         ("clock_rewind_seconds", "-1"),
+        ("host_confirm_seconds", "0"),
     ] {
         let prefix = format!("{key} =");
         let settings: String = DEFAULT_POLICY
@@ -1631,6 +1685,7 @@ fn an_older_policy_file_loads_with_the_bundled_window_limits() {
     );
     assert_eq!(older.clock_skew_seconds, bundled.clock_skew_seconds);
     assert_eq!(older.clock_rewind_seconds, bundled.clock_rewind_seconds);
+    assert_eq!(older.host_confirm_seconds, bundled.host_confirm_seconds);
     assert!(toml::from_str::<QueuePolicy>("attempt_limit = 3\n").is_err());
 }
 

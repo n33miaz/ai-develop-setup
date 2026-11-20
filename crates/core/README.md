@@ -16,10 +16,14 @@ A [política da fila](src/queue.rs) restaura a fila parada e calcula transiçõe
 
 `change_queue_state` devolve o novo estado junto com os dados do evento (`queue.enabled` ou `queue.stopped` com `reason: owner`), montados do aparelho conferido. Uma mudança para o estado atual é recusada com `Unchanged`, então nunca sai parada para uma fila já parada. O produtor monta o envelope com `actor.id` igual ao `device_id` do aparelho devolvido.
 
-Na partida, `restore_running_task` decide o destino da tarefa cujo último estado é `running`, em três casos:
-- `Keep`: o host manteve o processo, e a tarefa continua em `running`. O núcleo volta a acompanhar a sessão, e a tentativa termina normalmente, mesmo com a fila parada.
-- `Fail`: o host não manteve o processo, e a tarefa passa para `failed` com a mesma contagem, porque a tentativa interrompida já foi contada.
-- `Cancel`: a contagem é inconsistente (zero ou acima do teto). A tarefa passa para `cancelled` com a contagem gravada, e o chamador encerra o processo se o host o manteve.
+Na partida, `restore_running_task` decide o destino da tarefa cujo último estado é `running`. O chamador passa o estado e a contagem reconstituídos pelo replay, para uma queda entre o log e o retrato não escapar da regra, e diz o que o host de terminal informou sobre a sessão da tarefa (`HostProcess`). Parear a tarefa com a sessão cabe ao chamador: o registro da tarefa ainda não guarda a sessão. Os casos:
+- `Keep`: o host lista a sessão com o processo rodando (`Kept`), e a tarefa continua em `running`. O núcleo volta a acompanhar a sessão, e a tentativa termina normalmente, mesmo com a fila parada.
+- `AwaitHost`: o host ainda não respondeu (`Unconfirmed`) e não passaram `host_confirm_seconds` (60) desde que o núcleo começou a perguntar. A tarefa fica em `running` no log, sem evento novo, e nada a move até o host responder ou o prazo vencer. Esse estado é só do núcleo: a cada partida ele é calculado de novo.
+- `Fail`: o host respondeu que a sessão terminou ou não existe (`Lost`), e a tarefa passa para `failed` com a mesma contagem, porque a tentativa interrompida já foi contada. Uma sessão que terminou enquanto o núcleo estava fora também cai aqui: o resultado dela não é julgado.
+- `Abandon`: o prazo venceu sem resposta do host. A tarefa passa para `failed` com a mesma contagem, mas o processo pode continuar vivo: o chamador encerra a sessão assim que o host a listar, antes de a tarefa voltar a rodar, para duas tentativas nunca rodarem juntas na mesma pasta.
+- `Cancel`: a contagem é inconsistente (zero ou acima do teto). A tarefa passa para `cancelled` com a contagem gravada, e o chamador encerra o processo se o host o manteve ou o listar depois.
+
+Hoje o daemon não adota sessões antigas ao reiniciar, então `Kept` ainda não acontece na prática.
 
 O replay (`replay_task`) recebe o stream inteiro da fila, a partir de `queue.created` com `seq` 1 e sem buraco, e uma consulta ao cadastro de aparelhos no instante de cada evento. Ele devolve o estado e o saldo, ou o motivo da recusa (`ReplayRefusal`). Além da ordem e do saldo, ele confere:
 - todo evento é da fila e do stream `queue/<id>`;
