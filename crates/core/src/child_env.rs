@@ -11,7 +11,9 @@ use serde::Deserialize;
 /// How variable names are compared against the allow list. Deny patterns ignore case always.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NameCase {
-    /// Windows: `Path` and `PATH` are the same variable.
+    /// Windows: `Path` and `PATH` are the same variable. Only ASCII letters are folded, while
+    /// Windows also folds other letters (`Ä` and `ä`): an allowed name copies only a parent
+    /// name equal to it apart from ASCII case, so a wider fold could only let less through.
     Insensitive,
     Sensitive,
 }

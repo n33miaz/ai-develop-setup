@@ -13,6 +13,12 @@
 # Variaveis copiadas do processo pai, se existirem. A camada do usuario SUBSTITUI a lista.
 # Padrao: o minimo para um programa do Windows achar o sistema, o PATH, a pasta do usuario e a
 # temporaria. Nada de credencial: o login de cada ferramenta fica com ela, fora do produto.
+# Linux e macOS: a lista nao tem `HOME`, e sem ele a ferramenta nao acha a propria pasta (`~`), onde
+# guarda o login e a configuracao: abre como se nunca tivesse entrado e pede login de novo. Para
+# passar `HOME`, o arquivo do usuario escreve a lista inteira com ele, porque a camada do usuario
+# substitui `allow` (o nome que nao for repetido deixa de passar):
+#   [env]
+#   allow = ["PATH", "HOME", "TEMP", "TMP"]
 allow = [
   "SystemRoot",
   "windir",
