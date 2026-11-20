@@ -326,6 +326,8 @@ O estado guarda o instante do pedido de aprovação (`requested_at`) e o da conc
 
 São recusados, entre outros: licença sem a aprovação que o veredito exigia; plano, aprovação ou licença de outro hash; aprovação de outro `approval_id` ou tomada para outra ação; conceder ou negar com instante anterior ao do pedido; iniciar com instante anterior ao da concessão; conceder ou executar depois da validade; expirar antes dela; segunda licença para a mesma ação; qualquer comando em estado final.
 
+`JournalGate` usa a porta `GateJournal` para gravar o plano e as transições e só devolve a licença depois de o diário confirmar `action.started`. Ao carregar a ação, confere identificadores de evento e sequências por stream, reaplica a política vigente ao pedido reconstruído e compara o resultado com o plano e o evento inicial. Uma divergência impede novas transições. Um início já gravado restaura o estado `Executing` sem emitir outra licença. A porta exige que a implementação autentique o histórico e compare sua extensão na mesma transação que grava a próxima transição.
+
 ### Estado a partir dos eventos
 
 `replay` recebe os eventos de uma ação, na ordem em que foram gravados (os `action.*` do stream da ação e os `approval.*` da aprovação que o `approval.requested` amarra a ela), e devolve o estado: o mesmo que a máquina tem em memória, em todo passo de todo caminho. A máquina e o `replay` usam a mesma função `estado + evento -> estado`; não há segunda cópia das transições.
