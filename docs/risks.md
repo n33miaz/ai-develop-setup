@@ -115,7 +115,7 @@ Estado da mitigação, em cada risco:
 - **Teto.** Não se aplica.
 - **Mitigação existente.** Na abertura, o núcleo canonicaliza o caminho, recusa destinos de rede e prefixos de dispositivo no Windows, e recusa uma pasta de trabalho que resolva para a raiz. O programa deve resolver para um arquivo e a pasta para um diretório. O host recebe o caminho resolvido. Os testes em disco usam junções no Windows e links simbólicos nos demais sistemas.
 - **Plano B.** Corrigir o caminho no arquivo de configuração se o destino for recusado.
-- **O que falta.** O lançamento ainda usa caminhos. Uma entrada no caminho resolvido pode mudar entre a conferência e o uso pelo host.
+- **O que falta.** O lançamento ainda usa caminhos. Uma entrada no caminho resolvido pode mudar entre a conferência e o uso pelo host. No Linux e no macOS uma montagem de rede (NFS, SMB) parece um caminho local e não é reconhecida. Passar o caminho resolvido quebra programas que dependem do nome com que são chamados (atalhos de gerenciadores de versão, `busybox`, atalhos de aplicativos da Microsoft Store no Windows); nesse caso, configure o programa real.
 
 ### Página ou programa local comanda os terminais
 
