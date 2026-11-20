@@ -1,6 +1,12 @@
 export { decodeBase64, encodeBase64 } from './base64'
-export { CoreClientError } from './client'
-export type { ConnectionState, CoreClient, Unsubscribe } from './client'
+export {
+  CoreClientError,
+  isSubscriptionEndCode,
+  SESSION_CLOSE_PENDING,
+  SESSION_SETUP_TIMED_OUT,
+  SUBSCRIPTION_REPLAY_UNAVAILABLE,
+} from './client'
+export type { ConnectionState, CoreClient, SubscriptionEndCode, Unsubscribe } from './client'
 export { newCommand } from './command'
 export type * from './contracts'
 export { createFakeCoreClient } from './fake'

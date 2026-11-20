@@ -21,11 +21,19 @@ export interface TaskView {
   state: TaskState
 }
 
+/**
+ * Estado local da tela que não vem de evento: o núcleo o informa como resultado de comando ou de
+ * assinatura. `closing`: as tentativas automáticas de fechar se esgotaram (`-32013`); `ended`: a
+ * assinatura do fluxo terminou (`-32004`); `setupFailed`: a preparação estourou o prazo (`-32014`).
+ */
+export type SessionStatus = 'closing' | 'ended' | 'setupFailed'
+
 export interface SessionView {
   id: string
   /** O `display_name` de `session.created`; ausente quando o evento não o traz. */
   displayName?: string
   activity: SessionActivity
+  status?: SessionStatus
 }
 
 /** Estado local da tela: sai dos eventos da aprovação, não do registro `record.approval`. */

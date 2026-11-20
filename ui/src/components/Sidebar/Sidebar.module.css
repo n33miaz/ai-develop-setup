@@ -81,6 +81,15 @@ button.item[aria-current='true'] {
   background: currentColor;
 }
 
+.state[data-status] {
+  color: var(--warn);
+}
+
+.state[data-status] .dot {
+  background: none;
+  border-radius: 0;
+}
+
 button.item[aria-current='true'] .state {
   color: var(--accent-contrast);
 }
