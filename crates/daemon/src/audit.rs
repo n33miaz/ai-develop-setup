@@ -1,7 +1,7 @@
 //! Composition of the persistent audit log with the product vault.
 
 use std::{
-    fs,
+    fs::{self, File, OpenOptions, TryLockError},
     path::{Path, PathBuf},
 };
 
@@ -9,7 +9,10 @@ use ads_adapter_vault::OsVault;
 use ads_core::vault::{Secret, SecretName, Vault};
 use ads_storage::{
     EventLog, StorageConfig, StorageError,
-    anchor::{AnchorStore, COMMITMENT_VERSION, Commitment, DatabaseId, ReanchorPlan},
+    anchor::{
+        AnchorStore, COMMITMENT_VERSION, Commitment, DatabaseId, ReanchorPlan, RecoveryAnchor,
+        genesis_id,
+    },
     cipher::KeyProvider,
 };
 use sha2::{Digest, Sha256};
@@ -69,6 +72,21 @@ impl<V: Vault> VaultAnchor<V> {
             .transpose()
     }
 
+    fn scoped(&self, id: DatabaseId) -> Result<Option<([u8; 32], Commitment)>, StorageError> {
+        self.read_secret(SecretName::AuditAnchorFor(id))?
+            .map(|secret| {
+                let (location, commitment) = secret
+                    .expose()
+                    .split_at_checked(self.location.len())
+                    .ok_or(StorageError::AnchorMismatch)?;
+                Ok((
+                    location.try_into().expect("location is 32 bytes"),
+                    decode(commitment)?,
+                ))
+            })
+            .transpose()
+    }
+
     fn check_pin(&self, id: DatabaseId) -> Result<(), StorageError> {
         if self.pinned_id()?.is_some_and(|pinned| pinned != id) {
             return Err(StorageError::AnchorMismatch);
@@ -92,16 +110,12 @@ impl<V: Vault + Send> AnchorStore for VaultAnchor<V> {
 
     fn read(&self, id: DatabaseId) -> Result<Option<Commitment>, StorageError> {
         self.check_pin(id)?;
-        self.read_secret(SecretName::AuditAnchorFor(id))?
-            .map(|secret| {
-                let (location, commitment) = secret
-                    .expose()
-                    .split_at_checked(self.location.len())
-                    .ok_or(StorageError::AnchorMismatch)?;
+        self.scoped(id)?
+            .map(|(location, commitment)| {
                 if location != self.location {
                     return Err(StorageError::DuplicateDatabaseIdentity);
                 }
-                decode(commitment)
+                Ok(commitment)
             })
             .transpose()
     }
@@ -122,6 +136,32 @@ impl<V: Vault + Send> AnchorStore for VaultAnchor<V> {
             .transpose()
     }
 
+    fn recovery_anchor(&self, id: DatabaseId) -> Result<RecoveryAnchor, StorageError> {
+        let pinned = self.pinned_id()?;
+        let scoped = self.scoped(pinned.unwrap_or(id))?;
+        let (previous_location, commitment) = match scoped {
+            Some((location, commitment)) => (Some(location), Some(commitment)),
+            None => (None, self.legacy()?),
+        };
+        Ok(RecoveryAnchor {
+            previous_id: pinned
+                .or_else(|| scoped.map(|_| id))
+                .or_else(|| commitment.as_ref().and_then(genesis_id)),
+            commitment,
+            previous_location,
+            proposed_location: Some(self.location),
+        })
+    }
+
+    fn recover(&self, plan: &ReanchorPlan) -> Result<(), StorageError> {
+        let id = plan.summary().proposed_id;
+        self.store(id, plan.proposed_commitment())?;
+        if self.canonical && self.pinned_id()? != Some(id) {
+            self.store_secret(SecretName::AuditDatabase, id.to_vec())?;
+        }
+        Ok(())
+    }
+
     fn bind(&self, id: DatabaseId) -> Result<(), StorageError> {
         if !self.canonical {
             return Ok(());
@@ -135,7 +175,14 @@ impl<V: Vault + Send> AnchorStore for VaultAnchor<V> {
 }
 
 /// The per-user audit database used by the product on Windows.
-pub fn canonical_path() -> Result<PathBuf, StorageError> {
+pub fn canonical_path(config: &StorageConfig) -> Result<PathBuf, StorageError> {
+    if let Some(path) = config.audit_database_path() {
+        return Ok(path.to_path_buf());
+    }
+    Ok(vault_directory()?.join("audit.db"))
+}
+
+fn vault_directory() -> Result<PathBuf, StorageError> {
     if !cfg!(windows) {
         return Err(StorageError::AnchorUnavailable);
     }
@@ -143,7 +190,23 @@ pub fn canonical_path() -> Result<PathBuf, StorageError> {
         .map(PathBuf::from)
         .filter(|root| root.is_absolute())
         .ok_or(StorageError::Configuration)?;
-    Ok(root.join("ads").join("audit.db"))
+    Ok(root.join("ads"))
+}
+
+fn lock_binding(directory: &Path) -> Result<File, StorageError> {
+    // SQLite serializes a single file. The vault pin spans all configured paths.
+    fs::create_dir_all(directory)?;
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(directory.join("audit-binding.lock"))?;
+    lock.try_lock().map_err(|error| match error {
+        TryLockError::WouldBlock => StorageError::Busy,
+        TryLockError::Error(error) => error.into(),
+    })?;
+    Ok(lock)
 }
 
 fn require_canonical_path(
@@ -164,12 +227,14 @@ fn require_canonical_path(
     Ok(canonical)
 }
 
-fn canonical_anchor(
+fn canonical_anchor<V: Vault>(
     path: &Path,
+    config: &StorageConfig,
     create_dir: bool,
-) -> Result<(PathBuf, VaultAnchor<OsVault>), StorageError> {
-    let canonical = require_canonical_path(path, &canonical_path()?, create_dir)?;
-    let anchor = VaultAnchor::new(OsVault, &canonical, true)?;
+    vault: V,
+) -> Result<(PathBuf, VaultAnchor<V>), StorageError> {
+    let canonical = require_canonical_path(path, &canonical_path(config)?, create_dir)?;
+    let anchor = VaultAnchor::new(vault, &canonical, true)?;
     Ok((canonical, anchor))
 }
 
@@ -178,7 +243,8 @@ pub fn open(
     config: &StorageConfig,
     keys: Box<dyn KeyProvider + Send>,
 ) -> Result<EventLog, StorageError> {
-    let (path, anchor) = canonical_anchor(path, true)?;
+    let _binding = lock_binding(&vault_directory()?)?;
+    let (path, anchor) = canonical_anchor(path, config, true, OsVault)?;
     EventLog::open(&path, config, keys, Box::new(anchor))
 }
 
@@ -188,7 +254,7 @@ pub fn plan_reanchor(
     config: &StorageConfig,
     keys: Box<dyn KeyProvider + Send>,
 ) -> Result<ReanchorPlan, StorageError> {
-    let (path, anchor) = canonical_anchor(path, false)?;
+    let (path, anchor) = canonical_anchor(path, config, false, OsVault)?;
     EventLog::plan_reanchor(&path, config, keys, &anchor)
 }
 
@@ -199,7 +265,8 @@ pub fn reanchor(
     keys: Box<dyn KeyProvider + Send>,
     confirmed: ReanchorPlan,
 ) -> Result<(), StorageError> {
-    let (path, anchor) = canonical_anchor(path, false)?;
+    let _binding = lock_binding(&vault_directory()?)?;
+    let (path, anchor) = canonical_anchor(path, config, false, OsVault)?;
     EventLog::reanchor(&path, config, keys, &anchor, confirmed)
 }
 
@@ -304,17 +371,26 @@ mod tests {
     }
 
     #[test]
+    fn binding_lock_serializes_distinct_database_paths() {
+        let directory = fixture();
+        let first = lock_binding(&directory).unwrap();
+        assert_eq!(lock_binding(&directory).unwrap_err(), StorageError::Busy);
+        drop(first);
+        assert!(lock_binding(&directory).is_ok());
+    }
+
+    #[test]
     fn product_uses_only_the_canonical_database_path() {
         let root = fixture();
         let canonical = root.join("ads").join("audit.db");
         let other = root.join("audit.db");
+        let config = configured_for(&canonical);
+        let vault = MemoryVault::default();
+        assert_eq!(canonical_path(&config), Ok(canonical.clone()));
+        drop(open_configured(&canonical, &config, &vault).unwrap());
         assert_eq!(
-            require_canonical_path(&canonical, &canonical, true),
-            Ok(canonical.clone())
-        );
-        assert_eq!(
-            require_canonical_path(&other, &canonical, true),
-            Err(StorageError::NonCanonicalDatabase)
+            open_configured(&other, &config, &vault).unwrap_err(),
+            StorageError::NonCanonicalDatabase
         );
         assert!(!other.exists());
     }
@@ -408,11 +484,126 @@ mod tests {
             .store(SecretName::AuditAnchor, &Secret::new(vec![0]).unwrap())
             .unwrap();
         drop(open_with(&original, &migrated, true).unwrap());
+        let pinned = VaultAnchor::new(migrated.clone(), &original, true).unwrap();
+        assert_eq!(pinned.legacy(), Ok(None));
+        assert_eq!(pinned.can_create(), Ok(false));
         fs::copy(&unrelated, &original).unwrap();
         assert_eq!(
             open_with(&original, &migrated, true).unwrap_err(),
             StorageError::AnchorMismatch
         );
+    }
+
+    fn configured_for(path: &Path) -> StorageConfig {
+        StorageConfig::from_toml_str(&format!(
+            "audit_database_path = {}",
+            serde_json::to_string(path).unwrap()
+        ))
+        .unwrap()
+    }
+
+    fn open_configured(
+        path: &Path,
+        config: &StorageConfig,
+        vault: &MemoryVault,
+    ) -> Result<EventLog, StorageError> {
+        let (path, anchor) = canonical_anchor(path, config, true, vault.clone())?;
+        EventLog::open(&path, config, Box::new(Keys), Box::new(anchor))
+    }
+
+    #[test]
+    fn confirmed_move_recognizes_only_the_current_database() {
+        let root = fixture();
+        let old = root.join("old.db");
+        let moved = root.join("moved.db");
+        let old_config = configured_for(&old);
+        let config = configured_for(&moved);
+        let vault = MemoryVault::default();
+        drop(open_configured(&old, &old_config, &vault).unwrap());
+        fs::copy(&old, &moved).unwrap();
+        open_configured(&old, &old_config, &vault)
+            .unwrap()
+            .append(&event(1))
+            .unwrap();
+        let (path, anchor) = canonical_anchor(&moved, &config, false, vault.clone()).unwrap();
+        let plan = || EventLog::plan_reanchor(&path, &config, Box::new(Keys), &anchor);
+        assert_eq!(plan(), Err(StorageError::AnchorMismatch));
+        fs::copy(&old, &moved).unwrap();
+        let proposed = plan().unwrap();
+        let summary = proposed.summary();
+        assert_eq!(summary.previous_id, Some(summary.proposed_id));
+        assert_eq!(summary.location_changed, Some(true));
+        assert_eq!(
+            open_configured(&moved, &config, &vault).unwrap_err(),
+            StorageError::DuplicateDatabaseIdentity
+        );
+        EventLog::reanchor(&path, &config, Box::new(Keys), &anchor, proposed).unwrap();
+        assert_eq!(
+            open_configured(&moved, &config, &vault)
+                .unwrap()
+                .head(&event(1).stream),
+            Ok(1)
+        );
+        assert_eq!(
+            open_configured(&old, &old_config, &vault).unwrap_err(),
+            StorageError::DuplicateDatabaseIdentity
+        );
+    }
+
+    #[test]
+    fn confirmed_empty_replacement_keeps_the_old_database_in_quarantine() {
+        let root = fixture();
+        let path = root.join("audit.db");
+        let quarantine = root.join("quarantined.db");
+        let config = configured_for(&path);
+        let vault = MemoryVault::default();
+        open_configured(&path, &config, &vault)
+            .unwrap()
+            .append(&event(1))
+            .unwrap();
+        fs::rename(&path, &quarantine).unwrap();
+        assert!(open_configured(&path, &config, &vault).is_err());
+        assert!(!path.exists());
+        drop(ads_storage::AuditStore::open(&path, &config).unwrap());
+        let (canonical, anchor) = canonical_anchor(&path, &config, false, vault.clone()).unwrap();
+        let plan = EventLog::plan_reanchor(&canonical, &config, Box::new(Keys), &anchor).unwrap();
+        let summary = plan.summary();
+        assert_ne!(summary.previous_id, Some(summary.proposed_id));
+        assert_eq!(summary.previous_position, Some(1));
+        assert_eq!(summary.proposed_position, 0);
+        assert_eq!(
+            open_configured(&path, &config, &vault).unwrap_err(),
+            StorageError::AnchorMismatch
+        );
+        EventLog::reanchor(&canonical, &config, Box::new(Keys), &anchor, plan).unwrap();
+        let log = open_configured(&path, &config, &vault).unwrap();
+        assert_eq!(log.head(&event(1).stream), Ok(0));
+        drop(log);
+        assert!(quarantine.exists());
+        fs::copy(&quarantine, &path).unwrap();
+        assert_eq!(
+            open_configured(&path, &config, &vault).unwrap_err(),
+            StorageError::AnchorMismatch
+        );
+    }
+
+    #[test]
+    fn interrupted_legacy_adoption_finishes_binding_on_reopen() {
+        let path = fixture().join("audit.db");
+        let config = configured_for(&path);
+        let vault = MemoryVault::default();
+        let log = open_with(&path, &vault, false).unwrap();
+        drop(log);
+        let (_, anchor) = canonical_anchor(&path, &config, false, vault.clone()).unwrap();
+        let plan = EventLog::plan_reanchor(&path, &config, Box::new(Keys), &anchor).unwrap();
+        let id = plan.summary().proposed_id;
+        anchor
+            .store_secret(SecretName::AuditAnchor, plan.proposed_commitment().to_vec())
+            .unwrap();
+        assert_eq!(anchor.pinned_id(), Ok(None));
+        drop(open_configured(&path, &config, &vault).unwrap());
+        assert_eq!(anchor.pinned_id(), Ok(Some(id)));
+        assert_eq!(anchor.legacy(), Ok(None));
     }
 
     #[test]

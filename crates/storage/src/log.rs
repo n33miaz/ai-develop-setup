@@ -400,12 +400,22 @@ fn recovery_plan(
     keys: &dyn KeyProvider,
     anchor: &dyn AnchorStore,
 ) -> Result<ReanchorPlan, StorageError> {
+    check_log_schema(tx)?;
     let proposed = commitment(tx)?;
     let id = database_id(tx, &proposed)?;
-    let previous = match anchor.read(id)? {
-        Some(previous) => Some(previous),
-        None => anchor.legacy()?,
-    };
+    let mut previous = anchor.recovery_anchor(id)?;
+    if previous.previous_id.is_none() && previous.commitment == Some(proposed) {
+        previous.previous_id = Some(id);
+    }
+    if previous.previous_id == Some(id)
+        && previous
+            .previous_location
+            .zip(previous.proposed_location)
+            .is_some_and(|(old, new)| old != new)
+        && previous.commitment != Some(proposed)
+    {
+        return Err(StorageError::AnchorMismatch);
+    }
     verify_in(tx, keys)?;
     let unused: bool = tx.query_row(
         "SELECT EXISTS (SELECT 1 FROM cipher_key AS k
@@ -569,8 +579,7 @@ impl EventLog {
         if recovery_plan(&tx, &*log.keys, anchor)? != confirmed {
             return Err(StorageError::AnchorMismatch);
         }
-        anchor.store(confirmed.id, &confirmed.proposed)?;
-        anchor.bind(confirmed.id)?;
+        anchor.recover(&confirmed)?;
         tx.commit()?;
         Ok(())
     }

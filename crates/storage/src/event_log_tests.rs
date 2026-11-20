@@ -412,9 +412,13 @@ fn failed_sqlite_commit_leaves_the_anchor_ahead_until_confirmed_recovery() {
     );
 
     let plan = EventLog::plan_reanchor(&path, &config, keys("key-a", 1), &anchor).unwrap();
+    let summary = plan.summary();
     assert_eq!(
-        plan.summary(),
+        summary,
         crate::anchor::ReanchorSummary {
+            previous_id: Some(summary.proposed_id),
+            proposed_id: summary.proposed_id,
+            location_changed: None,
             previous_position: Some(2),
             proposed_position: 1,
             position_delta: Some(-1),
