@@ -1,0 +1,18 @@
+# Pré-lançamentos de desenvolvimento (ADR 0025). Lido por tools/release.py e pelo workflow prerelease.yml.
+
+# "on": cada junção na develop com CI verde publica um pré-lançamento. "off": não publica nem poda nada.
+enabled = "on"
+
+# Versão estável que os pré-lançamentos antecedem (SemVer MAIOR.MENOR.CORREÇÃO). Sobe quando a versão estável sair.
+base_version = "0.1.0"
+
+# Identificador do pré-lançamento: versão "<base>-<channel>.<AAAAMMDD>.<N>+<commit curto>", tag "<tag_prefix><base>-<channel>.<AAAAMMDD>.<N>".
+# O commit fica no título e no texto da release, não na tag, porque o "+" atrapalha links e ferramentas.
+channel = "dev"
+tag_prefix = "v"
+
+# Quantos pré-lançamentos deste canal ficam guardados (1 a 100). Os mais antigos são apagados com a tag.
+keep = 10
+
+# "apply": apaga o excedente depois de publicar. "dry-run": só lista o que apagaria. "off": não poda.
+prune = "apply"

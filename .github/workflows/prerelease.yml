@@ -1,0 +1,106 @@
+name: Pre-release
+
+# Pré-lançamento de desenvolvimento a cada junção na develop com CI verde (ADR 0025). Parâmetros em defaults/release.toml;
+# a numeração e a poda saem de tools/release.py, que só calcula. Ainda não há binário: a release leva a tag e as notas.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [develop]
+
+permissions:
+  contents: read
+
+# Uma publicação por vez, para dois pré-lançamentos do mesmo dia não pegarem o mesmo número.
+concurrency:
+  group: prerelease
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: publish
+    # Só o CI de push na develop deste repositório, e só verde.
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'develop' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+      - name: Testar o script de versões
+        run: python3 -m unittest discover -s tools -p 'test_release.py'
+      - name: Publicar
+        id: publish
+        run: |
+          set -euo pipefail
+          python3 tools/release.py config > config.txt
+          cat config.txt
+          if ! grep -qx 'enabled=on' config.txt; then
+            echo "Pré-lançamentos desligados em defaults/release.toml."
+            exit 0
+          fi
+          # Um commit mais novo já entrou: a vez é dele, e o número do dia continua em ordem.
+          develop_head=$(gh api "repos/$REPO/commits/develop" --jq .sha)
+          if [ "$develop_head" != "$HEAD_SHA" ]; then
+            echo "A develop já está em $develop_head; nada a publicar para $HEAD_SHA."
+            exit 0
+          fi
+          gh api --paginate "repos/$REPO/git/matching-refs/tags/" --jq '.[] | "\(.ref | sub("^refs/tags/"; "")) \(.object.sha)"' > tags.txt
+          if awk -v sha="$HEAD_SHA" '$2 == sha { found = 1 } END { exit !found }' tags.txt; then
+            echo "O commit $HEAD_SHA já tem tag; nada a publicar."
+            exit 0
+          fi
+          cut -d' ' -f1 tags.txt | python3 tools/release.py next --sha "$HEAD_SHA" > next.txt
+          cat next.txt
+          tag=$(sed -n 's/^tag=//p' next.txt)
+          version=$(sed -n 's/^version=//p' next.txt)
+          previous=$(sed -n 's/^previous=//p' next.txt)
+          notes="Versão \`$version\`, do commit $HEAD_SHA. Pré-lançamento de desenvolvimento: só tag e notas, ainda sem binário."
+          start=()
+          if [ -n "$previous" ]; then start=(--notes-start-tag "$previous"); fi
+          gh release create "$tag" --repo "$REPO" --target "$HEAD_SHA" --title "$version" \
+            --prerelease --latest=false --notes "$notes" --generate-notes "${start[@]}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - name: Podar os mais antigos
+        if: steps.publish.outputs.tag != ''
+        env:
+          NEW_TAG: ${{ steps.publish.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mode=$(sed -n 's/^prune=//p' config.txt)
+          keep=$(sed -n 's/^keep=//p' config.txt)
+          if [ "$mode" = "off" ]; then
+            echo "Poda desligada."
+            exit 0
+          fi
+          gh release list --repo "$REPO" --limit 1000 --json tagName,isPrerelease > releases.json
+          python3 tools/release.py prune --keep-tag "$NEW_TAG" < releases.json > prune.txt
+          echo "A apagar (release e tag), além dos $keep mais novos:"
+          cat prune.txt
+          if [ "$mode" != "apply" ]; then
+            echo "Modo $mode: nada apagado."
+            exit 0
+          fi
+          while read -r tag; do
+            [ -n "$tag" ] || continue
+            gh release delete "$tag" --repo "$REPO" --cleanup-tag --yes
+          done < prune.txt
+          # Nova conferência: depois da poda, sobra no máximo o limite e nenhum dos apagados.
+          gh release list --repo "$REPO" --limit 1000 --json tagName,isPrerelease > after.json
+          python3 tools/release.py prune --keep-tag "$NEW_TAG" < after.json > left.txt
+          if [ -s left.txt ]; then
+            echo "::error::a poda deixou pré-lançamentos além do limite:"
+            cat left.txt
+            exit 1
+          fi
