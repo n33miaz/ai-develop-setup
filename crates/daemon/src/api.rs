@@ -1,7 +1,7 @@
 //! Composição dos comandos da API local autenticada com o host de terminais.
 
 use crate::auth::{Token, permits_upgrade};
-use crate::events::EventLog;
+use crate::events::{Closing, EventLog, Poll, Stream};
 use crate::pty_client::{ClientError, ErrorCode, Event, PtyClient};
 use ads_contracts::CommandSessionOpenV1Params;
 use ads_ptyhost::wire::{
@@ -15,9 +15,10 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{Mutex, Semaphore, mpsc, oneshot};
+use tokio::sync::{Mutex, Notify, Semaphore, mpsc, oneshot};
 use tokio::time::{Instant, timeout, timeout_at};
 use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
 use zeroize::Zeroizing;
@@ -32,6 +33,10 @@ pub enum ApiError {
     Conflict,
     Replay,
     Unavailable,
+    ClosePending,
+    SetupTimeout,
+    /// Prazo do host esgotado num comando; o efeito é incerto e o serviço encerra.
+    HostTimeout,
     Host(ErrorCode),
 }
 impl ApiError {
@@ -45,6 +50,9 @@ impl ApiError {
             Self::Conflict => -32012,
             Self::Replay => -32004,
             Self::Unavailable => -32603,
+            Self::ClosePending => -32013,
+            Self::SetupTimeout => -32014,
+            Self::HostTimeout => -32603,
             Self::Host(code) => code.number(),
         }
     }
@@ -58,6 +66,9 @@ impl ApiError {
             Self::Conflict => "idempotency key conflict",
             Self::Replay => "replay unavailable",
             Self::Unavailable => "service unavailable",
+            Self::ClosePending => "session close pending",
+            Self::SetupTimeout => "session setup timed out",
+            Self::HostTimeout => "service unavailable",
             Self::Host(_) => "host refused command",
         }
     }
@@ -93,6 +104,9 @@ pub struct ApiConfig {
     pub max_message_bytes: usize,
     pub send_timeout_ms: u64,
     pub host_timeout_ms: u64,
+    pub retired_sessions: usize,
+    pub close_retries: usize,
+    pub close_retry_ms: u64,
 }
 impl ApiConfig {
     pub fn from_toml_str(overrides: &str) -> Result<Self, ApiError> {
@@ -121,6 +135,8 @@ impl ApiConfig {
             self.max_connections,
             self.max_pending_auth,
             self.max_message_bytes,
+            self.retired_sessions,
+            self.close_retries,
         ];
         if positive.iter().any(|n| *n == 0 || *n > 1_048_576)
             || self.max_write_bytes > 65536
@@ -130,6 +146,7 @@ impl ApiConfig {
                 self.auth_timeout_ms,
                 self.send_timeout_ms,
                 self.host_timeout_ms,
+                self.close_retry_ms,
             ]
             .iter()
             .any(|n| *n == 0 || *n > 300_000)
@@ -139,7 +156,8 @@ impl ApiConfig {
                 let Ok(uri) = s.parse::<tokio_tungstenite::tungstenite::http::Uri>() else {
                     return true;
                 };
-                !matches!(uri.scheme_str(), Some("http" | "https"))
+                !(s.starts_with("http://") || s.starts_with("https://"))
+                    || !matches!(uri.scheme_str(), Some("http" | "https"))
                     || uri
                         .authority()
                         .is_none_or(|a| a.as_str().contains(['*', '@']))
@@ -157,7 +175,9 @@ fn valid_ui_base(base: &str) -> bool {
     let Ok(uri) = base.parse::<tokio_tungstenite::tungstenite::http::Uri>() else {
         return false;
     };
-    uri.scheme_str() == Some("http")
+    // O navegador manda a origem em minúsculas; esquema em outra caixa nunca casaria com ela.
+    base.starts_with("http://")
+        && uri.scheme_str() == Some("http")
         && matches!(uri.host(), Some("localhost" | "127.0.0.1" | "[::1]"))
         && uri
             .authority()
@@ -186,32 +206,49 @@ impl Launcher for DisabledLauncher {
 
 struct Request {
     command: Value,
-    reply: oneshot::Sender<Result<bool, ApiError>>,
+    reply: oneshot::Sender<Result<Reply, ApiError>>,
+}
+struct Reply {
+    replayed: bool,
+    /// Encarnação do stream assinado; a conexão só entrega eventos dela.
+    stream: Option<Arc<Stream>>,
 }
 struct Session {
+    generation: u64,
     offset: u64,
     last_host_seq: u64,
     ended: bool,
     closing: bool,
     invalidated: bool,
     released: bool,
+    /// O `open` falhou depois de chegar ao host: o fechamento confirmado remove o registro e devolve o id.
+    failed_open: bool,
 }
 struct Entry {
     key: String,
     digest: [u8; 32],
 }
+struct Retry {
+    id: SessionId,
+    generation: u64,
+    attempts: usize,
+    due: Instant,
+}
 struct Service {
+    #[cfg(test)]
+    before_setup: Arc<Gate>,
     host: PtyClient,
     launcher: Arc<dyn Launcher>,
     config: ApiConfig,
     log: Arc<Mutex<EventLog>>,
     sessions: HashMap<String, Session>,
     keys: VecDeque<Entry>,
-    invalidated: VecDeque<SessionId>,
+    retries: VecDeque<Retry>,
     released: VecDeque<SessionId>,
+    generations: u64,
 }
 impl Service {
-    async fn command(&mut self, command: &Value) -> Result<bool, ApiError> {
+    async fn command(&mut self, command: &Value, deadline: Instant) -> Result<Reply, ApiError> {
         let method = command["method"].as_str().ok_or(ApiError::Invalid)?;
         let params = &command["params"];
         if params["_meta"]["origin"] != "local" {
@@ -224,29 +261,36 @@ impl Service {
             serde_json::to_vec(&json!([method, params])).map_err(|_| ApiError::Invalid)?,
         )
         .into();
-        if let Some(entry) = self.keys.iter().find(|e| e.key == key) {
-            return if entry.digest == digest {
-                Ok(true)
-            } else {
-                Err(ApiError::Conflict)
-            };
+        let replayed = match self.keys.iter().find(|e| e.key == key) {
+            Some(entry) if entry.digest == digest => true,
+            Some(_) => return Err(ApiError::Conflict),
+            None => false,
+        };
+        let mut stream = None;
+        if !replayed {
+            stream = self
+                .execute(method, params, command["id"].as_str(), deadline)
+                .await?;
+            self.keys.push_back(Entry {
+                key: key.to_owned(),
+                digest,
+            });
+            while self.keys.len() > self.config.idempotency_keys {
+                self.keys.pop_front();
+            }
+        } else if method == "events.subscribe" {
+            // Assinar não tem efeito; a repetição confere o stream atual como uma assinatura nova.
+            stream = self.execute(method, params, None, deadline).await?;
         }
-        self.execute(method, params, command["id"].as_str()).await?;
-        self.keys.push_back(Entry {
-            key: key.to_owned(),
-            digest,
-        });
-        while self.keys.len() > self.config.idempotency_keys {
-            self.keys.pop_front();
-        }
-        Ok(false)
+        Ok(Reply { replayed, stream })
     }
     async fn execute(
         &mut self,
         method: &str,
         params: &Value,
         cause: Option<&str>,
-    ) -> Result<(), ApiError> {
+        deadline: Instant,
+    ) -> Result<Option<Arc<Stream>>, ApiError> {
         let host = self.host.commands();
         let mut host_params = params.clone();
         host_params
@@ -261,7 +305,10 @@ impl Service {
                 {
                     return Err(ApiError::Capacity);
                 }
-                if self.sessions.contains_key(id) {
+                // Um id podado nesta execução não volta: um assinante atrasado misturaria os dois streams.
+                if self.sessions.contains_key(id)
+                    || self.log.lock().await.is_retired(&format!("session/{id}"))
+                {
                     return Err(ApiError::Conflict);
                 }
                 let request: CommandSessionOpenV1Params =
@@ -273,10 +320,13 @@ impl Service {
                 {
                     return Err(ApiError::Invalid);
                 }
-                self.wait_host(host.open(open)).await?;
+                self.wait_host(host.open(open), deadline).await?;
+                self.generations += 1;
                 self.sessions.insert(
                     id.to_owned(),
                     Session {
+                        generation: self.generations,
+                        failed_open: false,
                         offset: 0,
                         last_host_seq: 0,
                         ended: false,
@@ -286,19 +336,21 @@ impl Service {
                     },
                 );
                 let setup = async {
+                    #[cfg(test)]
+                    self.before_setup.pass().await;
                     self.log.lock().await.append(id, "created", json!({"session_id": id, "task_id": null, "harness": params["harness"], "mode": "interactive", "cols": params["cols"], "rows": params["rows"], "workdir_alias": params["workdir_alias"]}), cause)?;
-                    self.wait_host(host.subscribe(request.session_id.clone(), Some(0))).await?;
+                    self.wait_host(host.subscribe(request.session_id.clone(), Some(0)), deadline).await
+                        // O prazo vence aqui, no caminho que guarda o registro e agenda o fechamento.
+                        .map_err(|e| if e == ApiError::HostTimeout { ApiError::SetupTimeout } else { e })?;
                     Ok(())
                 }.await;
                 if let Err(error) = setup {
-                    let cleanup = self
-                        .wait_host(host.close(SessionParams {
-                            session_id: request.session_id,
-                        }))
-                        .await;
-                    self.sessions.remove(id);
-                    self.log.lock().await.remove(id);
-                    cleanup?;
+                    // O host já abriu o terminal: o fechamento segue pela fila, com prazo próprio por tentativa,
+                    // e o registro fica até o host confirmar. Esperar aqui deixaria o prazo do comando derrubar o serviço.
+                    if let Some(session) = self.sessions.get_mut(id) {
+                        session.failed_open = true;
+                    }
+                    self.invalidate(request.session_id).await;
                     return Err(error);
                 }
             }
@@ -312,13 +364,13 @@ impl Service {
                 if bytes.is_empty() || bytes.len() > self.config.max_write_bytes {
                     return Err(ApiError::Capacity);
                 }
-                self.wait_host(host.write(write)).await?;
+                self.wait_host(host.write(write), deadline).await?;
             }
             "session.resize" => {
                 self.active(id)?;
                 let resize: ResizeParams =
                     serde_json::from_value(host_params).map_err(|_| ApiError::Invalid)?;
-                self.wait_host(host.resize(resize)).await?;
+                self.wait_host(host.resize(resize), deadline).await?;
                 self.log.lock().await.append(
                     id,
                     "resized",
@@ -329,19 +381,24 @@ impl Service {
             "session.close" => {
                 let close: SessionParams =
                     serde_json::from_value(host_params).map_err(|_| ApiError::Invalid)?;
-                self.close(close).await?;
+                self.close(close, deadline).await?;
             }
             "events.subscribe" => {
-                self.log.lock().await.after(
-                    params["stream"].as_str().ok_or(ApiError::Invalid)?,
-                    params["after_seq"].as_u64().ok_or(ApiError::Invalid)?,
-                )?;
+                return self
+                    .log
+                    .lock()
+                    .await
+                    .subscribe(
+                        params["stream"].as_str().ok_or(ApiError::Invalid)?,
+                        params["after_seq"].as_u64().ok_or(ApiError::Invalid)?,
+                    )
+                    .map(Some);
             }
             _ => return Err(ApiError::Method),
         }
-        Ok(())
+        Ok(None)
     }
-    async fn close(&mut self, params: SessionParams) -> Result<(), ApiError> {
+    async fn close(&mut self, params: SessionParams, deadline: Instant) -> Result<(), ApiError> {
         let id = params.session_id.clone();
         let session = self
             .sessions
@@ -356,23 +413,98 @@ impl Service {
         }
         session.closing = true;
         let host = self.host.commands();
-        let result = self.wait_host(host.close(params)).await;
+        let result = self.wait_host(host.close(params), deadline).await;
         let session = self
             .sessions
             .get_mut(id.as_str())
             .ok_or(ApiError::Invalid)?;
         session.closing = false;
         if result.is_ok() || result == Err(ApiError::Host(ErrorCode::UnknownSession)) {
+            // Nenhuma tentativa antiga sobrevive à liberação: um id reaberto nunca recebe trabalho velho.
+            self.retries.retain(|r| r.id != id);
+            let mut log = self.log.lock().await;
+            if session.failed_open {
+                self.sessions.remove(id.as_str());
+                log.remove(id.as_str());
+                return result.map(|_| ());
+            }
+            if result.is_err() && !session.ended && !session.invalidated {
+                // O host não conhece a sessão: nenhum outro evento vai encerrar o stream na interface.
+                session.ended = true;
+                // Só falha com a sequência esgotada; a vaga é devolvida mesmo assim.
+                let _ = log.append(
+                    id.as_str(),
+                    "ended",
+                    json!({"session_id": id.as_str(), "reason": "error", "exit_code": null}),
+                    None,
+                );
+            }
+            if session.invalidated {
+                log.invalidate(id.as_str(), Closing::Closed);
+            }
             session.released = true;
             self.released.push_back(id);
             if self.released.len() > self.config.max_sessions
                 && let Some(expired) = self.released.pop_front()
             {
                 self.sessions.remove(expired.as_str());
-                self.log.lock().await.remove(expired.as_str());
+                log.retire(expired.as_str());
             }
         }
         result.map(|_| ())
+    }
+    /// Repete, com limite, o fechamento automático de sessão invalidada ou de `open` que falhou.
+    async fn retry_close(&mut self) -> Result<(), ApiError> {
+        let Some(index) = (0..self.retries.len()).min_by_key(|i| self.retries[*i].due) else {
+            return Ok(());
+        };
+        let Some(mut retry) = self.retries.remove(index) else {
+            return Ok(());
+        };
+        // Só a mesma instância da sessão, ainda no host, recebe a tentativa.
+        if !self
+            .sessions
+            .get(retry.id.as_str())
+            .is_some_and(|s| s.generation == retry.generation && !s.released)
+        {
+            return Ok(());
+        }
+        let deadline = Instant::now() + Duration::from_millis(self.config.host_timeout_ms);
+        let outcome = self
+            .close(
+                SessionParams {
+                    session_id: retry.id.clone(),
+                },
+                deadline,
+            )
+            .await;
+        match outcome {
+            // Liberada, já fechada pelo cliente ou podada: nada mais a fazer.
+            Ok(()) | Err(ApiError::Invalid | ApiError::Host(ErrorCode::UnknownSession)) => {
+                return Ok(());
+            }
+            Err(ApiError::Unavailable) => return Err(ApiError::Unavailable),
+            // Fechar de novo é seguro: se o pedido sem resposta chegou, o host responde UnknownSession.
+            Err(ApiError::HostTimeout) => {
+                if let Some(session) = self.sessions.get_mut(retry.id.as_str()) {
+                    session.closing = false;
+                }
+            }
+            Err(_) => (),
+        }
+        retry.attempts += 1;
+        if retry.attempts < self.config.close_retries {
+            eprintln!("ads-daemon: automatic session close failed; retrying");
+            retry.due = Instant::now() + Duration::from_millis(self.config.close_retry_ms);
+            self.retries.push_back(retry);
+        } else {
+            eprintln!("ads-daemon: automatic session close failed; session.close is required");
+            self.log
+                .lock()
+                .await
+                .invalidate(retry.id.as_str(), Closing::Failed);
+        }
+        Ok(())
     }
     async fn invalidate(&mut self, id: SessionId) {
         if let Some(session) = self.sessions.get_mut(id.as_str())
@@ -380,21 +512,37 @@ impl Service {
         {
             session.invalidated = true;
             // A invalidação pode ocorrer enquanto o daemon espera outra resposta do host.
-            if !session.released {
-                self.invalidated.push_back(id.clone());
-            }
-            self.log.lock().await.invalidate(id.as_str());
+            let closing = if session.released {
+                Closing::Closed
+            } else {
+                self.retries.push_back(Retry {
+                    id: id.clone(),
+                    generation: session.generation,
+                    attempts: 0,
+                    due: Instant::now(),
+                });
+                Closing::Pending
+            };
+            self.log.lock().await.invalidate(id.as_str(), closing);
         }
     }
+    /// Espera o host até `deadline`, o prazo único do comando ou da tentativa em curso.
     async fn wait_host<T>(
         &mut self,
         future: impl Future<Output = Result<T, ClientError>>,
+        deadline: Instant,
     ) -> Result<T, ApiError> {
         tokio::pin!(future);
+        let expired = tokio::time::sleep_until(deadline);
+        tokio::pin!(expired);
         loop {
+            if Instant::now() >= deadline {
+                return Err(ApiError::HostTimeout);
+            }
             tokio::select! {
                 result = &mut future => return result.map_err(host_error),
                 event = self.host.next() => self.event(event.map_err(host_error)?).await?,
+                _ = &mut expired => return Err(ApiError::HostTimeout),
             }
         }
     }
@@ -488,6 +636,169 @@ pub struct LocalApi {
     token: Token,
     config: ApiConfig,
     service: Service,
+    pending: Arc<Semaphore>,
+    hooks: Arc<TestHooks>,
+}
+
+/// Ponto de espera que só um teste fecha; aberto, `pass` retorna na hora.
+#[derive(Default)]
+pub struct Gate {
+    closed: AtomicBool,
+    opened: Notify,
+    #[cfg(test)]
+    reached: Notify,
+}
+impl Gate {
+    pub fn hold(&self) {
+        self.closed.store(true, Ordering::Release);
+    }
+    pub fn release(&self) {
+        self.closed.store(false, Ordering::Release);
+        self.opened.notify_waiters();
+    }
+    async fn pass(&self) {
+        loop {
+            let opened = self.opened.notified();
+            tokio::pin!(opened);
+            opened.as_mut().enable();
+            if !self.closed.load(Ordering::Acquire) {
+                return;
+            }
+            #[cfg(test)]
+            self.reached.notify_one();
+            opened.await;
+        }
+    }
+}
+
+/// Barreiras e medidas para os testes; inertes fora deles e fora do alcance do socket e da configuração.
+#[doc(hidden)]
+#[derive(Default)]
+pub struct TestHooks {
+    accept_faults: AtomicUsize,
+    accept_retry: Gate,
+    /// Depois do upgrade, antes do `auth.hello`.
+    pub after_upgrade: Gate,
+    /// Na tarefa expulsa, antes de ela terminar e devolver a vaga.
+    pub evicted_exit: Gate,
+    /// Antes de cada entrega a uma conexão com assinaturas.
+    pub before_delivery: Gate,
+    pending_live: AtomicUsize,
+    pending_peak: AtomicUsize,
+    waiting_peak: AtomicUsize,
+}
+impl TestHooks {
+    pub fn fail_accepts(&self, count: usize) {
+        self.accept_faults.store(count, Ordering::Release);
+    }
+    pub fn accept_faults_left(&self) -> usize {
+        self.accept_faults.load(Ordering::Acquire)
+    }
+    /// Pending connection tasks alive now, the most seen at once, and the longest the eviction queue grew.
+    pub fn pending(&self) -> (usize, usize, usize) {
+        (
+            self.pending_live.load(Ordering::Acquire),
+            self.pending_peak.load(Ordering::Acquire),
+            self.waiting_peak.load(Ordering::Acquire),
+        )
+    }
+}
+/// A vaga pendente vive até a tarefa autenticar ou terminar, mesmo depois da expulsão.
+struct PendingSlot {
+    _permit: tokio::sync::OwnedSemaphorePermit,
+    hooks: Arc<TestHooks>,
+}
+impl Drop for PendingSlot {
+    fn drop(&mut self) {
+        self.hooks.pending_live.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+const BEFORE_UPGRADE: u8 = 0;
+const UPGRADED: u8 = 1;
+const EVICTED: u8 = 2;
+struct Waiting {
+    evict: oneshot::Sender<()>,
+    state: Arc<AtomicU8>,
+}
+struct Admission {
+    stream: TcpStream,
+    evicted: oneshot::Receiver<()>,
+    state: Arc<AtomicU8>,
+    slot: PendingSlot,
+}
+struct Admitter<'a> {
+    listener: &'a TcpListener,
+    config: &'a ApiConfig,
+    pending: Arc<Semaphore>,
+    waiting: std::sync::Mutex<VecDeque<Waiting>>,
+    hooks: Arc<TestHooks>,
+}
+impl Admitter<'_> {
+    /// Fila cheia: expulsa a pendente mais antiga que ainda não fez upgrade e espera a vaga dela voltar.
+    /// Conexão que já fez upgrade conserva a vaga até autenticar ou vencer o prazo; se todas fizeram, a nova é recusada.
+    async fn admit(&self) -> Admission {
+        loop {
+            let (stream, _) =
+                accept_retry(self.listener, self.config.accept_retry_ms, &self.hooks).await;
+            let permit = match self.pending.clone().try_acquire_owned() {
+                Ok(permit) => permit,
+                Err(_) => {
+                    if !self.evict_oldest() {
+                        continue;
+                    }
+                    match timeout(
+                        Duration::from_millis(self.config.auth_timeout_ms),
+                        self.pending.clone().acquire_owned(),
+                    )
+                    .await
+                    {
+                        Ok(Ok(permit)) => permit,
+                        _ => continue,
+                    }
+                }
+            };
+            let live = self.hooks.pending_live.fetch_add(1, Ordering::AcqRel) + 1;
+            self.hooks.pending_peak.fetch_max(live, Ordering::AcqRel);
+            let (evict, evicted) = oneshot::channel();
+            let state = Arc::new(AtomicU8::new(BEFORE_UPGRADE));
+            let mut waiting = self.waiting.lock().unwrap_or_else(|e| e.into_inner());
+            // Quem já saiu da fase de upgrade larga o receptor; limpar antes de inserir mantém a fila no tamanho da cota.
+            waiting.retain(|w| !w.evict.is_closed());
+            waiting.push_back(Waiting {
+                evict,
+                state: state.clone(),
+            });
+            self.hooks
+                .waiting_peak
+                .fetch_max(waiting.len(), Ordering::AcqRel);
+            drop(waiting);
+            return Admission {
+                stream,
+                evicted,
+                state,
+                slot: PendingSlot {
+                    _permit: permit,
+                    hooks: self.hooks.clone(),
+                },
+            };
+        }
+    }
+    fn evict_oldest(&self) -> bool {
+        let mut waiting = self.waiting.lock().unwrap_or_else(|e| e.into_inner());
+        waiting.retain(|w| !w.evict.is_closed());
+        let chosen = waiting.iter().position(|w| {
+            w.state
+                .compare_exchange(BEFORE_UPGRADE, EVICTED, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+        });
+        match chosen.and_then(|index| waiting.remove(index)) {
+            Some(oldest) => {
+                let _ = oldest.evict.send(());
+                true
+            }
+            None => false,
+        }
+    }
 }
 impl LocalApi {
     pub async fn bind(
@@ -501,23 +812,35 @@ impl LocalApi {
             .map_err(|_| ApiError::Unavailable)?;
         host.enable_backpressure();
         let token = Token::generate()?;
-        let log = Arc::new(Mutex::new(EventLog::new(config.events_per_stream)));
+        let log = Arc::new(Mutex::new(EventLog::new(
+            config.events_per_stream,
+            config.retired_sessions,
+        )));
         let service = Service {
+            #[cfg(test)]
+            before_setup: Arc::default(),
             host,
             launcher,
             config: config.clone(),
             log,
             sessions: HashMap::new(),
             keys: VecDeque::new(),
-            invalidated: VecDeque::new(),
+            retries: VecDeque::new(),
             released: VecDeque::new(),
+            generations: 0,
         };
         Ok(Self {
             listener,
             token,
+            pending: Arc::new(Semaphore::new(config.max_pending_auth)),
             config,
             service,
+            hooks: Arc::new(TestHooks::default()),
         })
+    }
+    #[doc(hidden)]
+    pub fn test_hooks(&self) -> Arc<TestHooks> {
+        self.hooks.clone()
     }
     pub fn port(&self) -> Result<u16, ApiError> {
         self.listener
@@ -536,6 +859,8 @@ impl LocalApi {
             token,
             config,
             mut service,
+            pending,
+            hooks,
         } = self;
         let token = Arc::new(token);
         let config = Arc::new(config);
@@ -545,46 +870,42 @@ impl LocalApi {
             .port();
         let log = service.log.clone();
         let permits = Arc::new(Semaphore::new(config.max_connections));
-        let pending = Arc::new(Semaphore::new(config.max_pending_auth));
+        let admitter = Admitter {
+            listener: &listener,
+            config: &config,
+            pending,
+            waiting: std::sync::Mutex::new(VecDeque::new()),
+            hooks: hooks.clone(),
+        };
         let (commands, mut incoming) = mpsc::channel::<Request>(config.command_queue);
         let mut connections = tokio::task::JoinSet::new();
-        let mut accepting = Box::pin(accept_retry(&listener, config.accept_retry_ms));
+        let mut accepting = Box::pin(admitter.admit());
         loop {
-            while let Some(session_id) = service.invalidated.pop_front() {
-                let outcome = timeout(
-                    Duration::from_millis(config.host_timeout_ms),
-                    service.close(SessionParams { session_id }),
-                )
-                .await;
-                if matches!(outcome, Err(_) | Ok(Err(ApiError::Unavailable))) {
-                    return Err(ApiError::Unavailable);
-                }
-            }
+            let retry_due = service.retries.iter().map(|r| r.due).min();
             tokio::select! {
+                _ = tokio::time::sleep_until(retry_due.unwrap_or_else(Instant::now)), if retry_due.is_some() => {
+                    service.retry_close().await?;
+                },
                 event = service.host.next() => {
                     if service.event(event.map_err(host_error)?).await == Err(ApiError::Unavailable) { return Err(ApiError::Unavailable); }
                 },
                 Some(request) = incoming.recv() => {
-                    let outcome = timeout(Duration::from_millis(config.host_timeout_ms), service.command(&request.command)).await;
-                    match outcome {
-                        Ok(result) => {
-                            let _ = request.reply.send(result);
-                            if result == Err(ApiError::Unavailable) { return Err(ApiError::Unavailable); }
-                        }
-                        // Uma chamada cancelada pode ter executado; encerrar impede repetir efeito incerto.
-                        Err(_) => return Err(ApiError::Unavailable),
+                    let deadline = Instant::now() + Duration::from_millis(config.host_timeout_ms);
+                    let result = service.command(&request.command, deadline).await;
+                    // Um comando sem resposta do host pode ter executado; encerrar impede repetir efeito incerto.
+                    if let Err(ApiError::Unavailable | ApiError::HostTimeout) = result {
+                        let _ = request.reply.send(Err(ApiError::Unavailable));
+                        return Err(ApiError::Unavailable);
                     }
+                    let _ = request.reply.send(result);
                 }
-                accepted = &mut accepting => {
-                    accepting.set(accept_retry(&listener, config.accept_retry_ms));
-                    let (stream, _) = accepted;
-                    if let Ok(permit) = pending.clone().try_acquire_owned() {
-                        let (token, config, commands, log) = (token.clone(), config.clone(), commands.clone(), log.clone());
-                        let authenticated = permits.clone();
-                        connections.spawn(async move {
-                            let _ = connection(stream, port, token, config, commands, log, (permit, authenticated)).await;
-                        });
-                    }
+                admission = &mut accepting => {
+                    accepting.set(admitter.admit());
+                    let (token, config, commands, log, hooks) = (token.clone(), config.clone(), commands.clone(), log.clone(), hooks.clone());
+                    let authenticated = permits.clone();
+                    connections.spawn(async move {
+                        let _ = connection(admission, port, token, config, commands, log, (authenticated, hooks)).await;
+                    });
                 }
                 Some(_) = connections.join_next(), if !connections.is_empty() => (),
             }
@@ -592,7 +913,7 @@ impl LocalApi {
     }
 }
 
-async fn retry_io<T, F, Fut>(mut operation: F, delay_ms: u64) -> T
+async fn retry_io<T, F, Fut>(mut operation: F, delay_ms: u64, retry: &Gate) -> T
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = std::io::Result<T>>,
@@ -603,12 +924,31 @@ where
             Err(_) => {
                 eprintln!("ads-daemon: local accept failed; retrying");
                 tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                retry.pass().await;
             }
         }
     }
 }
-async fn accept_retry(listener: &TcpListener, delay_ms: u64) -> (TcpStream, std::net::SocketAddr) {
-    retry_io(|| listener.accept(), delay_ms).await
+async fn accept_retry(
+    listener: &TcpListener,
+    delay_ms: u64,
+    hooks: &TestHooks,
+) -> (TcpStream, std::net::SocketAddr) {
+    retry_io(
+        || async {
+            if hooks
+                .accept_faults
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1))
+                .is_ok()
+            {
+                return Err(std::io::Error::from(std::io::ErrorKind::ConnectionAborted));
+            }
+            listener.accept().await
+        },
+        delay_ms,
+        &hooks.accept_retry,
+    )
+    .await
 }
 
 fn response(id: &Value, result: Result<bool, ApiError>) -> Value {
@@ -648,70 +988,103 @@ fn consume_hello(hello: &mut Option<Value>) -> Result<Value, ApiError> {
 
 #[allow(clippy::result_large_err)] // A assinatura do callback é definida pela biblioteca WebSocket.
 async fn connection(
-    stream: TcpStream,
+    admission: Admission,
     port: u16,
     token: Arc<Token>,
     config: Arc<ApiConfig>,
     commands: mpsc::Sender<Request>,
     log: Arc<Mutex<EventLog>>,
-    permits: (tokio::sync::OwnedSemaphorePermit, Arc<Semaphore>),
+    (authenticated, hooks): (Arc<Semaphore>, Arc<TestHooks>),
 ) -> Result<(), ApiError> {
     use tokio_tungstenite::tungstenite::handshake::server::{Request as HttpRequest, Response};
     let ws_config = WebSocketConfig::default()
         .max_message_size(Some(config.max_message_bytes))
         .max_frame_size(Some(config.max_message_bytes));
+    let Admission {
+        stream,
+        evicted,
+        state,
+        slot,
+    } = admission;
     let deadline = Instant::now() + Duration::from_millis(config.auth_timeout_ms);
-    let mut ws = timeout_at(
-        deadline,
-        tokio_tungstenite::accept_hdr_async_with_config(
-            stream,
-            |request: &HttpRequest, response: Response| {
-                if permits_upgrade(request, port, &config.allowed_origins) {
-                    Ok(response)
-                } else {
-                    Err(tokio_tungstenite::tungstenite::http::Response::builder()
-                        .status(403)
-                        .body(None)
-                        .expect("static response"))
-                }
-            },
-            Some(ws_config),
-        ),
-    )
-    .await
-    .map_err(|_| ApiError::Unavailable)?
-    .map_err(|_| ApiError::Invalid)?;
-    let first = timeout_at(deadline, ws.next()).await;
-    let mut hello = match first {
-        Ok(Some(Ok(Message::Text(text)))) => serde_json::from_str::<Value>(&text)
-            .ok()
-            .and_then(|v| validate_command(v).ok()),
-        _ => None,
-    };
-    let valid = hello.as_ref().is_some_and(|v| {
-        v["method"] == "auth.hello"
-            && v["params"]["_meta"]["origin"] == "local"
-            && v["params"]["token"]
-                .as_str()
-                .is_some_and(|s| token.matches(s))
-    });
-    if !valid {
-        let _ = timeout(
-            Duration::from_millis(config.send_timeout_ms),
-            ws.close(None),
+    let upgrade = async {
+        let ws = timeout_at(
+            deadline,
+            tokio_tungstenite::accept_hdr_async_with_config(
+                stream,
+                |request: &HttpRequest, response: Response| {
+                    // A troca para UPGRADED acontece antes de o 101 sair: depois dele a conexão não pode ser expulsa.
+                    if permits_upgrade(request, port, &config.allowed_origins)
+                        && state
+                            .compare_exchange(
+                                BEFORE_UPGRADE,
+                                UPGRADED,
+                                Ordering::AcqRel,
+                                Ordering::Acquire,
+                            )
+                            .is_ok()
+                    {
+                        Ok(response)
+                    } else {
+                        Err(tokio_tungstenite::tungstenite::http::Response::builder()
+                            .status(403)
+                            .body(None)
+                            .expect("static response"))
+                    }
+                },
+                Some(ws_config),
+            ),
         )
-        .await;
-        return Err(ApiError::Invalid);
-    }
+        .await
+        .map_err(|_| ApiError::Unavailable)?
+        .map_err(|_| ApiError::Invalid)?;
+        // O 101 já saiu, mas a expulsão ainda é ouvida até aqui: a troca de estado no callback é o que protege.
+        hooks.after_upgrade.pass().await;
+        Ok(ws)
+    };
+    // Só a fase antes do upgrade pode ser expulsa; quem perder a disputa pela troca de estado sai.
+    let mut ws = tokio::select! {
+        biased;
+        _ = evicted => {
+            hooks.evicted_exit.pass().await;
+            return Err(ApiError::Capacity);
+        }
+        result = upgrade => result?,
+    };
+    let hello = async {
+        let first = timeout_at(deadline, ws.next()).await;
+        let hello = match first {
+            Ok(Some(Ok(Message::Text(text)))) => serde_json::from_str::<Value>(&text)
+                .ok()
+                .and_then(|v| validate_command(v).ok()),
+            _ => None,
+        };
+        let valid = hello.as_ref().is_some_and(|v| {
+            v["method"] == "auth.hello"
+                && v["params"]["_meta"]["origin"] == "local"
+                && v["params"]["token"]
+                    .as_str()
+                    .is_some_and(|s| token.matches(s))
+        });
+        if !valid {
+            let _ = timeout(
+                Duration::from_millis(config.send_timeout_ms),
+                ws.close(None),
+            )
+            .await;
+            return Err(ApiError::Invalid);
+        }
+        Ok(hello)
+    };
+    let mut hello = hello.await?;
     let id = consume_hello(&mut hello)?;
-    let (pending, authenticated) = permits;
     let _authenticated = authenticated
         .try_acquire_owned()
         .map_err(|_| ApiError::Capacity)?;
-    drop(pending);
+    drop(slot);
     send(&mut ws, response(&id, Ok(false)), &config).await?;
     let mut changed = log.lock().await.watch();
-    let mut subscriptions = HashMap::<String, (u64, Value)>::new();
+    let mut subscriptions = HashMap::<String, (u64, Value, Arc<Stream>)>::new();
     loop {
         let message = tokio::select! {
             message = ws.next() => Some(message),
@@ -762,18 +1135,35 @@ async fn connection(
                         .await
                         .map_err(|_| ApiError::Unavailable)?;
                     let outcome = answer.await.map_err(|_| ApiError::Unavailable)?;
-                    send(&mut ws, response(&id, outcome), &config).await?;
-                    if subscribe && outcome.is_ok() {
-                        subscriptions.insert(stream, (after, id));
+                    let replayed = outcome.as_ref().map(|r| r.replayed).map_err(|e| *e);
+                    send(&mut ws, response(&id, replayed), &config).await?;
+                    if subscribe
+                        && let Ok(Reply {
+                            stream: Some(handle),
+                            ..
+                        }) = outcome
+                    {
+                        subscriptions.insert(stream, (after, id, handle));
                     }
                 }
             }
         }
-        for (stream, (after, subscription_id)) in &mut subscriptions {
-            let events = log.lock().await.after(stream, *after);
-            let events = match events {
-                Ok(events) => events,
-                Err(error) => {
+        if !subscriptions.is_empty() {
+            hooks.before_delivery.pass().await;
+        }
+        let mut finished = Vec::new();
+        for (name, (after, subscription_id, stream)) in &mut subscriptions {
+            let events = match stream.poll(*after) {
+                // Fechamento automático em curso: a entrega espera o resultado final.
+                Poll::Wait => continue,
+                // Encarnação podada, removida ou com o fechamento resolvido: termina só esta assinatura.
+                Poll::End(error) => {
+                    send(&mut ws, response(subscription_id, Err(error)), &config).await?;
+                    finished.push(name.clone());
+                    continue;
+                }
+                Poll::Events(events) => events,
+                Poll::Fatal(error) => {
                     send(&mut ws, response(subscription_id, Err(error)), &config).await?;
                     let _ = timeout(
                         Duration::from_millis(config.send_timeout_ms),
@@ -783,19 +1173,39 @@ async fn connection(
                     return Err(error);
                 }
             };
-            for event in events {
-                *after = event["seq"].as_u64().ok_or(ApiError::Unavailable)?;
-                send(&mut ws, event, &config).await?;
-            }
+            deliver(&mut ws, events, after, stream, &config).await?;
+        }
+        for name in finished {
+            subscriptions.remove(&name);
         }
     }
 }
 
-async fn send(
-    ws: &mut tokio_tungstenite::WebSocketStream<TcpStream>,
-    value: Value,
+/// Envia um lote em ordem; uma invalidação no meio dele suspende o resto e o cursor fica no último quadro enviado.
+async fn deliver<S>(
+    ws: &mut S,
+    events: Vec<Value>,
+    after: &mut u64,
+    stream: &Stream,
     config: &ApiConfig,
-) -> Result<(), ApiError> {
+) -> Result<(), ApiError>
+where
+    S: futures_util::Sink<Message> + Unpin,
+{
+    for event in events {
+        if !stream.deliverable() {
+            break;
+        }
+        *after = event["seq"].as_u64().ok_or(ApiError::Unavailable)?;
+        send(ws, event, config).await?;
+    }
+    Ok(())
+}
+
+async fn send<S>(ws: &mut S, value: Value, config: &ApiConfig) -> Result<(), ApiError>
+where
+    S: futures_util::Sink<Message> + Unpin,
+{
     let value = checked("urn:ads:contract:local-api.server-message:1", value)?;
     timeout(
         Duration::from_millis(config.send_timeout_ms),
@@ -836,6 +1246,7 @@ mod tests {
                 })
             },
             10,
+            &Gate::default(),
         )
         .await;
         assert_eq!(value, 42);
@@ -849,8 +1260,12 @@ mod tests {
         assert_eq!(consume_hello(&mut hello).unwrap(), "request");
         assert!(hello.is_none());
     }
-    #[tokio::test]
-    async fn failed_created_event_closes_the_opened_host_session() {
+    async fn fake_service() -> (
+        LocalApi,
+        Arc<ads_ptyhost::FakeBackend>,
+        Arc<ads_ptyhost::PtyHost>,
+        tokio::task::JoinHandle<()>,
+    ) {
         use crate::pty_client::ClientConfig;
         use ads_ptyhost::{FakeBackend, HostConfig, PtyHost, server};
         struct FakeLauncher;
@@ -869,19 +1284,108 @@ mod tests {
         let client = PtyClient::over(near, ClientConfig::recommended(host.config()))
             .await
             .unwrap();
-        let mut api = LocalApi::bind(
-            ApiConfig::from_toml_str("").unwrap(),
+        let api = LocalApi::bind(
+            ApiConfig::from_toml_str("max_sessions = 1").unwrap(),
             client,
             Arc::new(FakeLauncher),
         )
         .await
         .unwrap();
+        (api, backend, host, peer)
+    }
+
+    #[tokio::test]
+    async fn confirmed_open_with_expired_setup_budget_schedules_cleanup() {
+        let (mut api, backend, host, peer) = fake_service().await;
+        let gate = api.service.before_setup.clone();
+        gate.hold();
+        let params = json!({"session_id": "session", "harness": "test", "workdir_alias": "workspace", "cols": 80, "rows": 24, "_meta": {"origin": "local", "idempotency_key": "01ARZ3NDEKTSV4RRFFQ69G5FAB"}});
+        let budget = Duration::from_secs(5);
+        let deadline = Instant::now() + budget;
+        let (result, ()) = timeout(Duration::from_secs(10), async {
+            tokio::join!(
+                api.service.execute("session.open", &params, None, deadline),
+                async {
+                    gate.reached.notified().await;
+                    assert_eq!(host.sessions().len(), 1);
+                    tokio::time::pause();
+                    tokio::time::advance(budget).await;
+                    gate.release();
+                }
+            )
+        })
+        .await
+        .unwrap();
+        tokio::time::resume();
+        assert_eq!(result.map(|_| ()), Err(ApiError::SetupTimeout));
+        assert_eq!(api.service.retries.len(), 1);
+        let mut other = params.clone();
+        other["session_id"] = json!("other");
+        assert_eq!(
+            api.service
+                .execute("session.open", &other, None, Instant::now() + budget)
+                .await
+                .map(|_| ()),
+            Err(ApiError::Capacity)
+        );
+        api.service.retry_close().await.unwrap();
+        assert!(backend.terminals()[0].was_killed());
+        assert!(host.sessions().is_empty());
+        assert!(api.service.sessions.is_empty());
+        assert!(
+            api.service
+                .execute("session.open", &params, None, Instant::now() + budget)
+                .await
+                .is_ok()
+        );
+        assert_eq!(host.sessions().len(), 1);
+        assert!(api.service.retries.is_empty());
+        peer.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn ready_host_call_is_not_polled_at_the_deadline() {
+        let (mut api, _, _, peer) = fake_service().await;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let ready = || std::future::ready(Ok::<_, ClientError>(()));
+        assert_eq!(api.service.wait_host(ready(), deadline).await, Ok(()));
+        tokio::time::advance(Duration::from_secs(5)).await;
+        let mut polls = 0;
+        for _ in 0..32 {
+            let response = std::future::poll_fn(|_| {
+                polls += 1;
+                std::task::Poll::Ready(Ok::<_, ClientError>(()))
+            });
+            assert_eq!(
+                api.service.wait_host(response, deadline).await,
+                Err(ApiError::HostTimeout)
+            );
+        }
+        assert_eq!(polls, 0);
+        peer.abort();
+    }
+
+    #[tokio::test]
+    async fn failed_created_event_closes_the_opened_host_session() {
+        let (mut api, backend, host, peer) = fake_service().await;
         api.service.log.lock().await.exhaust_sequence("session");
         let params = json!({"session_id": "session", "harness": "test", "workdir_alias": "workspace", "cols": 80, "rows": 24, "_meta": {"origin": "local", "idempotency_key": "01ARZ3NDEKTSV4RRFFQ69G5FAB"}});
         assert_eq!(
-            api.service.execute("session.open", &params, None).await,
+            api.service
+                .execute(
+                    "session.open",
+                    &params,
+                    None,
+                    Instant::now() + Duration::from_secs(5)
+                )
+                .await
+                .map(|_| ()),
             Err(ApiError::Capacity)
         );
+        // The record stays until the queued close is confirmed by the host.
+        assert!(!backend.terminals()[0].was_killed());
+        assert_eq!(api.service.sessions.len(), 1);
+        api.service.retry_close().await.unwrap();
         assert!(backend.terminals()[0].was_killed());
         assert!(host.sessions().is_empty());
         assert!(api.service.sessions.is_empty());
@@ -967,10 +1471,221 @@ mod tests {
         begin.send(()).unwrap();
         tokio::time::sleep(Duration::from_millis(30)).await;
         let host = api.service.host.commands();
-        let result = timeout(Duration::from_secs(2), api.service.wait_host(host.list()))
-            .await
-            .unwrap();
+        let result = timeout(
+            Duration::from_secs(2),
+            api.service
+                .wait_host(host.list(), Instant::now() + Duration::from_secs(2)),
+        )
+        .await
+        .unwrap();
         peer.abort();
         assert!(result.unwrap().sessions.is_empty());
+    }
+
+    async fn authenticate(port: u16, token: &str) -> tokio_tungstenite::WebSocketStream<TcpStream> {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let mut request = format!("ws://127.0.0.1:{port}/")
+            .into_client_request()
+            .unwrap();
+        request
+            .headers_mut()
+            .insert("Origin", "http://127.0.0.1:5173".parse().unwrap());
+        let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let (mut ws, _) = tokio_tungstenite::client_async(request, stream)
+            .await
+            .unwrap();
+        let hello = json!({"jsonrpc": "2.0", "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB", "method": "auth.hello", "params": {"token": token, "_meta": {"origin": "local", "idempotency_key": "01ARZ3NDEKTSV4RRFFQ69G5FAB"}}});
+        ws.send(Message::Text(hello.to_string().into()))
+            .await
+            .unwrap();
+        let reply: Value =
+            serde_json::from_str(ws.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+        assert_eq!(reply["result"]["accepted"], true);
+        ws
+    }
+
+    #[tokio::test]
+    async fn run_keeps_serving_while_accept_fails() {
+        use crate::pty_client::ClientConfig;
+        use ads_ptyhost::{FakeBackend, HostConfig, PtyHost, server};
+        let host =
+            Arc::new(PtyHost::new(Arc::new(FakeBackend::new()), HostConfig::defaults()).unwrap());
+        let (near, far) = tokio::io::duplex(4096);
+        let peer = tokio::spawn(server::connection(host.clone(), far));
+        let client = PtyClient::over(near, ClientConfig::recommended(host.config()))
+            .await
+            .unwrap();
+        let api = LocalApi::bind(
+            ApiConfig::from_toml_str("accept_retry_ms = 20").unwrap(),
+            client,
+            Arc::new(DisabledLauncher),
+        )
+        .await
+        .unwrap();
+        let port = api.port().unwrap();
+        let token = api
+            .launch_url()
+            .unwrap()
+            .split_once("&token=")
+            .unwrap()
+            .1
+            .to_owned();
+        let hooks = api.test_hooks();
+        let running = tokio::spawn(api.run());
+        let mut first = timeout(Duration::from_secs(5), authenticate(port, &token))
+            .await
+            .unwrap();
+        let start = Instant::now();
+        hooks.accept_retry.hold();
+        hooks.fail_accepts(25);
+        // The accept already waiting takes this socket; the next ones hit the injected failures.
+        let _armed = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let late = tokio::spawn({
+            let token = token.clone();
+            async move { authenticate(port, &token).await }
+        });
+        timeout(
+            Duration::from_secs(5),
+            hooks.accept_retry.reached.notified(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(hooks.accept_faults_left(), 24);
+        // The service answers while the next accept attempt is held.
+        let subscribe = json!({"jsonrpc": "2.0", "id": "01ARZ3NDEKTSV4RRFFQ69G5FAC", "method": "events.subscribe", "params": {"stream": "session/none", "after_seq": 0, "_meta": {"origin": "local", "idempotency_key": "01ARZ3NDEKTSV4RRFFQ69G5FAC"}}});
+        first
+            .send(Message::Text(subscribe.to_string().into()))
+            .await
+            .unwrap();
+        let reply = timeout(Duration::from_secs(5), first.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let reply: Value = serde_json::from_str(reply.to_text().unwrap()).unwrap();
+        assert_eq!(reply["result"]["accepted"], true);
+        assert_eq!(hooks.accept_faults_left(), 24);
+        hooks.accept_retry.release();
+        timeout(Duration::from_secs(5), late)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(hooks.accept_faults_left(), 0);
+        assert!(start.elapsed() >= Duration::from_millis(500));
+        assert!(!running.is_finished());
+        running.abort();
+        peer.abort();
+    }
+
+    #[tokio::test]
+    async fn evicted_connections_still_count_against_the_pending_cap() {
+        use crate::pty_client::ClientConfig;
+        use ads_ptyhost::{FakeBackend, HostConfig, PtyHost, server};
+        let host =
+            Arc::new(PtyHost::new(Arc::new(FakeBackend::new()), HostConfig::defaults()).unwrap());
+        let (near, far) = tokio::io::duplex(4096);
+        let peer = tokio::spawn(server::connection(host.clone(), far));
+        let client = PtyClient::over(near, ClientConfig::recommended(host.config()))
+            .await
+            .unwrap();
+        let api = LocalApi::bind(
+            ApiConfig::from_toml_str("max_pending_auth = 1\nauth_timeout_ms = 60000").unwrap(),
+            client,
+            Arc::new(DisabledLauncher),
+        )
+        .await
+        .unwrap();
+        let port = api.port().unwrap();
+        let hooks = api.test_hooks();
+        let pending = api.pending.clone();
+        let running = tokio::spawn(api.run());
+        let wait_live = |count: usize| {
+            let hooks = hooks.clone();
+            async move {
+                timeout(Duration::from_secs(5), async {
+                    while hooks.pending().0 != count {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                })
+                .await
+                .unwrap()
+            }
+        };
+        let mut oldest = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        wait_live(1).await;
+        // The evicted task is held before it ends, so its slot is still taken.
+        hooks.evicted_exit.hold();
+        let _newest = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        timeout(
+            Duration::from_secs(5),
+            hooks.evicted_exit.reached.notified(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(pending.available_permits(), 0);
+        assert_eq!(hooks.pending().0, 1);
+        assert_eq!(hooks.pending().1, 1);
+        hooks.evicted_exit.release();
+        use tokio::io::AsyncReadExt;
+        let mut byte = [0u8; 1];
+        let read = timeout(Duration::from_secs(5), oldest.read(&mut byte))
+            .await
+            .unwrap();
+        assert!(matches!(read, Ok(0) | Err(_)));
+        wait_live(1).await;
+        assert_eq!(hooks.pending().1, 1);
+        running.abort();
+        peer.abort();
+    }
+
+    #[tokio::test]
+    async fn invalidation_during_a_batch_suspends_the_remaining_frames() {
+        let log = Arc::new(Mutex::new(EventLog::new(8, 4)));
+        let stream = {
+            let mut log = log.lock().await;
+            for _ in 0..3 {
+                log.append(
+                    "s",
+                    "resized",
+                    json!({"session_id": "s", "cols": 80, "rows": 24}),
+                    None,
+                )
+                .unwrap();
+            }
+            log.subscribe("session/s", 0).unwrap()
+        };
+        let Poll::Events(events) = stream.poll(0) else {
+            panic!("expected events")
+        };
+        assert_eq!(events.len(), 3);
+        let sent = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let (shared_log, shared_sent) = (log.clone(), sent.clone());
+        // The first frame is still being sent when the session is invalidated.
+        let mut sink = Box::pin(futures_util::sink::unfold(
+            (),
+            move |(), message: Message| {
+                let (log, sent) = (shared_log.clone(), shared_sent.clone());
+                async move {
+                    sent.lock()
+                        .unwrap()
+                        .push(message.to_text().unwrap().to_owned());
+                    log.lock().await.invalidate("s", Closing::Pending);
+                    Ok::<_, std::convert::Infallible>(())
+                }
+            },
+        ));
+        let mut after = 0;
+        deliver(
+            &mut sink,
+            events,
+            &mut after,
+            &stream,
+            &ApiConfig::from_toml_str("").unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(sent.lock().unwrap().len(), 1);
+        assert_eq!(after, 1);
+        assert_eq!(stream.poll(after), Poll::Wait);
     }
 }
