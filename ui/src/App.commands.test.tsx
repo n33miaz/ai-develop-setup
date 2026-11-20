@@ -86,4 +86,41 @@ describe('live terminal commands', () => {
     })
     expect(send).toHaveBeenCalledTimes(4)
   })
+
+  it('sends input again after a refused write once a resize succeeds', async () => {
+    const client = createFakeCoreClient()
+    const t = createTranslator('en')
+    for (const draft of sampleSessionEvents(t)) client.emit(draft)
+    let refuse = true
+    const send = vi
+      .spyOn(client, 'send')
+      .mockImplementation((command) =>
+        Promise.resolve(
+          refuse
+            ? { jsonrpc: '2.0', id: command.id, error: { code: -32602, message: 'refused' } }
+            : { jsonrpc: '2.0', id: command.id, result: { accepted: true, replayed: false } },
+        ),
+      )
+    render(
+      <I18nContext value={t}>
+        <App client={client} live sessionStreams={['session/session-a']} />
+      </I18nContext>,
+    )
+    await screen.findByText(t('sample.session.a'))
+    fireEvent.click(screen.getByText('input'))
+    expect(await screen.findByRole('alert')).toHaveTextContent(t('session.commandFailed'))
+    refuse = false
+    fireEvent.click(screen.getByText('resize'))
+    await waitFor(() => {
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    })
+    fireEvent.click(screen.getByText('input'))
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledTimes(3)
+    })
+    const methods = send.mock.calls.map(([command]) => command.method)
+    expect(methods).toEqual(['session.write', 'session.resize', 'session.write'])
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
 })
