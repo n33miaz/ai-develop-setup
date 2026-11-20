@@ -780,6 +780,35 @@ fn product_wal_with_partial_last_frame_opens() {
 }
 
 #[test]
+fn product_wal_commit_with_damaged_salt_before_one_commit_is_refused() {
+    let (main, mut wal) = pending_product_wal(&[
+        "INSERT INTO meta VALUES ('first', x'01')",
+        "INSERT INTO meta VALUES ('second', x'02')",
+        "INSERT INTO meta VALUES ('third', x'03')",
+    ]);
+    let all = transactions(&wal);
+    assert_eq!(all.len(), 3);
+    let commit = *all[1].last().unwrap();
+    wal[commit + 8] ^= 1;
+    refused_keeping_pair(&write_pair(&main, &wal), StorageError::Corrupt);
+}
+
+#[test]
+fn product_wal_commit_with_zeroed_marker_before_one_commit_is_refused() {
+    let (main, mut wal) = pending_product_wal(&[
+        "INSERT INTO meta VALUES ('first', x'01')",
+        "INSERT INTO meta VALUES ('second', x'02')",
+        "INSERT INTO meta VALUES ('third', x'03')",
+    ]);
+    let all = transactions(&wal);
+    assert_eq!(all.len(), 3);
+    let commit = *all[1].last().unwrap();
+    wal[commit + 4..commit + 8].fill(0);
+    wal[commit + 24 + 100] ^= 1;
+    refused_keeping_pair(&write_pair(&main, &wal), StorageError::Corrupt);
+}
+
+#[test]
 fn integrity_refusal_with_pending_wal_keeps_main_file_and_wal() {
     let source = fixture();
     drop(AuditStore::open(&source, &StorageConfig::defaults()).unwrap());

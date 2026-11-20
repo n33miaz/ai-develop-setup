@@ -45,15 +45,16 @@ conferir esquemas estrangeiros com `application_id=0` e tabelas presentes apenas
 no WAL, sem alterar `-shm`. Arquivo já marcado pelo produto não passa pela imagem.
 Dele se lê o `-wal` em fluxo, um quadro por vez: o cabeçalho (magic, versão,
 página e checksum) é conferido, porque o SQLite descartaria em silêncio um WAL
-com cabeçalho danificado; e a abertura recusa com `Corrupt` quando, depois do
-primeiro quadro inválido, há um commit com o salt atual além do commit da
-transação que contém a quebra. O SQLite para no primeiro quadro inválido e
-perderia esses commits já confirmados. Quebra só na última transação é queda
-comum e abre normalmente, assim como o último quadro incompleto e a cauda de
-quadros de geração anterior (outro salt) depois dos atuais, que é o desenho
-normal após o WAL recomeçar. Duas quedas seguidas, cada uma rasgando uma escrita
-e deixando o commit dela, podem fazer um banco legítimo ser recusado; o reparo
-(levar o `-wal` para a quarentena) está no README do crate. Nada liga o WAL ao
+com cabeçalho danificado. Depois de um quadro completo inválido, um único
+marcador de commit com o salt atual basta para recusar com `Corrupt` se puder
+pertencer a outra transação. O checksum cobre o marcador, mas exclui o salt.
+Se apenas o salt diverge, o checksum válido permite identificar um quadro
+sem marcador de commit e tolerar o commit da mesma transação se a cadeia se
+mantiver até ele. Com checksum inválido, um marcador zerado no quadro da quebra
+pode ser resultado do próprio dano. Uma queda legítima pode deixar esse mesmo
+desenho e exigir quarentena, conforme o reparo no README do crate. Um último
+quadro incompleto e quadros de geração anterior depois dos atuais seguem
+ignorados. Nada liga o WAL ao
 arquivo principal: o SQLite aplica um `-wal` inteiro de outro banco do produto,
 de checksums válidos, e a abertura não percebe; a defesa é a âncora fora do
 arquivo planejada para o log encadeado. Em seguida a inspeção roda numa transação de leitura

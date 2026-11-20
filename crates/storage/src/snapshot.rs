@@ -95,7 +95,7 @@ fn fill(reader: &mut impl Read, buffer: &mut [u8]) -> Result<bool, StorageError>
 
 /// Product files skip the image, but SQLite silently discards a WAL with a
 /// damaged header, and every frame after the first invalid one. Refuse when
-/// that would drop a commit made after the transaction holding the break.
+/// a later commit marker could belong to a separate transaction.
 pub(crate) fn check_product_wal(path: &Path, page: usize) -> Result<(), StorageError> {
     let file = match File::open(wal_path(path)) {
         Ok(file) => file,
@@ -109,27 +109,36 @@ pub(crate) fn check_product_wal(path: &Path, page: usize) -> Result<(), StorageE
     }
     let (big, mut sum) = wal_header(&header, page)?;
     let mut frame = vec![0; 24 + page];
-    let mut broken = false;
-    let mut broken_commit = false;
-    while fill(&mut reader, &mut frame)? {
-        // Frames of an older generation carry other salts and are expected.
+    let mut can_finish = loop {
+        if !fill(&mut reader, &mut frame)? {
+            return Ok(());
+        }
+        let next = checksum(&frame[24..], checksum(&frame[..8], sum, big), big);
+        let valid_checksum = next == [word(&frame[16..]), word(&frame[20..])];
+        sum = next;
+        if !valid_checksum || word(&frame) == 0 {
+            break false;
+        }
         if frame[8..16] != header[16..24] {
-            broken = true;
-            continue;
+            // The checksum covers the commit marker but excludes the salt.
+            break word(&frame[4..]) == 0;
         }
-        if !broken {
+    };
+    while fill(&mut reader, &mut frame)? {
+        let current_salt = frame[8..16] == header[16..24];
+        if can_finish {
             let next = checksum(&frame[24..], checksum(&frame[..8], sum, big), big);
-            if word(&frame) != 0 && next == [word(&frame[16..]), word(&frame[20..])] {
-                sum = next;
-                continue;
-            }
-            broken = true;
+            can_finish = current_salt
+                && word(&frame) != 0
+                && next == [word(&frame[16..]), word(&frame[20..])];
+            sum = next;
         }
-        if word(&frame[4..]) != 0 {
-            if broken_commit {
+        // After a break, a current-salt commit marker is evidence of possible loss.
+        if current_salt && word(&frame[4..]) != 0 {
+            if !can_finish {
                 return Err(StorageError::Corrupt);
             }
-            broken_commit = true;
+            can_finish = false;
         }
     }
     Ok(())

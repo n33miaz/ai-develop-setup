@@ -45,7 +45,7 @@ A abertura recusa qualquer `audit.db-journal` ao lado do banco, inclusive vazio 
 
 ## Reparo de `-wal` recusado
 
-A abertura recusa com `Corrupt` um `audit.db-wal` em que o SQLite descartaria um commit já confirmado: depois do primeiro quadro inválido, há um commit com o salt atual além do commit da transação que contém a quebra. Duas quedas seguidas, cada uma rasgando uma escrita mas deixando o quadro de commit dela no disco, podem produzir esse desenho num banco legítimo, sem nenhum commit confirmado perdido; a abertura não tem como distinguir os dois casos e recusa. Para reparar:
+A abertura recusa com `Corrupt` quando um quadro completo inválido é seguido por um marcador de commit com o salt atual que pode pertencer a outra transação. Um único marcador posterior basta se o checksum do quadro inválido falhar ou se o quadro já marcar um commit. Um quadro com apenas o salt divergente, checksum válido e marcador zerado ainda pode ser seguido pelo commit da mesma transação se a cadeia de checksums se mantiver até ele. O último quadro incompleto e a cauda de geração anterior continuam sendo ignorados. Uma queda legítima também pode deixar um quadro com checksum inválido seguido pelo marcador da mesma transação. A abertura recusa esse caso ambíguo para evitar perda silenciosa de commits confirmados. Para reparar:
 
 1. Pare o produto e confira que nenhum processo usa o banco.
 2. Copie `audit.db`, `audit.db-wal` e, se existir, `audit.db-shm` para a subpasta `copia` de uma pasta de quarentena, com os mesmos nomes. Não apague nada.
