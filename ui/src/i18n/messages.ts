@@ -9,7 +9,11 @@ export const ptBR = {
   'harness.none': 'Nenhuma ferramenta configurada no núcleo.',
   'harness.noWorkdir':
     'Nenhuma pasta de trabalho configurada no núcleo; não é possível abrir sessões.',
-  'harness.failed': 'Não foi possível obter as ferramentas do núcleo. Reabra a URL da execução.',
+  'harness.failed': 'O núcleo recusou a lista de ferramentas. Confira a configuração dele.',
+  'harness.timeout':
+    'O núcleo não respondeu a tempo com a lista de ferramentas. Reabra a URL da execução.',
+  'harness.unsupported':
+    'Este núcleo não informa as ferramentas configuradas. Atualize o núcleo para abrir sessões.',
   'app.title': 'ai-develop-setup',
   'skip.toTerminal': 'Pular para o terminal',
   'notice.wip': 'Em construção. Esta tela mostra dados de exemplo locais; nada aqui vem do núcleo.',
@@ -63,7 +67,10 @@ export const en: Record<MessageKey, string> = {
   'harness.loading': 'Asking the core for its configured tools.',
   'harness.none': 'No tools are configured in the core.',
   'harness.noWorkdir': 'No work folder is configured in the core; sessions cannot be opened.',
-  'harness.failed': 'Could not get the tools from the core. Reopen the run URL.',
+  'harness.failed': 'The core refused the tool list. Check its configuration.',
+  'harness.timeout': 'The core did not send the tool list in time. Reopen the run URL.',
+  'harness.unsupported':
+    'This core does not report its configured tools. Update the core to open sessions.',
   'app.title': 'ai-develop-setup',
   'skip.toTerminal': 'Skip to the terminal',
   'notice.wip':

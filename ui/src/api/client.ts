@@ -21,12 +21,27 @@ export class CoreClientError extends Error {
   }
 }
 
+/** Por que `harness.list` falhou: sem resposta no prazo, núcleo que não conhece o método, recusa. */
+export type HarnessListFailure = 'timeout' | 'unsupported' | 'refused'
+
+export class HarnessListError extends Error {
+  readonly reason: HarnessListFailure
+
+  constructor(reason: HarnessListFailure) {
+    super(reason === 'timeout' ? 'core timeout' : 'command rejected')
+    this.name = 'HarnessListError'
+    this.reason = reason
+  }
+}
+
 /**
  * Contrato do cliente do núcleo. A UI nunca guarda verdade: só reproduz eventos recebidos.
  * Casca, navegador e celular usam a mesma interface; a implementação real entra depois.
  */
 export interface CoreClient {
   getState(): ConnectionState
+  /** Muda a cada conexão autenticada; o que veio de uma conexão não vale para a seguinte. */
+  getGeneration(): number
   onStateChange(listener: (state: ConnectionState) => void): Unsubscribe
   connect(): Promise<void>
   disconnect(): void

@@ -1,4 +1,4 @@
-import { CoreClientError, type ConnectionState, type CoreClient } from './client'
+import { CoreClientError, HarnessListError, type ConnectionState, type CoreClient } from './client'
 import { newCommand } from './command'
 import type {
   CommandHarnessListResponseV1,
@@ -23,6 +23,9 @@ export interface WsClientOptions {
 function accepted(response: Reply): boolean {
   return !isHarnessList(response) && 'result' in response
 }
+
+/** Quantos ids de `harness.list` vencidos são lembrados para descartar a resposta tardia. */
+const EXPIRED_IDS = 32
 
 export function createWsCoreClient({
   url,
@@ -50,6 +53,8 @@ export function createWsCoreClient({
   let socket: CoreSocket | null = null
   let connecting: Promise<void> | null = null
   let rejectConnection: ((error: Error) => void) | null = null
+  let generation = 0
+  const expired = new Set<string>()
   const listeners = new Set<(state: ConnectionState) => void>()
   const pending = new Map<
     string,
@@ -73,6 +78,7 @@ export function createWsCoreClient({
     rejectConnection?.(unavailable())
     rejectConnection = null
     subscriptions.clear()
+    expired.clear()
     for (const request of pending.values()) request.reject(unavailable())
     pending.clear()
     setState('disconnected')
@@ -92,6 +98,7 @@ export function createWsCoreClient({
   }
   return {
     getState: () => state,
+    getGeneration: () => generation,
     onStateChange(listener) {
       listeners.add(listener)
       return () => listeners.delete(listener)
@@ -129,6 +136,7 @@ export function createWsCoreClient({
               }
               connecting = null
               rejectConnection = null
+              generation += 1
               setState('connected')
               resolve()
             },
@@ -146,6 +154,16 @@ export function createWsCoreClient({
             fail()
             return
           }
+          // A resposta a um pedido vencido não tem mais quem a espere: some sem derrubar a conexão.
+          if (
+            typeof value === 'object' &&
+            value !== null &&
+            'jsonrpc' in value &&
+            'id' in value &&
+            typeof value.id === 'string' &&
+            expired.delete(value.id)
+          )
+            return
           if (!isServerMessage(value)) {
             fail()
             return
@@ -202,18 +220,26 @@ export function createWsCoreClient({
       if (state !== 'connected') return Promise.reject(unavailable())
       const command = newCommand('harness.list')
       let timer: ReturnType<typeof setTimeout> | undefined
-      const expired = new Promise<never>((_, reject) => {
+      const deadline = new Promise<never>((_, reject) => {
         timer = setTimeout(() => {
           const request = pending.get(command.id)
           pending.delete(command.id)
-          request?.reject(new Error('core timeout'))
-          reject(new Error('core timeout'))
+          if (request) {
+            expired.add(command.id)
+            for (const id of expired) {
+              if (expired.size <= EXPIRED_IDS) break
+              expired.delete(id)
+            }
+          }
+          request?.reject(new HarnessListError('timeout'))
+          reject(new HarnessListError('timeout'))
         }, listTimeoutMs)
       })
-      return Promise.race([transmit(command), expired])
+      return Promise.race([transmit(command), deadline])
         .then((response) => {
-          if (!isHarnessList(response)) throw new Error('command rejected')
-          return response.result
+          if (isHarnessList(response)) return response.result
+          // -32601: núcleo anterior ao método.
+          throw new HarnessListError(response.error?.code === -32601 ? 'unsupported' : 'refused')
         })
         .finally(() => {
           clearTimeout(timer)

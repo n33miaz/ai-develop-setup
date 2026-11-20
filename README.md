@@ -57,10 +57,15 @@ ferramenta, somados ao controle do terminal pela API, dão a quem usa a interfac
 acesso total à sua conta.
 Conectada, a interface mostra um botão de abertura para cada ferramenta que o
 daemon informa em `harness.list`. Enquanto a consulta não volta, um aviso diz que
-ela está em andamento; lista vazia, recusa ou falta de resposta em 10 segundos
-mostram cada uma o seu aviso, sem botões. Sem apelido de pasta anunciado pelo
-daemon, os botões ficam desativados e um aviso explica o motivo. A cada
-reconexão a consulta recomeça e só vale a resposta da conexão atual. `VITE_CORE_HARNESSES` (identificadores separados
+ela está em andamento. Sem botões, cada caso tem o seu aviso: lista vazia;
+falta de resposta em 10 segundos (reabra a URL da execução); daemon anterior ao
+comando, que responde `-32601` (atualize o daemon; reabrir a URL não resolve);
+e outra recusa (confira a configuração do daemon). Sem apelido de pasta anunciado
+pelo daemon, os botões ficam desativados e um aviso explica o motivo. Cada
+conexão autenticada tem uma geração própria: a lista, o apelido e os botões
+valem só para a geração que os recebeu, então uma reconexão volta ao aviso de
+consulta em andamento mesmo que a tela não chegue a mostrar a queda. A resposta
+que chega depois do prazo é descartada sem derrubar a conexão. `VITE_CORE_HARNESSES` (identificadores separados
 por vírgula, padrão vazio) vale só como reserva no modo de exemplo, sem núcleo,
 onde os botões ficam desativados. `VITE_CORE_WORKDIR` escolhe o apelido de pasta,
 com padrão `default`; se o daemon não conhecer esse apelido, a interface usa o

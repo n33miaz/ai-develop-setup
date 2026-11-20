@@ -40,6 +40,7 @@ export function createFakeCoreClient(
   const subscriptions = new Set<Subscription>()
   const acceptedKeys = new Set<string>()
   let connecting: Promise<void> | null = null
+  let generation = 0
 
   function setState(next: ConnectionState): void {
     if (state === next) return
@@ -94,6 +95,7 @@ export function createFakeCoreClient(
 
   return {
     getState: () => state,
+    getGeneration: () => generation,
 
     onStateChange(listener) {
       stateListeners.add(listener)
@@ -108,6 +110,7 @@ export function createFakeCoreClient(
         // `disconnect()` no meio do caminho cancela a tentativa: ela não volta a conectar.
         if (connecting !== attempt) throw notConnected()
         connecting = null
+        generation += 1
         setState('connected')
       })
       connecting = attempt

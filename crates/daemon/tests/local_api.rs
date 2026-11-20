@@ -123,6 +123,10 @@ async fn transmit(ws: &mut Socket, value: &Value) {
         .unwrap();
 }
 async fn receive(ws: &mut Socket) -> Value {
+    receive_reply(ws, false).await
+}
+/// `listed`: the frame answers a harness.list request, the only one allowed outside version 1.
+async fn receive_reply(ws: &mut Socket, listed: bool) -> Value {
     let message = bounded(ws.next()).await.unwrap().unwrap();
     let Message::Text(text) = message else {
         panic!("expected text")
@@ -133,8 +137,14 @@ async fn receive(ws: &mut Socket) -> Value {
             .unwrap()
             .is_ok()
     );
-    // Only the answer to harness.list is new: every other frame still fits the first version.
-    if value["result"].get("harnesses").is_none() {
+    if listed && value.get("result").is_some() {
+        assert!(
+            ads_contracts::reencode("urn:ads:command:harness.list.response:1", value.clone())
+                .unwrap()
+                .is_ok(),
+            "{value}"
+        );
+    } else {
         assert!(
             ads_contracts::reencode("urn:ads:contract:local-api.server-message:1", value.clone())
                 .unwrap()
@@ -154,7 +164,7 @@ async fn receive(ws: &mut Socket) -> Value {
 async fn call(ws: &mut Socket, method: &str, params: Value) -> Value {
     let value = command(method, params);
     transmit(ws, &value).await;
-    let response = receive(ws).await;
+    let response = receive_reply(ws, method == "harness.list").await;
     assert_eq!(response["id"], value["id"]);
     response
 }
@@ -1746,5 +1756,40 @@ async fn harness_list_needs_the_allowed_page_authentication_and_local_origin() {
     assert_eq!(
         call(&mut ws, "harness.list", json!({})).await["result"],
         expected
+    );
+}
+
+#[tokio::test]
+async fn a_client_that_never_lists_tools_only_receives_first_version_frames() {
+    let f = fixture("", Arc::new(TestLauncher)).await;
+    // `authenticated` and `call` check every reply against version 1 as well.
+    let mut ws = authenticated(&f).await;
+    let mut events = authenticated(&f).await;
+    assert_eq!(
+        call(
+            &mut events,
+            "events.subscribe",
+            json!({"stream": "session/legacy", "after_seq": 0})
+        )
+        .await["result"]["accepted"],
+        true
+    );
+    assert_eq!(
+        call(&mut ws, "session.open", open_params("legacy")).await["result"]["accepted"],
+        true
+    );
+    assert_eq!(
+        call(&mut ws, "unknown", json!({})).await["error"]["code"],
+        -32601
+    );
+    assert_eq!(
+        call(&mut ws, "session.close", json!({"session_id": "missing"})).await["error"]["code"],
+        -32602
+    );
+    let created = receive(&mut events).await;
+    assert_eq!(created["type"], "urn:ads:event:session.created:1");
+    assert_eq!(
+        call(&mut ws, "session.close", json!({"session_id": "legacy"})).await["result"]["accepted"],
+        true
     );
 }

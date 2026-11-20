@@ -12,8 +12,11 @@ import {
   decodeBase64,
   newCommand,
   newUlid,
+  HarnessListError,
+  useConnectionGeneration,
   useConnectionState,
   type CoreClient,
+  type HarnessListFailure,
   type EventEnvelopeV1,
   type HarnessCatalog,
 } from './api'
@@ -40,6 +43,13 @@ const THEME_LABEL: Record<ThemePreference, MessageKey> = {
   light: 'theme.light',
   dark: 'theme.dark',
 }
+
+const FAILURE_NOTICE: Record<HarnessListFailure, MessageKey> = {
+  timeout: 'harness.timeout',
+  unsupported: 'harness.unsupported',
+  refused: 'harness.failed',
+}
+const FAILURE_NOTICES = new Set<MessageKey>(Object.values(FAILURE_NOTICE))
 
 const TERMINAL_ID = 'terminal'
 const COMPACT_QUERY = '(width < 48rem)'
@@ -87,6 +97,7 @@ export function App({
   const t = useT()
   const sidebarId = useId()
   const connection = useConnectionState(client)
+  const generation = useConnectionGeneration(client)
   const { preference, cycle } = useTheme()
   const compact = useSyncExternalStore(subscribeCompact, isCompact)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -105,8 +116,11 @@ export function App({
 
   const [liveEvents, setLiveEvents] = useState<SessionEvent[]>([])
 
-  // null: consulta em andamento na conexão atual.
-  const [catalog, setCatalog] = useState<HarnessCatalog | 'failed' | null>(null)
+  // Vale só para a conexão autenticada (geração) que respondeu.
+  const [catalog, setCatalog] = useState<{
+    generation: number
+    value: HarnessCatalog | HarnessListFailure
+  } | null>(null)
 
   const receiveSession = useCallback((event: EventEnvelopeV1) => {
     if (
@@ -146,20 +160,24 @@ export function App({
     let current = true
     client.listHarnesses().then(
       (received) => {
-        if (current) setCatalog(received)
+        if (current) setCatalog({ generation, value: received })
       },
-      () => {
-        if (current) setCatalog('failed')
+      (error: unknown) => {
+        if (current)
+          setCatalog({
+            generation,
+            value: error instanceof HarnessListError ? error.reason : 'refused',
+          })
       },
     )
     return () => {
       current = false
-      setCatalog(null)
     }
-  }, [client, live, connection])
+  }, [client, live, connection, generation])
 
-  const liveCatalog = live && connection === 'connected' ? catalog : null
-  const listed = liveCatalog !== null && liveCatalog !== 'failed' ? liveCatalog : null
+  const liveCatalog =
+    live && connection === 'connected' && catalog?.generation === generation ? catalog.value : null
+  const listed = typeof liveCatalog === 'object' ? liveCatalog : null
   const available = live ? (listed?.harnesses ?? NO_STREAMS) : harnesses
   // Conectada, só abre com um apelido que o núcleo anunciou.
   const workdirAlias = !live
@@ -172,8 +190,8 @@ export function App({
       ? null
       : liveCatalog === null
         ? 'harness.loading'
-        : liveCatalog === 'failed'
-          ? 'harness.failed'
+        : typeof liveCatalog === 'string'
+          ? FAILURE_NOTICE[liveCatalog]
           : liveCatalog.harnesses.length === 0
             ? 'harness.none'
             : workdirAlias === undefined
@@ -241,7 +259,8 @@ export function App({
   )
 
   const open = async (harness: string) => {
-    if (workdirAlias === undefined) return
+    // A lista e o apelido são da conexão em que o botão apareceu.
+    if (workdirAlias === undefined || client.getGeneration() !== generation) return
     setOpening(true)
 
     setWarning(false)
@@ -326,7 +345,7 @@ export function App({
       )}
 
       {catalogNotice && (
-        <p role={catalogNotice === 'harness.failed' ? 'alert' : 'status'}>{t(catalogNotice)}</p>
+        <p role={FAILURE_NOTICES.has(catalogNotice) ? 'alert' : 'status'}>{t(catalogNotice)}</p>
       )}
 
       {warning && <p role="alert">{t('session.commandFailed')}</p>}

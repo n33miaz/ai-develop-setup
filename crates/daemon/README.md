@@ -133,7 +133,7 @@ lista de novo, nunca `replayed`. `api::Launcher::catalog` fornece a lista; o
 padrão é vazio, como em `DisabledLauncher`. A resposta é a única mensagem
 que precisa da `local-api.server-message:2`; quem não envia `harness.list`
 continua recebendo só mensagens da `:1`. Um daemon anterior ao comando o recusa
-com `-32601`, e a interface mostra que não obteve as ferramentas.
+com `-32601`, e a interface mostra que o daemon precisa ser atualizado.
 
 Padrões em [defaults/daemon.toml](../../defaults/daemon.toml), aplicados ao iniciar:
 

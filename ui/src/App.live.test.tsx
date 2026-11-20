@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { StrictMode } from 'react'
 import { describe, expect, it, vi } from 'vitest'
-import { createFakeCoreClient } from './api'
+import { createFakeCoreClient, HarnessListError, type FakeCoreClient } from './api'
 import { isLocalCommand } from './api/wire'
 import { App } from './App'
 import { createTranslator, I18nContext } from './i18n'
@@ -286,5 +286,98 @@ describe('tool list states', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(t('session.commandFailed'))
     expect(subscribe).toHaveBeenCalledTimes(1)
     expect(stop).toHaveBeenCalledTimes(1)
+  })
+})
+
+/** Cliente cuja queda e volta chegam à tela como um só aviso, sem o estado desconectado no meio. */
+function quietReconnect() {
+  const fake = createFakeCoreClient(CATALOG)
+  const listeners = new Set<(state: ReturnType<FakeCoreClient['getState']>) => void>()
+  let muted = false
+  fake.onStateChange((state) => {
+    if (!muted) for (const listener of [...listeners]) listener(state)
+  })
+  const client: FakeCoreClient = {
+    ...fake,
+    onStateChange(listener) {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+  }
+  const reconnect = async () => {
+    muted = true
+    fake.disconnect()
+    await fake.connect()
+    muted = false
+    for (const listener of [...listeners]) listener(fake.getState())
+  }
+  return { client, reconnect }
+}
+
+describe('tool list across connections', () => {
+  it('drops a loaded list when the client reconnects before the screen sees the drop', async () => {
+    const { client, reconnect } = quietReconnect()
+    const next = deferred<{ harnesses: string[]; workdir_aliases: string[] }>()
+    vi.spyOn(client, 'listHarnesses')
+      .mockResolvedValueOnce({ harnesses: ['claude'], workdir_aliases: ['old'] })
+      .mockReturnValueOnce(next.promise)
+    const send = vi.spyOn(client, 'send')
+    const t = createTranslator('en')
+    render(
+      <I18nContext value={t}>
+        <App client={client} live />
+      </I18nContext>,
+    )
+    await screen.findByRole('button', { name: 'Open claude' })
+    await act(async () => {
+      await reconnect()
+    })
+    expect(screen.queryByRole('button', { name: 'Open claude' })).not.toBeInTheDocument()
+    expect(screen.getByText(t('harness.loading'))).toBeInTheDocument()
+    await act(async () => {
+      next.resolve({ harnesses: ['codex'], workdir_aliases: ['new'] })
+      await next.promise
+    })
+    const button = screen.getByRole('button', { name: 'Open codex' })
+    await waitFor(() => {
+      expect(button).toBeEnabled()
+    })
+    fireEvent.click(button)
+    await waitFor(() => {
+      expect(send).toHaveBeenCalled()
+    })
+    expect(send.mock.calls[0]?.[0]).toMatchObject({
+      params: { harness: 'codex', workdir_alias: 'new' },
+    })
+  })
+  it('ignores the failure of a query from the previous connection', async () => {
+    const { client, reconnect } = quietReconnect()
+    let failFirst!: (error: Error) => void
+    const first = new Promise<never>((_, reject) => {
+      failFirst = reject
+    })
+    const second = deferred<{ harnesses: string[]; workdir_aliases: string[] }>()
+    vi.spyOn(client, 'listHarnesses').mockReturnValueOnce(first).mockReturnValueOnce(second.promise)
+    const t = createTranslator('en')
+    render(
+      <I18nContext value={t}>
+        <App client={client} live />
+      </I18nContext>,
+    )
+    await screen.findByText(t('harness.loading'))
+    await act(async () => {
+      await reconnect()
+    })
+    await act(async () => {
+      failFirst(new HarnessListError('timeout'))
+      await first.catch(() => undefined)
+    })
+    expect(screen.queryByText(t('harness.timeout'))).not.toBeInTheDocument()
+    expect(screen.getByText(t('harness.loading'))).toBeInTheDocument()
+    await act(async () => {
+      second.resolve({ harnesses: ['codex'], workdir_aliases: ['new'] })
+      await second.promise
+    })
+    expect(screen.getByRole('button', { name: 'Open codex' })).toBeInTheDocument()
   })
 })
