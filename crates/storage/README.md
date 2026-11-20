@@ -23,7 +23,7 @@ API: `EventLog::open(caminho, configuração, provedor de chaves, cofre da ânco
 O parâmetro `verify_on_append` de `defaults/storage.toml` escolhe quando essa reautenticação roda. Outro valor recusa com `Configuration`.
 
 - `"changed"` (padrão): só quando `data_version` mudou, como acima. Limite: uma escrita feita direto nos bytes do arquivo, sem passar pelo SQLite, não muda `data_version`. Uma linha alterada assim no meio do histórico passa pelo `append`, e a âncora avança. A alteração só é detectada na próxima abertura ancorada ou em `verify_chain`. Se a página alterada ainda estiver no cache da conexão, o próprio `append` pode regravá-la com o conteúdo anterior.
-- `"always"`: em todo `append` ancorado. Antes de conferir, a conexão descarta as páginas em cache (`PRAGMA shrink_memory`), para ler o que o arquivo contém. O custo é proporcional ao tamanho do histórico em cada gravação, sem decifrar.
+- `"always"`: em todo `append` ancorado. Antes de conferir âncora, esquema e cadeia, a conexão descarta as páginas em cache (`PRAGMA shrink_memory`), para ler o que o arquivo contém. O custo é proporcional ao tamanho do histórico em cada gravação, sem decifrar.
 
 A reautenticação roda dentro do lock de escrita. Enquanto ela dura, outro escritor espera e pode receber `Busy` depois de `busy_timeout_ms`. Com dois escritores se alternando, cada `append` paga a cadeia inteira. Com `"always"`, isso vale para toda gravação. Não há teto próprio além do tamanho do log.
 
@@ -36,7 +36,7 @@ A reautenticação roda dentro do lock de escrita. Enquanto ela dura, outro escr
 | `AnchorMismatch` | banco e âncora divergem | parar a escrita e seguir a recuperação |
 | `HistoryChanged { position }` | a reautenticação do `append` falhou na posição indicada (após mudança confirmada por outra conexão, ou em todo `append` com `"always"`) | parar a escrita e seguir a recuperação |
 | `UnsupportedSchema` | a mesma conferência encontrou o esquema diferente do esperado | parar a escrita e conferir a integridade do banco |
-| `KeyUnavailable` | a mesma conferência encontrou uma linha com chave registrada que este provedor não entrega (outro processo girou a chave) | entregar a chave ao provedor desta conexão e reabrir; não é indício de adulteração |
+| `KeyUnavailable` | a mesma conferência encontrou uma linha com chave registrada que este provedor não entrega (outro processo girou a chave) | entregar a chave ao provedor desta conexão e reabrir; a abertura ancorada verifica a cadeia inteira e distingue adulteração |
 | `Constraint` | o banco recusou a linha (`id` repetido ou gatilho) | não repetir igual |
 | `InvalidEvent` | limite de `type` ou família, ou id do portão que não é o do stream | corrigir o evento |
 | `TooLarge` | `data` serializado acima de `max_event_bytes` | guardar em outro lugar |

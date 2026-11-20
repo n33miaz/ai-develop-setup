@@ -637,6 +637,13 @@ impl EventLog {
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         if let Some(anchor) = &self.anchor {
+            let always = self.config.verify_on_append == VerifyOnAppend::Always;
+            if always {
+                // Drop cached pages so every check below reads what the file
+                // holds now, not what this connection last saw.
+                tx.pragma_query_value(None, "shrink_memory", |_| Ok(()))
+                    .optional()?;
+            }
             match anchor.read()? {
                 Some(expected) if expected == commitment(&tx)? => {}
                 Some(_) => return Err(StorageError::AnchorMismatch),
@@ -646,14 +653,8 @@ impl EventLog {
             // neither does a write made straight to the file's bytes: only
             // `Always` catches the latter before the anchor moves.
             let version = data_version(&tx)?;
-            let always = self.config.verify_on_append == VerifyOnAppend::Always;
             if always || version != self.verified_data_version {
                 check_log_schema(&tx)?;
-                if always {
-                    // Drop cached pages so the check reads what the file holds now.
-                    tx.pragma_query_value(None, "shrink_memory", |_| Ok(()))
-                        .optional()?;
-                }
                 verify_in(&tx, &*self.keys).map_err(|error| match error {
                     StorageError::ChainBroken { position } => {
                         changed_history(&tx, &*self.keys, position)
