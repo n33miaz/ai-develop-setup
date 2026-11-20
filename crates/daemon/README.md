@@ -154,6 +154,7 @@ Padrões em [defaults/daemon.toml](../../defaults/daemon.toml), aplicados ao ini
 | `send_timeout_ms` | 5000 | Prazo por envio; cliente lento é desconectado. |
 | `host_timeout_ms` | 10000 | Prazo único por comando no host e na conexão inicial. Cada chamada ao host começa dentro do prazo, e uma resposta já recebida vale mesmo se o prazo vencer enquanto o daemon trata um evento do host. Falha encerra o serviço para evitar repetir efeito incerto. Duas exceções não encerram: no fechamento automático o prazo esgotado conta como tentativa falha, e na preparação depois de um `session.open` confirmado ele responde `-32014` (`session setup failed`), como qualquer outra falha dessa etapa (ver abaixo). |
 | `retired_sessions` | 1024 | Ids de sessões podadas que não podem ser reabertos nesta execução (acima do limite, o mais antigo volta a ser aceito) e, em separado, streams assinados antes do `session.open` (acima do limite, a espera mais antiga termina com `-32004` no id da assinatura, mesmo se a conexão estiver ociosa). |
+| `subscription_ids_per_stream` | 2 | Ids de assinatura por conexão: este valor vezes `max_sessions`. Reassinar a mesma encarnação na mesma conexão soma um id, que só sai quando o stream termina; ids de encarnação já terminada não contam. A interface mantém uma assinatura por stream e conexão, então raramente passa de um id por stream; aumente para clientes que reassinam muito. |
 | `close_retries` | 3 | Tentativas do fechamento automático de sessão invalidada, de `open` que falhou ou de sessão que terminou sozinha; esgotadas numa sessão invalidada, a assinatura do stream recebe `-32013`. |
 | `close_retry_ms` | 1000 | Espera entre tentativas do fechamento automático. |
 
@@ -211,9 +212,11 @@ Uma execução conserva no máximo `2 × max_sessions × events_per_stream` even
 (um stream que sai do log, mesmo ainda assinado, descarta os seus);
 o tamanho de cada saída também é limitado pelo quadro do cliente do host.
 Assinaturas por conexão são limitadas a `max_sessions` streams. Assinar de novo, na mesma
-conexão, a mesma encarnação de um stream junta o id à assinatura existente: cada evento sai uma
-vez, a partir do menor cursor, e o resultado final chega a cada id. Os ids por conexão são
-limitados a `2 × max_sessions`; acima disso a assinatura é recusada com `-32003`. Se a encarnação
+conexão, a mesma encarnação de um stream junta o id à assinatura existente: a entrega segue um
+cursor só, o menor pedido, e o resultado final chega a cada id. Se o novo `after_seq` for menor que
+o que já saiu, os eventos desde ele saem de novo; o consumidor descarta por `seq` o que já tinha. Os
+ids por conexão são limitados a `subscription_ids_per_stream × max_sessions`, sem contar os de
+encarnação já terminada; acima disso a assinatura é recusada com `-32003`. Se a encarnação
 assinada antes já terminou, o fim dela chega aos ids antigos antes da confirmação da nova. Filas, conexões e chaves
 também têm limites separados. Seq e offset recomeçam ao reiniciar.
 

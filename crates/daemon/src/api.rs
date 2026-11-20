@@ -106,6 +106,7 @@ pub struct ApiConfig {
     pub send_timeout_ms: u64,
     pub host_timeout_ms: u64,
     pub retired_sessions: usize,
+    pub subscription_ids_per_stream: usize,
     pub close_retries: usize,
     pub close_retry_ms: u64,
 }
@@ -137,6 +138,7 @@ impl ApiConfig {
             self.max_pending_auth,
             self.max_message_bytes,
             self.retired_sessions,
+            self.subscription_ids_per_stream,
             self.close_retries,
         ];
         if positive.iter().any(|n| *n == 0 || *n > 1_048_576)
@@ -1258,11 +1260,19 @@ async fn connection(
                         .as_str()
                         .unwrap_or("")
                         .to_owned();
-                    let ids = subscriptions.values().map(|s| s.1.len()).sum::<usize>();
+                    // Ids de uma encarnação já terminada saem na próxima entrega e não contam.
+                    let ids = subscriptions
+                        .values()
+                        .filter(|s| !s.2.ended())
+                        .map(|s| s.1.len())
+                        .sum::<usize>();
                     if subscribe
                         && ((!subscriptions.contains_key(&stream)
                             && subscriptions.len() >= config.max_sessions)
-                            || ids >= 2 * config.max_sessions)
+                            || ids
+                                >= config
+                                    .subscription_ids_per_stream
+                                    .saturating_mul(config.max_sessions))
                     {
                         send(&mut ws, response(&id, Err(ApiError::Capacity)), &config).await?;
                         continue;

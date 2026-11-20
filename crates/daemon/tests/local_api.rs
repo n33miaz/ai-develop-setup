@@ -3351,6 +3351,91 @@ async fn repeated_subscription_on_one_connection_gets_every_final_result() {
     assert!(ended.contains(&first["id"]) && ended.contains(&second["id"]));
 }
 
+#[tokio::test]
+async fn repeated_subscription_with_a_lower_cursor_sends_events_again() {
+    let f = fixture("", Arc::new(TestLauncher)).await;
+    let mut ws = authenticated(&f).await;
+    let mut control = authenticated(&f).await;
+    call(&mut control, "session.open", open_params("a")).await;
+    let resize = |cols: u64| json!({"session_id": "a", "cols": cols, "rows": 24});
+    call(&mut control, "session.resize", resize(90)).await;
+    call(
+        &mut ws,
+        "events.subscribe",
+        json!({"stream": "session/a", "after_seq": 0}),
+    )
+    .await;
+    assert_eq!(receive(&mut ws).await["seq"], 1);
+    assert_eq!(receive(&mut ws).await["seq"], 2);
+    // The second subscription asks from the start: the shared cursor goes back and 1 and 2 go out again.
+    call(
+        &mut ws,
+        "events.subscribe",
+        json!({"stream": "session/a", "after_seq": 0}),
+    )
+    .await;
+    assert_eq!(receive(&mut ws).await["seq"], 1);
+    assert_eq!(receive(&mut ws).await["seq"], 2);
+    call(&mut control, "session.resize", resize(100)).await;
+    assert_eq!(receive(&mut ws).await["seq"], 3);
+    // Nothing else is pending: the next frame answers this request.
+    assert_eq!(
+        call(&mut ws, "unknown", json!({})).await["error"]["code"],
+        -32601
+    );
+}
+
+#[tokio::test]
+async fn ended_incarnation_answers_its_ids_before_the_new_subscription() {
+    let (f, calls) = scripted_fixture(
+        "max_sessions = 1\nretired_sessions = 1",
+        "exit-then-hold-close",
+        ads_ptyhost::wire::ErrorCode::InternalError,
+        0,
+        &[],
+    )
+    .await;
+    let mut watcher = authenticated(&f).await;
+    let mut other = authenticated(&f).await;
+    let mut control = authenticated(&f).await;
+    let first = command(
+        "events.subscribe",
+        json!({"stream": "session/a", "after_seq": 0}),
+    );
+    transmit(&mut watcher, &first).await;
+    assert_eq!(receive(&mut watcher).await["result"]["accepted"], true);
+    // The service waits for the host while the next commands queue behind the close.
+    call(&mut control, "session.open", open_params("s")).await;
+    let close = command("session.close", json!({"session_id": "s"}));
+    transmit(&mut control, &close).await;
+    wait_until(|| calls.lock().unwrap().iter().any(|c| c == "close")).await;
+    // Queued first: a subscription that pushes the waiting "a" out of the quota.
+    transmit(
+        &mut other,
+        &command(
+            "events.subscribe",
+            json!({"stream": "session/b", "after_seq": 0}),
+        ),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Queued second: the watcher subscribes "a" again and waits for the answer, without delivering.
+    let second = command(
+        "events.subscribe",
+        json!({"stream": "session/a", "after_seq": 0}),
+    );
+    transmit(&mut watcher, &second).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    f.release.notify_one();
+    assert_eq!(receive(&mut control).await["id"], close["id"]);
+    let ended = receive(&mut watcher).await;
+    assert_eq!(ended["id"], first["id"]);
+    assert_eq!(ended["error"]["code"], -32004);
+    let confirmed = receive(&mut watcher).await;
+    assert_eq!(confirmed["id"], second["id"]);
+    assert_eq!(confirmed["result"]["accepted"], true);
+}
+
 async fn host_event_during_an_automatic_close(target: &'static str) {
     let (f, calls) = scripted_fixture(
         "max_sessions = 2\nhost_timeout_ms = 300\nclose_retry_ms = 20",
