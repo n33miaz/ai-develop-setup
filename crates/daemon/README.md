@@ -61,10 +61,12 @@ inexistente e apelido de pasta fora da configuração recebem `-32602`.
    ```powershell
    Set-Location ui
    npm ci
-   $env:VITE_CORE_HARNESSES = 'claude,codex'
-   $env:VITE_CORE_WORKDIR = 'default'
    npm run dev
    ```
+
+   Conectada, a interface pergunta ao daemon (`harness.list`) quais ferramentas
+   estão ligadas e mostra um botão para cada uma; `VITE_CORE_HARNESSES` não é
+   necessária.
 
    Depois que o Vite confirmar a porta, abra no navegador a URL completa
    impressa pelo daemon
@@ -115,6 +117,23 @@ Os tipos gerados validam todos os comandos e eventos contra os contratos.
 `events.subscribe` envia eventos com `seq > after_seq`, seguidos dos novos,
 incluindo uma assinatura feita antes de abrir a sessão. Nenhum `fs.*` está registrado.
 Todo comando remoto é recusado, mesmo com autenticação válida.
+
+`harness.list` (só depois de `auth.hello`; `params` leva apenas o `_meta`
+obrigatório de todo comando) responde
+`{"harnesses": [...], "workdir_aliases": [...]}`
+([`command.harness.list.response:1`](../../contracts/README.md#api-local)): os
+identificadores das ferramentas com `program` preenchido, na ordem `claude`,
+`codex`, e os apelidos de `[workdirs]` em ordem de nome. Só nomes: programa,
+argumentos, ambiente e caminhos nunca saem do daemon, e o contrato fechado da
+resposta não tem onde levá-los. A lista é montada uma vez, na partida (reinicie
+para reler a configuração), e não confere o disco: uma ferramenta listada ainda
+pode receber `-32602` em `session.open` se o programa ou a pasta não existir.
+Como só lê, não passa pela cache de idempotência: repetir a chave devolve a
+lista de novo, nunca `replayed`. `api::Launcher::catalog` fornece a lista; o
+padrão é vazio, como em `DisabledLauncher`. A resposta é a única mensagem
+que precisa da `local-api.server-message:2`; quem não envia `harness.list`
+continua recebendo só mensagens da `:1`. Um daemon anterior ao comando o recusa
+com `-32601`, e a interface mostra que o daemon precisa ser atualizado.
 
 Padrões em [defaults/daemon.toml](../../defaults/daemon.toml), aplicados ao iniciar:
 

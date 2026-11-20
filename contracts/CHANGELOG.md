@@ -2,6 +2,15 @@
 
 Formato: uma seção por data. Contrato novo, campo opcional acrescentado, versão nova de uma URN e contrato aposentado entram aqui. As regras de versão estão no [README](README.md).
 
+## 2026-11-19
+
+Lista de ferramentas na API local. Nenhum contrato existente foi alterado.
+
+- Contratos novos (`:1`):
+  - Comando `harness.list`: estende `command.request:1` com `params` fechado só no `_meta`. Só leitura.
+  - Resposta `harness.list.response`: `result` fechado com `harnesses` e `workdir_aliases`, listas sem repetição de `common.id:1`. Só nomes; programa, argumentos, ambiente e caminho não cabem.
+- Versão nova, convivendo com a `:1`: `local-api.server-message:2`, que aceita também a resposta de `harness.list`. O núcleo passa a escrever a `:2`.
+
 ## 2026-11-16
 
 Contratos da API local (interface ↔ núcleo), todos `:1`. Nenhum contrato existente foi alterado.

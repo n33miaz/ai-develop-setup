@@ -1,6 +1,7 @@
 import Ajv2020, { type AnySchema } from 'ajv/dist/2020.js'
 import addFormats from 'ajv-formats'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { HarnessListError } from './client'
 import { newCommand } from './command'
 import { createFakeCoreClient } from './fake'
 import type { CommandRequestV1 } from './contracts'
@@ -30,7 +31,11 @@ class FakeSocket extends EventTarget {
     this.dispatchEvent(new Event('close'))
   }
   receive(message: unknown) {
-    valid('urn:ads:contract:local-api.server-message:1', message)
+    valid('urn:ads:contract:local-api.server-message:2', message)
+    this.receiveRaw(message)
+  }
+  /** Entrega sem conferir: simula um núcleo que manda o que o contrato não aceita. */
+  receiveRaw(message: unknown) {
     this.dispatchEvent(new MessageEvent('message', { data: JSON.stringify(message) }))
   }
   answer(index: number) {
@@ -42,12 +47,13 @@ class FakeSocket extends EventTarget {
   }
 }
 const token = 'a'.repeat(43)
-function setup() {
+function setup(listTimeoutMs?: number) {
   const socket = new FakeSocket()
   const urls: string[] = []
   const client = createWsCoreClient({
     url: 'ws://127.0.0.1:12345',
     token,
+    ...(listTimeoutMs === undefined ? {} : { listTimeoutMs }),
     socketFactory: (url) => {
       urls.push(url)
       return socket
@@ -55,8 +61,8 @@ function setup() {
   })
   return { socket, client, urls }
 }
-async function connected() {
-  const context = setup()
+async function connected(listTimeoutMs?: number) {
+  const context = setup(listTimeoutMs)
   const ready = context.client.connect()
   context.socket.dispatchEvent(new Event('open'))
   context.socket.answer(0)
@@ -333,11 +339,224 @@ describe('local WebSocket client', () => {
     socket.receive({ jsonrpc: '2.0', id: socket.sent[0]?.id, error: { code: -1, message: token } })
     await rejected
   })
+  it('lists the configured tools through harness.list', async () => {
+    const { client, socket } = await connected()
+    const listed = client.listHarnesses()
+    expect(socket.sent[1]).toMatchObject({ method: 'harness.list', params: { _meta: {} } })
+    socket.receive({
+      jsonrpc: '2.0',
+      id: socket.sent[1]?.id,
+      result: { harnesses: ['claude'], workdir_aliases: ['default'] },
+    })
+    await expect(listed).resolves.toEqual({ harnesses: ['claude'], workdir_aliases: ['default'] })
+    await expect(client.send(newCommand('harness.list'))).rejects.toThrow('use listHarnesses')
+  })
+  it('rejects a refused harness.list without exposing the server message', async () => {
+    const { client, socket } = await connected()
+    const listed = client.listHarnesses()
+    socket.receive({ jsonrpc: '2.0', id: socket.sent[1]?.id, error: { code: -1, message: token } })
+    await expect(listed).rejects.toThrow('command rejected')
+    expect(client.getState()).toBe('connected')
+  })
+  it('disconnects when a reply does not have the shape of its request', async () => {
+    const list = await connected()
+    const listed = list.client.listHarnesses()
+    list.socket.answer(1)
+    await expect(listed).rejects.toThrow('core disconnected')
+    expect(list.client.getState()).toBe('disconnected')
+    const other = await connected()
+    const closing = other.client.send(newCommand('session.close', { session_id: 'session-a' }))
+    other.socket.receive({
+      jsonrpc: '2.0',
+      id: other.socket.sent[1]?.id,
+      result: { harnesses: [], workdir_aliases: [] },
+    })
+    await expect(closing).rejects.toThrow('core disconnected')
+  })
+  it.each([
+    ['an extra field', { harnesses: ['claude'], workdir_aliases: ['default'], program: 'x' }],
+    ['a POSIX path as alias', { harnesses: ['claude'], workdir_aliases: ['/srv/work'] }],
+    ['a Windows path as alias', { harnesses: ['claude'], workdir_aliases: ['C:\\work'] }],
+    ['a repeated tool', { harnesses: ['claude', 'claude'], workdir_aliases: [] }],
+    ['no alias list', { harnesses: ['claude'] }],
+  ])('drops the connection on a tool list with %s', async (_, result) => {
+    const { client, socket } = await connected()
+    const listed = client.listHarnesses()
+    socket.receiveRaw({ jsonrpc: '2.0', id: socket.sent[1]?.id, result })
+    await expect(listed).rejects.toThrow('core disconnected')
+    expect(client.getState()).toBe('disconnected')
+  })
+  it('rejects the list when an older core does not know the method', async () => {
+    const { client, socket } = await connected()
+    const listed = client.listHarnesses()
+    socket.receive({
+      jsonrpc: '2.0',
+      id: socket.sent[1]?.id,
+      error: { code: -32601, message: 'unknown method' },
+    })
+    await expect(listed).rejects.toThrow('command rejected')
+    expect(client.getState()).toBe('connected')
+  })
+  it('gives up on a list the core never answers and ignores the late reply', async () => {
+    const { client, socket } = await connected(20)
+    const listed = client.listHarnesses()
+    await expect(listed).rejects.toThrow('core timeout')
+    socket.receive({
+      jsonrpc: '2.0',
+      id: socket.sent[1]?.id,
+      result: { harnesses: ['claude'], workdir_aliases: ['default'] },
+    })
+    expect(client.getState()).toBe('connected')
+    const again = client.listHarnesses()
+    socket.receive({
+      jsonrpc: '2.0',
+      id: socket.sent[2]?.id,
+      result: { harnesses: [], workdir_aliases: [] },
+    })
+    await expect(again).resolves.toEqual({ harnesses: [], workdir_aliases: [] })
+  })
+  it('refuses to authenticate when the hello reply is a tool list', async () => {
+    const { client, socket } = setup()
+    const rejected = expect(client.connect()).rejects.toThrow('core disconnected')
+    socket.dispatchEvent(new Event('open'))
+    socket.receive({
+      jsonrpc: '2.0',
+      id: socket.sent[0]?.id,
+      result: { harnesses: [], workdir_aliases: [] },
+    })
+    await rejected
+  })
   it.each([
     'ws://127.0.0.1:12345/?token=secret',
     'ws://example.test',
     'ws://user:secret@localhost:12345',
   ])('rejects an unsafe endpoint without echoing it', (url) => {
     expect(() => createWsCoreClient({ url, token })).toThrow('invalid local endpoint')
+  })
+})
+
+describe('tool list deadline', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+  it('tells a timeout apart from an older core that does not know the method', async () => {
+    vi.useFakeTimers()
+    const { client, socket } = await connected(50)
+    const late = client.listHarnesses()
+    const lateReason = late.catch((error: unknown) => (error as HarnessListError).reason)
+    await vi.advanceTimersByTimeAsync(50)
+    expect(await lateReason).toBe('timeout')
+    const old = client.listHarnesses()
+    socket.receive({
+      jsonrpc: '2.0',
+      id: socket.sent[2]?.id,
+      error: { code: -32601, message: 'unknown method' },
+    })
+    await expect(old).rejects.toMatchObject({ reason: 'unsupported' })
+    const refused = client.listHarnesses()
+    socket.receive({
+      jsonrpc: '2.0',
+      id: socket.sent[3]?.id,
+      error: { code: -32602, message: 'invalid command' },
+    })
+    await expect(refused).rejects.toMatchObject({ reason: 'refused' })
+  })
+  it('clears the deadline when the list arrives or the connection drops', async () => {
+    vi.useFakeTimers()
+    const { client, socket } = await connected(50)
+    const listed = client.listHarnesses()
+    expect(vi.getTimerCount()).toBe(1)
+    socket.receive({
+      jsonrpc: '2.0',
+      id: socket.sent[1]?.id,
+      result: { harnesses: [], workdir_aliases: [] },
+    })
+    await listed
+    expect(vi.getTimerCount()).toBe(0)
+    const dropped = client.listHarnesses()
+    socket.close()
+    await expect(dropped).rejects.toThrow('core disconnected')
+    expect(vi.getTimerCount()).toBe(0)
+  })
+  it('discards late replies to an expired list while other requests continue', async () => {
+    vi.useFakeTimers()
+    const { client, socket } = await connected(50)
+    const late = client.listHarnesses()
+    const settled = late.catch(() => undefined)
+    await vi.advanceTimersByTimeAsync(50)
+    await settled
+    const closing = client.send(newCommand('session.close', { session_id: 'session-a' }))
+    socket.receiveRaw({
+      jsonrpc: '2.0',
+      id: socket.sent[1]?.id,
+      result: { harnesses: ['claude'], workdir_aliases: ['/srv/work'], program: 'x' },
+    })
+    expect(client.getState()).toBe('connected')
+    socket.answer(2)
+    await expect(closing).resolves.toMatchObject({ result: { accepted: true } })
+    socket.receive({
+      jsonrpc: '2.0',
+      id: socket.sent[1]?.id,
+      result: { harnesses: ['claude'], workdir_aliases: ['default'] },
+    })
+    expect(client.getState()).toBe('connected')
+  })
+})
+
+describe('expired tool list ids', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+  it('forgets expired ids when the connection ends', async () => {
+    vi.useFakeTimers()
+    const sockets: FakeSocket[] = []
+    const client = createWsCoreClient({
+      url: 'ws://127.0.0.1:12345',
+      token,
+      listTimeoutMs: 50,
+      socketFactory: () => {
+        const socket = new FakeSocket()
+        sockets.push(socket)
+        return socket
+      },
+    })
+    const open = async () => {
+      const ready = client.connect()
+      const socket = sockets[sockets.length - 1]
+      if (!socket) throw new Error('missing socket')
+      socket.dispatchEvent(new Event('open'))
+      socket.answer(0)
+      await ready
+      return socket
+    }
+    const first = await open()
+    const late = client.listHarnesses().catch(() => undefined)
+    await vi.advanceTimersByTimeAsync(50)
+    await late
+    const expiredId = first.sent[1]?.id
+    client.disconnect()
+    const second = await open()
+    second.receiveRaw({
+      jsonrpc: '2.0',
+      id: expiredId,
+      result: { harnesses: ['claude'], workdir_aliases: ['/srv/work'] },
+    })
+    expect(client.getState()).toBe('disconnected')
+  })
+  it('keeps only the newest 32 expired ids', async () => {
+    vi.useFakeTimers()
+    const { client, socket } = await connected(50)
+    const lists = Array.from({ length: 33 }, () => client.listHarnesses().catch(() => undefined))
+    await vi.advanceTimersByTimeAsync(50)
+    await Promise.all(lists)
+    const malformed = (id: string | undefined) => ({
+      jsonrpc: '2.0',
+      id,
+      result: { harnesses: ['claude'], workdir_aliases: ['/srv/work'] },
+    })
+    socket.receiveRaw(malformed(socket.sent[33]?.id))
+    expect(client.getState()).toBe('connected')
+    socket.receiveRaw(malformed(socket.sent[1]?.id))
+    expect(client.getState()).toBe('disconnected')
   })
 })

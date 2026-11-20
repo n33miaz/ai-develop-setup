@@ -276,12 +276,14 @@ Além dos cinco do JSON-RPC 2.0 (`-32700`, `-32600`, `-32601`, `-32602`, `-32603
 WebSocket em loopback entre a interface (navegador ou casca) e o núcleo. Como a conexão é autenticada está na [ADR 0020](../docs/adr/0020-local-api-authentication.md). Cada mensagem é um texto JSON.
 
 - Da interface ao núcleo: comandos `command.request:1`, cada método com Schema próprio que fixa `method` e fecha `params` (tabela [API local](#api-local-1)). O primeiro comando de toda conexão é `auth.hello`; antes dele o núcleo não aceita outro.
-- Do núcleo à interface: `urn:ads:contract:local-api.server-message:1`, que é a resposta `command.response:2` a um comando ou um evento `event.envelope:1` de um stream assinado por `events.subscribe`. A saída do terminal chega como evento `session.output:1`.
+- Do núcleo à interface: `urn:ads:contract:local-api.server-message:2`, que é a resposta `command.response:2` a um comando, a resposta `command.harness.list.response:1` a `harness.list` ou um evento `event.envelope:1` de um stream assinado por `events.subscribe`. A saída do terminal chega como evento `session.output:1`. A `:1` (sem a resposta de `harness.list`) continua no repositório, sem alteração.
+- `harness.list` só lê: devolve os identificadores das ferramentas ligadas e os apelidos de pasta de trabalho da configuração do usuário, para a interface saber o que pode abrir. O `params` é um objeto só com o `_meta` obrigatório do envelope. O `result` é fechado e só leva nomes; programa, argumentos, ambiente e caminho nunca saem do núcleo. Comando recusado volta como `command.response:2` com `error`.
+- A `:2` é uma extensão aditiva, acionada pelo pedido: não há negociação de versão no `auth.hello` nem marcador na mensagem. O núcleo só manda a resposta de `harness.list` a quem enviou `harness.list`; para um cliente que nunca o envia, toda mensagem continua cabendo na `:1`. Um núcleo anterior ao comando o recusa com `-32601` (método desconhecido); a interface mostra, sem botões de abertura, que o núcleo precisa ser atualizado.
 - A interface escolhe a ferramenta pelo identificador do adaptador (`harness`) e a pasta pelo apelido (`workdir_alias`). `session.open` recusa `program`, `args`, `env` e `cwd`: o que roda, com que argumentos, em que ambiente e em que pasta sai só da configuração do usuário no núcleo.
 - Limites: colunas e linhas de 1 a 1000 (os mesmos do `pty-host/1`); `session.write` leva de 1 a 65536 bytes (87384 caracteres em base64), o que cabe com folga no quadro padrão do `pty-host/1` (`max_frame_bytes` de 1 MiB). Texto maior vai em vários comandos, na ordem.
 - O Schema aceita `origin: "remote"` no `_meta`, como o envelope de comando. Quem recusa comando remoto na API local é o núcleo (ADR 0020), não o Schema: o mesmo comando pode chegar, assinado, pelo transporte remoto.
 
-`server-message` é `anyOf`, não `oneOf`: as duas alternativas são objetos fechados e cada uma exige um campo que a outra recusa (`jsonrpc` na resposta; `type` no evento), então nenhum documento cabe nas duas e `anyOf` aceita exatamente o mesmo que `oneOf` aceitaria. O gerador de Rust só traduz `oneOf` com um campo de valor fixo que distinga as alternativas.
+`server-message` é `anyOf`, não `oneOf`: as duas alternativas são objetos fechados e cada uma exige um campo que a outra recusa (`jsonrpc` na resposta; `type` no evento), então nenhum documento cabe nas duas e `anyOf` aceita exatamente o mesmo que `oneOf` aceitaria. Na `:2` vale o mesmo para a terceira alternativa: o `result` de `command.response:2` é fechado e exige `accepted`, que o de `harness.list.response:1`, também fechado, recusa; e a resposta de `harness.list` exige `result`, que a recusa (`error`) não tem. O gerador de Rust só traduz `oneOf` com um campo de valor fixo que distinga as alternativas.
 
 ## Atualização
 
@@ -322,7 +324,7 @@ O manifesto (`urn:ads:record:update-manifest:1`) é assinado no CI. A assinatura
 
 ### API local
 
-Os seis comandos estendem `urn:ads:command:request:1` com `allOf`, fixam `method` e fecham `params` (o `_meta` continua o do envelope).
+Os sete comandos estendem `urn:ads:command:request:1` com `allOf`, fixam `method` e fecham `params` (o `_meta` continua o do envelope).
 
 | Schema | O que descreve |
 |---|---|
@@ -333,6 +335,9 @@ Os seis comandos estendem `urn:ads:command:request:1` com `allOf`, fixam `method
 | `urn:ads:command:session.close:1` | Encerra a sessão de terminal e o processo dela. |
 | `urn:ads:command:events.subscribe:1` | Assina os eventos de um stream a partir de um seq (0: tudo o que o núcleo guarda). |
 | `urn:ads:contract:local-api.server-message:1` | O que o núcleo manda à interface pelo WebSocket: resposta `command.response:2` ou evento `event.envelope:1`. |
+| `urn:ads:command:harness.list:1` | Pede, só para leitura, as ferramentas ligadas na configuração do usuário e os apelidos de pasta de trabalho. |
+| `urn:ads:command:harness.list.response:1` | Resposta aceita de `harness.list`: identificadores das ferramentas e apelidos de pasta, só nomes, nunca programa, argumentos, ambiente ou caminho. |
+| `urn:ads:contract:local-api.server-message:2` | A `:1` mais a resposta de `harness.list`. É a que o núcleo escreve; a `:1` não é alterada. |
 
 ### Eventos de sessão
 

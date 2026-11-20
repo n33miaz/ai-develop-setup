@@ -6,6 +6,8 @@ use crate::support;
 
 pub mod command_auth_hello_v1;
 pub mod command_events_subscribe_v1;
+pub mod command_harness_list_response_v1;
+pub mod command_harness_list_v1;
 pub mod command_request_v1;
 pub mod command_response_v1;
 pub mod command_response_v2;
@@ -27,6 +29,7 @@ pub mod common_timestamp_v1;
 pub mod common_ulid_v1;
 pub mod contract_harness_adapter_v1;
 pub mod contract_local_api_server_message_v1;
+pub mod contract_local_api_server_message_v2;
 pub mod contract_pty_host_frame_v1;
 pub mod contract_pty_host_notification_v1;
 pub mod contract_pty_host_request_v1;
@@ -82,6 +85,8 @@ pub mod relay_envelope_v1;
 
 pub use command_auth_hello_v1::*;
 pub use command_events_subscribe_v1::*;
+pub use command_harness_list_response_v1::*;
+pub use command_harness_list_v1::*;
 pub use command_request_v1::*;
 pub use command_response_v1::*;
 pub use command_response_v2::*;
@@ -103,6 +108,7 @@ pub use common_timestamp_v1::*;
 pub use common_ulid_v1::*;
 pub use contract_harness_adapter_v1::*;
 pub use contract_local_api_server_message_v1::*;
+pub use contract_local_api_server_message_v2::*;
 pub use contract_pty_host_frame_v1::*;
 pub use contract_pty_host_notification_v1::*;
 pub use contract_pty_host_request_v1::*;
@@ -163,6 +169,11 @@ pub const SCHEMAS: &[(&str, &str)] = &[
         "command.events.subscribe.v1",
         "urn:ads:command:events.subscribe:1",
     ),
+    (
+        "command.harness.list.response.v1",
+        "urn:ads:command:harness.list.response:1",
+    ),
+    ("command.harness.list.v1", "urn:ads:command:harness.list:1"),
     ("command.request.v1", "urn:ads:command:request:1"),
     ("command.response.v1", "urn:ads:command:response:1"),
     ("command.response.v2", "urn:ads:command:response:2"),
@@ -198,6 +209,10 @@ pub const SCHEMAS: &[(&str, &str)] = &[
     (
         "contract.local-api.server-message.v1",
         "urn:ads:contract:local-api.server-message:1",
+    ),
+    (
+        "contract.local-api.server-message.v2",
+        "urn:ads:contract:local-api.server-message:2",
     ),
     (
         "contract.pty-host.frame.v1",
@@ -384,6 +399,10 @@ pub fn reencode(id: &str, value: Value) -> Option<Result<Value, serde_json::Erro
         "urn:ads:command:events.subscribe:1" => {
             support::reencode::<CommandEventsSubscribeV1>(value)
         }
+        "urn:ads:command:harness.list.response:1" => {
+            support::reencode::<CommandHarnessListResponseV1>(value)
+        }
+        "urn:ads:command:harness.list:1" => support::reencode::<CommandHarnessListV1>(value),
         "urn:ads:command:request:1" => support::reencode::<CommandRequestV1>(value),
         "urn:ads:command:response:1" => support::reencode::<CommandResponseV1>(value),
         "urn:ads:command:response:2" => support::reencode::<CommandResponseV2>(value),
@@ -408,6 +427,9 @@ pub fn reencode(id: &str, value: Value) -> Option<Result<Value, serde_json::Erro
         }
         "urn:ads:contract:local-api.server-message:1" => {
             support::reencode::<ContractLocalApiServerMessageV1>(value)
+        }
+        "urn:ads:contract:local-api.server-message:2" => {
+            support::reencode::<ContractLocalApiServerMessageV2>(value)
         }
         "urn:ads:contract:pty-host.frame:1" => support::reencode::<ContractPtyHostFrameV1>(value),
         "urn:ads:contract:pty-host.notification:1" => {

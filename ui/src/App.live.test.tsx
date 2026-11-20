@@ -3,6 +3,7 @@ import { StrictMode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   createFakeCoreClient,
+  HarnessListError,
   type CommandRequestV1,
   type CommandResponseV2,
   type FakeCoreClient,
@@ -51,9 +52,11 @@ describe('live interface', () => {
   })
 })
 
+const CATALOG = { harnesses: ['claude'], workdir_aliases: ['default'] }
+
 describe('opening sessions', () => {
   it('opens a schema-valid session and observes creation before the response', async () => {
-    const client = createFakeCoreClient()
+    const client = createFakeCoreClient(CATALOG)
     const send = vi.spyOn(client, 'send').mockImplementation((command) => {
       expect(isLocalCommand(command)).toBe(true)
       if (command.method === 'session.open') {
@@ -72,10 +75,10 @@ describe('opening sessions', () => {
     })
     render(
       <I18nContext value={createTranslator('en')}>
-        <App client={client} live harnesses={['claude']} />
+        <App client={client} live />
       </I18nContext>,
     )
-    const button = screen.getByRole('button', { name: 'Open claude' })
+    const button = await screen.findByRole('button', { name: 'Open claude' })
     await waitFor(() => expect(button).toBeEnabled())
     fireEvent.click(button)
     await waitFor(() =>
@@ -90,7 +93,7 @@ describe('opening sessions', () => {
     expect(document.activeElement?.tagName).toBe('TEXTAREA')
   })
   it('shows a translated warning for a server rejection', async () => {
-    const client = createFakeCoreClient()
+    const client = createFakeCoreClient(CATALOG)
     vi.spyOn(client, 'send').mockImplementation((command) =>
       Promise.resolve({
         jsonrpc: '2.0',
@@ -101,14 +104,289 @@ describe('opening sessions', () => {
     const t = createTranslator('pt-BR')
     render(
       <I18nContext value={t}>
-        <App client={client} live harnesses={['claude']} />
+        <App client={client} live />
       </I18nContext>,
     )
-    const button = screen.getByRole('button', { name: 'Abrir claude' })
+    const button = await screen.findByRole('button', { name: 'Abrir claude' })
     await waitFor(() => expect(button).toBeEnabled())
     fireEvent.click(button)
     expect(await screen.findByRole('alert')).toHaveTextContent(t('session.commandFailed'))
     expect(screen.queryByText('private server details')).not.toBeInTheDocument()
+  })
+})
+
+describe('tool list', () => {
+  it('uses the tools and folder alias the core reports, ignoring the build-time list', async () => {
+    const client = createFakeCoreClient({ harnesses: ['codex'], workdir_aliases: ['repo'] })
+    const send = vi.spyOn(client, 'send')
+    render(
+      <I18nContext value={createTranslator('en')}>
+        <App client={client} live harnesses={['claude']} workdir="default" />
+      </I18nContext>,
+    )
+    const button = await screen.findByRole('button', { name: 'Open codex' })
+    expect(screen.queryByRole('button', { name: 'Open claude' })).not.toBeInTheDocument()
+    await waitFor(() => expect(button).toBeEnabled())
+    fireEvent.click(button)
+    await waitFor(() => {
+      expect(send).toHaveBeenCalled()
+    })
+    expect(send.mock.calls[0]?.[0]).toMatchObject({
+      method: 'session.open',
+      params: { harness: 'codex', workdir_alias: 'repo' },
+    })
+  })
+  it('keeps the configured folder alias when the core knows it', async () => {
+    const client = createFakeCoreClient({
+      harnesses: ['claude'],
+      workdir_aliases: ['other', 'chosen'],
+    })
+    const send = vi.spyOn(client, 'send')
+    render(
+      <I18nContext value={createTranslator('en')}>
+        <App client={client} live workdir="chosen" />
+      </I18nContext>,
+    )
+    const button = await screen.findByRole('button', { name: 'Open claude' })
+    await waitFor(() => expect(button).toBeEnabled())
+    fireEvent.click(button)
+    await waitFor(() => {
+      expect(send).toHaveBeenCalled()
+    })
+    expect(send.mock.calls[0]?.[0]).toMatchObject({ params: { workdir_alias: 'chosen' } })
+  })
+  it('shows no tools and a warning when the core refuses the list', async () => {
+    const client = createFakeCoreClient(CATALOG)
+    vi.spyOn(client, 'listHarnesses').mockRejectedValue(new Error('command rejected'))
+    const t = createTranslator('en')
+    render(
+      <I18nContext value={t}>
+        <App client={client} live harnesses={['claude']} />
+      </I18nContext>,
+    )
+    expect(await screen.findByRole('alert')).toHaveTextContent(t('harness.failed'))
+    expect(screen.queryByRole('button', { name: 'Open claude' })).not.toBeInTheDocument()
+  })
+  it('falls back to the build-time list only in sample mode', () => {
+    const client = createFakeCoreClient(CATALOG)
+    const listHarnesses = vi.spyOn(client, 'listHarnesses')
+    render(
+      <I18nContext value={createTranslator('en')}>
+        <App client={client} harnesses={['sample-tool']} />
+      </I18nContext>,
+    )
+    expect(screen.getByRole('button', { name: 'Open sample-tool' })).toBeDisabled()
+    expect(listHarnesses).not.toHaveBeenCalled()
+  })
+})
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((done) => {
+    resolve = done
+  })
+  return { promise, resolve }
+}
+
+describe('tool list states', () => {
+  it('tells a pending list apart from an empty one', async () => {
+    const client = createFakeCoreClient(CATALOG)
+    const answer = deferred<{ harnesses: string[]; workdir_aliases: string[] }>()
+    vi.spyOn(client, 'listHarnesses').mockReturnValue(answer.promise)
+    const t = createTranslator('en')
+    render(
+      <I18nContext value={t}>
+        <App client={client} live />
+      </I18nContext>,
+    )
+    expect(await screen.findByText(t('harness.loading'))).toBeInTheDocument()
+    await act(async () => {
+      answer.resolve({ harnesses: [], workdir_aliases: ['default'] })
+      await answer.promise
+    })
+    expect(screen.getByText(t('harness.none'))).toBeInTheDocument()
+    expect(screen.queryByText(t('harness.loading'))).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Open / })).not.toBeInTheDocument()
+  })
+  it('never opens a session without an alias the core announced', async () => {
+    const client = createFakeCoreClient({ harnesses: ['claude'], workdir_aliases: [] })
+    const send = vi.spyOn(client, 'send')
+    const subscribe = vi.spyOn(client, 'subscribe')
+    const t = createTranslator('en')
+    render(
+      <I18nContext value={t}>
+        <App client={client} live workdir="default" />
+      </I18nContext>,
+    )
+    expect(await screen.findByText(t('harness.noWorkdir'))).toBeInTheDocument()
+    const button = screen.getByRole('button', { name: 'Open claude' })
+    expect(button).toBeDisabled()
+    fireEvent.click(button)
+    expect(send).not.toHaveBeenCalled()
+    expect(subscribe).not.toHaveBeenCalled()
+  })
+  it('uses only the answer of the current connection after reconnecting', async () => {
+    const client = createFakeCoreClient(CATALOG)
+    const first = deferred<{ harnesses: string[]; workdir_aliases: string[] }>()
+    const second = deferred<{ harnesses: string[]; workdir_aliases: string[] }>()
+    vi.spyOn(client, 'listHarnesses')
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise)
+    const send = vi.spyOn(client, 'send')
+    const t = createTranslator('en')
+    render(
+      <I18nContext value={t}>
+        <App client={client} live />
+      </I18nContext>,
+    )
+    await screen.findByText(t('harness.loading'))
+    act(() => {
+      client.disconnect()
+    })
+    await act(async () => {
+      await client.connect()
+    })
+    expect(screen.getByText(t('harness.loading'))).toBeInTheDocument()
+    await act(async () => {
+      second.resolve({ harnesses: ['codex'], workdir_aliases: ['new'] })
+      await second.promise
+    })
+    await act(async () => {
+      first.resolve({ harnesses: ['claude'], workdir_aliases: ['old'] })
+      await first.promise
+    })
+    expect(screen.queryByRole('button', { name: 'Open claude' })).not.toBeInTheDocument()
+    const button = screen.getByRole('button', { name: 'Open codex' })
+    await waitFor(() => {
+      expect(button).toBeEnabled()
+    })
+    fireEvent.click(button)
+    await waitFor(() => {
+      expect(send).toHaveBeenCalled()
+    })
+    expect(send.mock.calls[0]?.[0]).toMatchObject({
+      params: { harness: 'codex', workdir_alias: 'new' },
+    })
+  })
+  it('releases the session subscription when a listed tool fails to open', async () => {
+    const client = createFakeCoreClient(CATALOG)
+    const stop = vi.fn()
+    const subscribe = vi.spyOn(client, 'subscribe').mockReturnValue(stop)
+    vi.spyOn(client, 'send').mockImplementation((command) =>
+      Promise.resolve({
+        jsonrpc: '2.0',
+        id: command.id,
+        error: { code: -32602, message: 'invalid command' },
+      }),
+    )
+    const t = createTranslator('en')
+    render(
+      <I18nContext value={t}>
+        <App client={client} live />
+      </I18nContext>,
+    )
+    const button = await screen.findByRole('button', { name: 'Open claude' })
+    await waitFor(() => {
+      expect(button).toBeEnabled()
+    })
+    fireEvent.click(button)
+    expect(await screen.findByRole('alert')).toHaveTextContent(t('session.commandFailed'))
+    expect(subscribe).toHaveBeenCalledTimes(1)
+    expect(stop).toHaveBeenCalledTimes(1)
+  })
+})
+
+/** Cliente cuja queda e volta chegam à tela como um só aviso, sem o estado desconectado no meio. */
+function quietReconnect() {
+  const fake = createFakeCoreClient(CATALOG)
+  const listeners = new Set<(state: ReturnType<FakeCoreClient['getState']>) => void>()
+  let muted = false
+  fake.onStateChange((state) => {
+    if (!muted) for (const listener of [...listeners]) listener(state)
+  })
+  const client: FakeCoreClient = {
+    ...fake,
+    onStateChange(listener) {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+  }
+  // `notify = false`: a tela nem fica sabendo da reconexão (renderização velha).
+  const reconnect = async (notify = true) => {
+    muted = true
+    fake.disconnect()
+    await fake.connect()
+    muted = false
+    if (notify) for (const listener of [...listeners]) listener(fake.getState())
+  }
+  return { client, reconnect }
+}
+
+describe('tool list across connections', () => {
+  it('drops a loaded list when the client reconnects before the screen sees the drop', async () => {
+    const { client, reconnect } = quietReconnect()
+    const next = deferred<{ harnesses: string[]; workdir_aliases: string[] }>()
+    vi.spyOn(client, 'listHarnesses')
+      .mockResolvedValueOnce({ harnesses: ['claude'], workdir_aliases: ['old'] })
+      .mockReturnValueOnce(next.promise)
+    const send = vi.spyOn(client, 'send')
+    const t = createTranslator('en')
+    render(
+      <I18nContext value={t}>
+        <App client={client} live />
+      </I18nContext>,
+    )
+    await screen.findByRole('button', { name: 'Open claude' })
+    await act(async () => {
+      await reconnect()
+    })
+    expect(screen.queryByRole('button', { name: 'Open claude' })).not.toBeInTheDocument()
+    expect(screen.getByText(t('harness.loading'))).toBeInTheDocument()
+    await act(async () => {
+      next.resolve({ harnesses: ['codex'], workdir_aliases: ['new'] })
+      await next.promise
+    })
+    const button = screen.getByRole('button', { name: 'Open codex' })
+    await waitFor(() => {
+      expect(button).toBeEnabled()
+    })
+    fireEvent.click(button)
+    await waitFor(() => {
+      expect(send).toHaveBeenCalled()
+    })
+    expect(send.mock.calls[0]?.[0]).toMatchObject({
+      params: { harness: 'codex', workdir_alias: 'new' },
+    })
+  })
+  it('ignores the failure of a query from the previous connection', async () => {
+    const { client, reconnect } = quietReconnect()
+    let failFirst!: (error: Error) => void
+    const first = new Promise<never>((_, reject) => {
+      failFirst = reject
+    })
+    const second = deferred<{ harnesses: string[]; workdir_aliases: string[] }>()
+    vi.spyOn(client, 'listHarnesses').mockReturnValueOnce(first).mockReturnValueOnce(second.promise)
+    const t = createTranslator('en')
+    render(
+      <I18nContext value={t}>
+        <App client={client} live />
+      </I18nContext>,
+    )
+    await screen.findByText(t('harness.loading'))
+    await act(async () => {
+      await reconnect()
+    })
+    await act(async () => {
+      failFirst(new HarnessListError('timeout'))
+      await first.catch(() => undefined)
+    })
+    expect(screen.queryByText(t('harness.timeout'))).not.toBeInTheDocument()
+    expect(screen.getByText(t('harness.loading'))).toBeInTheDocument()
+    await act(async () => {
+      second.resolve({ harnesses: ['codex'], workdir_aliases: ['new'] })
+      await second.promise
+    })
+    expect(screen.getByRole('button', { name: 'Open codex' })).toBeInTheDocument()
   })
 })
 
@@ -122,7 +400,7 @@ describe('sessions the core cannot keep', () => {
   }
 
   it('shows a pending close and sends session.close from its button', async () => {
-    const client = createFakeCoreClient()
+    const client = createFakeCoreClient(CATALOG)
     const send = vi.spyOn(client, 'send')
     const t = createTranslator('pt-BR')
     render(
@@ -156,7 +434,7 @@ describe('sessions the core cannot keep', () => {
   })
 
   it('keeps the close button when the core refuses session.close', async () => {
-    const client = createFakeCoreClient()
+    const client = createFakeCoreClient(CATALOG)
     const t = createTranslator('en')
     render(
       <I18nContext value={t}>
@@ -183,7 +461,7 @@ describe('sessions the core cannot keep', () => {
   })
 
   it('marks a session whose subscription ended without losing the connection', async () => {
-    const client = createFakeCoreClient()
+    const client = createFakeCoreClient(CATALOG)
     const t = createTranslator('en')
     render(
       <I18nContext value={t}>
@@ -254,7 +532,9 @@ describe('sessions the core cannot keep', () => {
         <App client={client} live harnesses={['claude']} {...props} />
       </I18nContext>,
     )
-    const button = screen.getByRole('button', { name: t('session.open', { harness: 'claude' }) })
+    const button = await screen.findByRole('button', {
+      name: t('session.open', { harness: 'claude' }),
+    })
     await waitFor(() => expect(button).toBeEnabled())
     fireEvent.click(button)
     await waitFor(() => expect(button).toBeEnabled())
@@ -316,7 +596,7 @@ describe('sessions the core cannot keep', () => {
     })
 
   it('keeps the close action when -32013 arrives before -32014', async () => {
-    const client = createFakeCoreClient()
+    const client = createFakeCoreClient(CATALOG)
     const { ends } = trackSubscriptions(client)
     await openWith(client, (command) => {
       ends.at(-1)?.end(-32013)
@@ -329,7 +609,7 @@ describe('sessions the core cannot keep', () => {
   })
 
   it('shows the close action when -32013 arrives after -32014', async () => {
-    const client = createFakeCoreClient()
+    const client = createFakeCoreClient(CATALOG)
     const { ends } = trackSubscriptions(client)
     await openWith(client, (command) => refused(command, -32014))
     expect(screen.queryByRole('button', { name: 'Close session' })).not.toBeInTheDocument()
@@ -340,7 +620,7 @@ describe('sessions the core cannot keep', () => {
   })
 
   it('does not bring back a closing session that another subscription saw end', async () => {
-    const client = createFakeCoreClient()
+    const client = createFakeCoreClient(CATALOG)
     const { ends } = trackSubscriptions(client)
     render(
       <I18nContext value={createTranslator('en')}>
@@ -371,14 +651,14 @@ describe('sessions the core cannot keep', () => {
   })
 
   it('releases the subscription of a refused open', async () => {
-    const client = createFakeCoreClient()
+    const client = createFakeCoreClient(CATALOG)
     const { stopped } = trackSubscriptions(client)
     await openWith(client, (command) => refused(command, -1))
     expect(stopped).toHaveLength(1)
   })
 
   it('releases the open subscription when the session ends after -32014', async () => {
-    const client = createFakeCoreClient()
+    const client = createFakeCoreClient(CATALOG)
     const { stopped } = trackSubscriptions(client)
     const send = await openWith(client, (command) => refused(command, -32014))
     expect(stopped).toHaveLength(0)
@@ -395,7 +675,7 @@ describe('sessions the core cannot keep', () => {
   })
 
   it('shows the close action when another subscription of the stream ended first', async () => {
-    const client = createFakeCoreClient()
+    const client = createFakeCoreClient(CATALOG)
     const { ends } = trackSubscriptions(client)
     const t = createTranslator('en')
     const send = vi.spyOn(client, 'send')
@@ -404,7 +684,7 @@ describe('sessions the core cannot keep', () => {
         <App client={client} live harnesses={['claude']} />
       </I18nContext>,
     )
-    const open = screen.getByRole('button', { name: 'Open claude' })
+    const open = await screen.findByRole('button', { name: 'Open claude' })
     await waitFor(() => expect(open).toBeEnabled())
     fireEvent.click(open)
     await waitFor(() => expect(open).toBeEnabled())
@@ -423,7 +703,7 @@ describe('sessions the core cannot keep', () => {
   })
 
   it('shows a new session that reuses the id of a closed one', async () => {
-    const client = createFakeCoreClient()
+    const client = createFakeCoreClient(CATALOG)
     const { ends } = trackSubscriptions(client)
     await renderClosing(client, ends, ['session-a', 'session-a'], [0])
     fireEvent.click(screen.getByRole('button', { name: 'Close session' }))
@@ -448,7 +728,7 @@ describe('sessions the core cannot keep', () => {
 
     it('completes a close confirmed after the deadline without a stale warning', async () => {
       vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-      const client = createFakeCoreClient()
+      const client = createFakeCoreClient(CATALOG)
       const { ends } = trackSubscriptions(client)
       await renderClosing(client, ends, ['session-a'], [0])
       const answer = deferred()
@@ -467,7 +747,7 @@ describe('sessions the core cannot keep', () => {
 
     it('reuses the key and ignores a stale refusal after the retry confirms', async () => {
       vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-      const client = createFakeCoreClient()
+      const client = createFakeCoreClient(CATALOG)
       const { ends } = trackSubscriptions(client)
       await renderClosing(client, ends, ['session-a'], [0])
       const answers = [deferred(), deferred()]
@@ -496,7 +776,7 @@ describe('sessions the core cannot keep', () => {
 
     it('sends one close per session while it waits and keeps other sessions closable', async () => {
       vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-      const client = createFakeCoreClient()
+      const client = createFakeCoreClient(CATALOG)
       const { ends } = trackSubscriptions(client)
       await renderClosing(client, ends, ['session-a', 'session-b'], [0, 1])
       const send = vi.spyOn(client, 'send').mockImplementation(() => new Promise(() => undefined))
@@ -521,7 +801,7 @@ describe('sessions the core cannot keep', () => {
 
     it('keeps focus on another session when a pending close completes', async () => {
       vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-      const client = createFakeCoreClient()
+      const client = createFakeCoreClient(CATALOG)
       const { ends } = trackSubscriptions(client)
       await renderClosing(client, ends, ['session-a', 'session-b'], [0, 1])
       const answer = deferred()
@@ -540,7 +820,7 @@ describe('sessions the core cannot keep', () => {
   })
 
   it('moves focus to the terminal when the session ends under the focused button', async () => {
-    const client = createFakeCoreClient()
+    const client = createFakeCoreClient(CATALOG)
     const { ends } = trackSubscriptions(client)
     await renderClosing(client, ends, ['session-a', 'session-a'], [0])
     const region = screen.getByRole('status', { name: 'Session state' })
@@ -558,7 +838,7 @@ describe('sessions the core cannot keep', () => {
   })
 
   it('announces the notice in a live region and moves focus after closing', async () => {
-    const client = createFakeCoreClient()
+    const client = createFakeCoreClient(CATALOG)
     const t = createTranslator('en')
     render(
       <I18nContext value={t}>
@@ -588,7 +868,7 @@ describe('sessions the core cannot keep', () => {
   })
 
   it('shows a session that timed out while starting', async () => {
-    const client = createFakeCoreClient()
+    const client = createFakeCoreClient(CATALOG)
     vi.spyOn(client, 'send').mockImplementation((command) =>
       Promise.resolve({
         jsonrpc: '2.0',
@@ -602,11 +882,57 @@ describe('sessions the core cannot keep', () => {
         <App client={client} live harnesses={['claude']} />
       </I18nContext>,
     )
-    const button = screen.getByRole('button', { name: 'Abrir claude' })
+    const button = await screen.findByRole('button', { name: 'Abrir claude' })
     await waitFor(() => expect(button).toBeEnabled())
     fireEvent.click(button)
     expect(await screen.findByText(t('session.notice.setupFailed'))).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Falhou ao iniciar/ })).toBeInTheDocument()
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+})
+
+describe('session streams across connections', () => {
+  it('subscribes the session streams again after a reconnect the screen did not see', async () => {
+    const { client, reconnect } = quietReconnect()
+    const t = createTranslator('en')
+    render(
+      <I18nContext value={t}>
+        <App client={client} live sessionStreams={['session/session-a']} />
+      </I18nContext>,
+    )
+    await screen.findByRole('button', { name: 'Open claude' })
+    await act(async () => {
+      await reconnect()
+    })
+    act(() => {
+      for (const draft of sampleSessionEvents(t)) {
+        if (draft.stream === 'session/session-a') client.emit(draft)
+      }
+    })
+    expect(
+      screen.getByRole('region', { name: t('terminal.label', { name: t('sample.session.a') }) }),
+    ).toBeInTheDocument()
+  })
+  it('does not open from a button of a connection that was already replaced', async () => {
+    const { client, reconnect } = quietReconnect()
+    const t = createTranslator('en')
+    render(
+      <I18nContext value={t}>
+        <App client={client} live />
+      </I18nContext>,
+    )
+    const button = await screen.findByRole('button', { name: 'Open claude' })
+    await waitFor(() => {
+      expect(button).toBeEnabled()
+    })
+    const subscribe = vi.spyOn(client, 'subscribe')
+    const send = vi.spyOn(client, 'send')
+    await reconnect(false)
+    fireEvent.click(button)
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(subscribe).not.toHaveBeenCalled()
+    expect(send).not.toHaveBeenCalled()
   })
 })

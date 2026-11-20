@@ -12,12 +12,16 @@ import {
   decodeBase64,
   newCommand,
   newUlid,
+  HarnessListError,
   SESSION_CLOSE_PENDING,
   SESSION_SETUP_TIMED_OUT,
+  useConnectionGeneration,
   useConnectionState,
   type CommandRequestV1,
   type CoreClient,
+  type HarnessListFailure,
   type EventEnvelopeV1,
+  type HarnessCatalog,
   type SubscriptionEndCode,
 } from './api'
 
@@ -43,6 +47,13 @@ const THEME_LABEL: Record<ThemePreference, MessageKey> = {
   light: 'theme.light',
   dark: 'theme.dark',
 }
+
+const FAILURE_NOTICE: Record<HarnessListFailure, MessageKey> = {
+  timeout: 'harness.timeout',
+  unsupported: 'harness.unsupported',
+  refused: 'harness.failed',
+}
+const FAILURE_NOTICES = new Set<MessageKey>(Object.values(FAILURE_NOTICE))
 
 const SESSION_NOTICE: Record<SessionStatus, MessageKey> = {
   closing: 'session.notice.closing',
@@ -104,7 +115,7 @@ function isCompact() {
 interface AppProps {
   client: CoreClient
   live?: boolean
-
+  /** Reserva do modo de exemplo; conectada, a interface usa a lista do núcleo. */
   harnesses?: readonly string[]
 
   workdir?: string
@@ -137,6 +148,7 @@ export function App({
   const t = useT()
   const sidebarId = useId()
   const connection = useConnectionState(client)
+  const generation = useConnectionGeneration(client)
   const { preference, cycle } = useTheme()
   const compact = useSyncExternalStore(subscribeCompact, isCompact)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -174,6 +186,12 @@ export function App({
   const [opening, setOpening] = useState(false)
 
   const [liveEvents, setLiveEvents] = useState<SessionEvent[]>([])
+
+  // Vale só para a conexão autenticada (geração) que respondeu.
+  const [catalog, setCatalog] = useState<{
+    generation: number
+    value: HarnessCatalog | HarnessListFailure
+  } | null>(null)
 
   const [statuses, setStatuses] = useState<SessionStatuses>({})
 
@@ -250,7 +268,8 @@ export function App({
 
       opened.clear()
     },
-    [client, connection],
+    // A geração refaz tudo numa reconexão que a tela não chegou a ver.
+    [client, connection, generation],
   )
 
   useEffect(() => {
@@ -260,6 +279,50 @@ export function App({
       client.disconnect()
     }
   }, [client, live])
+  useEffect(() => {
+    if (!live || connection !== 'connected') return
+    let current = true
+    client.listHarnesses().then(
+      (received) => {
+        if (current) setCatalog({ generation, value: received })
+      },
+      (error: unknown) => {
+        // Erro de uma conexão que já foi trocada não diz nada sobre a atual.
+        if (current && client.getGeneration() === generation)
+          setCatalog({
+            generation,
+            value: error instanceof HarnessListError ? error.reason : 'refused',
+          })
+      },
+    )
+    return () => {
+      current = false
+    }
+  }, [client, live, connection, generation])
+
+  const liveCatalog =
+    live && connection === 'connected' && catalog?.generation === generation ? catalog.value : null
+  const listed = typeof liveCatalog === 'object' ? liveCatalog : null
+  const available = live ? (listed?.harnesses ?? NO_STREAMS) : harnesses
+  // Conectada, só abre com um apelido que o núcleo anunciou.
+  const workdirAlias = !live
+    ? workdir
+    : listed?.workdir_aliases.includes(workdir)
+      ? workdir
+      : listed?.workdir_aliases[0]
+  const catalogNotice: MessageKey | null =
+    !live || connection !== 'connected'
+      ? null
+      : liveCatalog === null
+        ? 'harness.loading'
+        : typeof liveCatalog === 'string'
+          ? FAILURE_NOTICE[liveCatalog]
+          : liveCatalog.harnesses.length === 0
+            ? 'harness.none'
+            : workdirAlias === undefined
+              ? 'harness.noWorkdir'
+              : null
+
   useEffect(() => {
     if (!live || connection !== 'connected') return
 
@@ -274,7 +337,7 @@ export function App({
     return () => {
       for (const stop of unsubscribe) stop()
     }
-  }, [client, live, connection, sessionStreams, receiveSession, markSession])
+  }, [client, live, connection, generation, sessionStreams, receiveSession, markSession])
 
   const { tasks, sessions } = useMemo(() => {
     if (live)
@@ -291,9 +354,11 @@ export function App({
   const session = sessions.find((item) => item.id === chosenSessionId) ?? sessions[0]
   const sessionId = session?.id
   const sessionName = session ? (session.displayName ?? t('session.unnamed')) : ''
+  // Fonte e entrada são da conexão autenticada atual (0: nenhuma); uma reconexão as refaz.
+  const liveGeneration = live && connection === 'connected' ? generation : 0
   const source = useMemo(
     () =>
-      live && sessionId !== undefined && connection === 'connected'
+      liveGeneration > 0 && sessionId !== undefined
         ? eventByteSource(client, `session/${sessionId}`)
         : staticByteSource(
             live
@@ -302,16 +367,14 @@ export function App({
                 ? ''
                 : decodeBase64(sampleOutput(t, sessionId, sessionName).data.payload),
           ),
-    [t, sessionId, sessionName, live, client, connection],
+    [t, sessionId, sessionName, live, client, liveGeneration],
   )
 
   const input = useMemo(
     () =>
-      live && sessionId && connection === 'connected'
-        ? sessionInput(client, sessionId, reportError)
-        : undefined,
+      liveGeneration > 0 && sessionId ? sessionInput(client, sessionId, reportError) : undefined,
 
-    [live, sessionId, connection, client, reportError],
+    [liveGeneration, sessionId, client, reportError],
   )
 
   const resize = useCallback(
@@ -331,6 +394,8 @@ export function App({
   )
 
   const open = async (harness: string) => {
+    // A lista e o apelido são da conexão em que o botão apareceu.
+    if (workdirAlias === undefined || client.getGeneration() !== generation) return
     setOpening(true)
 
     setWarning(null)
@@ -355,7 +420,7 @@ export function App({
         newCommand('session.open', {
           session_id: id,
           harness,
-          workdir_alias: workdir,
+          workdir_alias: workdirAlias,
           ...size.current,
         }),
       )
@@ -438,14 +503,14 @@ export function App({
         </button>
       </header>
 
-      {live && harnesses.length > 0 && (
+      {available.length > 0 && (
         <div className={styles.actions}>
-          {harnesses.map((harness) => (
+          {available.map((harness) => (
             <button
               key={harness}
               type="button"
               className={styles.button}
-              disabled={connection !== 'connected' || opening}
+              disabled={connection !== 'connected' || opening || workdirAlias === undefined}
               onClick={() => {
                 void open(harness)
               }}
@@ -454,6 +519,10 @@ export function App({
             </button>
           ))}
         </div>
+      )}
+
+      {catalogNotice && (
+        <p role={FAILURE_NOTICES.has(catalogNotice) ? 'alert' : 'status'}>{t(catalogNotice)}</p>
       )}
 
       {warning !== null && <p role="alert">{t('session.commandFailed')}</p>}

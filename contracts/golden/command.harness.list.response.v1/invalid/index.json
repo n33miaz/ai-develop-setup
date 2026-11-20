@@ -1,0 +1,28 @@
+{
+  "01-program-in-result.json": {
+    "rule": "result é fechado: só nomes, nunca programa, ambiente nem caminho.",
+    "keyword": "additionalProperties",
+    "instancePath": "/result",
+    "params": {
+      "additionalProperty": "program"
+    }
+  },
+  "02-path-as-alias.json": {
+    "rule": "Apelido é identificador opaco, não caminho.",
+    "keyword": "pattern",
+    "instancePath": "/result/workdir_aliases/0"
+  },
+  "03-repeated-harness.json": {
+    "rule": "Cada ferramenta aparece uma vez.",
+    "keyword": "uniqueItems",
+    "instancePath": "/result/harnesses"
+  },
+  "04-missing-aliases.json": {
+    "rule": "A lista de apelidos é obrigatória, mesmo vazia.",
+    "keyword": "required",
+    "instancePath": "/result",
+    "params": {
+      "missingProperty": "workdir_aliases"
+    }
+  }
+}

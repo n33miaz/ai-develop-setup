@@ -194,8 +194,19 @@ fn host_error(error: ClientError) -> ApiError {
     }
 }
 
+/// What `harness.list` answers: names only, never programs, arguments, environment or paths.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HarnessCatalog {
+    pub harnesses: Vec<String>,
+    pub workdir_aliases: Vec<String>,
+}
+
 pub trait Launcher: Send + Sync + 'static {
     fn prepare(&self, request: &CommandSessionOpenV1Params) -> Result<OpenParams, ApiError>;
+    /// Read once when the API binds; restart the daemon to change the configuration.
+    fn catalog(&self) -> HarnessCatalog {
+        HarnessCatalog::default()
+    }
 }
 pub struct DisabledLauncher;
 impl Launcher for DisabledLauncher {
@@ -635,6 +646,7 @@ pub struct LocalApi {
     listener: TcpListener,
     token: Token,
     config: ApiConfig,
+    catalog: Value,
     service: Service,
     pending: Arc<Semaphore>,
     hooks: Arc<TestHooks>,
@@ -812,6 +824,9 @@ impl LocalApi {
             .map_err(|_| ApiError::Unavailable)?;
         host.enable_backpressure();
         let token = Token::generate()?;
+        let catalog = launcher.catalog();
+        let catalog =
+            json!({"harnesses": catalog.harnesses, "workdir_aliases": catalog.workdir_aliases});
         let log = Arc::new(Mutex::new(EventLog::new(
             config.events_per_stream,
             config.retired_sessions,
@@ -834,6 +849,7 @@ impl LocalApi {
             token,
             pending: Arc::new(Semaphore::new(config.max_pending_auth)),
             config,
+            catalog,
             service,
             hooks: Arc::new(TestHooks::default()),
         })
@@ -858,11 +874,13 @@ impl LocalApi {
             listener,
             token,
             config,
+            catalog,
             mut service,
             pending,
             hooks,
         } = self;
         let token = Arc::new(token);
+        let catalog = Arc::new(catalog);
         let config = Arc::new(config);
         let port = listener
             .local_addr()
@@ -901,10 +919,10 @@ impl LocalApi {
                 }
                 admission = &mut accepting => {
                     accepting.set(admitter.admit());
-                    let (token, config, commands, log, hooks) = (token.clone(), config.clone(), commands.clone(), log.clone(), hooks.clone());
+                    let (token, config, commands, log, hooks, catalog) = (token.clone(), config.clone(), commands.clone(), log.clone(), hooks.clone(), catalog.clone());
                     let authenticated = permits.clone();
                     connections.spawn(async move {
-                        let _ = connection(admission, port, token, config, commands, log, (authenticated, hooks)).await;
+                        let _ = connection(admission, port, token, config, commands, log, (authenticated, hooks, catalog)).await;
                     });
                 }
                 Some(_) = connections.join_next(), if !connections.is_empty() => (),
@@ -971,6 +989,7 @@ fn validate_command(value: Value) -> Result<Value, ApiError> {
             | "session.resize"
             | "session.close"
             | "events.subscribe"
+            | "harness.list"
     ) {
         return Err(ApiError::Method);
     }
@@ -994,7 +1013,7 @@ async fn connection(
     config: Arc<ApiConfig>,
     commands: mpsc::Sender<Request>,
     log: Arc<Mutex<EventLog>>,
-    (authenticated, hooks): (Arc<Semaphore>, Arc<TestHooks>),
+    (authenticated, hooks, catalog): (Arc<Semaphore>, Arc<TestHooks>, Arc<Value>),
 ) -> Result<(), ApiError> {
     use tokio_tungstenite::tungstenite::handshake::server::{Request as HttpRequest, Response};
     let ws_config = WebSocketConfig::default()
@@ -1116,6 +1135,16 @@ async fn connection(
                     if command["method"] == "auth.hello" {
                         return Err(ApiError::Invalid);
                     }
+                    if command["method"] == "harness.list" {
+                        // Só leitura: fora da cache de idempotência, que guardaria só `replayed`.
+                        let reply = if command["params"]["_meta"]["origin"] == "local" {
+                            json!({"jsonrpc": "2.0", "id": id, "result": *catalog})
+                        } else {
+                            response(&id, Err(ApiError::Remote))
+                        };
+                        send(&mut ws, reply, &config).await?;
+                        continue;
+                    }
                     let subscribe = command["method"] == "events.subscribe";
                     let stream = command["params"]["stream"]
                         .as_str()
@@ -1206,7 +1235,7 @@ async fn send<S>(ws: &mut S, value: Value, config: &ApiConfig) -> Result<(), Api
 where
     S: futures_util::Sink<Message> + Unpin,
 {
-    let value = checked("urn:ads:contract:local-api.server-message:1", value)?;
+    let value = checked("urn:ads:contract:local-api.server-message:2", value)?;
     timeout(
         Duration::from_millis(config.send_timeout_ms),
         ws.send(Message::Text(value.to_string().into())),

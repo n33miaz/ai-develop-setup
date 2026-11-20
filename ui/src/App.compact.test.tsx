@@ -47,7 +47,10 @@ it.each([
         Object.assign(matchMedia(query), { matches: query === '(width < 48rem)' }),
       )
     try {
-      const client = createFakeCoreClient()
+      const client = createFakeCoreClient({
+        harnesses: ['claude', 'codex'],
+        workdir_aliases: ['default'],
+      })
       const { rerender } = render(
         <I18nContext value={createTranslator(locale)}>
           <App client={client} />
@@ -57,7 +60,7 @@ it.each([
 
       rerender(
         <I18nContext value={createTranslator(locale)}>
-          <App client={client} live harnesses={['claude', 'codex']} />
+          <App client={client} live />
         </I18nContext>,
       )
       expect(await screen.findByRole('button', { name: claude })).toBeInTheDocument()

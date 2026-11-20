@@ -1,6 +1,6 @@
 //! Adaptação de session.open para os parâmetros do host.
 
-use crate::api::{ApiError, Launcher};
+use crate::api::{ApiError, HarnessCatalog, Launcher};
 use ads_adapter_claude as claude;
 use ads_adapter_codex as codex;
 use ads_contracts::CommandSessionOpenV1Params;
@@ -106,6 +106,22 @@ where
                     _ => ApiError::Invalid,
                 }),
             _ => Err(ApiError::Invalid),
+        }
+    }
+
+    fn catalog(&self) -> HarnessCatalog {
+        let harnesses = [
+            (claude::HARNESS_ID, self.claude.program().is_some()),
+            (codex::HARNESS_ID, self.codex.program().is_some()),
+        ]
+        .into_iter()
+        .filter(|(_, on)| *on)
+        .map(|(id, _)| id.to_owned())
+        .collect();
+        // `[workdirs]` is shared, so both adapters hold the same aliases.
+        HarnessCatalog {
+            harnesses,
+            workdir_aliases: self.claude.workdir_aliases().map(str::to_owned).collect(),
         }
     }
 }

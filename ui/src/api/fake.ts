@@ -5,7 +5,13 @@ import {
   type SubscriptionEndCode,
   type Unsubscribe,
 } from './client'
-import type { CommandResponseV2, CommonActorV1, EventDraft, EventEnvelopeV1 } from './contracts'
+import type {
+  CommandResponseV2,
+  CommonActorV1,
+  EventDraft,
+  EventEnvelopeV1,
+  HarnessCatalog,
+} from './contracts'
 import { newUlid } from './ulid'
 
 /** Cliente falso em memória: dá para testar a UI sem núcleo. Não simula rede nem atraso. */
@@ -33,13 +39,17 @@ function deepFreeze<T>(value: T): T {
   return value
 }
 
-export function createFakeCoreClient(): FakeCoreClient {
+/** `catalog` é o que `listHarnesses` responde; o padrão é nenhuma ferramenta. */
+export function createFakeCoreClient(
+  catalog: HarnessCatalog = { harnesses: [], workdir_aliases: [] },
+): FakeCoreClient {
   let state: ConnectionState = 'disconnected'
   const stateListeners = new Set<(state: ConnectionState) => void>()
   const logs = new Map<string, EventEnvelopeV1[]>()
   const subscriptions = new Set<Subscription>()
   const acceptedKeys = new Set<string>()
   let connecting: Promise<void> | null = null
+  let generation = 0
 
   function setState(next: ConnectionState): void {
     if (state === next) return
@@ -94,6 +104,7 @@ export function createFakeCoreClient(): FakeCoreClient {
 
   return {
     getState: () => state,
+    getGeneration: () => generation,
 
     onStateChange(listener) {
       stateListeners.add(listener)
@@ -108,6 +119,7 @@ export function createFakeCoreClient(): FakeCoreClient {
         // `disconnect()` no meio do caminho cancela a tentativa: ela não volta a conectar.
         if (connecting !== attempt) throw notConnected()
         connecting = null
+        generation += 1
         setState('connected')
       })
       connecting = attempt
@@ -142,6 +154,11 @@ export function createFakeCoreClient(): FakeCoreClient {
         result: { accepted: true, replayed },
       }
       return Promise.resolve(response)
+    },
+
+    listHarnesses() {
+      if (state !== 'connected') return Promise.reject(notConnected())
+      return Promise.resolve(structuredClone(catalog))
     },
 
     emit: append,
