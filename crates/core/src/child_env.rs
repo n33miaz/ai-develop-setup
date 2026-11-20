@@ -8,12 +8,14 @@ use std::fmt;
 
 use serde::Deserialize;
 
-/// How variable names are compared against the allow list. Deny patterns ignore case always.
+/// How variable names are compared against the allow list. Deny patterns ignore case always,
+/// with the widest comparison (see [`EnvPolicy::is_denied`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NameCase {
     /// Windows: `Path` and `PATH` are the same variable. Only ASCII letters are folded, while
     /// Windows also folds other letters (`Ä` and `ä`): an allowed name copies only a parent
-    /// name equal to it apart from ASCII case, so a wider fold could only let less through.
+    /// name equal to it apart from ASCII case, so this narrower fold can only let less through
+    /// than the one Windows uses.
     Insensitive,
     Sensitive,
 }
@@ -155,6 +157,17 @@ impl Pattern {
     }
 }
 
+/// Fullwidth ASCII forms (`Ｔ`, `＿`) as plain ASCII, the part of compatibility normalization
+/// that can spell a pattern.
+fn fold_fullwidth(name: &str) -> String {
+    name.chars()
+        .map(|c| match u32::from(c) {
+            code @ 0xFF01..=0xFF5E => char::from_u32(code - 0xFEE0).unwrap_or(c),
+            _ => c,
+        })
+        .collect()
+}
+
 fn valid_name(name: &str) -> bool {
     !name.is_empty() && !name.chars().any(|c| c == '=' || c == '*' || c.is_control())
 }
@@ -235,10 +248,21 @@ impl EnvPolicy {
         Ok(())
     }
 
-    /// Whether `name` matches a deny pattern, ignoring case.
+    /// Whether `name` matches a deny pattern in any of its folded spellings. Wider than any
+    /// system's comparison on purpose, so it only ever serves to deny: `MY_ſECRET` and
+    /// `ＧＨ_TOKEN` are denied like `MY_SECRET` and `GH_TOKEN`.
     pub fn is_denied(&self, name: &str) -> bool {
-        let upper = name.to_ascii_uppercase();
-        self.deny.iter().any(|pattern| pattern.matches(&upper))
+        let fullwidth = fold_fullwidth(name);
+        [name, fullwidth.as_str()]
+            .into_iter()
+            .flat_map(|form| {
+                [
+                    form.to_ascii_uppercase(),
+                    form.to_uppercase(),
+                    form.to_lowercase().to_uppercase(),
+                ]
+            })
+            .any(|upper| self.deny.iter().any(|pattern| pattern.matches(&upper)))
     }
 
     /// The child's whole environment: each allowed name the parent has, written as the allow
