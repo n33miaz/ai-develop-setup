@@ -1,6 +1,6 @@
 # Tempos de CI e uso de disco
 
-Medido no PR que criou o workspace (14/11/2026), lendo `startedAt` e `completedAt` de cada job e passo na API do GitHub (`gh run view --json jobs`). Os crates ainda estão vazios, então os jobs `rust` e `shell-check` medem o custo fixo (instalar a toolchain, restaurar o cache, resolver e compilar a árvore do Tauri), não o de código de produto. Remedir quando o primeiro crate tiver código de verdade.
+Os números abaixo vêm do PR que criou o workspace (14/11/2026), lendo `startedAt` e `completedAt` de cada job e passo na API do GitHub (`gh run view --json jobs`). Os crates ainda estão vazios, então os jobs `rust` e `shell-check` medem o custo fixo (instalar a toolchain, restaurar o cache, resolver e compilar a árvore do Tauri), não o de código de produto. Remedir quando o primeiro crate tiver código de verdade.
 
 ## Por job
 
@@ -18,9 +18,19 @@ Medido no PR que criou o workspace (14/11/2026), lendo `startedAt` e `completedA
 - Caminho bloqueante quando a casca é tocada: o maior job é o `shell-check`, 171 s frio e cerca de 1 min quente. Sem tocar a casca, o `shell-check` é pulado e o caminho é o `rust` (cerca de 25 s hoje).
 - Passos do `shell-check` (frio, depois quente): `cargo check -p ads-shell` levou 113 s e depois 14 a 19 s; instalar a toolchain fixada, 12 a 13 s; restaurar o cache, 6 s frio (nada a restaurar) e 18 a 19 s quente; salvar o cache, 27 s só na primeira execução.
 - Passos do `rust` (quente): instalar a toolchain fixada, cerca de 10 s (o maior); `cargo-deny`, 3 s; testes, 2 s; formatação e lint, menos de 1 s cada nesta fase.
-- Passos do `pty-windows` (frio): lint do `ads-ptyhost`, 29 s (compila `tokio`, `windows` e `portable-pty`); testes, 13 s, dos quais os 20 ciclos de ConPTY levam cerca de 1 s (901 ms no runner, 40 processos de sessão, nenhum remanescente, handles 97 antes e 97 depois); salvar o cache, 41 s só na primeira execução. No mesmo PR o `rust` levou 32 s com as dependências novas (lint 6 s, testes 4 s). O job só roda quando o código do PTY, o `Cargo.lock`, o `Cargo.toml`, a toolchain ou o próprio workflow mudam.
+- Passos do `pty-windows` (frio): lint do `ads-ptyhost`, 29 s (compila `tokio`, `windows` e `portable-pty`); testes, 13 s, dos quais os 20 ciclos de ConPTY levam cerca de 1 s (901 ms no runner, 40 processos de sessão, nenhum remanescente, handles 97 antes e 97 depois); salvar o cache, 41 s só na primeira execução. No mesmo PR o `rust` levou 32 s com as dependências novas (lint 6 s, testes 4 s).
 - A primeira execução do `rust` falhou no `cargo-deny` por erro de configuração (chave no lugar errado do `deny.toml`) e, como o cache só é salvo em sucesso, a execução seguinte ainda foi a fria; por isso o "frio" do `rust` vem dela.
 - Estimativas anteriores (arquitetura): `rust` 8 a 12 min frio e `shell-check` 20 a 30 min frio. A medição ficou muito abaixo porque não há código; a casca tem só o esqueleto. Não revisar a decisão de caminho bloqueante com estes números.
+
+## Filtros, cache e verificações agendadas
+
+- Os filtros dos jobs Windows cobrem os crates que cada job usa, suas dependências transitivas no workspace e os arquivos de origem dos contratos. O teste Python compara os filtros com o grafo produzido por `cargo metadata --no-deps`.
+- Só execuções do mesmo PR se substituem. Cada push na `develop` tem seu próprio grupo de concorrência.
+- O cache Rust usa uma chave por sistema no Linux e uma por job no Windows, para cada job gravar as próprias dependências; as diferenças de ambiente ficam no hash. A casca mantém seu hash próprio por causa de `RUSTFLAGS`. Só a `develop` salva cache. PRs apenas restauram.
+- O `pty-windows` testa a biblioteca do núcleo, o ambiente do processo filho e os adaptadores. Os testes de propriedade do portão rodam no Linux.
+- O workflow semanal verifica avisos do RustSec com `cargo deny` nos mesmos alvos do CI e roda `npm audit --audit-level=high` em `ui/` e `contracts/`, incluindo as dependências de desenvolvimento. Os checks completos do `cargo deny` continuam no job `rust`.
+
+Os novos tempos serão medidos nas próximas execuções. Registre o caminho até o `ci-ok`, a duração do passo de testes do núcleo e dos adaptadores no `pty-windows`, os acertos de cache e os tempos de restauração e gravação por sistema. Confira se pushes próximos chegam ao fim e meça cada job de dependências desde o checkout até o resultado, com preparação fria e quente. O limite para incluir a nova verificação no `ci-ok` é de menos de um minuto.
 
 ## Disco no PC
 
