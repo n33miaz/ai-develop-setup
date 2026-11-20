@@ -322,7 +322,11 @@ Configura `claude` e `codex` com o programa `cmd.exe` e argumentos fixos
 `ANTHROPIC_API_KEY` e `OPENAI_API_KEY` com um valor de teste. Pela API WebSocket,
 confere que a chave chega literal ao filho (`%...%` não expandido, ou seja, a
 variável não existe nele) e que `SystemRoot`, permitida, chega com o valor do
-pai; depois encerra o host de teste. Não abre agentes nem shells interativos. Os demais testes usam `FakeBackend` e rodam também em Linux.
+pai; depois encerra o host de teste. Não abre agentes nem shells interativos. Só no Windows,
+`ended_session_leaves_no_child_behind_on_windows` (`tests/local_api.rs`) roda o host no próprio
+processo de teste com ConPTY: um `cmd.exe` abre outro interpretador, que fica à espera de entrada,
+e sai depois de 3 s; o teste confere que, quando o daemon devolve a vaga sozinho, nenhum processo
+da árvore continua vivo. Os demais testes usam `FakeBackend` e rodam também em Linux.
 
 Para desfazer a integração, remova o consumidor da biblioteca; nenhuma sessão é
 migrada nem formato de armazenamento é alterado. A contiguidade de `seq`, os códigos
