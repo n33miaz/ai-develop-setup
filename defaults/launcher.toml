@@ -4,7 +4,7 @@
 daemon_program = "ads-daemon"
 ptyhost_program = "ads-ptyhost"
 # daemon_config e ptyhost_config são opcionais. Sem eles, cada filho usa seus padrões.
-# Use uma pasta exclusiva da instalação e gravável apenas pelo usuário.
+# Pasta exclusiva da instalação. Criada só para a conta atual; existente, é recusada se outra conta tiver acesso.
 control_dir = "launcher-control"
 # Nomes dentro da pasta de controle. Mantenha os padrões para clientes do supervisor.
 lock_file = "supervisor.lock"

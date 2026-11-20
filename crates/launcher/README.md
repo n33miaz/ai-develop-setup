@@ -7,7 +7,14 @@ ao lado do lançador. Os programas e `control_dir` relativos partem da pasta
 do executável. Com `--config`, só os caminhos `daemon_config` e
 `ptyhost_config` relativos partem da pasta do TOML.
 O arquivo sobrepõe as chaves de [`defaults/launcher.toml`](../../defaults/launcher.toml).
-Use uma pasta de controle exclusiva da instalação, gravável apenas pela sua conta.
+Use uma pasta de controle exclusiva da instalação. Se ela não existe, o lançador
+a cria acessível só pela conta atual: no Windows, com uma lista de acesso protegida
+de uma entrada só, a do usuário, herdada pelos arquivos de dentro; no Unix, com modo
+0700, e os arquivos de trava e de estado com 0600. Uma pasta já existente é recusada,
+com erro e sem iniciar nada, se o dono não for a conta atual ou se outra conta tiver
+qualquer acesso a ela. No Windows, só o sistema local e o grupo Administradores, que
+já podem assumir qualquer arquivo da máquina, são tolerados além do usuário. Para
+corrigir, apague a pasta para o lançador recriá-la ou restrinja-a à sua conta.
 Uma trava de sistema operacional limita a execução a um lançador por pasta de
 controle e fica ativa enquanto ele roda.
 Os arquivos de trava são reutilizados após a saída. O daemon supervisionado
@@ -30,8 +37,9 @@ iniciada pelo daemon, inclua seu nome nas duas listas, `child_env_allow` e
 
 Crie o arquivo vazio `restart` na pasta de controle para reiniciar o daemon e
 zerar seu contador de falhas na janela móvel. Crie `stop` para encerrar o daemon e
-o lançador. Um sinal de parada pendente na partida continua válido e fica
-registrado no estado em `stop_pending_at_startup`. Se os dois arquivos
+o lançador. Um arquivo de sinal cujo dono não é a conta atual fica no lugar,
+é ignorado e aparece em `last_error`. Um sinal de parada da conta atual pendente
+na partida continua válido e fica registrado no estado em `stop_pending_at_startup`. Se os dois arquivos
 estiverem presentes, a parada prevalece. O host
 permanece em execução com as sessões existentes. Enquanto supervisionado, ele
 só é reiniciado após sair. Reassumir a supervisão de um host que ficou ativo
@@ -52,8 +60,7 @@ Erros no laço são informados no terminal e publicados em `last_error` ou
 `state_write_error` quando o arquivo volta a aceitar gravação. A consulta
 dos sinais e a publicação pendente são repetidas no ciclo seguinte. Os PIDs
 são um instantâneo e podem ficar desatualizados se o lançador sair abruptamente.
-O arquivo tem duração local e pode ser lido por outras ferramentas autorizadas
-pela pasta de controle.
+O arquivo tem duração local e só a conta atual o lê.
 
 A consulta de saúde e a confirmação do
 commit dependem de um contrato ainda ausente no daemon. Manifesto, troca de

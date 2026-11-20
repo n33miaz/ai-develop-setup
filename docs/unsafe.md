@@ -1,6 +1,6 @@
 # Orçamento de `unsafe`
 
-Regra: `unsafe_code = "forbid"` vale para todo o workspace (`[workspace.lints.rust]` no `Cargo.toml` da raiz) e cada crate herda com `[lints] workspace = true`. As exceções em uso são quatro, cada uma com uma tabela `[lints]` própria com `unsafe_code = "deny"` e o lint liberado em um só módulo, compilado apenas no Windows: `ads-ptyhost` (`crates/ptyhost/src/win.rs`), `ads-adapter-fs` (`crates/adapters/fs/src/sys/windows.rs`), `ads-testkit` (`crates/testkit/src/win.rs`) e `ads-adapter-vault` (`crates/adapters/vault/src/windows.rs`). O `ads-testkit` é só de teste: entra apenas como dependência de desenvolvimento e não chega a nenhum binário do produto, nem com `--all-features`. Fora desses módulos, `unsafe` continua reprovando a compilação.
+Regra: `unsafe_code = "forbid"` vale para todo o workspace (`[workspace.lints.rust]` no `Cargo.toml` da raiz) e cada crate herda com `[lints] workspace = true`. As exceções em uso são cinco, cada uma com uma tabela `[lints]` própria com `unsafe_code = "deny"` e o lint liberado em um só módulo, compilado apenas no Windows: `ads-ptyhost` (`crates/ptyhost/src/win.rs`), `ads-adapter-fs` (`crates/adapters/fs/src/sys/windows.rs`), `ads-testkit` (`crates/testkit/src/win.rs`), `ads-adapter-vault` (`crates/adapters/vault/src/windows.rs`) e `ads-launcher` (`crates/launcher/src/private/win.rs`). O `ads-testkit` é só de teste: entra apenas como dependência de desenvolvimento e não chega a nenhum binário do produto, nem com `--all-features`. Fora desses módulos, `unsafe` continua reprovando a compilação.
 
 A contagem só sobe com justificativa aqui.
 
@@ -10,6 +10,7 @@ A contagem só sobe com justificativa aqui.
 | `ads-adapter-fs` | 4 | chamadas da API do Windows para abrir, mover e apagar por identificador aberto, listadas abaixo; no Linux as mesmas operações vêm do `rustix`, sem `unsafe` |
 | `ads-testkit` | 7 | só de teste, fora de qualquer binário do produto; listados abaixo |
 | `ads-adapter-vault` | 6 | operações por nome no cofre do Windows e tratamento da memória devolvida |
+| `ads-launcher` | 13 | chamadas da API do Windows para criar a pasta de controle só do usuário e conferir dono e lista de acesso, listadas abaixo; no Unix o mesmo vem da biblioteca padrão e do `rustix`, sem `unsafe` |
 | `ads-storage` | 0 | SQLite e cifra pelas APIs seguras das dependências; herda `forbid` |
 | demais | 0 | nenhum |
 
@@ -65,3 +66,17 @@ Um processo filho do binário de teste fecha o próprio processo ou o próprio t
 | `Target::remove` | 1 | `CredDeleteW` | remover a entrada pelo nome exato |
 | `ReadCredential::blob` | 2 | desreferenciar a estrutura e montar a fatia mutável | copiar o segredo e zerar o buffer original antes de liberá-lo |
 | `ReadCredential::drop` | 1 | `CredFree` | liberar uma vez o buffer alocado pelo sistema |
+
+## `ads-launcher` (`crates/launcher/src/private/win.rs`)
+
+A biblioteca padrão não cria pasta com lista de acesso própria nem lê dono e lista de acesso. Cada bloco é uma única chamada, ou a leitura do que a chamada anterior preencheu, e leva um comentário `SAFETY`; o token aberto passa na hora para um `OwnedHandle`, e a memória que o sistema aloca fica num guarda que a libera ao sair de escopo. A pasta e as entradas são abertas pela biblioteca padrão, sem seguir ponto de reanálise.
+
+| Onde | Blocos | Chamada | Motivo |
+|---|---|---|---|
+| `LocalMemory::drop` | 1 | `LocalFree` | liberar a memória que o sistema alocou (texto do identificador, descritor de segurança) |
+| `take_text` | 1 | `PWSTR::to_string` | copiar um texto devolvido pelo sistema antes de liberá-lo |
+| `sid_text` | 1 | `ConvertSidToStringSidW` | escrever um identificador de segurança em texto (`S-1-...`), forma em que donos e entradas são comparados |
+| `token_sid` | 2 | `GetTokenInformation`, leitura do ponteiro inicial do `TOKEN_USER` ou `TOKEN_OWNER` preenchido | ler o usuário atual e o dono que ele dá aos objetos que cria |
+| `current_identity` | 2 | `OpenProcessToken` (só `TOKEN_QUERY`) com `GetCurrentProcess`, `OwnedHandle::from_raw_handle` | abrir para leitura o token do próprio processo |
+| `create_dir` | 2 | `ConvertStringSecurityDescriptorToSecurityDescriptorW`, `CreateDirectoryW` | criar a pasta de controle com dono e lista de acesso protegida de uma entrada só, a do usuário, herdada pelos arquivos de dentro |
+| `security` | 4 | `GetSecurityInfo` (dono e lista de acesso), `GetAclInformation`, `GetAce`, leitura do cabeçalho da entrada | conferir o dono e cada entrada da lista de acesso de uma pasta existente ou de um arquivo de sinal |

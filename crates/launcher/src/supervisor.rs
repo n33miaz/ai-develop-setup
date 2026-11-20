@@ -1,6 +1,6 @@
 use std::{
     collections::VecDeque,
-    fs::{self, File, OpenOptions, TryLockError},
+    fs::{self, File, TryLockError},
     io,
     path::Path,
     process::{Child, Command, ExitStatus, Stdio},
@@ -10,7 +10,10 @@ use std::{
 
 use serde::Serialize;
 
-use crate::Config;
+use crate::{
+    Config,
+    private::{self, Identity},
+};
 
 #[derive(Default, Serialize)]
 struct ProcessState {
@@ -174,7 +177,7 @@ fn detach(host: &mut Command) {
 }
 
 fn open_lock(path: &Path) -> io::Result<File> {
-    let lock = OpenOptions::new()
+    let lock = private::file_options()
         .read(true)
         .write(true)
         .create(true)
@@ -190,16 +193,29 @@ fn open_lock(path: &Path) -> io::Result<File> {
     Ok(lock)
 }
 
-fn consume_signal(path: &Path) -> io::Result<bool> {
+#[derive(Debug, PartialEq, Eq)]
+enum Signal {
+    Absent,
+    Accepted,
+    /// A file the current user does not own: left in place and never honored.
+    Foreign,
+}
+
+fn consume_signal(path: &Path, local: &Identity) -> io::Result<Signal> {
+    let missing = |error: io::Error| match error.kind() {
+        io::ErrorKind::NotFound => Ok(Signal::Absent),
+        _ => Err(error),
+    };
     match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.is_file() => match fs::remove_file(path) {
-            Ok(()) => Ok(true),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
-            Err(error) => Err(error),
+        Ok(metadata) if metadata.is_file() => match private::owned_by(path, local) {
+            Ok(false) => Ok(Signal::Foreign),
+            Ok(true) => fs::remove_file(path)
+                .map(|()| Signal::Accepted)
+                .or_else(missing),
+            Err(error) => missing(error),
         },
-        Ok(_) => Ok(false),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error),
+        Ok(_) => Ok(Signal::Absent),
+        Err(error) => missing(error),
     }
 }
 
@@ -225,7 +241,7 @@ fn write_state(
         .unwrap_or_default()
         .as_nanos();
     let temp = path.with_extension(format!("{}-{stamp}.tmp", std::process::id()));
-    let mut file = OpenOptions::new()
+    let mut file = private::file_options()
         .write(true)
         .create_new(true)
         .open(&temp)?;
@@ -264,13 +280,31 @@ impl Publication {
         match result {
             Ok(value) => Some(value),
             Err(error) => {
-                let message = format!("{operation}: {error}");
-                if self.last_error.as_deref() != Some(&message) {
-                    eprintln!("ads-launcher: {message}");
-                    self.last_error = Some(message);
-                    self.dirty = true;
-                }
+                self.report(format!("{operation}: {error}"));
                 None
+            }
+        }
+    }
+
+    fn report(&mut self, message: String) {
+        if self.last_error.as_deref() != Some(&message) {
+            eprintln!("ads-launcher: {message}");
+            self.last_error = Some(message);
+            self.dirty = true;
+        }
+    }
+
+    /// `Some(true)` when the signal was accepted; a foreign signal file is reported and ignored.
+    fn signal(&mut self, operation: &str, path: &Path, local: &Identity) -> Option<bool> {
+        match self.attempt(operation, consume_signal(path, local))? {
+            Signal::Accepted => Some(true),
+            Signal::Absent => Some(false),
+            Signal::Foreign => {
+                self.report(format!(
+                    "{operation}: ignored {}, not owned by the current user",
+                    path.display()
+                ));
+                Some(false)
             }
         }
     }
@@ -282,7 +316,8 @@ pub(crate) fn run(
     mut daemon: Command,
     mut host: Command,
 ) -> io::Result<()> {
-    fs::create_dir_all(control)?;
+    let local = Identity::current()?;
+    private::ensure_dir(control, &local)?;
     let _lock = open_lock(&control.join(&config.lock_file))?;
     let state = control.join(&config.state_file);
     let stop = control.join(&config.stop_file);
@@ -295,7 +330,8 @@ pub(crate) fn run(
     // Publish before starting children so an unusable state path fails early.
     let mut publication = Publication {
         stop_pending_at_startup: fs::symlink_metadata(&stop)
-            .is_ok_and(|metadata| metadata.is_file()),
+            .is_ok_and(|metadata| metadata.is_file())
+            && private::owned_by(&stop, &local).unwrap_or(false),
         ..Publication::default()
     };
     write_state(&state, &daemon, &host, false, &publication)?;
@@ -303,20 +339,19 @@ pub(crate) fn run(
     let mut restarting = false;
     loop {
         if !stopping {
-            stopping =
-                publication.attempt("consume stop signal", consume_signal(&stop)) == Some(true);
+            stopping = publication.signal("consume stop signal", &stop, &local) == Some(true);
         }
         let stopped = if stopping {
             let daemon_stopped = publication.attempt("stop daemon", daemon.stop()).is_some();
             let signal_cleared = publication
-                .attempt("clear restart signal", consume_signal(&restart))
+                .signal("clear restart signal", &restart, &local)
                 .is_some();
             publication.attempt("check host exit", host.tick_exit_only());
             publication.dirty = true;
             daemon_stopped && signal_cleared
         } else {
-            restarting |= publication.attempt("consume restart signal", consume_signal(&restart))
-                == Some(true);
+            restarting |=
+                publication.signal("consume restart signal", &restart, &local) == Some(true);
             if restarting
                 && publication
                     .attempt("restart daemon", daemon.restart())
@@ -381,7 +416,7 @@ pub(crate) mod tests {
                 .join("../../target")
                 .join(format!("launcher-test-{}-{stamp}", std::process::id()));
             fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::create_dir(&path).unwrap();
+            private::create_dir(&path, &Identity::current().unwrap()).unwrap();
             Self(path)
         }
     }
@@ -544,6 +579,86 @@ pub(crate) mod tests {
         fs::write(host_release, []).unwrap();
     }
 
+    /// Grants every account of the machine full access to `path`, as an inherited open list would.
+    fn open_to_everyone(path: &Path) {
+        #[cfg(windows)]
+        {
+            let status = Command::new("icacls")
+                .arg(path)
+                .args(["/grant", "*S-1-1-0:(OI)(CI)F"])
+                .stdout(Stdio::null())
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o777)).unwrap();
+        }
+    }
+
+    #[test]
+    fn creates_a_private_control_folder() {
+        let dir = TestDir::new();
+        let control = dir.0.join("control");
+        let settings = config();
+        let local = Identity::current().unwrap();
+        private::ensure_dir(&control, &local).unwrap();
+        fs::write(control.join(&settings.stop_file), []).unwrap();
+        run(&settings, &control, fixture(None), fixture(None)).unwrap();
+        #[cfg(windows)]
+        {
+            let entries = private::windows_security(&control).unwrap().dacl.unwrap();
+            assert!(
+                matches!(entries.as_slice(), [private::Entry::Allow(sid)] if *sid == local.user)
+            );
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(fs::metadata(&control).unwrap().mode() & 0o777, 0o700);
+            let state = control.join(&settings.state_file);
+            assert_eq!(fs::metadata(state).unwrap().mode() & 0o777, 0o600);
+        }
+    }
+
+    #[test]
+    fn refuses_a_control_folder_other_accounts_can_use() {
+        let dir = TestDir::new();
+        let settings = config();
+        open_to_everyone(&dir.0);
+        let stop = dir.0.join(&settings.stop_file);
+        fs::write(&stop, []).unwrap();
+        let daemon = Command::new(dir.0.join("missing-daemon"));
+        let host = Command::new(dir.0.join("missing-host"));
+        let error = run(&settings, &dir.0, daemon, host).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(error.to_string().contains("another account"), "{error}");
+        assert!(stop.exists());
+        assert!(!dir.0.join(&settings.lock_file).exists());
+        assert!(!dir.0.join(&settings.state_file).exists());
+    }
+
+    #[test]
+    fn ignores_a_signal_file_owned_by_another_account() {
+        let dir = TestDir::new();
+        let signal = dir.0.join("restart");
+        fs::write(&signal, []).unwrap();
+        // A second account cannot be created here, so the file is checked against another
+        // identity: to it, the file belongs to someone else.
+        let other = Identity {
+            user: "S-1-5-21-1-2-3-4242".into(),
+            default_owner: "4242".into(),
+        };
+        assert_eq!(consume_signal(&signal, &other).unwrap(), Signal::Foreign);
+        assert!(signal.exists());
+        let local = Identity::current().unwrap();
+        assert_eq!(consume_signal(&signal, &local).unwrap(), Signal::Accepted);
+        assert!(!signal.exists());
+        assert_eq!(consume_signal(&signal, &local).unwrap(), Signal::Absent);
+    }
+
     fn state_value(path: &Path) -> Option<Value> {
         fs::read(path)
             .ok()
@@ -568,7 +683,7 @@ pub(crate) mod tests {
         let worker = thread::spawn(move || run(&settings, &control, daemon, host).unwrap());
         let read = || state_value(&state);
         let initial = until(|| read().filter(|value| value["daemon"]["pid"].is_u64()));
-        let blocked_signal = OpenOptions::new()
+        let blocked_signal = fs::OpenOptions::new()
             .read(true)
             .write(true)
             .create_new(true)
