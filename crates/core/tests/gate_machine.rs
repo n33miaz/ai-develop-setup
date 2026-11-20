@@ -5,8 +5,8 @@ mod common;
 
 use ads_core::gate::{
     Action, ActionPlan, Command, Decision, ErrorCode, Estimate, Event, ExecutionPermit,
-    OperationRequest as Op, PlanHash, Refused, ShortText, State, TransitionError, Verdict, Via,
-    classify,
+    OperationRequest as Op, PathError, PlanError, PlanHash, Refused, ShortText, State,
+    TransitionError, Verdict, Via, classify,
 };
 use common::{WIN_HOME, WIN_ROOT, at, id, meta, plan, policy, request, win};
 
@@ -286,6 +286,14 @@ fn plan_that_does_not_fit_the_record_starts_nothing() {
     let verdict = win(Op::Overwrite, &[&long]);
     assert_eq!(verdict.decision(), Decision::Allowed);
     assert!(Action::plan(id("act-01"), &verdict, meta(T0, 1)).is_ok());
+    let over = format!("{long}a");
+    assert!(matches!(
+        ActionPlan::normalize(&request(Op::Overwrite, WIN_ROOT, &[&over])),
+        Err(PlanError::Target {
+            index: 0,
+            error: PathError::TooLong
+        })
+    ));
 
     // More rules fired than the record holds: still no record, so no action.
     let max = ads_contracts::RecordActionPlanV2VerdictReasons::MAX_ITEMS;
