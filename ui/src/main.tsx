@@ -1,6 +1,6 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { selectCoreClient } from './api/bootstrap'
+import { replaySettings, selectCoreClient } from './api/bootstrap'
 import { App } from './App'
 import { createTranslator, I18nContext, resolveLocale } from './i18n'
 import './styles/theme.css'
@@ -12,19 +12,11 @@ if (!root) throw new Error('missing #root element')
 const locale = resolveLocale(navigator.language)
 document.documentElement.lang = locale
 
-/** Inteiro não negativo da configuração, ou `undefined` para o padrão do cliente. */
-function count(value: unknown): number | undefined {
-  const parsed = Number(value)
-  return value !== undefined && value !== '' && Number.isSafeInteger(parsed) && parsed >= 0
-    ? parsed
-    : undefined
-}
-const replayEvents = count(import.meta.env.VITE_CORE_REPLAY_EVENTS)
-const replayBytes = count(import.meta.env.VITE_CORE_REPLAY_BYTES)
-const { client, live } = selectCoreClient(window, undefined, {
-  ...(replayEvents === undefined ? {} : { replayEvents }),
-  ...(replayBytes === undefined ? {} : { replayBytes }),
-})
+const { client, live } = selectCoreClient(
+  window,
+  undefined,
+  replaySettings(import.meta.env.VITE_CORE_REPLAY_EVENTS, import.meta.env.VITE_CORE_REPLAY_BYTES),
+)
 const configuredStreams: unknown = import.meta.env.VITE_CORE_SESSION_STREAMS
 const sessionStreams =
   typeof configuredStreams === 'string'

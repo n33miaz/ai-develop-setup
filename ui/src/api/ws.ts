@@ -27,11 +27,14 @@ export interface WsClientOptions {
   listTimeoutMs?: number
   /**
    * Eventos recentes guardados por stream para quem assina depois, sem nova assinatura no núcleo.
-   * Deve andar junto com `events_per_stream` do daemon (padrão 256 nos dois). Com 0 nada fica
-   * guardado: quem chega depois e pede eventos já recebidos termina com `-32004`.
+   * Deve andar junto com `events_per_stream` do daemon (padrão 256 nos dois). Mínimo 1: um valor
+   * abaixo disso, ou que não seja inteiro, volta ao padrão.
    */
   replayEvents?: number
-  /** Teto em bytes do que fica guardado por stream, medido nas mensagens recebidas. */
+  /**
+   * Teto do que fica guardado por stream, contado em unidades UTF-16 das mensagens recebidas
+   * (igual a bytes para texto ASCII). Mínimo 1, como `replayEvents`.
+   */
   replayBytes?: number
 }
 
@@ -42,14 +45,26 @@ function accepted(response: Reply): boolean {
 /** Quantos ids de `harness.list` vencidos são lembrados para descartar a resposta tardia. */
 const EXPIRED_IDS = 32
 
+const DEFAULT_REPLAY_EVENTS = 256
+const DEFAULT_REPLAY_BYTES = 4 * 1024 * 1024
+
+/** Limite de replay válido (inteiro de 1 em diante) ou o padrão. */
+function replayLimit(value: number | undefined, fallback: number): number {
+  return value !== undefined && Number.isSafeInteger(value) && value >= 1 ? value : fallback
+}
+
 export function createWsCoreClient({
   url,
   token,
   socketFactory = (url) => new WebSocket(url),
   listTimeoutMs = 10000,
-  replayEvents = 256,
-  replayBytes = 4 * 1024 * 1024,
+  replayEvents: configuredEvents,
+  replayBytes: configuredBytes,
 }: WsClientOptions): CoreClient {
+  // Com 0 nada ficaria guardado: um terminal remontado ficaria vazio e uma nova assinatura depois de
+  // reconectar daria por encerrada uma sessão viva.
+  const replayEvents = replayLimit(configuredEvents, DEFAULT_REPLAY_EVENTS)
+  const replayBytes = replayLimit(configuredBytes, DEFAULT_REPLAY_BYTES)
   let endpoint: URL
   try {
     endpoint = new URL(url)
@@ -142,12 +157,7 @@ export function createWsCoreClient({
   }
   /** Guarda o evento recebido em ordem, descartando os mais antigos acima dos tetos. */
   function remember(shared: Shared, event: EventEnvelopeV1, size: number) {
-    if (
-      replayEvents <= 0 ||
-      replayBytes <= 0 ||
-      event.seq <= (shared.events.at(-1)?.event.seq ?? 0)
-    )
-      return
+    if (event.seq <= (shared.events.at(-1)?.event.seq ?? 0)) return
     shared.events.push({ event, size })
     shared.bytes += size
     while (shared.events.length > replayEvents || shared.bytes > replayBytes) {
@@ -157,7 +167,7 @@ export function createWsCoreClient({
   /** Os eventos guardados bastam para um ouvinte que começa depois de `afterSeq`. */
   function covers(shared: Shared, afterSeq: number): boolean {
     if (afterSeq >= shared.last) return true
-    if (replayEvents <= 0 || replayBytes <= 0 || afterSeq < shared.start) return false
+    if (afterSeq < shared.start) return false
     // A partir de 0 o núcleo também só reenviaria o que ainda retém.
     if (afterSeq === 0 && shared.start === 0) return true
     const oldest = shared.events[0]?.event.seq
@@ -355,7 +365,12 @@ export function createWsCoreClient({
         return () => existing.listeners.delete(listener)
       }
       if (existing) {
-        // Os eventos pedidos já não estão guardados: só este ouvinte termina, como o núcleo faria.
+        // Os eventos pedidos já não estão guardados: só este ouvinte termina, como o núcleo faria,
+        // mesmo que o núcleo ainda os tenha. Não se pede de novo ao núcleo de propósito: o protocolo
+        // não cancela assinaturas, então uma segunda no mesmo stream e conexão ficaria viva para
+        // sempre, e o resultado final de cada uma chega pelo id do próprio pedido, o que exigiria
+        // ligar vários ids ao mesmo stream no cliente e no daemon. Quem precisa de histórico mais
+        // antigo aumenta `replayEvents`/`replayBytes` até `events_per_stream` do daemon.
         let cancelled = false
         queueMicrotask(() => {
           if (!cancelled && streams.get(stream) === existing) listener.onEnd?.(-32004)
