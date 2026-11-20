@@ -3,6 +3,7 @@
 pub mod budget;
 pub mod child_env;
 pub mod gate;
+pub mod queue;
 pub mod routing;
 pub mod tool_launch;
 

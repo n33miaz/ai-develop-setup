@@ -10,6 +10,17 @@ O [roteador](src/routing.rs) interpreta [routing.toml](../../defaults/routing.to
 
 `shadow` é o padrão e a escolha manual configurada continua em vigor. `manual` só registra essa escolha, `propose` acrescenta a proposta e `auto` explícito retorna os dados da decisão calculada. O fallback em `shadow` e `propose` descreve a alternativa simulada. Quem integra o núcleo fornece o instante e os metadados do envelope e é responsável por publicar os eventos e aplicar decisões.
 
+## Fila contínua
+
+A [política da fila](src/queue.rs) restaura a fila parada e calcula transições usando o registro atual e, quando exigido, o aparelho autenticado. O aparelho autenticado leva o dono a que pertence, e a política confere esse dono contra o da fila. A partida, o teto de custo e a falta de recursos param a fila com os dados de `queue.stopped` do daemon. Na partida, a restauração considera o retrato e o último estado registrado no log, e registra a parada se qualquer um dos dois indicar a fila ligada. Os dados da parada pelo dono só saem para um aparelho do dono da fila. O replay reconstitui o saldo a partir da criação e das mudanças ordenadas da tarefa. O produtor usa o estado e o saldo reconstituídos antes de autorizar novas transições e reserva a origem na mesma operação que anexa a criação.
+
+[queue.toml](../../defaults/queue.toml) fornece os padrões de duas tentativas por tarefa e 1000 admissões por fila. O integrador pode passar uma política diferente com `QueuePolicy`. A admissão recusa criação com teto acima do configurado, `task_id` já usado em qualquer fila e origem repetida na fila. O limite de admissão inclui origens encerradas. Ao atingir o limite, novas criações são recusadas. O cadastro de aparelhos autenticados e o produtor que anexa os eventos serão integrados com a persistência e a execução da fila. Ficam para a [issue #121](https://github.com/n33miaz/ai-develop-setup/issues/121):
+- a conferência de autorização no replay;
+- o construtor de `AuthenticatedDevice` para a camada de autenticação;
+- os limites por regra e por janela;
+- o `common` do apelido e da origem;
+- a tarefa em `running` quando o núcleo reinicia e o host mantém o processo.
+
 ## Ambiente do processo filho (`src/child_env.rs`)
 
 Política pura do ambiente que um processo de ferramenta recebe: só passam os nomes da lista permitida que o processo pai tem, escritos como a lista os escreve, mais os valores que o produto define (`TERM`, `COLORTERM`). Nome em `allow` ou em `set` que casa com um padrão negado (`NOME`, `PREFIXO*`, `*SUFIXO`, `*TRECHO*`, sem diferença de maiúsculas) recusa a política na carga; o filtro confere de novo e o descarta. Nomes repetidos (pela regra de caixa), nomes com `=`, `*` ou controle e valores de `set` com NUL ou controle também recusam. Os erros dizem a lista e a posição, nunca o texto recusado. Padrões de nome não reconhecem um segredo sob um nome qualquer: a garantia é que nada de nome reconhecidamente sensível passa e que o que passa está todo em `allow`. Os padrões ficam em [`defaults/harnesses.toml`](../../defaults/harnesses.toml) (`[env]`): a camada do usuário substitui `allow` e `set` e só acrescenta a `deny`. A comparação com `allow` ignora maiúsculas no Windows (`NameCase::Insensitive`); com dois nomes do pai que só diferem na caixa, vale o escrito igual à lista, senão o menor. O núcleo não lê o ambiente: quem chama o passa como dado.

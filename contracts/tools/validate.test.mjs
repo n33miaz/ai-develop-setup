@@ -198,6 +198,38 @@ test("dourado válido de evento com stream de outra entidade reprova", () => {
   assertFails(run(tree("task/task-01")), 'valid/02.json: stream "task/task-01" não é o da entidade em data.task_id');
 });
 
+test("inválido de regra cruzada precisa passar no Schema e falhar na regra", () => {
+  const event = (stream, data = { task_id: "task-02" }) => ({ stream, data });
+  const schema = {
+    $schema: D,
+    $id: "urn:ads:event:thing.made:1",
+    title: "Coisa feita",
+    description: "Um evento de teste.",
+    type: "object",
+    additionalProperties: false,
+    required: ["stream", "data"],
+    properties: { stream: { type: "string", pattern: "^task/" }, data: { type: "object" } },
+    examples: [event("task/task-02")],
+  };
+  const tree = (cross) => ({ put }) => {
+    put("schemas/event.thing.made.v1.schema.json", schema);
+    put("golden/event.thing.made.v1/valid/01.json", event("task/task-02"));
+    put("golden/event.thing.made.v1/valid/02.json", event("task/task-03", { task_id: "task-03" }));
+    put("golden/event.thing.made.v1/invalid/01.json", event("other/task-02"));
+    put("golden/event.thing.made.v1/invalid/02.json", { stream: "task/task-02" });
+    put("golden/event.thing.made.v1/invalid/03.json", cross);
+    put("golden/event.thing.made.v1/invalid/index.json", {
+      "01.json": { rule: "família errada", keyword: "pattern", instancePath: "/stream" },
+      "02.json": { rule: "data obrigatório", keyword: "required", instancePath: "" },
+      "03.json": { rule: "mesma entidade", keyword: "crossRule", instancePath: "", messagePrefix: "stream" },
+    });
+    put("README.md", "| `urn:ads:record:thing:1` | coisa |\n| `urn:ads:event:thing.made:1` | coisa feita |\n");
+  };
+  assert.deepEqual(run(tree(event("task/task-01"))).errors, []);
+  assertFails(run(tree(event("task/task-02"))), "invalid/03.json: deveria falhar na regra mesma entidade");
+  assertFails(run(tree({ ...event("task/task-01"), x: 1 })), "invalid/03.json: deveria passar no Schema");
+});
+
 test("pasta de dourados sem Schema reprova", () => {
   const r = run(({ put }) => put("golden/record.ghost.v1/valid/01.json", {}));
   assertFails(r, "pasta sem Schema correspondente");

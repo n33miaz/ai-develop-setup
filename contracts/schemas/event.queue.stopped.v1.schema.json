@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:event:queue.stopped:1",
+  "title": "Fila parada",
+  "description": "Registra a parada da fila: pelo dono autenticado, identificado em data.owner_id, ou pelo daemon na partida, no teto de custo ou na falta de recursos.",
+  "allOf": [
+    {
+      "$ref": "urn:ads:event:envelope:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "type",
+        "stream",
+        "data",
+        "actor"
+      ],
+      "properties": {
+        "type": {
+          "const": "urn:ads:event:queue.stopped:1"
+        },
+        "stream": {
+          "type": "string",
+          "pattern": "^queue/"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "queue_id",
+            "reason"
+          ],
+          "properties": {
+            "queue_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "reason": {
+              "enum": [
+                "owner",
+                "restart",
+                "budget",
+                "resources"
+              ]
+            },
+            "owner_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "via": {
+              "enum": [
+                "local_ui",
+                "tray",
+                "remote_device"
+              ]
+            }
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "properties": {
+              "reason": {
+                "const": "owner"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "actor": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "device"
+              }
+            }
+          },
+          "data": {
+            "type": "object",
+            "required": [
+              "owner_id",
+              "via"
+            ]
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "actor": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "daemon"
+              }
+            }
+          },
+          "data": {
+            "type": "object",
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "owner_id"
+                  ]
+                },
+                {
+                  "required": [
+                    "via"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+      "type": "urn:ads:event:queue.stopped:1",
+      "ts": "2030-01-02T03:04:05Z",
+      "stream": "queue/queue-01",
+      "seq": 1,
+      "actor": {
+        "kind": "device",
+        "id": "device-01"
+      },
+      "cause": null,
+      "data_class": "internal",
+      "data": {
+        "queue_id": "queue-01",
+        "reason": "owner",
+        "owner_id": "owner-01",
+        "via": "local_ui"
+      }
+    }
+  ]
+}

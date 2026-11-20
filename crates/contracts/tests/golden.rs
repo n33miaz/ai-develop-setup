@@ -73,13 +73,21 @@ fn every_schema_round_trips_its_valid_files_and_refuses_its_invalid_ones() {
             }
         }
 
-        for file in json_files(&contracts.join("golden").join(key).join("invalid")) {
+        let invalid_dir = contracts.join("golden").join(key).join("invalid");
+        let index = read(&invalid_dir.join("index.json"));
+        for file in json_files(&invalid_dir) {
             let name = file_name(&file);
             if name == "index.json" {
                 continue;
             }
             invalid += 1;
             let accepted = matches!(reencode(&id, read(&file)), Some(Ok(_)));
+            if index[&name]["keyword"] == "crossRule" {
+                if !accepted {
+                    problems.push(format!("{key}/invalid/{name}: refused by shape"));
+                }
+                continue;
+            }
             let excepted = EXCEPTIONS
                 .iter()
                 .position(|(k, f, _)| *k == key && *f == name);

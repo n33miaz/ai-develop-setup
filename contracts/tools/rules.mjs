@@ -10,6 +10,7 @@ export const STREAM_ID_FIELD = {
   action: "action_id",
   review: "review_id",
   routing: "task_id",
+  queue: "queue_id",
 };
 
 // Devolve o texto do problema, ou null quando o stream nomeia a mesma entidade que `data`.
@@ -101,5 +102,20 @@ export function crossRuleErrors(key, data) {
     return problem ? [problem] : [];
   }
   if (/^record\.action-plan\.v\d+$/.test(key)) return actionPlanErrors(data);
+  if (key === "record.queue-task.v1") return queueTaskErrors(data);
   return [];
+}
+
+export function queueTaskErrors(task) {
+  const errors = [];
+  if (task.attempts > task.attempt_limit) errors.push("attempts excede attempt_limit");
+  if (sortableTimestamp(task.updated_at) < sortableTimestamp(task.created_at)) {
+    errors.push("updated_at antecede created_at");
+  }
+  return errors;
+}
+
+function sortableTimestamp(value) {
+  const [seconds, fraction = ""] = value.slice(0, -1).split(".");
+  return seconds + fraction.padEnd(6, "0");
 }

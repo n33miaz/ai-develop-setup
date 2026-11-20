@@ -1,0 +1,23 @@
+{
+  "remote-enable.json": {
+    "rule": "A ativação exige um canal local.",
+    "keyword": "enum",
+    "instancePath": "/data/via"
+  },
+  "wrong-queue.json": {
+    "rule": "O stream identifica a mesma fila.",
+    "keyword": "crossRule",
+    "instancePath": "",
+    "messagePrefix": "stream"
+  },
+  "extra-data.json": {
+    "rule": "Os dados do evento são fechados.",
+    "keyword": "additionalProperties",
+    "instancePath": "/data"
+  },
+  "agent.json": {
+    "rule": "O evento exige um aparelho autenticado.",
+    "keyword": "const",
+    "instancePath": "/actor/kind"
+  }
+}

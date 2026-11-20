@@ -132,7 +132,11 @@ test("padrões: só passa o que significa o mesmo nos dois motores", () => {
   assert.equal(rustPattern("^[^\\u0000-\\u001f]*$", "x"), "^[^\\x{0000}-\\x{001f}]*$");
   assert.equal(rustPattern("(^|[\\\\/])\\.\\.?([\\\\/]|$)", "x"), "(^|[\\\\/])\\.\\.?([\\\\/]|$)");
   assert.equal(rustPattern("^(?:[A-Z]{4})*a{2,}\\/$", "x"), "^(?:[A-Z]{4})*a{2,}/$");
-  for (const bad of ["a.b", "\\d+", "\\bx", "(?!a)", "(?<n>a)", "a+?", "a*+", "[a[b]]", "[a&&b]", "a{x}", "[abc", "\\1", "a}"]) {
+  assert.equal(
+    rustPattern("^[\\p{L}\\p{Zs} ]*[\\u{E0100}-\\u{E01EF}]$", "x"),
+    "^[\\p{L}\\p{Zs} ]*[\\x{E0100}-\\x{E01EF}]$",
+  );
+  for (const bad of ["a.b", "\\d+", "\\p{Lu}", "\\p{Script=Latin}", "\\P{L}", "\\u{110000}", "\\u{}", "\\bx", "(?!a)", "(?<n>a)", "a+?", "a*+", "[a[b]]", "[a&&b]", "a{x}", "[abc", "\\1", "a}"]) {
     assert.throws(() => rustPattern(bad, "x"), /fora do subconjunto suportado/, bad);
   }
 });

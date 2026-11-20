@@ -1,0 +1,38 @@
+{
+  "01-wrong-type.json": {
+    "rule": "O tipo é a URN deste evento.",
+    "keyword": "const",
+    "instancePath": "/type"
+  },
+  "02-wrong-stream.json": {
+    "rule": "O stream pertence à família queue.",
+    "keyword": "pattern",
+    "instancePath": "/stream"
+  },
+  "03-invalid-queue-id.json": {
+    "rule": "O identificador da fila é opaco.",
+    "keyword": "pattern",
+    "instancePath": "/data/queue_id"
+  },
+  "created-running.json": {
+    "rule": "A tarefa nasce em queued.",
+    "keyword": "const",
+    "instancePath": "/data/state"
+  },
+  "created-attempt.json": {
+    "rule": "A contagem inicial é zero.",
+    "keyword": "const",
+    "instancePath": "/data/attempts"
+  },
+  "wrong-queue.json": {
+    "rule": "O stream identifica a mesma fila.",
+    "keyword": "crossRule",
+    "instancePath": "",
+    "messagePrefix": "stream"
+  },
+  "extra-data.json": {
+    "rule": "Os dados do evento são fechados.",
+    "keyword": "additionalProperties",
+    "instancePath": "/data"
+  }
+}

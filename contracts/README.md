@@ -9,7 +9,7 @@ Fonte única de toda mensagem e todo registro do produto: JSON Schema 2020-12, u
 | `schemas/` | Um arquivo por Schema: `<tipo>.<nome>.v<versão>.schema.json` |
 | `golden/<tipo>.<nome>.v<versão>/valid/` | Exemplos que têm de passar (pelo menos 2) |
 | `golden/<tipo>.<nome>.v<versão>/invalid/` | Exemplos que têm de falhar (pelo menos 3), mais `index.json` |
-| `corpus/` | Casos comuns a dois validadores: o Schema e o código que lê o mesmo dado. Hoje, `abspath.json` ([caminho absoluto](#caminho-absoluto-o-schema-e-o-núcleo)) |
+| `corpus/` | Casos comuns a dois validadores: o Schema e o código que lê o mesmo dado. Hoje, `abspath.json` ([caminho absoluto](#caminho-absoluto-o-schema-e-o-núcleo)) e `title-chars.json` ([título da tarefa](#fila-contínua)) |
 | `generated/ts/` | Tipos TypeScript gerados, versionados; o CI reprova se estiverem desatualizados. A interface os importa por `ui/src/api/contracts.ts` |
 | `../crates/contracts/src/generated/` | Tipos Rust gerados (crate `ads-contracts`), versionados; o CI reprova se estiverem desatualizados. Como cada parte do Schema vira tipo está no [README do crate](../crates/contracts/README.md) |
 | `tools/` | Validador, geradores (`gen-ts.mjs`, `gen-rust.mjs`), regras entre campos (`rules.mjs`) e os testes deles |
@@ -110,6 +110,7 @@ O `stream` de um evento é `<família>/<id>`, e o `<id>` é o da entidade que o 
 | `action` | `action_id` |
 | `review` | `review_id` |
 | `routing` | `task_id` |
+| `queue` | `queue_id` |
 
 `host` e `usage` ficam fora da regra: o stream deles agrupa por máquina ou por tarefa, e nem todo evento dessas famílias leva esse identificador em `data`.
 
@@ -285,6 +286,30 @@ WebSocket em loopback entre a interface (navegador ou casca) e o núcleo. Como a
 
 `server-message` é `anyOf`, não `oneOf`: as duas alternativas são objetos fechados e cada uma exige um campo que a outra recusa (`jsonrpc` na resposta; `type` no evento), então nenhum documento cabe nas duas e `anyOf` aceita exatamente o mesmo que `oneOf` aceitaria. Na `:2` vale o mesmo para a terceira alternativa: o `result` de `command.response:2` é fechado e exige `accepted`, que o de `harness.list.response:1`, também fechado, recusa; e a resposta de `harness.list` exige `result`, que a recusa (`error`) não tem. O gerador de Rust só traduz `oneOf` com um campo de valor fixo que distinga as alternativas.
 
+## Fila contínua
+
+A criação fica registrada em `queue.created`, sempre em `stopped`. Na partida, o núcleo restaura toda fila em `stopped`, inclusive se o retrato persistido ou o último evento de estado da fila indicar `enabled`. Se qualquer um dos dois indicar `enabled`, ele anexa `queue.stopped` com `reason: restart`. Assim, uma queda entre anexar `queue.enabled` e gravar o retrato também fica registrada. Uma nova ativação precisa de `queue.enabled` após a partida.
+
+`owner_id` identifica a pessoa dona da fila, e `actor.id` identifica o aparelho que agiu. O cadastro de aparelhos autenticados liga cada aparelho a um dono. Por isso o PC e o celular do mesmo dono são aceitos, e o aparelho de outro dono é recusado. Essa ligação é dado de cadastro, conferido pelo núcleo e não pelo Schema. Em `queue.created`, `queue.enabled` e na parada pelo dono, o ator é um `device` e `data.owner_id` repete o dono cadastrado da fila. A ativação aceita só `local_ui` e `tray`. Criação, parada e aceite de tarefa também aceitam `remote_device`, reservado para um futuro transporte autenticado e assinado.
+
+`queue.stopped` informa o motivo da parada. Com `owner`, o ator é o aparelho do dono e o evento leva `owner_id` e `via`. Com `restart` (partida do núcleo), `budget` (teto de custo) ou `resources` (falta de recursos da máquina), o ator é o `daemon`, sem `owner_id` nem `via`. Parar a fila só impede novos inícios, qualquer que seja o motivo, inclusive `budget` e `resources`. A tarefa em `running` continua até terminar a tentativa atual e segue para `review`, `failed` ou `cancelled`. Para interromper uma tentativa em curso, o dono ou o daemon cancela a tarefa. Na partida, a tarefa que estava em `running` e cujo processo o host não manteve passa para `failed` sem consumir tentativa nova, porque a tentativa interrompida já foi contada ao entrar em `running`. O enum de motivos é fechado na versão 1. Um motivo novo, como política ou falhas em série, exige `queue.stopped:2`.
+
+`queue.task_created` registra o estado inicial `queued`, zero tentativas e o teto imutável de 1 a 10, incluindo a primeira. O teto e a origem são recuperados do evento de criação. A chave de deduplicação combina fila, apelido e origem. A origem manual usa um identificador estável do pedido, a issue usa seu número no repositório do apelido e a regra de bug usa o par regra e alvo estável. O produtor reserva a chave e aplica o limite da fila ao anexar a criação, em uma operação, preservando chaves de tarefas encerradas e no replay.
+
+O apelido é um identificador de cadastro e a resolução da pasta usa esse cadastro. Branch opcional segue a forma ASCII `feature/...` ou `fix/...`, em minúsculas, sem componente terminado em ponto nem nome de dispositivo do Windows. Referências opcionais de pull request são números positivos do repositório cadastrado. O executor passa `--` antes da referência em comandos Git que aceitam esse separador. O título aceita letras, marcas, números, pontuação, símbolos e o espaço comum, sempre com ao menos uma letra ou um número. Ele não começa nem termina com espaço, não repete espaço e não tem mais de três marcas combinantes seguidas. Recusa caracteres de formatação e de uso privado, caracteres de tag, seletores de variação, preenchedores e símbolos invisíveis. Também recusa o seletor de emoji U+FE0F e o ZWJ U+200D. Emoji isolados, como ⚠ ou 💻, passam como símbolo. Seletores e sequências unidas por ZWJ, como ⚠️, 👨‍💻 ou bandeiras, são recusados. Quem cria a tarefa remove esses caracteres do título da issue antes de gravar. A validação não detecta homógrafos: letras parecidas de outros alfabetos, como o `а` cirílico no lugar do `a` latino, passam. Por isso a aparência do título nunca serve de prova de identidade ou de autorização.
+
+O alfabeto é fixo no Unicode 16. `corpus/title-chars.json` guarda as faixas explícitas do alfabeto, das letras e números e das marcas, e `tools/title-alphabet.mjs` monta com elas os padrões do Schema. Por isso nem o Ajv nem o regex do Rust consultam a sua própria tabela Unicode, e o resultado não muda com a versão do Node ou do crate. Os padrões usam só classes de caracteres, sem quantificador aninhado, e a verificação é linear no tamanho do texto. O mesmo arquivo lista, para cada posição testada (isolado, início, fim e meio), os pontos de código aceitos. `tools/corpus.test.mjs` confere o Schema e `crates/contracts/tests/title_corpus.rs` confere o tipo Rust contra essas listas. Para mudar o alfabeto, edite as classes, rode `node tools/title-alphabet.mjs --write` e atualize as listas por posição.
+
+| Estado atual | Destinos permitidos |
+|---|---|
+| `queued` | `running` se a fila correspondente estiver ligada e houver tentativa, ou `cancelled` |
+| `running` | `review`, `failed` ou `cancelled` |
+| `review` | `done` com aceite do dono autenticado registrado em `actor` e `via`, `failed` ou `cancelled` |
+| `failed` | `queued` se houver tentativa, ou `cancelled` |
+| `done`, `cancelled` | nenhum |
+
+`failed` sem saldo encerra a execução. Cancelar continua permitido para encerrar administrativamente a tarefa, inclusive com contagem inconsistente. Cancelar não exige aparelho autenticado de propósito: encerrar trabalho é o lado seguro, e o agente ou o daemon podem fazê-lo. A entrada em `running` consome uma tentativa. As outras transições preservam a contagem. O produtor confere a mudança contra o registro atual antes de emitir `queue.task_state_changed`. A contagem respeita o teto e a data de atualização é igual ou posterior à criação.
+
 ## Atualização
 
 O manifesto (`urn:ads:record:update-manifest:1`) é assinado no CI. A assinatura fica em arquivo à parte e cobre os bytes exatos do arquivo do manifesto, para não depender de forma canônica de JSON; o lançador a confere com a chave pública embutida antes de ler qualquer campo, e só então confere o digest de cada arquivo (ADR 0015).
@@ -307,6 +332,7 @@ O manifesto (`urn:ads:record:update-manifest:1`) é assinado no CI. A assinatura
 | `urn:ads:common:abspath:2` | O mesmo caminho, recusando também, no estilo Windows, nome de dispositivo e nome curto 8.3. Convive com a `:1`. |
 | `urn:ads:common:action-rule:1` | Código estável de uma regra do portão de ações que disparou num plano. |
 | `urn:ads:common:actor:1` | Quem causou um evento ou uma decisão: um aparelho, um agente de IA ou o próprio daemon. |
+| `urn:ads:common:queue-task-state:1` | Estado de uma tarefa da fila. |
 
 ### Envelopes
 
@@ -359,6 +385,16 @@ Os sete comandos estendem `urn:ads:command:request:1` com `allOf`, fixam `method
 | `urn:ads:event:task.completed:1` | A tarefa terminou com entrega; registra se os testes passaram e o digest do diff. |
 | `urn:ads:event:task.failed:1` | A tarefa terminou sem entrega, com um código de erro estável e a indicação de se vale tentar de novo. |
 | `urn:ads:event:task.cancelled:1` | A tarefa foi interrompida por decisão do dono, por teto de custo, por pressão de recursos, por política ou por ter sido substituída. |
+
+### Eventos da fila
+
+| URN | Significado |
+|---|---|
+| `urn:ads:event:queue.task_created:1` | Uma tarefa entrou na fila. |
+| `urn:ads:event:queue.task_state_changed:1` | Uma tarefa mudou de estado. |
+| `urn:ads:event:queue.created:1` | A fila foi criada parada. |
+| `urn:ads:event:queue.enabled:1` | O dono ligou a fila. |
+| `urn:ads:event:queue.stopped:1` | A fila parou, pelo dono ou pelo daemon, com o motivo. |
 
 ### Eventos de aprovação
 
@@ -428,6 +464,8 @@ Os sete comandos estendem `urn:ads:command:request:1` com `allOf`, fixam `method
 | `urn:ads:record:update-manifest:1` | O que o CI publica a cada junção: qual build é, de qual commit saiu e o SHA-256 de cada arquivo. O lançador confere a assinatura do manifesto (arquivo à parte, sobre os bytes exatos deste JSON) com a chave pública embutida e depois o digest de cada arquivo, antes de trocar qualquer coisa. |
 | `urn:ads:record:update-status:1` | Estado visível da auto-atualização, escrito pelo lançador: o que está rodando, a versão anterior guardada, a candidata em andamento, a prova depois da troca, as quedas contadas e as versões bloqueadas. Baixando, conferindo e trocando têm candidata; em prova há prazo; falha traz código de erro. |
 | `urn:ads:record:parameter:1` | Um parâmetro do produto como o núcleo o apresenta: a chave, o tipo, o padrão recomendado, o valor em vigor e a explicação. Todo comportamento com mais de uma escolha razoável é um registro destes. Parâmetro nunca guarda segredo: segredo fica no cofre. |
+| `urn:ads:record:queue-task:1` | Registro de uma tarefa da fila. |
+| `urn:ads:record:task-queue:1` | Identidade, dono e estado da fila. |
 
 ### Contratos entre processos
 

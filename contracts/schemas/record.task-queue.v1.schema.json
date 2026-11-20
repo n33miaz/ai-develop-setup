@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:record:task-queue:1",
+  "title": "Fila contínua",
+  "description": "Controle da fila. Toda fila nasce parada e volta parada a cada partida do núcleo; só o dono autenticado pode ativá-la, registrando queue.enabled.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "id",
+    "owner_id",
+    "state"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "id": {
+      "$ref": "urn:ads:common:id:1"
+    },
+    "owner_id": {
+      "$ref": "urn:ads:common:id:1"
+    },
+    "state": {
+      "enum": [
+        "stopped",
+        "enabled"
+      ]
+    }
+  },
+  "examples": [
+    {
+      "version": 1,
+      "id": "queue-01",
+      "owner_id": "owner-01",
+      "state": "stopped"
+    }
+  ]
+}

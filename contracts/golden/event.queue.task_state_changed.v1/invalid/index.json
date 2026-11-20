@@ -1,0 +1,63 @@
+{
+  "01-wrong-type.json": {
+    "rule": "O tipo é a URN deste evento.",
+    "keyword": "const",
+    "instancePath": "/type"
+  },
+  "02-wrong-stream.json": {
+    "rule": "O stream pertence à família queue.",
+    "keyword": "pattern",
+    "instancePath": "/stream"
+  },
+  "03-invalid-queue-id.json": {
+    "rule": "O identificador da fila é opaco.",
+    "keyword": "pattern",
+    "instancePath": "/data/queue_id"
+  },
+  "04-unknown-state.json": {
+    "rule": "O destino é um estado da tarefa.",
+    "keyword": "enum",
+    "instancePath": "/data/to"
+  },
+  "05-negative-attempts.json": {
+    "rule": "A contagem de tentativas é não negativa.",
+    "keyword": "minimum",
+    "instancePath": "/data/attempts"
+  },
+  "done-running.json": {
+    "rule": "O estado done encerra a tarefa.",
+    "keyword": "not",
+    "instancePath": "/data"
+  },
+  "queued-queued.json": {
+    "rule": "Uma mudança exige estados distintos.",
+    "keyword": "enum",
+    "instancePath": "/data/to"
+  },
+  "running-zero.json": {
+    "rule": "O início consome uma tentativa.",
+    "keyword": "minimum",
+    "instancePath": "/data/attempts"
+  },
+  "done-agent.json": {
+    "rule": "A aceitação exige um aparelho autenticado.",
+    "keyword": "const",
+    "instancePath": "/actor/kind"
+  },
+  "done-no-via.json": {
+    "rule": "A aceitação registra o canal.",
+    "keyword": "required",
+    "instancePath": "/data"
+  },
+  "wrong-queue.json": {
+    "rule": "O stream identifica a mesma fila.",
+    "keyword": "crossRule",
+    "instancePath": "",
+    "messagePrefix": "stream"
+  },
+  "extra-data.json": {
+    "rule": "Os dados do evento são fechados.",
+    "keyword": "additionalProperties",
+    "instancePath": "/data"
+  }
+}

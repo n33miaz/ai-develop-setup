@@ -1,0 +1,17 @@
+{
+  "01-unknown.json": {
+    "rule": "O estado tem de pertencer ao ciclo da tarefa.",
+    "keyword": "enum",
+    "instancePath": ""
+  },
+  "02-empty.json": {
+    "rule": "A cadeia vazia não representa um estado.",
+    "keyword": "enum",
+    "instancePath": ""
+  },
+  "03-null.json": {
+    "rule": "O estado é um texto.",
+    "keyword": "type",
+    "instancePath": ""
+  }
+}

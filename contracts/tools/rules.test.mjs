@@ -44,12 +44,15 @@ test("stream: aceita o stream da entidade de data e recusa o de outra", () => {
   assert.match(streamBindingError({ ...event, stream: "approval/appr-01" }), /esperado "approval\/appr-02"/);
   assert.match(streamBindingError({ stream: "task/task-01", data: {} }), /data\.task_id/);
   assert.equal(streamBindingError({ stream: "routing/task-01", data: { task_id: "task-01" } }), null);
+  const queued = { stream: "queue/queue-01", data: { queue_id: "queue-01", task_id: "task-01" } };
+  assert.equal(streamBindingError(queued), null);
+  assert.match(streamBindingError({ ...queued, stream: "queue/task-01" }), /data\.queue_id/);
 });
 
 test("stream: família fora da tabela não tem regra", () => {
   assert.equal(streamBindingError({ stream: "host/host-01", data: { event_id: "x" } }), null);
   assert.equal(streamBindingError({ stream: "usage/task-01", data: {} }), null);
-  assert.deepEqual(Object.keys(STREAM_ID_FIELD).sort(), ["action", "approval", "review", "routing", "session", "task"]);
+  assert.deepEqual(Object.keys(STREAM_ID_FIELD).sort(), ["action", "approval", "queue", "review", "routing", "session", "task"]);
 });
 
 test("stream: a regra vale para os dourados de evento e só para eles", () => {
@@ -158,5 +161,24 @@ test("caminho absoluto: aceita só a forma normalizada, Windows e POSIX", () => 
   };
   for (const [why, paths] of Object.entries(refused)) {
     for (const bad of paths) assert.ok(!validate(bad), `${why}: ${JSON.stringify(bad)}`);
+  }
+});
+
+test("queue task cross rules compare attempt ceilings and UTC fractions", () => {
+  const key = "record.queue-task.v1";
+  const base = {
+    attempts: 2,
+    attempt_limit: 2,
+    created_at: "2030-01-02T03:04:05Z",
+    updated_at: "2030-01-02T03:04:05Z",
+  };
+  for (const [changes, errors] of [
+    [{}, []],
+    [{ attempts: 3 }, ["attempts excede attempt_limit"]],
+    [{ updated_at: "2030-01-02T03:04:04.999999Z" }, ["updated_at antecede created_at"]],
+    [{ updated_at: "2030-01-02T03:04:05.000001Z" }, []],
+    [{ created_at: "2030-01-02T03:04:05.1Z", updated_at: "2030-01-02T03:04:05.100000Z" }, []],
+  ]) {
+    assert.deepEqual(crossRuleErrors(key, { ...base, ...changes }), errors);
   }
 });

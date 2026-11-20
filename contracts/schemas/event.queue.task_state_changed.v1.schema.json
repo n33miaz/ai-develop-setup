@@ -1,0 +1,249 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:event:queue.task_state_changed:1",
+  "title": "Estado da tarefa da fila alterado",
+  "description": "Registra os estados anterior e posterior e a contagem de tentativas após a mudança.",
+  "allOf": [
+    {
+      "$ref": "urn:ads:event:envelope:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "type",
+        "stream",
+        "data"
+      ],
+      "properties": {
+        "type": {
+          "const": "urn:ads:event:queue.task_state_changed:1"
+        },
+        "stream": {
+          "type": "string",
+          "pattern": "^queue/"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "queue_id",
+            "task_id",
+            "from",
+            "to",
+            "attempts"
+          ],
+          "properties": {
+            "queue_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "task_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "from": {
+              "$ref": "urn:ads:common:queue-task-state:1"
+            },
+            "to": {
+              "$ref": "urn:ads:common:queue-task-state:1"
+            },
+            "attempts": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "via": {
+              "enum": [
+                "local_ui",
+                "tray",
+                "remote_device"
+              ]
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "from": {
+                    "const": "queued"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "to": {
+                    "enum": [
+                      "running",
+                      "cancelled"
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "from": {
+                    "const": "running"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "to": {
+                    "enum": [
+                      "review",
+                      "failed",
+                      "cancelled"
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "from": {
+                    "const": "review"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "to": {
+                    "enum": [
+                      "done",
+                      "failed",
+                      "cancelled"
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "from": {
+                    "const": "failed"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "to": {
+                    "enum": [
+                      "queued",
+                      "cancelled"
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "from": {
+                    "const": "done"
+                  }
+                }
+              },
+              "then": {
+                "not": {
+                  "required": [
+                    "to"
+                  ]
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "from": {
+                    "const": "cancelled"
+                  }
+                }
+              },
+              "then": {
+                "not": {
+                  "required": [
+                    "to"
+                  ]
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "to": {
+                    "const": "running"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "attempts": {
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "if": {
+        "properties": {
+          "data": {
+            "properties": {
+              "from": {
+                "const": "review"
+              },
+              "to": {
+                "const": "done"
+              }
+            },
+            "type": "object"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "actor": {
+            "properties": {
+              "kind": {
+                "const": "device"
+              }
+            },
+            "type": "object"
+          },
+          "data": {
+            "required": [
+              "via"
+            ],
+            "type": "object"
+          }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+      "type": "urn:ads:event:queue.task_state_changed:1",
+      "ts": "2030-01-02T03:04:05Z",
+      "stream": "queue/queue-01",
+      "seq": 1,
+      "actor": {
+        "kind": "daemon",
+        "id": "core-01"
+      },
+      "cause": null,
+      "data_class": "internal",
+      "data": {
+        "queue_id": "queue-01",
+        "task_id": "task-01",
+        "from": "queued",
+        "to": "running",
+        "attempts": 1
+      }
+    }
+  ]
+}

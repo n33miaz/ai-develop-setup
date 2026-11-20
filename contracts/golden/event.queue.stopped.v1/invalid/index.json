@@ -1,0 +1,73 @@
+{
+  "01-wrong-type.json": {
+    "rule": "O tipo é a URN deste evento.",
+    "keyword": "const",
+    "instancePath": "/type"
+  },
+  "02-wrong-stream.json": {
+    "rule": "O stream pertence à família queue.",
+    "keyword": "pattern",
+    "instancePath": "/stream"
+  },
+  "03-invalid-queue-id.json": {
+    "rule": "O identificador da fila é opaco.",
+    "keyword": "pattern",
+    "instancePath": "/data/queue_id"
+  },
+  "wrong-queue.json": {
+    "rule": "O stream identifica a mesma fila.",
+    "keyword": "crossRule",
+    "instancePath": "",
+    "messagePrefix": "stream"
+  },
+  "extra-data.json": {
+    "rule": "Os dados do evento são fechados.",
+    "keyword": "additionalProperties",
+    "instancePath": "/data"
+  },
+  "agent.json": {
+    "rule": "O evento exige um aparelho autenticado.",
+    "keyword": "const",
+    "instancePath": "/actor/kind"
+  },
+  "restart-device.json": {
+    "rule": "A parada automática é registrada pelo daemon.",
+    "keyword": "const",
+    "instancePath": "/actor/kind"
+  },
+  "budget-owner.json": {
+    "rule": "A parada automática não declara dono nem canal.",
+    "keyword": "not",
+    "instancePath": "/data"
+  },
+  "owner-no-via.json": {
+    "rule": "A parada pelo dono registra o canal.",
+    "keyword": "required",
+    "instancePath": "/data"
+  },
+  "unknown-reason.json": {
+    "rule": "O motivo da parada pertence à lista conhecida.",
+    "keyword": "enum",
+    "instancePath": "/data/reason"
+  },
+  "daemon-owner.json": {
+    "rule": "A parada pelo dono é registrada por um aparelho.",
+    "keyword": "const",
+    "instancePath": "/actor/kind"
+  },
+  "daemon-owner-bare.json": {
+    "rule": "A parada pelo dono é registrada por um aparelho.",
+    "keyword": "const",
+    "instancePath": "/actor/kind"
+  },
+  "owner-no-owner.json": {
+    "rule": "A parada pelo dono registra o dono.",
+    "keyword": "required",
+    "instancePath": "/data"
+  },
+  "restart-via.json": {
+    "rule": "A parada automática não declara dono nem canal.",
+    "keyword": "not",
+    "instancePath": "/data"
+  }
+}
