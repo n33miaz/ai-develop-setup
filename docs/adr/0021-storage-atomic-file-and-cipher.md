@@ -121,14 +121,18 @@ promete apagar cópias externas, registradores, swap, dumps ou memória após ab
 A cifra e o SHA-256 usado no HMAC habilitam a feature `zeroize`. O HMAC de
 chave de 32 bytes compõe duas instâncias de SHA-256 conforme a RFC 2104.
 Os blocos de preenchimento e os resultados intermediários usam `Zeroizing`.
+A finalização reinicializa as instâncias SHA-256 no lugar. A limpeza é de melhor
+esforço, pois movimentos de dados e registradores podem deixar cópias.
 
 ## Log de eventos
 
 A versão 3 só acrescenta objetos à versão 1: `cipher_key` (identificador, cifra
 e `key_check`, nunca a chave) e `event` (um envelope por linha, `data` cifrado).
 A versão 4 acrescenta `log_genesis` e atualiza o gatilho de continuidade. Logs
-vazios recebem uma gênese aleatória. Logs existentes mantêm a gênese original
-para preservar a autenticação da primeira linha. Bancos das versões 1 e 3 são
+vazios recebem 32 bytes de gênese do gerador aleatório do sistema. Logs existentes mantêm a gênese original
+para preservar a autenticação da primeira linha. A rotação só avança para um
+identificador de chave ainda não usado. Na transação de `append`, uma chave
+já registrada só pode gravar se for a da última linha, quando houver linhas. Bancos das versões 1 e 3 são
 migrados na abertura. A migração roda numa transação `IMMEDIATE`
 e, dentro dela, compara o esquema do arquivo com o da versão dele para qualquer
 versão, inclusive a atual: outro processo pode ter migrado ou alterado o arquivo

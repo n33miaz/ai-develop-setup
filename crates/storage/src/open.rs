@@ -32,18 +32,7 @@ fn preflight(c: &Connection, config: &StorageConfig) -> Result<(), StorageError>
     harden(c, config)?;
     let id = integer(c, "application_id")?;
     let version = integer(c, "user_version")?;
-    if id != APPLICATION_ID && id != 0 {
-        return Err(StorageError::ForeignApplication);
-    }
-    if version > SCHEMA_VERSION {
-        return Err(StorageError::SchemaTooNew);
-    }
-    if version < 0 || (id == 0 && version != 0) || (id == APPLICATION_ID && version < 1) {
-        return Err(StorageError::UnsupportedSchema);
-    }
-    if id == APPLICATION_ID {
-        migrate::readable(version)?;
-    }
+    check_identity(id, version)?;
     let count: i64 = c.query_row("SELECT count(*) FROM sqlite_schema", [], |r| r.get(0))?;
     if id == 0 && count != 0 {
         return Err(StorageError::ForeignApplication);
@@ -56,6 +45,22 @@ fn preflight(c: &Connection, config: &StorageConfig) -> Result<(), StorageError>
         if result != "ok" {
             return Err(StorageError::Corrupt);
         }
+    }
+    Ok(())
+}
+
+fn check_identity(id: i64, version: i64) -> Result<(), StorageError> {
+    if id != APPLICATION_ID && id != 0 {
+        return Err(StorageError::ForeignApplication);
+    }
+    if version > SCHEMA_VERSION {
+        return Err(StorageError::SchemaTooNew);
+    }
+    if version < 0 || (id == 0 && version != 0) || (id == APPLICATION_ID && version < 1) {
+        return Err(StorageError::UnsupportedSchema);
+    }
+    if id == APPLICATION_ID {
+        migrate::readable(version)?;
     }
     Ok(())
 }
@@ -105,18 +110,7 @@ fn header(path: &Path) -> Result<Header, StorageError> {
     }
     let version = i32::from_be_bytes(bytes[60..64].try_into().unwrap()) as i64;
     let id = i32::from_be_bytes(bytes[68..72].try_into().unwrap()) as i64;
-    if id != 0 && id != APPLICATION_ID {
-        return Err(StorageError::ForeignApplication);
-    }
-    if version > SCHEMA_VERSION {
-        return Err(StorageError::SchemaTooNew);
-    }
-    if version < 0 || (id == 0 && version != 0) || (id == APPLICATION_ID && version < 1) {
-        return Err(StorageError::UnsupportedSchema);
-    }
-    if id == APPLICATION_ID {
-        migrate::readable(version)?;
-    }
+    check_identity(id, version)?;
     Ok(if id == APPLICATION_ID {
         Header::Product {
             page: page as usize,
@@ -177,10 +171,9 @@ fn inspect(path: &Path, config: &StorageConfig) -> Result<bool, StorageError> {
             }
             let kind = header(path)?;
             if let Header::Product { page } = kind
-                && let Some(version) = crate::snapshot::check_product_wal(path, page)?
-                && migrate::RETIRED.contains(&i64::from(version))
+                && let Some((id, version)) = crate::snapshot::check_product_wal(path, page)?
             {
-                return Err(StorageError::RetiredSchema);
+                check_identity(i64::from(id), i64::from(version))?;
             }
             if kind == Header::Unmarked {
                 let image = crate::snapshot::image(path, config.inspection_max_bytes)?;
@@ -481,7 +474,7 @@ pub(crate) mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(triggers, 6);
+        assert_eq!(triggers, 9);
     }
 
     #[test]

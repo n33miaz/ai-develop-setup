@@ -333,8 +333,14 @@ fn genesis(tx: &rusqlite::Connection) -> Result<Vec<u8>, StorageError> {
         |r| r.get(0),
     )
     .optional()?
-    .filter(|link: &Vec<u8>| link.len() == 32)
-    .ok_or(StorageError::Corrupt)
+    .ok_or(StorageError::ChainBroken { position: 1 })
+    .and_then(|link: Vec<u8>| {
+        if link.len() == 32 {
+            Ok(link)
+        } else {
+            Err(StorageError::Corrupt)
+        }
+    })
 }
 
 impl EventLog {
@@ -371,7 +377,7 @@ impl EventLog {
     /// do not retry unchanged. `InvalidEvent`: `type` or stream family over its
     /// bound, or a gate event whose `action_id`/`approval_id` disagree with its
     /// stream. `TooLarge`: `data` over `max_event_bytes`. `WrongKey`: the provider
-    /// disagrees with itself or with the registered key.
+    /// disagrees with itself or with the registered key, or tries to reuse a retired id.
     pub fn append(&mut self, event: &EventEnvelopeV1) -> Result<Position, StorageError> {
         let kind = event.r#type.as_str();
         let stream = event.stream.as_str();
@@ -404,16 +410,17 @@ impl EventLog {
         if seq != head_in(&tx, stream)? + 1 {
             return Err(StorageError::Conflict);
         }
-        register(&tx, &key_id, &key)?;
-        let last: Option<(i64, Vec<u8>)> = tx
+        let last: Option<(i64, Vec<u8>, String)> = tx
             .query_row(
-                "SELECT position, chain FROM event ORDER BY position DESC LIMIT 1",
+                "SELECT position, chain, key_id FROM event ORDER BY position DESC LIMIT 1",
                 [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()?;
+        let last_id = last.as_ref().map(|(_, _, id)| id.as_str());
+        register(&tx, &key_id, &key, last_id)?;
         let (position, prev_chain) = match last {
-            Some((position, chain)) => (position + 1, chain),
+            Some((position, chain, _)) => (position + 1, chain),
             None => (1, genesis(&tx)?),
         };
         let mut row = Row {
@@ -476,7 +483,8 @@ impl EventLog {
     /// Events from `from_seq` on, decrypted one row at a time. The page stops at
     /// `limit` (capped by `read_page_limit`) or before the row whose ciphertext
     /// would pass `read_page_max_bytes`; the first row always fits. A `seq` missing
-    /// inside the page is `ChainBroken` at the row after the gap.
+    /// inside the page is `ChainBroken` at the row after the gap. Invalid,
+    /// unregistered, or confirmed substituted key ids also break the chain.
     pub fn read_stream(
         &self,
         stream: &EventEnvelopeV1Stream,
@@ -605,17 +613,27 @@ impl EventLog {
     ) -> Result<bool, StorageError> {
         // Only run after key lookup or authentication fails. A successful alternate AAD proves
         // an id change while preserving Tampered for other damaged columns.
-        let mut statement = tx.prepare("SELECT key_id FROM cipher_key WHERE key_id != ?1")?;
-        let mut ids = statement.query([&row.key_id])?;
+        let mut statement = tx
+            .prepare("SELECT key_id FROM cipher_key WHERE key_id != ?1 ORDER BY key_id LIMIT ?2")?;
+        let mut ids = statement.query(params![&row.key_id, self.config.read_key_candidates])?;
         while let Some(candidate) = ids.next()? {
             let candidate: String = candidate.get(0)?;
             let Ok(id) = KeyId::new(&candidate) else {
                 continue;
             };
+            let Some(check) = registered(tx, &id)? else {
+                continue;
+            };
+            let Ok(key) = self.keys.by_id(&id) else {
+                continue;
+            };
+            if matches_check(&key, &check).is_err() {
+                continue;
+            }
             ciphertext.key_id = id;
             if row
                 .associated(|fields| {
-                    cipher::decrypt(&*self.keys, &AssociatedData(fields), ciphertext)
+                    cipher::decrypt_with(&key, &AssociatedData(fields), ciphertext)
                 })
                 .is_ok()
             {
@@ -653,8 +671,14 @@ impl EventLog {
 
 /// Registers the key's check on first use, inside the append transaction, or
 /// confirms the key matches the one already registered.
-fn register(tx: &Transaction<'_>, id: &KeyId, key: &SecretKey) -> Result<(), StorageError> {
+fn register(
+    tx: &Transaction<'_>,
+    id: &KeyId,
+    key: &SecretKey,
+    last_id: Option<&str>,
+) -> Result<(), StorageError> {
     match registered(tx, id)? {
+        Some(_) if last_id.is_some_and(|last| last != id.as_str()) => Err(StorageError::WrongKey),
         Some(check) => matches_check(key, &check),
         None => {
             let check = cipher::key_check_with(id, key)?;

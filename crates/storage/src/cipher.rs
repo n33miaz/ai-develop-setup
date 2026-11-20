@@ -25,7 +25,7 @@ fn hmac_sha256(key: &[u8; 32], feed: impl FnOnce(&mut Sha256)) -> Zeroizing<[u8;
     inner.update(pad.as_slice());
     feed(&mut inner);
     let mut digest = Zeroizing::new([0; 32]);
-    inner.finalize_into((&mut *digest).into());
+    inner.finalize_into_reset((&mut *digest).into());
 
     for byte in pad.iter_mut() {
         *byte ^= 0x36 ^ 0x5c;
@@ -34,7 +34,7 @@ fn hmac_sha256(key: &[u8; 32], feed: impl FnOnce(&mut Sha256)) -> Zeroizing<[u8;
     outer.update(pad.as_slice());
     outer.update(digest.as_slice());
     let mut output = Zeroizing::new([0; 32]);
-    outer.finalize_into((&mut *output).into());
+    outer.finalize_into_reset((&mut *output).into());
     output
 }
 
@@ -276,7 +276,15 @@ pub fn decrypt(
     ciphertext: &Ciphertext,
 ) -> Result<Zeroizing<Vec<u8>>, CipherError> {
     let key = keys.by_id(&ciphertext.key_id)?;
-    unseal_with(&key, DATA_DOMAIN, aad, ciphertext)
+    decrypt_with(&key, aad, ciphertext)
+}
+
+pub(crate) fn decrypt_with(
+    key: &SecretKey,
+    aad: &AssociatedData<'_>,
+    ciphertext: &Ciphertext,
+) -> Result<Zeroizing<Vec<u8>>, CipherError> {
+    unseal_with(key, DATA_DOMAIN, aad, ciphertext)
 }
 pub fn key_check(keys: &dyn KeyProvider) -> Result<Ciphertext, CipherError> {
     let (key_id, key) = keys.current()?;
@@ -315,6 +323,44 @@ mod tests {
                 0x2e, 0x32, 0xcf, 0xf7,
             ]
         );
+    }
+
+    #[test]
+    fn hmac_matches_rfc_4231_cases_two_through_four() {
+        let sequential: Vec<u8> = (1..=25).collect();
+        for (key, data, expected) in [
+            (
+                b"Jefe".as_slice(),
+                b"what do ya want for nothing?".as_slice(),
+                [
+                    0x5b, 0xdc, 0xc1, 0x46, 0xbf, 0x60, 0x75, 0x4e, 0x6a, 0x04, 0x24, 0x26, 0x08,
+                    0x95, 0x75, 0xc7, 0x5a, 0x00, 0x3f, 0x08, 0x9d, 0x27, 0x39, 0x83, 0x9d, 0xec,
+                    0x58, 0xb9, 0x64, 0xec, 0x38, 0x43,
+                ],
+            ),
+            (
+                &[0xaa; 20],
+                &[0xdd; 50],
+                [
+                    0x77, 0x3e, 0xa9, 0x1e, 0x36, 0x80, 0x0e, 0x46, 0x85, 0x4d, 0xb8, 0xeb, 0xd0,
+                    0x91, 0x81, 0xa7, 0x29, 0x59, 0x09, 0x8b, 0x3e, 0xf8, 0xc1, 0x22, 0xd9, 0x63,
+                    0x55, 0x14, 0xce, 0xd5, 0x65, 0xfe,
+                ],
+            ),
+            (
+                sequential.as_slice(),
+                &[0xcd; 50],
+                [
+                    0x82, 0x55, 0x8a, 0x38, 0x9a, 0x44, 0x3c, 0x0e, 0xa4, 0xcc, 0x81, 0x98, 0x99,
+                    0xf2, 0x08, 0x3a, 0x85, 0xf0, 0xfa, 0xa3, 0xe5, 0x78, 0xf8, 0x07, 0x7a, 0x2e,
+                    0x3f, 0xf4, 0x67, 0x29, 0x66, 0x5b,
+                ],
+            ),
+        ] {
+            let mut padded = [0; 32];
+            padded[..key.len()].copy_from_slice(key);
+            assert_eq!(*hmac_sha256(&padded, |hash| hash.update(data)), expected);
+        }
     }
 
     struct MemoryKeys {

@@ -96,7 +96,10 @@ fn fill(reader: &mut impl Read, buffer: &mut [u8]) -> Result<bool, StorageError>
 /// Product files skip the image, but SQLite silently discards a WAL with a
 /// damaged header, and every frame after the first invalid one. Refuse when
 /// a later commit marker has the current salt.
-pub(crate) fn check_product_wal(path: &Path, page: usize) -> Result<Option<i32>, StorageError> {
+pub(crate) fn check_product_wal(
+    path: &Path,
+    page: usize,
+) -> Result<Option<(i32, i32)>, StorageError> {
     let file = match File::open(wal_path(path)) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -109,11 +112,11 @@ pub(crate) fn check_product_wal(path: &Path, page: usize) -> Result<Option<i32>,
     }
     let (big, mut sum) = wal_header(&header, page)?;
     let mut frame = vec![0; 24 + page];
-    let mut pending_version = None;
-    let mut committed_version = None;
+    let mut pending_identity = None;
+    let mut committed_identity = None;
     loop {
         if !fill(&mut reader, &mut frame)? {
-            return Ok(committed_version);
+            return Ok(committed_identity);
         }
         let next = checksum(&frame[24..], checksum(&frame[..8], sum, big), big);
         if next != [word(&frame[16..]), word(&frame[20..])]
@@ -124,10 +127,13 @@ pub(crate) fn check_product_wal(path: &Path, page: usize) -> Result<Option<i32>,
         }
         sum = next;
         if word(&frame) == 1 {
-            pending_version = Some(i32::from_be_bytes(frame[84..88].try_into().unwrap()));
+            pending_identity = Some((
+                i32::from_be_bytes(frame[92..96].try_into().unwrap()),
+                i32::from_be_bytes(frame[84..88].try_into().unwrap()),
+            ));
         }
         if word(&frame[4..]) != 0 {
-            committed_version = pending_version;
+            committed_identity = pending_identity;
         }
     }
     while fill(&mut reader, &mut frame)? {
@@ -136,7 +142,7 @@ pub(crate) fn check_product_wal(path: &Path, page: usize) -> Result<Option<i32>,
             return Err(StorageError::Corrupt);
         }
     }
-    Ok(committed_version)
+    Ok(committed_identity)
 }
 
 fn overlay(image: &mut Vec<u8>, wal: &[u8], page: usize, limit: usize) -> Result<(), StorageError> {
