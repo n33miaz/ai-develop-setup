@@ -72,27 +72,28 @@ impl Manifest {
     /// Parses and checks everything that does not need the disk.
     pub(crate) fn from_bytes(bytes: &[u8]) -> Result<Self, Stop> {
         let invalid = |what: &str| Stop::new(Reason::ManifestInvalid, what);
-        let manifest: Manifest =
-            serde_json::from_slice(bytes).map_err(|error| invalid(&error.to_string()))?;
+        let manifest: Manifest = serde_json::from_slice(bytes)
+            .map_err(|error| Stop::caused_by(Reason::ManifestInvalid, error))?;
         if manifest.version != MANIFEST_VERSION {
             return Err(invalid("unknown version"));
         }
-        if Id::new(manifest.action_id.as_str()).is_err() {
-            return Err(invalid("the action id is not an id"));
+        if let Err(error) = Id::new(manifest.action_id.as_str()) {
+            return Err(invalid("the action id is not an id").with_cause(error));
         }
-        if PlanHash::new(manifest.plan_hash.as_str()).is_err() {
-            return Err(invalid("the plan hash is not a digest"));
+        if let Err(error) = PlanHash::new(manifest.plan_hash.as_str()) {
+            return Err(invalid("the plan hash is not a digest").with_cause(error));
         }
-        if Timestamp::new(manifest.started_at.as_str()).is_err() {
-            return Err(invalid("the instant is not a timestamp"));
+        if let Err(error) = Timestamp::new(manifest.started_at.as_str()) {
+            return Err(invalid("the instant is not a timestamp").with_cause(error));
         }
         for item in &manifest.items {
             if item.path.is_empty() {
                 return Err(invalid("an item with no path"));
             }
             for name in &item.path {
-                check_name(name)
-                    .map_err(|_| invalid("an item path with a name that is not plain"))?;
+                check_name(name).map_err(|error| {
+                    invalid("an item path with a name that is not plain").with_cause(error)
+                })?;
             }
         }
         Ok(manifest)

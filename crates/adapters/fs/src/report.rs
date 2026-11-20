@@ -176,10 +176,11 @@ impl Completed {
 
 /// The plan did not run, or stopped in the middle. `reason.error_code()` goes into
 /// `action.failed`; `stage` and the report say exactly what was and was not changed.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct Failure {
     pub reason: Reason,
     pub detail: String,
+    pub(crate) cause: Option<crate::reason::Cause>,
     pub stage: Stage,
     pub report: Report,
 }
@@ -189,9 +190,29 @@ impl Failure {
         Box::new(Self {
             reason: stop.reason,
             detail: stop.detail,
+            cause: stop.cause,
             stage: Stage::Checks,
             report: Report::default(),
         })
+    }
+}
+
+impl PartialEq for Failure {
+    fn eq(&self, other: &Self) -> bool {
+        self.reason == other.reason
+            && self.detail == other.detail
+            && self.stage == other.stage
+            && self.report == other.report
+    }
+}
+
+impl Eq for Failure {}
+
+impl std::error::Error for Failure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.cause
+            .as_deref()
+            .map(|error| error as &dyn std::error::Error)
     }
 }
 

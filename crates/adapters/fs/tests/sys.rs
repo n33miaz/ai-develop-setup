@@ -70,7 +70,7 @@ fn an_entry_is_opened_by_one_name_of_an_open_folder() {
     assert_eq!(meta.kind, Some(Kind::File));
     assert_eq!(meta.size, 5);
     assert!(a.child("empty").unwrap().names().unwrap().is_empty());
-    assert!(matches!(a.child("gone"), Err(Error::Missing)));
+    assert!(matches!(a.child("gone"), Err(Error::Missing(_))));
     assert_eq!(a.read_file("file.txt", 5).unwrap(), b"12345");
 
     // A name is one name: no path, no step up, nothing through the open folder.
@@ -182,7 +182,7 @@ fn creation_is_exclusive_and_relative_to_the_open_folder() {
     work.make_dir("new").unwrap();
     let made = work.child("new").unwrap();
     assert_eq!(kind(&made), Kind::Dir);
-    assert!(matches!(work.make_dir("new"), Err(Error::Exists)));
+    assert!(matches!(work.make_dir("new"), Err(Error::Exists(_))));
     {
         use std::io::Write;
         let mut file = made.create_file("file.txt").unwrap();
@@ -191,7 +191,10 @@ fn creation_is_exclusive_and_relative_to_the_open_folder() {
         file.write_all(b"text").unwrap();
         file.sync_all().unwrap();
     }
-    assert!(matches!(made.create_file("file.txt"), Err(Error::Exists)));
+    assert!(matches!(
+        made.create_file("file.txt"),
+        Err(Error::Exists(_))
+    ));
     assert!(work.create_file("new").is_err());
     assert_eq!(
         fs::read_to_string(sandbox.path("work/new/file.txt")).unwrap(),
@@ -218,13 +221,13 @@ fn a_move_refuses_a_destination_that_exists() {
         let claim = from.claim("file.txt", id("file.txt")).unwrap();
         let refused = claim.move_to(&to, taken);
         assert!(
-            matches!(refused, Err(Error::Exists)),
+            matches!(refused, Err(Error::Exists(_))),
             "{taken}: {refused:?}"
         );
         let claim = from.claim("tree", id("tree")).unwrap();
         let refused = claim.move_to(&to, taken);
         assert!(
-            matches!(refused, Err(Error::Exists)),
+            matches!(refused, Err(Error::Exists(_))),
             "{taken}: {refused:?}"
         );
     }
@@ -266,7 +269,7 @@ fn only_the_object_that_was_checked_is_claimed() {
     assert!(matches!(work.claim("a.txt", approved), Err(Error::Changed)));
     assert!(matches!(
         work.claim("gone.txt", approved),
-        Err(Error::Missing)
+        Err(Error::Missing(_))
     ));
     assert_eq!(
         fs::read_to_string(sandbox.path("work/a.txt")).unwrap(),

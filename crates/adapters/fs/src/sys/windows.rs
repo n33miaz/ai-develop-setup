@@ -91,20 +91,43 @@ fn raw(file: &File) -> HANDLE {
     HANDLE(file.as_raw_handle())
 }
 
+#[derive(Debug)]
 enum Refusal {
-    Missing,
-    Exists,
-    NotADirectory,
+    Missing(io::Error),
+    Exists(io::Error),
+    NotADirectory(io::Error),
     Other(io::Error),
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Missing(_) => f.write_str("it does not exist"),
+            Self::Exists(_) => f.write_str("the name is taken"),
+            Self::NotADirectory(_) => f.write_str("not a folder"),
+            Self::Other(error) => error.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for Refusal {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Missing(error)
+            | Self::Exists(error)
+            | Self::NotADirectory(error)
+            | Self::Other(error) => Some(error),
+        }
+    }
 }
 
 impl From<Refusal> for Error {
     fn from(refusal: Refusal) -> Self {
         match refusal {
-            Refusal::Missing => Self::Missing,
-            Refusal::Exists => Self::Exists,
-            Refusal::NotADirectory => {
-                Self::Io(io::Error::new(io::ErrorKind::NotADirectory, "not a folder"))
+            Refusal::Missing(error) => Self::Missing(error),
+            Refusal::Exists(error) => Self::Exists(error),
+            refusal @ Refusal::NotADirectory(_) => {
+                Self::Io(io::Error::new(io::ErrorKind::NotADirectory, refusal))
             }
             Refusal::Other(error) => Self::Io(error),
         }
@@ -167,9 +190,11 @@ fn open_at(
         }));
     }
     Err(match status {
-        STATUS_OBJECT_NAME_NOT_FOUND | STATUS_OBJECT_PATH_NOT_FOUND => Refusal::Missing,
-        STATUS_OBJECT_NAME_COLLISION => Refusal::Exists,
-        STATUS_NOT_A_DIRECTORY => Refusal::NotADirectory,
+        status @ (STATUS_OBJECT_NAME_NOT_FOUND | STATUS_OBJECT_PATH_NOT_FOUND) => {
+            Refusal::Missing(refused(status))
+        }
+        status @ STATUS_OBJECT_NAME_COLLISION => Refusal::Exists(refused(status)),
+        status @ STATUS_NOT_A_DIRECTORY => Refusal::NotADirectory(refused(status)),
         other => Refusal::Other(refused(other)),
     })
 }
@@ -214,7 +239,7 @@ fn apply(
     };
     match status {
         status if status.is_ok() => Ok(()),
-        STATUS_OBJECT_NAME_COLLISION => Err(Error::Exists),
+        status @ STATUS_OBJECT_NAME_COLLISION => Err(Error::Exists(refused(status))),
         STATUS_DIRECTORY_NOT_EMPTY => Err(Error::Io(io::Error::new(
             io::ErrorKind::DirectoryNotEmpty,
             "the folder is not empty",
@@ -302,7 +327,7 @@ impl Node {
             open_at(&self.file, "", BROWSE, HELD, FILE_OPEN, options).map_err(|refusal| {
                 match Error::from(refusal) {
                     Error::Io(error) => error,
-                    other => io::Error::other(other.to_string()),
+                    other => io::Error::other(other),
                 }
             })?;
         Ok(Self { file })
@@ -313,7 +338,7 @@ impl Node {
         plain(name)?;
         match open_at(&self.file, name, LOOK, SHARED, FILE_OPEN, ITSELF) {
             Ok(file) => Ok(meta_of(&file)?.id == expected),
-            Err(Refusal::Missing) => Ok(false),
+            Err(Refusal::Missing(_)) => Ok(false),
             Err(refusal) => Err(refusal.into()),
         }
     }
@@ -344,7 +369,7 @@ impl Node {
         plain(name)?;
         let folder = NTCREATEFILE_CREATE_OPTIONS(ITSELF.0 | FILE_DIRECTORY_FILE.0);
         let file = match open_at(&self.file, name, BROWSE, SHARED, FILE_OPEN, folder) {
-            Err(Refusal::NotADirectory) => {
+            Err(Refusal::NotADirectory(_)) => {
                 open_at(&self.file, name, LOOK, SHARED, FILE_OPEN, ITSELF)
             }
             other => other,
@@ -482,7 +507,7 @@ impl Node {
             open_at(&self.file, "", access, SHARED, FILE_OPEN, options).map_err(|refusal| {
                 match Error::from(refusal) {
                     Error::Io(error) => error,
-                    other => io::Error::other(other.to_string()),
+                    other => io::Error::other(other),
                 }
             })?;
         writable.sync_all()

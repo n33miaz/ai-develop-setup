@@ -17,6 +17,8 @@ pub enum StorageError {
     UnsupportedSchema,
     /// Written by a pre-release format no build reads any more; move the file aside.
     RetiredSchema,
+    /// A version 3 log returned to a previously used key; migration would break verification.
+    LegacyKeyReuse,
     PragmaMismatch,
     /// The product connection refused a statement outside its allow-list.
     Denied,

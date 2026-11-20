@@ -97,6 +97,17 @@ pub enum PlanError {
     },
 }
 
+impl std::error::Error for PlanError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::WorkRoot(error) | Self::Destination(error) | Self::Target { error, .. } => {
+                Some(error)
+            }
+            Self::NoTargets => None,
+        }
+    }
+}
+
 impl fmt::Display for PlanError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

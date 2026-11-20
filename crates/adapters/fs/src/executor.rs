@@ -140,9 +140,9 @@ impl Executor {
                 format!("a permit of {action_id} was already taken by this executor"),
             )));
         }
-        journal
-            .consume(started)
-            .map_err(|error| Failure::before_anything(Stop::new(Reason::JournalRefused, error)))?;
+        journal.consume(started).map_err(|error| {
+            Failure::before_anything(Stop::caused_by(Reason::JournalRefused, error))
+        })?;
         self.spent.insert(action_id);
 
         let mut job = prepare(&self.fence, &self.policy, &self.limits, &permit)
@@ -174,6 +174,7 @@ impl Executor {
             Err((stage, stop)) => Err(Box::new(Failure {
                 reason: stop.reason,
                 detail: stop.detail,
+                cause: stop.cause,
                 stage,
                 report,
             })),

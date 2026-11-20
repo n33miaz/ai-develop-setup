@@ -195,6 +195,7 @@ fn a_user_layer_cannot_remove_the_shipped_deny_patterns() {
         allow: Some(vec!["GITHUB_PAT".into()]),
         deny: Some(vec![]),
         set: Some(BTreeMap::from([("GH_TOKEN_FILE".into(), "x".into())])),
+        deny_exceptions: None,
     };
     assert!(matches!(
         policy(Some(&over), NameCase::Sensitive),
@@ -207,6 +208,7 @@ fn a_user_layer_adds_deny_patterns() {
     let over = EnvLayer {
         allow: Some(vec!["HOMEPATH".into()]),
         deny: Some(vec!["HOME*".into()]),
+        deny_exceptions: None,
         set: None,
     };
     assert_eq!(
@@ -368,6 +370,8 @@ const SHIPPED_DENY: &[&str] = &[
     "*_PAT_*",
     "*_AUTH*",
     "*_PASS*",
+    "*PASSPHRASE*",
+    "*ASKPASS*",
     "*_SESSION*",
     "*_COOKIE*",
     "*_JWT*",
@@ -378,6 +382,20 @@ const SHIPPED_DENY: &[&str] = &[
     "AUTHORIZATION",
     "DATABASE_URL",
     "KUBECONFIG",
+    "*NETRC*",
+    "PGPASSFILE",
+    "DOCKER_CONFIG",
+    "NPM_CONFIG_USERCONFIG",
+    "NPM_CONFIG_GLOBALCONFIG",
+    "NPM_CONFIG_PREFIX",
+    "NPM_CONFIG_REGISTRY",
+    "NPM_CONFIG_USERNAME",
+    "NPM_CONFIG_OTP",
+    "NPM_CONFIG_PROXY",
+    "NPM_CONFIG_HTTPS_PROXY",
+    "NPM_CONFIG_CERT",
+    "NPM_CONFIG_CERTFILE",
+    "NPM_CONFIG_KEYFILE",
     "ANTHROPIC_*",
     "CLAUDE_*",
     "OPENAI_*",
@@ -434,9 +452,37 @@ fn each_less_used_deny_pattern_refuses_its_names_on_its_own() {
     // Names that only the pattern under test catches, so that removing it lets them through.
     let cases: &[(&str, &[&str])] = &[
         (
-            "*_SESSION*",
-            &["APP_SESSION_ID", "web_session", "My_Session_Store"],
+            "*_AUTH*",
+            &[
+                "CONSUL_HTTP_AUTH",
+                "SSH_AUTH_SOCK",
+                "APP_AUTHDATA",
+                "NPM_CONFIG__AUTH",
+            ],
         ),
+        ("*PASSPHRASE*", &["PASSPHRASE", "GpgPassphrase"]),
+        ("*ASKPASS*", &["GIT_ASKPASS", "SSH_ASKPASS", "sudo_askpass"]),
+        (
+            "*_SESSION*",
+            &[
+                "BW_SESSION",
+                "OP_SESSION_myaccount",
+                "APP_SESSION_ID",
+                "web_sessionid_store",
+                "TG_SESSION_STRING",
+            ],
+        ),
+        ("*NETRC*", &["NETRC", "CURL_NETRC_FILE"]),
+        ("PGPASSFILE", &["PGPASSFILE"]),
+        ("DOCKER_CONFIG", &["DOCKER_CONFIG"]),
+        ("NPM_CONFIG_USERCONFIG", &["NPM_CONFIG_USERCONFIG"]),
+        ("NPM_CONFIG_GLOBALCONFIG", &["NPM_CONFIG_GLOBALCONFIG"]),
+        ("NPM_CONFIG_PREFIX", &["NPM_CONFIG_PREFIX"]),
+        ("NPM_CONFIG_REGISTRY", &["NPM_CONFIG_REGISTRY"]),
+        ("NPM_CONFIG_USERNAME", &["NPM_CONFIG_USERNAME"]),
+        ("NPM_CONFIG_CERT", &["NPM_CONFIG_CERT"]),
+        ("NPM_CONFIG_CERTFILE", &["NPM_CONFIG_CERTFILE"]),
+        ("NPM_CONFIG_KEYFILE", &["NPM_CONFIG_KEYFILE"]),
         (
             "*_COOKIE*",
             &["BROWSER_COOKIE_JAR", "site_cookie", "App_Cookies"],
@@ -512,6 +558,17 @@ fn the_essential_names_stay_allowed_and_are_copied() {
             "KEYBOARD_LAYOUT",
             "DSN_LIST_DIR",
             "AUTHORIZED_KEYS_DIR",
+            // `_AUTHOR` and harmless `_SESSION` names.
+            "GIT_AUTHOR_NAME",
+            "GIT_AUTHOR_EMAIL",
+            "GIT_AUTHOR_DATE",
+            "WT_SESSION",
+            "XDG_SESSION_ID",
+            "XDG_SESSION_TYPE",
+            "XDG_SESSION_CLASS",
+            "XDG_SESSION_DESKTOP",
+            "DBUS_SESSION_BUS_ADDRESS",
+            "DESKTOP_SESSION",
         ])
         .collect();
     for case in [NameCase::Insensitive, NameCase::Sensitive] {
@@ -535,11 +592,18 @@ fn the_essential_names_stay_allowed_and_are_copied() {
 #[test]
 fn on_windows_only_ascii_case_is_ignored_in_allowed_names() {
     // Windows folds more than ASCII when it compares variable names; the allow list does not.
-    // A name that differs from a parent name beyond ASCII case is a different name here.
+    // When copying, a name that differs from a parent name beyond ASCII case is a different
+    // name, which can only let less through.
     let with_allow = |names: &[&str]| policy(Some(&allow_only(names)), NameCase::Insensitive);
 
-    // Not repeated: `Ä` and `ä` differ beyond ASCII case.
-    assert!(with_allow(&["PATH", "\u{c4}X", "\u{e4}x"]).is_ok());
+    // Repeated all the same: Windows takes `ÄX` and `äx` as one variable.
+    assert_eq!(
+        with_allow(&["PATH", "\u{c4}X", "\u{e4}x"]),
+        Err(EnvPolicyError::DuplicateName {
+            list: EnvList::Allow,
+            index: 2
+        })
+    );
     assert_eq!(
         with_allow(&["\u{c4}X", "\u{c4}x"]),
         Err(EnvPolicyError::DuplicateName {
@@ -639,4 +703,86 @@ fn the_documented_linux_allow_list_passes_home_and_replaces_the_shipped_one() {
     // A shipped name the example does not repeat stops passing.
     assert!(!child.contains_key("TEMP"));
     assert!(!child.values().any(|v| v == "s3cr3t"));
+}
+
+#[test]
+fn session_credentials_are_denied_in_allow_and_set() {
+    for name in ["APP_SESSION_ID", "APP_SESSION_SECRET"] {
+        for (over, list) in [
+            (allow_only(&[name]), EnvList::Allow),
+            (set_only(&[(name, "fixture")]), EnvList::Set),
+        ] {
+            assert_eq!(
+                policy(Some(&over), NameCase::host()),
+                Err(EnvPolicyError::DeniedName { list, index: 0 }),
+                "{name}"
+            );
+        }
+    }
+}
+
+#[test]
+fn npm_cache_is_allowed_and_userconfig_is_denied() {
+    let over = allow_only(&["NPM_CONFIG_CACHE"]);
+    let built = policy(Some(&over), NameCase::host()).unwrap();
+    assert_eq!(
+        built.child_env([("NPM_CONFIG_CACHE", "fixture")])["NPM_CONFIG_CACHE"],
+        "fixture"
+    );
+    for (over, list) in [
+        (allow_only(&["NPM_CONFIG_USERCONFIG"]), EnvList::Allow),
+        (
+            set_only(&[("NPM_CONFIG_USERCONFIG", "fixture")]),
+            EnvList::Set,
+        ),
+    ] {
+        assert_eq!(
+            policy(Some(&over), NameCase::host()),
+            Err(EnvPolicyError::DeniedName { list, index: 0 })
+        );
+    }
+}
+
+#[test]
+fn shipped_exceptions_are_nominal_and_user_denies_still_win() {
+    for name in ["WT_SESSION", "GIT_AUTHOR_NAME"] {
+        let over = set_only(&[(name, "fixture")]);
+        let built = policy(Some(&over), NameCase::host()).unwrap();
+        assert_eq!(
+            built.child_env(Vec::<(String, String)>::new())[name],
+            "fixture"
+        );
+    }
+    let over = EnvLayer {
+        allow: Some(vec!["WT_SESSION".into()]),
+        deny: Some(vec!["*_SESSION*".into()]),
+        ..EnvLayer::default()
+    };
+    assert_eq!(
+        policy(Some(&over), NameCase::host()),
+        Err(EnvPolicyError::DeniedName {
+            list: EnvList::Allow,
+            index: 0
+        })
+    );
+    assert!(
+        policy(None, NameCase::host())
+            .unwrap()
+            .is_denied("WT_SESSION_EXTRA")
+    );
+}
+
+#[test]
+fn user_configuration_cannot_add_deny_exceptions() {
+    let over = EnvLayer {
+        deny_exceptions: Some(BTreeMap::from([(
+            "*_SESSION*".into(),
+            vec!["APP_SESSION_ID".into()],
+        )])),
+        ..EnvLayer::default()
+    };
+    assert_eq!(
+        policy(Some(&over), NameCase::host()),
+        Err(EnvPolicyError::BadDenyExceptions)
+    );
 }

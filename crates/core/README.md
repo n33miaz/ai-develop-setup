@@ -58,13 +58,13 @@ Os limites da janela se liberam sozinhos com o tempo. Uma fila que atingiu o tot
 
 ## Ambiente do processo filho (`src/child_env.rs`)
 
-Política pura do ambiente que um processo de ferramenta recebe: só passam os nomes da lista permitida que o processo pai tem, escritos como a lista os escreve, mais os valores que o produto define (`TERM`, `COLORTERM`). Nome em `allow` ou em `set` que casa com um padrão negado (`NOME`, `PREFIXO*`, `*SUFIXO`, `*TRECHO*`, sem diferença de maiúsculas) recusa a política na carga; o filtro confere de novo e o descarta. Nomes repetidos (pela regra de caixa), nomes com `=`, `*` ou controle e valores de `set` com NUL ou controle também recusam. Os erros dizem a lista e a posição, nunca o texto recusado. Padrões de nome não reconhecem um segredo sob um nome qualquer: a garantia é que nada de nome reconhecidamente sensível passa e que o que passa está todo em `allow`. Os padrões ficam em [`defaults/harnesses.toml`](../../defaults/harnesses.toml) (`[env]`): a camada do usuário substitui `allow` e `set` e só acrescenta a `deny`. A comparação com `allow` ignora maiúsculas no Windows (`NameCase::Insensitive`); com dois nomes do pai que só diferem na caixa, vale o escrito igual à lista, senão o menor. O núcleo não lê o ambiente: quem chama o passa como dado.
+Política pura do ambiente que um processo de ferramenta recebe: só passam os nomes da lista permitida que o processo pai tem, escritos como a lista os escreve, mais os valores que o produto define (`TERM`, `COLORTERM`). Nome em `allow` ou em `set` que casa com um padrão negado (`NOME`, `PREFIXO*`, `*SUFIXO`, `*TRECHO*`, sem diferença de maiúsculas) recusa a política na carga; o filtro confere de novo e o descarta. A exceção são os nomes inofensivos listados pelo produto para um padrão em `[env.deny_exceptions]` (por exemplo `WT_SESSION` para `*_SESSION*`); a camada do usuário pode negá-los, mas não criar exceções. Nomes repetidos (pela comparação do sistema: no Windows também letras fora do ASCII, `ÄX` e `äx`), nomes com `=`, `*` ou controle e valores de `set` com NUL ou controle também recusam. Os erros dizem a lista e a posição, nunca o texto recusado. Padrões de nome não reconhecem um segredo sob um nome qualquer: a garantia é que nada de nome reconhecidamente sensível passa e que o que passa está todo em `allow`. Os padrões ficam em [`defaults/harnesses.toml`](../../defaults/harnesses.toml) (`[env]`): a camada do usuário substitui `allow` e `set` e só acrescenta a `deny`. A comparação com `allow` ignora maiúsculas no Windows (`NameCase::Insensitive`); com dois nomes do pai que só diferem na caixa, vale o escrito igual à lista, senão o menor. O núcleo não lê o ambiente: quem chama o passa como dado.
 
 ## Abertura de ferramentas
 
 Em `src/tool_launch/`, o núcleo carrega
 [`defaults/harnesses.toml`](../../defaults/harnesses.toml) com as substituições do
-usuário em `[tools.<id>]`, `[workdirs]` e `[env]`. Outras tabelas de ferramenta
+usuário em `[tools.<id>]`, `[workdirs]`, `[accounts]` e `[env]`. Outras tabelas de ferramenta
 são tratadas pelos adaptadores correspondentes.
 
 Cada adaptador declara a ferramenta com `ads_core::tool_harness!`, que tira do
@@ -87,6 +87,27 @@ confere que os dois só diferem na ferramenta).
 `Probe` permite conferir a existência do programa e da pasta na hora da
 abertura. `DiskProbe` faz essa consulta no disco.
 
+### Perfis de conta
+
+No arquivo de configuração do usuário, `[accounts.<ferramenta>.<apelido>]`
+define `profile_dir`. O apelido segue as regras de `workdirs`. O caminho é
+absoluto no estilo do sistema em que o núcleo roda e segue as mesmas regras
+de sintaxe. A validação compara os componentes do caminho normalizado e
+recusa pastas iguais ou aninhadas entre perfis e em relação às pastas de
+`[workdirs]`. Configure pastas de perfil sem links simbólicos nem junções
+no caminho, conforme o [risco registrado](../../docs/risks.md#contas-por-pasta-de-perfil).
+A futura ligação na abertura deve ocorrer após o filtro final de `open_params`.
+
+Em `[tools.<id>]`, `switch` aceita `manual`, `propose` (padrão) e `auto`.
+`switch_at_pct` aceita inteiros de 1 a 100, com padrão 90% da cota observada.
+Antigravity fica em `manual` sem configuração de troca.
+
+`ProfileBinding` aplica a constante de ambiente do adaptador depois do filtro.
+O processo pai e `env.set` continuam sujeitos a `env.deny`. A abertura de
+sessões ainda usa o ambiente sem perfil. O teste de isolamento do mantenedor
+e a medição de cota precedem a ativação da troca, conforme a
+[ADR 0022](../../docs/adr/0022-account-profile-folders-and-automatic-switching.md).
+
 ### O que a abertura garante
 
 - Quem pede a sessão escolhe só a ferramenta (pelo nome), o apelido da pasta e o
@@ -100,7 +121,10 @@ abertura. `DiskProbe` faz essa consulta no disco.
   e `\pasta`), variável (`%VAR%`, `$VAR`), `~`, `..`, caminho de rede, prefixos
   `\?\` e `\.\`, fluxo alternativo (`arquivo:fluxo`), nome curto do Windows
   (`NOME~1`), nome de dispositivo (`NUL`, `COM1`), componente terminado em ponto
-  ou espaço, caracteres reservados, curinga e caractere de controle.
+  ou espaço, caracteres reservados, curinga e caractere de controle. Caminho
+  escrito no estilo do outro sistema (`/usr/bin/x` no Windows, `C:\x.exe` fora
+  dele) é recusado na carga, com erro próprio; `HostRules` diz à carga as regras
+  do sistema (`HostRules::host()` fora dos testes).
 - Argumentos: só os fixos da configuração, na ordem dela; com caractere de
   controle, a configuração é recusada.
 - Pasta: o apelido precisa estar em `[workdirs]` (comparação exata) e a pasta
@@ -133,6 +157,9 @@ abertura. `DiskProbe` faz essa consulta no disco.
 - O login da ferramenta: fica com ela, no lugar padrão dela, achado pela pasta do
   usuário. As variáveis da pasta de configuração (`CLAUDE_CONFIG_DIR`,
   `CODEX_HOME`) e as demais que redirecionam o login não passam.
+- A abertura resolve links do programa e da pasta de trabalho, aplica as regras
+  de caminho ao destino e passa o caminho resolvido ao host. Veja os
+  [riscos de troca de caminho](../../docs/risks.md#programa-ou-pasta-configurados-por-um-link).
 - Que o programa seja o certo: confere-se que o arquivo existe, não quem o
   assinou. O arquivo pode sumir entre a conferência e a abertura; aí quem falha é
   a abertura no processo dos terminais.
