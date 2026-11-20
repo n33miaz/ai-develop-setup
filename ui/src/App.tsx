@@ -15,6 +15,8 @@ import {
   SESSION_CLOSE_PENDING,
   SESSION_SETUP_TIMED_OUT,
   useConnectionState,
+  type CommandRequestV1,
+  type CommandResponseV2,
   type CoreClient,
   type EventEnvelopeV1,
   type SubscriptionEndCode,
@@ -56,14 +58,44 @@ function nextStatus(
   current: SessionStatus | 'closed' | undefined,
   next: SessionStatus | 'closed',
 ): SessionStatus | 'closed' | undefined {
-  // Fechada fica fechada; o fim de outra assinatura não esconde um fechamento ainda pendente.
+  // Fechada fica fechada; nada que chegue depois esconde um fechamento que ainda depende do usuário.
   if (current === 'closed') return current
-  if (current === 'closing' && next === 'ended') return current
+  if (current === 'closing' && next !== 'closed') return current
   return next
 }
 
+/** Sessões cujo último evento de ciclo de vida é `session.ended`. */
+function endedSessions(events: readonly SessionEvent[]): Set<string> {
+  const ended = new Set<string>()
+  for (const event of events) {
+    if (event.type === 'urn:ads:event:session.ended:1') ended.add(event.data.session_id)
+    else if (event.type === 'urn:ads:event:session.created:1') ended.delete(event.data.session_id)
+  }
+  return ended
+}
+
+function sendWithin(
+  client: CoreClient,
+  command: CommandRequestV1,
+  ms: number,
+): Promise<CommandResponseV2 | 'timeout'> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => {
+      resolve('timeout')
+    }, ms)
+  })
+  return Promise.race([client.send(command), timeout]).finally(() => {
+    clearTimeout(timer)
+  })
+}
+
 /** Junta o estado local às sessões dos eventos; fechamento pendente ou falha aparecem mesmo sem `session.created`. */
-function withStatuses(sessions: SessionView[], statuses: SessionStatuses): SessionView[] {
+function withStatuses(
+  sessions: SessionView[],
+  statuses: SessionStatuses,
+  ended: ReadonlySet<string>,
+): SessionView[] {
   const views: SessionView[] = []
   for (const session of sessions) {
     const status = statuses[session.id]
@@ -72,6 +104,8 @@ function withStatuses(sessions: SessionView[], statuses: SessionStatuses): Sessi
   }
   for (const [id, status] of Object.entries(statuses)) {
     if (status !== 'closing' && status !== 'setupFailed') continue
+    // Um aviso tardio não recria a sessão que o núcleo já deu por encerrada.
+    if (ended.has(id)) continue
     if (!sessions.some((session) => session.id === id)) views.push({ id, activity: 'idle', status })
   }
   return views
@@ -102,6 +136,9 @@ interface AppProps {
 
   resizeDebounceMs?: number
 
+  /** Quanto esperar a resposta de `session.close`; depois disso o botão volta e a repetição usa a mesma chave. */
+  closeTimeoutMs?: number
+
   sessionStreams?: readonly string[]
   /** Os eventos que a tela reproduz; enquanto o núcleo não a alimenta, os de exemplo. */
   events?: (t: Translate) => SampleEvents
@@ -119,6 +156,8 @@ export function App({
   workdir = 'default',
 
   resizeDebounceMs = 150,
+
+  closeTimeoutMs = 10000,
 }: AppProps) {
   const t = useT()
   const sidebarId = useId()
@@ -133,7 +172,18 @@ export function App({
     setWarning(true)
   }, [])
 
-  const openedSubscriptions = useRef<(() => void)[]>([])
+  // Assinaturas abertas por `open`, por sessão, até terminarem ou a sessão ser fechada.
+  const openedSubscriptions = useRef(new Map<string, () => void>())
+
+  const releaseOpened = useCallback((id: string) => {
+    const stop = openedSubscriptions.current.get(id)
+    openedSubscriptions.current.delete(id)
+    stop?.()
+  }, [])
+
+  // Trava síncrona por sessão e o comando em curso, para repetir com a mesma chave depois do prazo.
+  const closeLocks = useRef(new Set<string>())
+  const closeCommands = useRef(new Map<string, CommandRequestV1>())
 
   const size = useRef({ cols: 80, rows: 24 })
 
@@ -143,7 +193,7 @@ export function App({
 
   const [statuses, setStatuses] = useState<SessionStatuses>({})
 
-  const [closing, setClosing] = useState(false)
+  const [closingIds, setClosingIds] = useState<ReadonlySet<string>>(new Set())
 
   const markSession = useCallback((id: string, status: SessionStatus | 'closed') => {
     setStatuses((previous) => {
@@ -156,12 +206,11 @@ export function App({
   const endSession = useCallback(
     (stream: string) => (code: SubscriptionEndCode) => {
       if (!stream.startsWith('session/')) return
-      markSession(
-        stream.slice('session/'.length),
-        code === SESSION_CLOSE_PENDING ? 'closing' : 'ended',
-      )
+      const id = stream.slice('session/'.length)
+      releaseOpened(id)
+      markSession(id, code === SESSION_CLOSE_PENDING ? 'closing' : 'ended')
     },
-    [markSession],
+    [markSession, releaseOpened],
   )
 
   const receiveSession = useCallback((event: EventEnvelopeV1) => {
@@ -183,9 +232,10 @@ export function App({
 
   useEffect(
     () => () => {
-      for (const stop of openedSubscriptions.current) stop()
+      const opened = openedSubscriptions.current
+      for (const stop of opened.values()) stop()
 
-      openedSubscriptions.current = []
+      opened.clear()
     },
     [client, connection],
   )
@@ -210,7 +260,11 @@ export function App({
   }, [client, live, connection, sessionStreams, receiveSession, endSession])
 
   const { tasks, sessions } = useMemo(() => {
-    if (live) return { tasks: [], sessions: withStatuses(sessionsFrom(liveEvents), statuses) }
+    if (live)
+      return {
+        tasks: [],
+        sessions: withStatuses(sessionsFrom(liveEvents), statuses, endedSessions(liveEvents)),
+      }
     const replayed = events(t)
     return { tasks: tasksFrom(replayed.tasks), sessions: sessionsFrom(replayed.sessions) }
   }, [events, t, live, liveEvents, statuses])
@@ -274,7 +328,7 @@ export function App({
       const stream = `session/${id}`
       const stop = client.subscribe(stream, 0, receiveSession, endSession(stream))
 
-      openedSubscriptions.current.push(stop)
+      openedSubscriptions.current.set(id, stop)
 
       const response = await client.send(
         newCommand('session.open', {
@@ -285,9 +339,14 @@ export function App({
         }),
       )
 
+      // Depois de -32014 a assinatura continua: é por ela que chega o resultado do fechamento.
       if (response.error?.code === SESSION_SETUP_TIMED_OUT) markSession(id, 'setupFailed')
-      else if (response.error) reportError()
+      else if (response.error) {
+        releaseOpened(id)
+        reportError()
+      }
     } catch {
+      releaseOpened(id)
       reportError()
     } finally {
       setOpening(false)
@@ -295,19 +354,37 @@ export function App({
   }
 
   const close = async (id: string) => {
-    setClosing(true)
+    if (closeLocks.current.has(id)) return
+    closeLocks.current.add(id)
+    setClosingIds(new Set(closeLocks.current))
 
     setWarning(false)
 
-    try {
-      const response = await client.send(newCommand('session.close', { session_id: id }))
+    // Depois de um prazo sem resposta o resultado é incerto: repete com a mesma chave e outro id.
+    const previous = closeCommands.current.get(id)
+    const command = previous
+      ? { ...previous, id: newUlid() }
+      : newCommand('session.close', { session_id: id })
+    closeCommands.current.set(id, command)
 
-      if (response.error) reportError()
-      else markSession(id, 'closed')
+    try {
+      const response = await sendWithin(client, command, closeTimeoutMs)
+
+      if (response === 'timeout') reportError()
+      else {
+        closeCommands.current.delete(id)
+        if (response.error) reportError()
+        else {
+          releaseOpened(id)
+          markSession(id, 'closed')
+          document.getElementById(TERMINAL_ID)?.focus()
+        }
+      }
     } catch {
       reportError()
     } finally {
-      setClosing(false)
+      closeLocks.current.delete(id)
+      setClosingIds(new Set(closeLocks.current))
     }
   }
 
@@ -355,14 +432,16 @@ export function App({
 
       {warning && <p role="alert">{t('session.commandFailed')}</p>}
 
-      {session?.status && (
-        <div className={styles.status} role="status">
-          <p>{t(SESSION_NOTICE[session.status])}</p>
-          {session.status === 'closing' && (
+      {live && (
+        <div className={styles.status} data-active={Boolean(session?.status)}>
+          <p role="status" aria-label={t('session.statusLabel')}>
+            {session?.status ? t(SESSION_NOTICE[session.status]) : ''}
+          </p>
+          {session?.status === 'closing' && (
             <button
               type="button"
               className={styles.button}
-              disabled={connection !== 'connected' || closing}
+              disabled={connection !== 'connected' || closingIds.has(session.id)}
               onClick={() => {
                 void close(session.id)
               }}

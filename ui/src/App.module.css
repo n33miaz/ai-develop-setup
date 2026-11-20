@@ -80,6 +80,11 @@
   color: var(--warn);
 }
 
+.status[data-active='false'] {
+  padding: 0;
+  border: 0;
+}
+
 .status p {
   flex: 1 1 16rem;
   margin: 0;

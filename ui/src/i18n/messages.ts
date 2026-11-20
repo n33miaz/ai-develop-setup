@@ -4,6 +4,7 @@ export const ptBR = {
   'session.commandFailed':
     'Não foi possível executar o comando da sessão. Confira a conexão e a configuração do núcleo.',
   'session.close': 'Fechar sessão',
+  'session.statusLabel': 'Estado da sessão',
   'session.state.closing': 'Fechando',
   'session.state.ended': 'Encerrada',
   'session.state.setupFailed': 'Falhou ao iniciar',
@@ -63,6 +64,7 @@ export const en: Record<MessageKey, string> = {
   'session.commandFailed':
     'Could not execute the session command. Check the connection and core configuration.',
   'session.close': 'Close session',
+  'session.statusLabel': 'Session state',
   'session.state.closing': 'Closing',
   'session.state.ended': 'Ended',
   'session.state.setupFailed': 'Failed to start',
