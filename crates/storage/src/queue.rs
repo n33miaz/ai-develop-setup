@@ -1,5 +1,5 @@
 //! Queue streams: the events of each task queue in the anchored log, one stream per queue.
-use crate::{EventLog, StorageError, StoredEvent};
+use crate::{EventLog, StorageConfig, StorageError, StoredEvent};
 use ads_contracts::{CommonIdV1, EventEnvelopeV1Stream};
 use serde_json::{Map, Value};
 
@@ -25,6 +25,15 @@ pub(crate) fn check_binding(
         Some(Value::String(id)) if id == entity && CommonIdV1::new(id.as_str()).is_ok() => Ok(()),
         _ => Err(StorageError::InvalidEvent),
     }
+}
+
+/// Whether a queue event would pass `queue_max_events`. A stop always enters: the core records
+/// one only for an enabled queue, so stops stay bounded by the enables the cap refuses, and a
+/// full queue can still be stopped after a restart.
+pub(crate) fn over_cap(kind: &str, family: &str, seq: u64, config: &StorageConfig) -> bool {
+    family == QUEUE_FAMILY
+        && seq > config.queue_max_events
+        && !kind.starts_with("urn:ads:event:queue.stopped:")
 }
 
 /// Stream of one queue.

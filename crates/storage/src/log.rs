@@ -606,7 +606,8 @@ impl EventLog {
     /// do not retry unchanged. `InvalidEvent`: `type` or stream family over its
     /// bound, a gate event whose `action_id`/`approval_id` disagree with its
     /// stream, or a queue event outside `queue/<data.queue_id>` (and back).
-    /// `Full`: a queue stream already holds `queue_max_events`. `TooLarge`: `data` over `max_event_bytes`. `WrongKey`: the provider
+    /// `Full`: a queue stream already holds `queue_max_events` (a stop still
+    /// enters). `TooLarge`: `data` over `max_event_bytes`. `WrongKey`: the provider
     /// disagrees with itself or with the registered key, or tries to reuse a retired id.
     /// `ChainBroken { position: 1 }`: the log has no genesis for the first row.
     pub fn append(&mut self, event: &EventEnvelopeV1) -> Result<Position, StorageError> {
@@ -617,7 +618,7 @@ impl EventLog {
             return Err(StorageError::InvalidEvent);
         }
         let (action_id, approval_id) = gate_ids(kind, stream, &event.data)?;
-        if family == crate::queue::QUEUE_FAMILY && event.seq.get() > self.config.queue_max_events {
+        if crate::queue::over_cap(kind, family, event.seq.get(), &self.config) {
             return Err(StorageError::Full);
         }
         let data = Zeroizing::new(

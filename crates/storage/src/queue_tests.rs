@@ -272,13 +272,25 @@ fn a_lowered_cap_keeps_the_queue_history_readable() {
         ("daemon", "core-01"),
         serde_json::json!({ "queue_id": "queue-01", "reason": "restart" }),
     );
-    assert_eq!(log.append(&next), Err(StorageError::Full));
+    let enabled = envelope(
+        7,
+        "enabled:1",
+        DEVICE,
+        serde_json::json!({ "queue_id": "queue-01", "owner_id": "owner-01", "via": "local_ui" }),
+    );
+    assert_eq!(log.append(&enabled), Err(StorageError::Full));
     assert_eq!(log.verify_chain(), Ok(6));
+    // A full queue can still be stopped, and nothing else enters after the stop.
+    log.append(&next).unwrap();
+    let mut after = enabled.clone();
+    after.id = ads_contracts::CommonUlidV1::new("01ARZ3NDEKTSV4RR0000000008").unwrap();
+    after.seq = std::num::NonZeroU64::new(8).unwrap();
+    assert_eq!(log.append(&after), Err(StorageError::Full));
     drop(log);
 
-    let mut log = open(&fixture.db(), &anchor, "queue_max_events = 7").unwrap();
-    log.append(&next).unwrap();
+    let mut log = open(&fixture.db(), &anchor, "queue_max_events = 8").unwrap();
+    log.append(&after).unwrap();
     let mut grown = events;
-    grown.push(next);
+    grown.extend([next, after]);
     assert_eq!(read_back(&log).unwrap(), grown);
 }

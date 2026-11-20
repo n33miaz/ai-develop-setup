@@ -365,6 +365,16 @@ Riscos da troca de conta por pasta de perfil ([ADR 0022](adr/0022-account-profil
 - **Plano B.** Manter a fila parada e a tarefa em `running` sem nova tentativa. Recuperar do backup íntegro o stream e, quando necessária, a política inicial antes de repetir o replay e conferir a sessão no host.
 - **O que falta.** Integrar a gravação condicional das mudanças do dono ao produtor conforme o [README do núcleo](../crates/core/README.md#fila-contínua).
 
+## Stream da fila no teto de eventos
+
+- **Descrição.** Ao atingir `queue_max_events` ([storage.toml](../defaults/storage.toml)), o `append` da fila recusa com `Full` todo evento menos `queue.stopped`: nenhuma ativação, admissão nem mudança de estado de tarefa entra, inclusive o fim de uma tarefa em `running`.
+- **Impacto.** A fila para de andar; a tarefa em execução fica em `running` no log até o teto subir. O gasto continua limitado, porque `queued → running` também é recusado.
+- **Dono.** Armazenamento e produtor da fila.
+- **Teto.** `queue_max_events` (padrão 100000, até 10000000) por fila; a leitura nunca recusa pelo tamanho.
+- **Mitigação existente.** A parada da fila ainda entra, então a partida registra a parada de uma fila cheia. Teste `a_lowered_cap_keeps_the_queue_history_readable` em `crates/storage/src/queue_tests.rs`.
+- **Plano B.** O dono sobe `queue_max_events` e reabre, ou cria outra fila. Ao subir `admission_limit`, manter `queue_max_events` acima de `admission_limit` vezes os eventos de uma tarefa (até cerca de 4 por tentativa).
+- **O que falta.** O daemon ainda não grava a fila; a interface precisa explicar o `Full` ao dono quando a ligação existir.
+
 ## Carimbo adiantado aceito no replay da fila
 
 - **Descrição.** No replay, o relógio de cada criação é o próprio `ts` gravado, então `AheadOfClock` não dispara. Um produtor com a chave da cadeia HMAC, por erro ou de propósito, pode gravar uma criação com carimbo adiantado, e o replay a aceita. A admissão ao vivo recusaria essa criação.
