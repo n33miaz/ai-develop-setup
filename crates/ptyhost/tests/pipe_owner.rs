@@ -15,8 +15,8 @@ use ads_ptyhost::win::{
 };
 use tokio::io::AsyncReadExt;
 
-const WARMUP_ROUNDS: usize = 3;
-const ROUNDS: usize = 40;
+const WARMUP_CYCLES: usize = 3;
+const CYCLES: usize = 40;
 const SETTLE_TIMEOUT: Duration = Duration::from_secs(10);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const STABLE_SAMPLES: usize = 3;
@@ -24,9 +24,9 @@ const IO_TIMEOUT: Duration = Duration::from_secs(5);
 /// Access that opens the pipe and finds its server, but cannot read who owns it.
 const FILE_READ_ATTRIBUTES: u32 = 0x80;
 
-fn endpoint(label: &str, round: usize) -> String {
+fn endpoint(label: &str, cycle: usize) -> String {
     format!(
-        r"\\.\pipe\ads-ptyhost-owner-{}-{label}-{round}",
+        r"\\.\pipe\ads-ptyhost-owner-{}-{label}-{cycle}",
         std::process::id()
     )
 }
@@ -41,10 +41,10 @@ fn stranger() -> LocalUser {
 /// A client refused by `check` on a fresh pipe: the server saw it connect and received nothing.
 async fn refused_on_a_real_pipe(
     label: &str,
-    round: usize,
+    cycle: usize,
     check: impl FnOnce(RawHandle) -> io::Result<()>,
 ) {
-    let endpoint = endpoint(label, round);
+    let endpoint = endpoint(label, cycle);
     let mut server = create_user_pipe(&endpoint, &current_user_sid().unwrap(), true).unwrap();
     {
         let mut waiting = std::pin::pin!(server.connect());
@@ -72,10 +72,10 @@ async fn refused_on_a_real_pipe(
     assert!(received.is_empty(), "{label}: {} bytes", received.len());
 }
 
-/// One round of each way the queries fail.
-async fn round(round: usize, not_a_pipe: &std::fs::File) {
+/// One pass through each way the queries fail.
+async fn cycle(cycle: usize, not_a_pipe: &std::fs::File) {
     // The first query fails: the handle given is not a pipe.
-    refused_on_a_real_pipe("first", round, |_| {
+    refused_on_a_real_pipe("first", cycle, |_| {
         check_pipe_server(not_a_pipe.as_raw_handle())
     })
     .await;
@@ -83,11 +83,11 @@ async fn round(round: usize, not_a_pipe: &std::fs::File) {
     // Every query succeeds and the identity does not match: the server process, its token and
     // the pipe's descriptor were all opened before the refusal.
     let stranger = stranger();
-    refused_on_a_real_pipe("whole", round, |pipe| check_pipe_server_as(&stranger, pipe)).await;
+    refused_on_a_real_pipe("whole", cycle, |pipe| check_pipe_server_as(&stranger, pipe)).await;
 
     // The last query fails: a client that may read the pipe's attributes but not its owner
     // finds the server process and its token, then cannot read who owns the pipe.
-    let endpoint = endpoint("owner", round);
+    let endpoint = endpoint("owner", cycle);
     let _server = create_user_pipe(&endpoint, &current_user_sid().unwrap(), true).unwrap();
     let limited = std::fs::OpenOptions::new()
         .access_mode(FILE_READ_ATTRIBUTES)
@@ -130,38 +130,19 @@ async fn settle(limit: u32) -> u32 {
 #[tokio::test]
 async fn repeated_query_failures_refuse_and_release_every_handle() {
     let not_a_pipe = std::fs::File::open(std::env::current_exe().unwrap()).unwrap();
-    for index in 0..WARMUP_ROUNDS {
-        round(index, &not_a_pipe).await;
+    for index in 0..WARMUP_CYCLES {
+        cycle(index, &not_a_pipe).await;
     }
     let before = settle(u32::MAX).await;
-    for index in WARMUP_ROUNDS..WARMUP_ROUNDS + ROUNDS {
-        round(index, &not_a_pipe).await;
+    for index in WARMUP_CYCLES..WARMUP_CYCLES + CYCLES {
+        cycle(index, &not_a_pipe).await;
     }
     let after = settle(before).await;
-    println!("pipe owner refusals: {ROUNDS} rounds; handles before: {before}, after: {after}");
+    println!("pipe owner refusals: {CYCLES} cycles; handles before: {before}, after: {after}");
 }
 
-// Manual checks. They need a second account or a different elevation level, so they never run
-// on their own: each one panics with its instructions when the variables it reads are missing.
-//
-// Build the binary once (`cargo test -p ads-ptyhost --test pipe_owner --no-run` prints its
-// path) and copy it to a folder the other account can read and run, e.g. under `C:\Users\Public`.
-// The client side runs with `cargo test -p ads-ptyhost --test pipe_owner -- --ignored --exact
-// <name>`; the side of the other account runs the copied binary with `--ignored --exact <name>`
-// from a shell opened with `runas /user:<other account> cmd`.
-//
-// Expected results, client side:
-// | Server                                                     | Client           | Result   |
-// |------------------------------------------------------------|------------------|----------|
-// | `serve_for_another_account`, run by another account        | any              | refused  |
-// | host of the same user, both non-elevated                   | non-elevated     | accepted |
-// | host of the same user, both elevated                       | elevated         | accepted |
-// | host of the same user, elevated (owner: administrators)    | non-elevated     | refused  |
-// | host of the same user, non-elevated                        | elevated         | accepted |
-// | host of another administrator, elevated                    | elevated         | refused  |
-//
-// "Host of the same user" is `ads-ptyhost` started with `channel_path` set to the endpoint; the
-// owner of its pipe is whatever the token of that process gives its objects.
+// Manual checks: they need a second account or another elevation level. How to run them and
+// the expected results are in the README, "Testes manuais do dono do pipe".
 
 const ENDPOINT_VARIABLE: &str = "ADS_PIPE_OWNER_ENDPOINT";
 const CLIENT_VARIABLE: &str = "ADS_PIPE_OWNER_CLIENT_SID";
@@ -179,10 +160,10 @@ fn required(name: &str, instructions: &str) -> String {
 /// `ADS_PIPE_OWNER_CLIENT_SID` (the client user's identifier, from `whoami /user`). Waits up to
 /// two minutes for one client and fails if it receives any byte.
 #[tokio::test]
-#[ignore = "manual: run by a second account, see the comment above"]
+#[ignore = "manual: run by a second account, see the ptyhost README"]
 async fn serve_for_another_account() {
     let instructions =
-        "Run from a shell of another account; see the comment in tests/pipe_owner.rs.";
+        "Run it from a shell of another account; see the ptyhost README, manual pipe owner tests.";
     let endpoint = required(ENDPOINT_VARIABLE, instructions);
     let client = required(CLIENT_VARIABLE, instructions);
     assert_ne!(client, current_user_sid().unwrap(), "{instructions}");
@@ -205,21 +186,14 @@ async fn serve_for_another_account() {
 }
 
 /// Client side: connects to `ADS_PIPE_OWNER_ENDPOINT` with the real check and compares with
-/// `ADS_PIPE_OWNER_EXPECT` (`accepted` or `refused`, from the table above).
+/// `ADS_PIPE_OWNER_EXPECT` (`accepted` or `refused`, from the table in the README).
 #[tokio::test]
-#[ignore = "manual: needs a server of another account or elevation level, see the comment above"]
+#[ignore = "manual: needs a server of another account or elevation level, see the ptyhost README"]
 async fn connect_to_a_prepared_server() {
-    let instructions = "Start one of the servers in the table in tests/pipe_owner.rs first.";
+    let instructions = "Start one of the servers of the table in the ptyhost README first.";
     let endpoint = required(ENDPOINT_VARIABLE, instructions);
     let expect = required(EXPECT_VARIABLE, instructions);
     let result = connect(&endpoint).await;
-    // Printed for the record; a normal account cannot read another user's server.
-    let opened = std::fs::OpenOptions::new()
-        .access_mode(FILE_READ_ATTRIBUTES)
-        .open(&endpoint);
-    if let Ok(pipe) = opened {
-        println!("server as read: {:?}", pipe_server(pipe.as_raw_handle()));
-    }
     match expect.as_str() {
         "accepted" => assert!(result.is_ok(), "{:?}", result.err()),
         "refused" => assert!(
