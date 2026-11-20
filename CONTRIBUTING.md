@@ -146,7 +146,7 @@ Títulos e descrições de issue e PR, nomes de branch, assuntos de commit, come
 
 O Dependabot abre, toda segunda-feira, PRs para a `develop` com as atualizações de Cargo, npm (`ui/` e `contracts/`) e GitHub Actions; as menores e de correção vêm agrupadas por ecossistema, as maiores uma a uma ([.github/dependabot.yml](.github/dependabot.yml)). Nas Actions, fixadas por SHA, ele troca o SHA e o comentário de versão juntos.
 
-Depois do CI verde num PR do Dependabot, o workflow `dependabot-coauthor.yml` acrescenta o mantenedor como coautor nas mensagens dos commits do PR, confere que o conteúdo é o mesmo que o CI aprovou e pede o CI de novo, para o `ci-ok` existir no commit reescrito. É a única reescrita de histórico do repositório, automática e restrita a branches `dependabot/*` ainda não juntadas; desliga-se com `coauthor = "none"` em `defaults/dependencies.toml`. Os commits do Dependabot ficam fora do job `commits` (são de robô), e o PR é juntado como os demais, por merge commit depois do `ci-ok` verde.
+Depois do CI verde num PR do Dependabot, o workflow `dependabot-coauthor.yml` acrescenta o mantenedor como coautor nas mensagens dos commits do PR, confere que cada commit mantém a árvore e o autor que o CI aprovou e pede o CI de novo, para o `ci-ok` existir no commit reescrito. Ele só age em PR aberto do Dependabot para a `develop`, sem commit de merge. É a única reescrita de histórico do repositório, automática e restrita a branches `dependabot/*` ainda não juntadas; desliga-se com `coauthor = "none"` em `defaults/dependencies.toml`. Os commits do Dependabot ficam fora do job `commits` (são de robô), e o PR é juntado como os demais, por merge commit depois do `ci-ok` verde.
 
 ## Segredos e dados
 
