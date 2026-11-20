@@ -47,6 +47,7 @@ import type { SessionEvent } from './api'
 import { UpdateNotice } from './pwa/UpdateNotice'
 
 const NO_STREAMS: readonly string[] = []
+const INVALID_PARAMS = -32602
 
 const THEME_LABEL: Record<ThemePreference, MessageKey> = {
   system: 'theme.system',
@@ -73,6 +74,7 @@ interface OpenSubscription {
   stop: () => void
   // O processo pode sair durante a preparação, antes do resultado do fechamento automático.
   preparing: boolean
+  created: boolean
   exited: boolean
 }
 
@@ -219,7 +221,7 @@ export function App({
   }, [])
 
   const finishSession = useCallback(
-    (id: string, keepOpened = false) => {
+    (id: string, exited = false) => {
       const button = closeButtonRef.current
       const active = document.activeElement
       if (
@@ -227,8 +229,8 @@ export function App({
         (button?.dataset.session === id && (active === null || active === document.body))
       )
         mainRef.current?.focus()
-      replay.current.finish(id)
-      if (!keepOpened) releaseOpened(id)
+      replay.current.finish(id, exited)
+      releaseOpened(id)
       closeCommands.current.delete(id)
       unlockClose(id)
       clearWarning('close:' + id)
@@ -266,8 +268,13 @@ export function App({
       if (!replay.current.receive(session)) return
       if (session.type === 'urn:ads:event:session.ended:1') {
         const entry = openedSubscriptions.current.get(id)
-        if (entry) entry.exited = true
-        finishSession(id, entry?.preparing)
+        if (entry?.preparing) {
+          entry.exited = true
+          markSession(id, 'ended')
+          replay.current.finish(id, true)
+        } else {
+          finishSession(id, true)
+        }
         return
       }
       if (wasFinished) setStatuses((previous) => without(previous, id))
@@ -277,7 +284,7 @@ export function App({
         return next
       })
     },
-    [finishSession],
+    [finishSession, markSession],
   )
 
   useEffect(
@@ -360,6 +367,9 @@ export function App({
         (code) => {
           if (!stream.startsWith(SESSION_STREAM_PREFIX)) return
           if (creation !== undefined && creation !== replay.current.creationOf(id)) return
+          if (code === SESSION_CLOSE_PENDING && creation !== undefined) {
+            replay.current.resumeCleanup(id)
+          }
           markSession(id, code === SESSION_CLOSE_PENDING ? 'closing' : 'ended')
         },
       )
@@ -437,20 +447,33 @@ export function App({
     setChosenSessionId(id)
 
     try {
-      const entry: OpenSubscription = { stop: () => undefined, preparing: true, exited: false }
+      const entry: OpenSubscription = {
+        stop: () => undefined,
+        preparing: true,
+        created: false,
+        exited: false,
+      }
       openedSubscriptions.current.set(id, entry)
-      entry.stop = client.subscribe('session/' + id, 0, receiveSession, (code) => {
-        if (openedSubscriptions.current.get(id) !== entry) return
-        releaseOpened(id)
-        if (code === SESSION_CLOSE_PENDING) {
-          if (entry.exited && entry.preparing) replay.current.resumeCleanup(id)
-          markSession(id, 'closing')
-        } else if (entry.preparing) {
-          finishSession(id)
-        } else {
-          markSession(id, 'ended')
-        }
-      })
+      entry.stop = client.subscribe(
+        SESSION_STREAM_PREFIX + id,
+        0,
+        (event) => {
+          if (event.type === 'urn:ads:event:session.created:1') entry.created = true
+          receiveSession(event)
+        },
+        (code) => {
+          if (openedSubscriptions.current.get(id) !== entry) return
+          releaseOpened(id)
+          if (code === SESSION_CLOSE_PENDING) {
+            if (entry.exited && entry.preparing) replay.current.resumeCleanup(id)
+            markSession(id, 'closing')
+          } else if (entry.preparing) {
+            finishSession(id)
+          } else {
+            markSession(id, 'ended')
+          }
+        },
+      )
 
       const response = await client.send(
         newCommand('session.open', {
@@ -461,18 +484,20 @@ export function App({
         }),
       )
 
-      if (response.error?.code === SESSION_SETUP_TIMED_OUT) {
-        if (openedSubscriptions.current.get(id) === entry) {
+      if (openedSubscriptions.current.get(id) !== entry) return
+      if (response.error) {
+        const timedOut = response.error.code === SESSION_SETUP_TIMED_OUT
+        if (timedOut || entry.created) {
           if (entry.exited) replay.current.resumeCleanup(id)
-          setSetupGenerations((previous) => new Map(previous).set(id, generation))
+          if (timedOut) setSetupGenerations((previous) => new Map(previous).set(id, generation))
           markSession(id, 'setupFailed')
+        } else {
+          releaseOpened(id)
+          reportError()
         }
-      } else if (response.error) {
-        releaseOpened(id)
-        reportError()
       } else {
         entry.preparing = false
-        if (entry.exited) releaseOpened(id)
+        if (entry.exited) finishSession(id, true)
       }
     } catch {
       releaseOpened(id)
@@ -511,7 +536,7 @@ export function App({
     client.send(command).then(
       (response) => {
         clearTimeout(timer)
-        if (response.error) fail(true)
+        if (response.error && response.error.code !== INVALID_PARAMS) fail(true)
         else if (
           closeCommands.current.get(id)?.params._meta.idempotency_key ===
           command.params._meta.idempotency_key
@@ -524,6 +549,14 @@ export function App({
       },
     )
   }
+
+  const warningMessages = sessions
+    .filter(
+      ({ id, status }) =>
+        (status === 'closing' || status === 'setupFailed') && warnings.has('close:' + id),
+    )
+    .map(({ id, displayName }) => t('session.closeFailed', { name: displayName ?? id }))
+  if (warnings.has('command')) warningMessages.unshift(t('session.commandFailed'))
 
   return (
     <div className={styles.app}>
@@ -571,7 +604,7 @@ export function App({
         <p role={FAILURE_NOTICES.has(catalogNotice) ? 'alert' : 'status'}>{t(catalogNotice)}</p>
       )}
 
-      {warnings.size > 0 && <p role="alert">{t('session.commandFailed')}</p>}
+      {warningMessages.length > 0 && <p role="alert">{warningMessages.join(' ')}</p>}
 
       {live && (
         <div className={styles.status} data-active={Boolean(session?.status)}>

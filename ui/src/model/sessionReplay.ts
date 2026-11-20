@@ -5,7 +5,7 @@ export const SESSION_STREAM_PREFIX = 'session/'
 interface Cursor {
   seq: number
   createdId?: string
-  finished?: boolean
+  finished?: 'exited' | 'closed'
 }
 
 /** Guarda um cursor por sessão ativa; só fluxos configurados conservam o cursor após o fim. */
@@ -44,12 +44,16 @@ export class SessionReplay {
   }
 
   isFinished(id: string): boolean {
-    return this.cursors.get(id)?.finished === true
+    return this.cursors.get(id)?.finished !== undefined
   }
 
-  finish(id: string) {
+  finish(id: string, exited = false) {
     if (this.configured.has(id)) {
-      this.cursors.set(id, { seq: 0, ...this.cursors.get(id), finished: true })
+      this.cursors.set(id, {
+        seq: 0,
+        ...this.cursors.get(id),
+        finished: exited ? 'exited' : 'closed',
+      })
     } else {
       this.cursors.delete(id)
     }
@@ -57,6 +61,6 @@ export class SessionReplay {
 
   resumeCleanup(id: string) {
     const cursor = this.cursors.get(id)
-    if (cursor) cursor.finished = false
+    if (cursor?.finished === 'exited') delete cursor.finished
   }
 }
