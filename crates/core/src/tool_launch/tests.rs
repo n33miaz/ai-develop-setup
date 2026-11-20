@@ -33,7 +33,16 @@ const POISON_EXTRA: &[&str] = &[];
 const DENIED_EXTRA: &[&str] = &[];
 const WRONG_HARNESSES: &[&str] = &["harness-other", "Harness-Test", "harness-a"];
 
+mod real_process;
 mod suite;
+
+/// `path` as the configuration keeps it: canonical, so that a short name or a lowercase drive
+/// letter on the machine running the tests does not change the text, and without `\\?\`.
+fn literal(path: &std::path::Path) -> String {
+    let canonical = std::fs::canonicalize(path).unwrap().display().to_string();
+    let plain = canonical.strip_prefix(r"\\?\").unwrap_or(&canonical);
+    crate::gate::AbsPath::parse(plain).unwrap().to_string()
+}
 
 crate::tool_harness!(
     /// A tool declared like an adapter declares one, with no table in the shipped defaults.

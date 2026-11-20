@@ -12,10 +12,11 @@ use serde::Deserialize;
 /// with the widest comparison (see [`EnvPolicy::is_denied`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NameCase {
-    /// Windows: `Path` and `PATH` are the same variable. Only ASCII letters are folded, while
-    /// Windows also folds other letters (`Ä` and `ä`): an allowed name copies only a parent
-    /// name equal to it apart from ASCII case, so this narrower fold can only let less through
-    /// than the one Windows uses.
+    /// Windows: `Path` and `PATH` are the same variable. Copying from the parent folds only
+    /// ASCII letters, while Windows also folds other letters (`Ä` and `ä`): an allowed name
+    /// copies only a parent name equal to it apart from ASCII case, so it can only let less
+    /// through. Repeated names and the names `set` replaces use the wider fold, so two entries
+    /// Windows takes as one variable are refused, and a `set` value always wins.
     Insensitive,
     Sensitive,
 }
@@ -35,6 +36,23 @@ impl NameCase {
             Self::Insensitive => a.eq_ignore_ascii_case(b),
             Self::Sensitive => a == b,
         }
+    }
+
+    /// Whether the system may take `a` and `b` as one variable: on Windows, equal once every
+    /// letter with a one-letter upper case is upper-cased. At least as wide as Windows' rule.
+    fn one_variable(self, a: &str, b: &str) -> bool {
+        match self {
+            Self::Insensitive => a.chars().map(simple_upper).eq(b.chars().map(simple_upper)),
+            Self::Sensitive => a == b,
+        }
+    }
+}
+
+fn simple_upper(c: char) -> char {
+    let mut upper = c.to_uppercase();
+    match (upper.next(), upper.next()) {
+        (Some(one), None) => one,
+        _ => c,
     }
 }
 
@@ -87,7 +105,7 @@ pub enum EnvPolicyError {
         list: EnvList,
         index: usize,
     },
-    /// The same name twice in one list, under the policy's case rule.
+    /// The same name twice in one list, as the system would compare them.
     DuplicateName {
         list: EnvList,
         index: usize,
@@ -157,8 +175,9 @@ impl Pattern {
     }
 }
 
-/// Fullwidth ASCII forms (`Ｔ`, `＿`) as plain ASCII, the part of compatibility normalization
-/// that can spell a pattern.
+/// Fullwidth ASCII forms (`Ｔ`, `＿`) as plain ASCII. Other forms that compatibility
+/// normalization turns into ASCII (mathematical `𝐓`, circled `Ⓣ`, ligatures `ﬁ`) are left as
+/// they are: no system reads such a name as the ASCII one, so it names another variable.
 fn fold_fullwidth(name: &str) -> String {
     name.chars()
         .map(|c| match u32::from(c) {
@@ -240,7 +259,7 @@ impl EnvPolicy {
             if self.is_denied(name) {
                 return Err(EnvPolicyError::DeniedName { list, index });
             }
-            if seen.iter().any(|have| self.case.same(have, name)) {
+            if seen.iter().any(|have| self.case.one_variable(have, name)) {
                 return Err(EnvPolicyError::DuplicateName { list, index });
             }
             seen.push(name);
@@ -298,7 +317,7 @@ impl EnvPolicy {
             if self.is_denied(name) {
                 continue;
             }
-            child.retain(|have, _| !self.case.same(have, name));
+            child.retain(|have, _| !self.case.one_variable(have, name));
             child.insert(name.clone(), value.clone());
         }
         child
@@ -364,6 +383,38 @@ mod tests {
         };
         let child = policy.child_env([("GH_TOKEN", "s"), ("PATH", "p")]);
         assert_eq!(child, BTreeMap::from([("PATH".into(), "p".into())]));
+    }
+
+    #[test]
+    fn names_windows_takes_as_one_are_one_name() {
+        // `Ä` and `ä` are one letter to Windows, though copying folds only ASCII.
+        let policy = EnvPolicy::from_layers(
+            &layer(&["äx"], &[], &[("ÄX", "set")]),
+            None,
+            NameCase::Insensitive,
+        )
+        .unwrap();
+        let child = policy.child_env([("äx", "parent")]);
+        assert_eq!(child, BTreeMap::from([("ÄX".into(), "set".into())]));
+        assert_eq!(
+            EnvPolicy::from_layers(&layer(&["äx", "ÄX"], &[], &[]), None, NameCase::Insensitive),
+            Err(EnvPolicyError::DuplicateName {
+                list: EnvList::Allow,
+                index: 1
+            })
+        );
+        // Elsewhere they are two names.
+        let policy = EnvPolicy::from_layers(
+            &layer(&["äx", "ÄX"], &[], &[("ÄX", "set")]),
+            None,
+            NameCase::Sensitive,
+        )
+        .unwrap();
+        let child = policy.child_env([("äx", "parent")]);
+        assert_eq!(
+            child,
+            BTreeMap::from([("äx".into(), "parent".into()), ("ÄX".into(), "set".into())])
+        );
     }
 
     #[test]

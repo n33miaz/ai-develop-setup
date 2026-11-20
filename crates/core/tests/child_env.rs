@@ -535,11 +535,18 @@ fn the_essential_names_stay_allowed_and_are_copied() {
 #[test]
 fn on_windows_only_ascii_case_is_ignored_in_allowed_names() {
     // Windows folds more than ASCII when it compares variable names; the allow list does not.
-    // A name that differs from a parent name beyond ASCII case is a different name here.
+    // When copying, a name that differs from a parent name beyond ASCII case is a different
+    // name, which can only let less through.
     let with_allow = |names: &[&str]| policy(Some(&allow_only(names)), NameCase::Insensitive);
 
-    // Not repeated: `Ä` and `ä` differ beyond ASCII case.
-    assert!(with_allow(&["PATH", "\u{c4}X", "\u{e4}x"]).is_ok());
+    // Repeated all the same: Windows takes `ÄX` and `äx` as one variable.
+    assert_eq!(
+        with_allow(&["PATH", "\u{c4}X", "\u{e4}x"]),
+        Err(EnvPolicyError::DuplicateName {
+            list: EnvList::Allow,
+            index: 2
+        })
+    );
     assert_eq!(
         with_allow(&["\u{c4}X", "\u{c4}x"]),
         Err(EnvPolicyError::DuplicateName {
