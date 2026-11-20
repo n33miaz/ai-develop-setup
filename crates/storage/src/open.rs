@@ -286,20 +286,27 @@ fn existing_flags() -> OpenFlags {
 impl AuditStore {
     /// Validates the header before SQLite can access the file.
     pub fn open(path: &Path, config: &StorageConfig) -> Result<Self, StorageError> {
-        Self::open_after_inspection(path, config, || {})
+        Self::open_after_inspection(path, config, true, || {})
+    }
+
+    pub(crate) fn open_existing(path: &Path, config: &StorageConfig) -> Result<Self, StorageError> {
+        Self::open_after_inspection(path, config, false, || {})
     }
 
     fn open_after_inspection(
         path: &Path,
         config: &StorageConfig,
+        create: bool,
         after: impl FnOnce(),
     ) -> Result<Self, StorageError> {
         let exists = settle(path, config)?;
         after();
         let flags = if exists {
             existing_flags()
-        } else {
+        } else if create {
             existing_flags() | OpenFlags::SQLITE_OPEN_CREATE
+        } else {
+            return Err(StorageError::AnchorMismatch);
         };
         let mut connection = Connection::open_with_flags(path, flags)?;
         // A refusal must neither checkpoint the frames it refused nor delete the WAL,
@@ -386,7 +393,7 @@ pub(crate) mod tests {
         let moved = root.join(format!("disappeared-{}.saved", std::process::id()));
         let config = StorageConfig::defaults();
         drop(AuditStore::open(&path, &config).unwrap());
-        let result = AuditStore::open_after_inspection(&path, &config, || {
+        let result = AuditStore::open_after_inspection(&path, &config, true, || {
             std::fs::rename(&path, &moved).unwrap()
         });
         assert_eq!(result.unwrap_err(), StorageError::CantOpen);

@@ -1,11 +1,11 @@
-use ads_contracts::{
-    CommonActorV1, CommonActorV1Kind, CommonDataClassV1, CommonIdV1, CommonTimestampV1,
-    CommonUlidV1, EventEnvelopeV1, EventEnvelopeV1Stream, EventEnvelopeV1Type,
-};
-use ads_storage::{
+use crate::{
     AuditStore, EventLog, StorageConfig, StorageError,
     cipher::{CipherError, KeyId, KeyProvider, SecretKey},
     open::{APPLICATION_ID, SCHEMA_VERSION},
+};
+use ads_contracts::{
+    CommonActorV1, CommonActorV1Kind, CommonDataClassV1, CommonIdV1, CommonTimestampV1,
+    CommonUlidV1, EventEnvelopeV1, EventEnvelopeV1Stream, EventEnvelopeV1Type,
 };
 use rusqlite::Connection;
 use std::{
@@ -17,12 +17,256 @@ use std::{
 const SENTINEL: &str = "private-sentinel-5f2e9c1d";
 const CLEAR_MARKER: &str = "clear-actor-marker-81b3";
 
+#[derive(Clone, Default)]
+struct MemoryAnchor(std::sync::Arc<std::sync::Mutex<MemoryAnchorState>>);
+
+#[derive(Default)]
+struct MemoryAnchorState {
+    commitment: Option<crate::anchor::Commitment>,
+    deny_reads: bool,
+    deny_writes: bool,
+}
+
+impl crate::anchor::AnchorStore for MemoryAnchor {
+    fn read(&self) -> Result<Option<crate::anchor::Commitment>, StorageError> {
+        let state = self.0.lock().unwrap();
+        if state.deny_reads {
+            return Err(StorageError::AnchorUnavailable);
+        }
+        Ok(state.commitment)
+    }
+
+    fn store(&self, commitment: &crate::anchor::Commitment) -> Result<(), StorageError> {
+        let mut state = self.0.lock().unwrap();
+        if state.deny_writes {
+            return Err(StorageError::AnchorUnavailable);
+        }
+        state.commitment = Some(*commitment);
+        Ok(())
+    }
+}
+
+fn anchored(path: &Path, anchor: &MemoryAnchor) -> Result<EventLog, StorageError> {
+    EventLog::open(
+        path,
+        &StorageConfig::defaults(),
+        keys("key-a", 1),
+        Box::new(anchor.clone()),
+    )
+}
+
+#[test]
+fn external_commitment_refuses_a_cut_tail_and_an_older_copy() {
+    for restore_copy in [false, true] {
+        let path = fixture();
+        let anchor = MemoryAnchor::default();
+        let first = event("task/t1", 1, 1, serde_json::json!({}));
+        let second = event("task/t1", 2, 2, serde_json::json!({}));
+        let mut log = anchored(&path, &anchor).unwrap();
+        log.append(&first).unwrap();
+        drop(log);
+        let old_file = std::fs::read(&path).unwrap();
+        let mut log = anchored(&path, &anchor).unwrap();
+        log.append(&second).unwrap();
+        drop(log);
+        if restore_copy {
+            std::fs::write(&path, old_file).unwrap();
+        } else {
+            tamper(&path, "DELETE FROM event WHERE position = 2", None);
+        }
+        assert_eq!(open(&path).verify_chain(), Ok(1));
+        assert_eq!(
+            anchored(&path, &anchor).unwrap_err(),
+            StorageError::AnchorMismatch
+        );
+    }
+}
+
+#[test]
+fn external_commitment_refuses_a_registered_future_key_before_rotation() {
+    let path = fixture();
+    let anchor = MemoryAnchor::default();
+    let mut log = anchored(&path, &anchor).unwrap();
+    log.append(&event("task/t1", 1, 1, serde_json::json!({})))
+        .unwrap();
+    Connection::open(&path)
+        .unwrap()
+        .execute(
+            "INSERT INTO cipher_key VALUES (?1, 'xchacha20poly1305', zeroblob(24), zeroblob(16))",
+            ["key-b"],
+        )
+        .unwrap();
+    assert_eq!(
+        log.append(&event("task/t1", 2, 2, serde_json::json!({}))),
+        Err(StorageError::AnchorMismatch)
+    );
+    let error = EventLog::open(
+        &path,
+        &StorageConfig::defaults(),
+        keys("key-b", 2),
+        Box::new(anchor),
+    )
+    .unwrap_err();
+    assert_eq!(error, StorageError::AnchorMismatch);
+}
+
+#[test]
+fn unavailable_anchor_blocks_open_and_rolls_back_append() {
+    let path = fixture();
+    let anchor = MemoryAnchor::default();
+    anchor.0.lock().unwrap().deny_reads = true;
+    assert_eq!(
+        anchored(&path, &anchor).unwrap_err(),
+        StorageError::AnchorUnavailable
+    );
+    assert!(!path.exists());
+    anchor.0.lock().unwrap().deny_reads = false;
+    let mut log = anchored(&path, &anchor).unwrap();
+    let event = event("task/t1", 1, 1, serde_json::json!({}));
+    for deny_reads in [true, false] {
+        {
+            let mut state = anchor.0.lock().unwrap();
+            state.deny_reads = deny_reads;
+            state.deny_writes = !deny_reads;
+        }
+        assert_eq!(log.append(&event), Err(StorageError::AnchorUnavailable));
+        assert_eq!(log.head(&event.stream), Ok(0));
+    }
+    anchor.0.lock().unwrap().deny_writes = false;
+    assert_eq!(log.append(&event).unwrap().get(), 1);
+    assert_eq!(anchored(&path, &anchor).unwrap().head(&event.stream), Ok(1));
+}
+
+#[test]
+fn recovery_rechecks_the_confirmed_plan_and_never_silently_enrolls_history() {
+    let path = fixture();
+    let anchor = MemoryAnchor::default();
+    let config = StorageConfig::defaults();
+    let key = || keys("key-a", 1);
+    let plan = || EventLog::plan_reanchor(&path, &config, key(), &anchor).unwrap();
+    let mut log = open(&path);
+    log.append(&event("task/t1", 1, 1, serde_json::json!({})))
+        .unwrap();
+    assert_eq!(
+        anchored(&path, &anchor).unwrap_err(),
+        StorageError::AnchorMissing
+    );
+    let stale = plan();
+    assert_eq!(stale.summary().previous_position, None);
+    assert_eq!(stale.summary().proposed_position, 1);
+    log.append(&event("task/t1", 2, 2, serde_json::json!({})))
+        .unwrap();
+    assert_eq!(
+        EventLog::reanchor(&path, &config, key(), &anchor, stale),
+        Err(StorageError::AnchorMismatch)
+    );
+    EventLog::reanchor(&path, &config, key(), &anchor, plan()).unwrap();
+    assert_eq!(anchored(&path, &anchor).unwrap().verify_chain(), Ok(2));
+    let missing = fixture();
+    assert_eq!(
+        anchored(&missing, &anchor).unwrap_err(),
+        StorageError::AnchorMismatch
+    );
+    assert!(!missing.exists());
+}
+
+#[test]
+fn anchored_open_and_recovery_refuse_a_missing_middle_row() {
+    let path = fixture();
+    let anchor = MemoryAnchor::default();
+    let mut log = anchored(&path, &anchor).unwrap();
+    log.append(&event("task/t1", 1, 1, serde_json::json!({})))
+        .unwrap();
+    log.append(&gate_event(
+        "urn:ads:event:action.started:1",
+        "action/a1",
+        1,
+        2,
+        serde_json::json!({ "action_id": "a1", "approval_id": "ap1" }),
+    ))
+    .unwrap();
+    log.append(&event("task/t1", 2, 3, serde_json::json!({})))
+        .unwrap();
+    drop(log);
+    tamper(&path, "DELETE FROM event WHERE position = 2", None);
+
+    let error = StorageError::ChainBroken { position: 3 };
+    assert_eq!(anchored(&path, &anchor).unwrap_err(), error);
+    assert_eq!(
+        EventLog::plan_reanchor(&path, &StorageConfig::defaults(), keys("key-a", 1), &anchor)
+            .unwrap_err(),
+        error
+    );
+}
+
+#[test]
+fn failed_sqlite_commit_leaves_the_anchor_ahead_until_confirmed_recovery() {
+    let path = fixture();
+    let anchor = MemoryAnchor::default();
+    let config = StorageConfig::defaults();
+    let mut log = anchored(&path, &anchor).unwrap();
+    let first = event("task/t1", 1, 1, serde_json::json!({}));
+    let second = event("task/t1", 2, 2, serde_json::json!({}));
+    log.append(&first).unwrap();
+
+    log.set_commit_hook(Some(|| true));
+    assert_eq!(log.append(&second), Err(StorageError::Constraint));
+    log.set_commit_hook(None);
+    assert_eq!(log.head(&first.stream), Ok(1));
+    assert_eq!(log.append(&second), Err(StorageError::AnchorMismatch));
+    assert_eq!(
+        anchored(&path, &anchor).unwrap_err(),
+        StorageError::AnchorMismatch
+    );
+
+    let plan = EventLog::plan_reanchor(&path, &config, keys("key-a", 1), &anchor).unwrap();
+    assert_eq!(
+        plan.summary(),
+        crate::anchor::ReanchorSummary {
+            previous_position: Some(2),
+            proposed_position: 1,
+            position_delta: Some(-1),
+            same_genesis: Some(true),
+            same_registered_keys: Some(true),
+        }
+    );
+    EventLog::reanchor(&path, &config, keys("key-a", 1), &anchor, plan).unwrap();
+    assert_eq!(
+        anchored(&path, &anchor)
+            .unwrap()
+            .append(&second)
+            .unwrap()
+            .get(),
+        2
+    );
+}
+
+#[test]
+fn recovery_refuses_a_registered_key_without_an_event() {
+    let path = fixture();
+    let anchor = MemoryAnchor::default();
+    let mut log = anchored(&path, &anchor).unwrap();
+    log.append(&event("task/t1", 1, 1, serde_json::json!({})))
+        .unwrap();
+    drop(log);
+    Connection::open(&path)
+        .unwrap()
+        .execute(
+            "INSERT INTO cipher_key VALUES (?1, 'xchacha20poly1305', zeroblob(24), zeroblob(16))",
+            ["key-b"],
+        )
+        .unwrap();
+    assert_eq!(
+        EventLog::plan_reanchor(&path, &StorageConfig::defaults(), keys("key-a", 1), &anchor),
+        Err(StorageError::AnchorMismatch)
+    );
+}
+
 fn fixture() -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
-    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
+    let root = crate::open::tests::test_directory();
     assert!(root.is_absolute());
     std::fs::create_dir_all(&root).unwrap();
-    let root = root.canonicalize().unwrap();
     loop {
         let dir = root.join(format!(
             "event-log-{}-{}",
@@ -74,7 +318,7 @@ impl KeyProvider for Keys {
 }
 
 fn open(path: &Path) -> EventLog {
-    EventLog::open(path, &StorageConfig::defaults(), keys("key-a", 1)).unwrap()
+    EventLog::open_unanchored(path, &StorageConfig::defaults(), keys("key-a", 1)).unwrap()
 }
 
 fn stream(name: &str) -> EventEnvelopeV1Stream {
@@ -167,7 +411,7 @@ fn sentinel_never_reaches_database_wal_or_shm() {
     assert!(!diagnostic.contains(SENTINEL));
     drop(log);
     assert_eq!(
-        EventLog::open(&path, &StorageConfig::defaults(), keys("key-a", 2)).unwrap_err(),
+        EventLog::open_unanchored(&path, &StorageConfig::defaults(), keys("key-a", 2)).unwrap_err(),
         StorageError::WrongKey
     );
     // A new current key cannot read rows written under a different key-a.
@@ -175,7 +419,7 @@ fn sentinel_never_reaches_database_wal_or_shm() {
         current: ("key-b", 3),
         older: vec![("key-a", 2)],
     });
-    let log = EventLog::open(&path, &StorageConfig::defaults(), rotated).unwrap();
+    let log = EventLog::open_unanchored(&path, &StorageConfig::defaults(), rotated).unwrap();
     assert_eq!(
         log.read_stream(&stream("task/t1"), 1, 10).unwrap_err(),
         StorageError::WrongKey
@@ -192,7 +436,7 @@ fn rotation_reads_old_rows_with_older_key() {
         current: ("key-b", 3),
         older: vec![("key-a", 1)],
     });
-    let mut log = EventLog::open(&path, &StorageConfig::defaults(), rotated).unwrap();
+    let mut log = EventLog::open_unanchored(&path, &StorageConfig::defaults(), rotated).unwrap();
     let fourth = event("task/t1", 4, 4, serde_json::json!({ "text": "after" }));
     log.append(&fourth).unwrap();
     let read: Vec<_> = log
@@ -317,7 +561,8 @@ fn altered_clear_column_or_ciphertext_is_refused_on_read() {
             current: ("key-b", 5),
             older: vec![("key-a", 1)],
         });
-        let mut log = EventLog::open(&path, &StorageConfig::defaults(), rotated).unwrap();
+        let mut log =
+            EventLog::open_unanchored(&path, &StorageConfig::defaults(), rotated).unwrap();
         log.append(&event("task/t3", 1, 5, serde_json::json!({ "x": 2 })))
             .unwrap();
         drop(log);
@@ -331,7 +576,7 @@ fn altered_clear_column_or_ciphertext_is_refused_on_read() {
             current: ("key-b", 5),
             older: vec![("key-a", 1)],
         });
-        let log = EventLog::open(&path, &StorageConfig::defaults(), rotated).unwrap();
+        let log = EventLog::open_unanchored(&path, &StorageConfig::defaults(), rotated).unwrap();
         assert_eq!(
             log.read_stream(&stream(read), 1, 10).unwrap_err(),
             if *column == "key_id" {
@@ -401,11 +646,12 @@ fn verify_chain_points_to_first_altered_or_missing_row() {
 fn racing_connections_on_same_seq_let_exactly_one_in() {
     for attempt in 0..10u64 {
         let path = fixture();
-        let mut first = open(&path);
+        let anchor = MemoryAnchor::default();
+        let mut first = anchored(&path, &anchor).unwrap();
         first
             .append(&event("task/race", 1, 1, serde_json::json!({})))
             .unwrap();
-        let second = open(&path);
+        let second = anchored(&path, &anchor).unwrap();
         let barrier = std::sync::Barrier::new(2);
         let results: Vec<_> = std::thread::scope(|scope| {
             let handles: Vec<_> = [first, second]
@@ -440,7 +686,7 @@ fn racing_connections_on_same_seq_let_exactly_one_in() {
             1,
             "{results:?}"
         );
-        let log = open(&path);
+        let log = anchored(&path, &anchor).unwrap();
         assert_eq!(log.head(&stream("task/race")), Ok(2));
         assert_eq!(log.verify_chain(), Ok(2));
     }
@@ -629,7 +875,8 @@ fn schema_with_removed_or_changed_trigger_is_refused_on_open() {
         drop(log);
         Connection::open(&path).unwrap().execute_batch(sql).unwrap();
         assert_eq!(
-            EventLog::open(&path, &StorageConfig::defaults(), keys("key-a", 1)).unwrap_err(),
+            EventLog::open_unanchored(&path, &StorageConfig::defaults(), keys("key-a", 1))
+                .unwrap_err(),
             StorageError::UnsupportedSchema,
             "{sql}"
         );
@@ -640,7 +887,7 @@ fn schema_with_removed_or_changed_trigger_is_refused_on_open() {
 fn oversized_event_is_refused_without_writing_and_reads_are_paged() {
     let path = fixture();
     let config = StorageConfig::from_toml_str("max_event_bytes = 64\nread_page_limit = 2").unwrap();
-    let mut log = EventLog::open(&path, &config, keys("key-a", 1)).unwrap();
+    let mut log = EventLog::open_unanchored(&path, &config, keys("key-a", 1)).unwrap();
     let big = event(
         "task/t1",
         1,
@@ -826,7 +1073,7 @@ fn held_write_lock_gives_busy_without_writing() {
     let path = fixture();
     let config = StorageConfig::from_toml_str("busy_timeout_ms = 0").unwrap();
     // Opened before the lock is taken: opening runs the migration under it.
-    let mut log = EventLog::open(&path, &config, keys("key-a", 1)).unwrap();
+    let mut log = EventLog::open_unanchored(&path, &config, keys("key-a", 1)).unwrap();
     let holder = Connection::open(&path).unwrap();
     holder.execute_batch("BEGIN IMMEDIATE").unwrap();
     let first = event("task/t1", 1, 1, serde_json::json!({}));
@@ -849,7 +1096,7 @@ fn tampered_key_check_is_wrong_key() {
         Some(vec![7; 16]),
     );
     assert_eq!(
-        EventLog::open(&path, &StorageConfig::defaults(), keys("key-a", 1)).unwrap_err(),
+        EventLog::open_unanchored(&path, &StorageConfig::defaults(), keys("key-a", 1)).unwrap_err(),
         StorageError::WrongKey
     );
 }
@@ -874,7 +1121,7 @@ fn provider_whose_current_and_by_id_disagree_is_refused_before_writing() {
     let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let path = fixture();
     assert_eq!(
-        EventLog::open(
+        EventLog::open_unanchored(
             &path,
             &StorageConfig::defaults(),
             Box::new(Flaky(flag.clone()))
@@ -883,7 +1130,7 @@ fn provider_whose_current_and_by_id_disagree_is_refused_before_writing() {
         StorageError::WrongKey
     );
     flag.store(false, Ordering::SeqCst);
-    let mut log = EventLog::open(
+    let mut log = EventLog::open_unanchored(
         &path,
         &StorageConfig::defaults(),
         Box::new(Flaky(flag.clone())),
@@ -1050,7 +1297,7 @@ fn type_and_stream_family_are_bounded() {
 fn event_size_limit_is_inclusive_and_empty_reads_are_empty() {
     let path = fixture();
     let config = StorageConfig::from_toml_str("max_event_bytes = 64").unwrap();
-    let mut log = EventLog::open(&path, &config, keys("key-a", 1)).unwrap();
+    let mut log = EventLog::open_unanchored(&path, &config, keys("key-a", 1)).unwrap();
     // The JSON around the text, {"t":""}, takes 8 bytes.
     let sized = |n: usize, seq| {
         event(
@@ -1088,7 +1335,7 @@ fn page_stops_at_the_byte_budget_and_always_makes_progress() {
     let path = fixture();
     let config =
         StorageConfig::from_toml_str("max_event_bytes = 64\nread_page_max_bytes = 150").unwrap();
-    let mut log = EventLog::open(&path, &config, keys("key-a", 1)).unwrap();
+    let mut log = EventLog::open_unanchored(&path, &config, keys("key-a", 1)).unwrap();
     // 50 bytes of JSON each, 66 of ciphertext: two fit in 150, three do not.
     for n in 1..=5 {
         log.append(&event(
@@ -1113,7 +1360,7 @@ fn page_stops_at_the_byte_budget_and_always_makes_progress() {
     // A budget smaller than one row still returns that row alone.
     let tight =
         StorageConfig::from_toml_str("max_event_bytes = 64\nread_page_max_bytes = 64").unwrap();
-    let log = EventLog::open(&path, &tight, keys("key-a", 1)).unwrap();
+    let log = EventLog::open_unanchored(&path, &tight, keys("key-a", 1)).unwrap();
     assert_eq!(seqs(&log, 1), [1]);
     assert_eq!(seqs(&log, 2), [2]);
 }
@@ -1126,7 +1373,7 @@ fn reading_numeric_arrays_measures_retained_event_memory() {
     let config =
         StorageConfig::from_toml_str("max_event_bytes = 20000\nread_page_max_bytes = 40000")
             .unwrap();
-    let mut log = EventLog::open(&path, &config, keys("key-a", 1)).unwrap();
+    let mut log = EventLog::open_unanchored(&path, &config, keys("key-a", 1)).unwrap();
     for n in 1..=3 {
         log.append(&event(
             "task/t1",
@@ -1146,7 +1393,7 @@ fn reading_numeric_arrays_measures_retained_event_memory() {
             |r| r.get(0),
         )
         .unwrap();
-    let page_slots = page.capacity() * std::mem::size_of::<ads_storage::StoredEvent>();
+    let page_slots = page.capacity() * std::mem::size_of::<crate::StoredEvent>();
     let mut array_bytes = 0;
     for event in &page {
         let Value::Array(numbers) = &event.event.data["numbers"] else {
@@ -1226,7 +1473,8 @@ fn retired_version_two_and_meta_only_current_files_are_refused_unchanged() {
         drop(c);
         let before = std::fs::read(&path).unwrap();
         assert_eq!(
-            EventLog::open(&path, &StorageConfig::defaults(), keys("key-a", 1)).unwrap_err(),
+            EventLog::open_unanchored(&path, &StorageConfig::defaults(), keys("key-a", 1))
+                .unwrap_err(),
             expected,
             "{version} {}",
             extra.len()
@@ -1385,7 +1633,7 @@ fn an_authenticated_chain_cannot_return_to_an_older_key() {
     three(&mut log);
     drop(log);
     let config = StorageConfig::defaults();
-    let mut log = EventLog::open(&path, &config, keys("key-b", 2)).unwrap();
+    let mut log = EventLog::open_unanchored(&path, &config, keys("key-b", 2)).unwrap();
     log.append(&event("task/t1", 4, 4, serde_json::json!({})))
         .unwrap();
     drop(log);
@@ -1396,7 +1644,7 @@ fn an_authenticated_chain_cannot_return_to_an_older_key() {
         Err(StorageError::WrongKey)
     );
     assert_eq!(files(&path), before);
-    let log = EventLog::open(
+    let log = EventLog::open_unanchored(
         &path,
         &config,
         Box::new(Keys {
@@ -1449,7 +1697,8 @@ fn read_stream_checks_alternative_registrations_within_budget() {
             Ok(SecretKey::new(&[byte; 32]))
         }
     }
-    let log = EventLog::open(&path, &config, Box::new(ReaderKeys(calls.clone()))).unwrap();
+    let log =
+        EventLog::open_unanchored(&path, &config, Box::new(ReaderKeys(calls.clone()))).unwrap();
     assert_eq!(
         log.read_stream(&stream("task/t1"), 2, 1).unwrap_err(),
         StorageError::WrongKey
@@ -1481,7 +1730,8 @@ fn read_stream_reports_the_position_of_a_forged_key_id() {
             [],
         )
         .unwrap();
-    let log = open(&path);
+    let config = StorageConfig::from_toml_str("read_key_candidates = 0").unwrap();
+    let log = EventLog::open_unanchored(&path, &config, keys("key-a", 1)).unwrap();
     assert_eq!(
         log.read_stream(&stream("task/t1"), 1, 10).unwrap_err(),
         StorageError::ChainBroken { position: 2 }
@@ -1690,11 +1940,12 @@ fn altered_format_and_lost_old_key() {
         log.verify_chain(),
         Err(StorageError::ChainBroken { position: 2 })
     );
-    // A provider that lost key-a: reading says so; the chain cannot vouch for row 1.
-    let lost = EventLog::open(&path, &StorageConfig::defaults(), keys("key-b", 3)).unwrap();
+    // A missing historical key makes row 1 unverifiable from both entry points.
+    let lost =
+        EventLog::open_unanchored(&path, &StorageConfig::defaults(), keys("key-b", 3)).unwrap();
     assert_eq!(
         lost.read_stream(&stream("task/t1"), 1, 1).unwrap_err(),
-        StorageError::KeyUnavailable
+        StorageError::ChainBroken { position: 1 }
     );
     assert_eq!(
         lost.verify_chain(),
@@ -1714,7 +1965,7 @@ fn tampering_right_after_a_key_rotation_breaks_the_chain_there() {
             older: vec![("key-a", 1)],
         })
     };
-    let mut log = EventLog::open(&path, &StorageConfig::defaults(), rotated()).unwrap();
+    let mut log = EventLog::open_unanchored(&path, &StorageConfig::defaults(), rotated()).unwrap();
     log.append(&event("task/t1", 4, 4, serde_json::json!({ "n": 4 })))
         .unwrap();
     log.append(&event("task/t1", 5, 5, serde_json::json!({ "n": 5 })))
@@ -1726,7 +1977,7 @@ fn tampering_right_after_a_key_rotation_breaks_the_chain_there() {
         "UPDATE event SET ts = '2026-11-19T12:00:09Z' WHERE position = 4",
         None,
     );
-    let log = EventLog::open(&path, &StorageConfig::defaults(), rotated()).unwrap();
+    let log = EventLog::open_unanchored(&path, &StorageConfig::defaults(), rotated()).unwrap();
     assert_eq!(
         log.verify_chain(),
         Err(StorageError::ChainBroken { position: 4 })
@@ -1762,7 +2013,8 @@ fn provider_changing_during_append_never_leaves_an_unreadable_row() {
             calls: calls.clone(),
             flip,
         });
-        let Ok(mut log) = EventLog::open(&path, &StorageConfig::defaults(), provider) else {
+        let Ok(mut log) = EventLog::open_unanchored(&path, &StorageConfig::defaults(), provider)
+        else {
             continue;
         };
         let opened = calls.load(Ordering::SeqCst);

@@ -281,7 +281,7 @@ mod tests {
 
         let path = crate::open::tests::test_directory().join("audit.db");
         let config = crate::StorageConfig::defaults();
-        let open = || crate::EventLog::open(&path, &config, Box::new(TestKeys)).unwrap();
+        let open = || crate::EventLog::open_unanchored(&path, &config, Box::new(TestKeys)).unwrap();
         let event = |n| {
             let mut event: EventEnvelopeV1 = serde_json::from_str(include_str!(
                 "../../../contracts/golden/event.envelope.v1/valid/01-base.json"
