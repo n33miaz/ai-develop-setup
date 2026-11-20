@@ -136,13 +136,13 @@ mod tests {
     #[test]
     fn only_a_path_in_the_style_of_the_system_is_looked_up() {
         for (path, style, other) in [
-            (r"C:\Tools\claude.exe", PathStyle::Windows, PathStyle::Posix),
+            (r"C:\Tools\tool.exe", PathStyle::Windows, PathStyle::Posix),
             (
                 r"C:\Program Files\work dir",
                 PathStyle::Windows,
                 PathStyle::Posix,
             ),
-            ("/usr/local/bin/codex", PathStyle::Posix, PathStyle::Windows),
+            ("/usr/local/bin/tool", PathStyle::Posix, PathStyle::Windows),
             (
                 "/home/someone/work dir",
                 PathStyle::Posix,
@@ -154,7 +154,7 @@ mod tests {
         }
         // Not written as the configuration keeps it: never looked up.
         for path in [
-            "c:/Tools/claude.exe",
+            "c:/Tools/tool.exe",
             "/usr//bin",
             r"\\?\C:\x",
             "tool.exe",

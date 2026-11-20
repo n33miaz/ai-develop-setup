@@ -64,10 +64,8 @@ fn request(harness: &str, alias: &str) -> CommandSessionOpenV1Params {
 }
 
 const POISON: &[&str] = &[
-    "ANTHROPIC_API_KEY",
-    "anthropic_api_key",
-    "OPENAI_API_KEY",
-    "Openai_Api_Key",
+    "XYZ_API_KEY",
+    "xyz_api_key",
     "GH_TOKEN",
     "gh_token",
     "GITHUB_TOKEN",
@@ -326,7 +324,7 @@ fn the_request_cannot_carry_a_program_args_env_or_folder() {
         ("env", serde_json::json!({"GH_TOKEN": "x"})),
         ("cwd", serde_json::json!("C:\\")),
     ] {
-        let mut json = serde_json::to_value(request("claude", "scratch")).unwrap();
+        let mut json = serde_json::to_value(request(HARNESS_ID, "scratch")).unwrap();
         json[field] = value;
         assert!(
             serde_json::from_value::<CommandSessionOpenV1Params>(json).is_err(),

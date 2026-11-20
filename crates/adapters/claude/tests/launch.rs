@@ -7,6 +7,10 @@ use ads_core::gate::PathError;
 const OTHER_HARNESS: &str = "codex";
 const PROGRAM: &str = r"C:\Tools\claude\claude.exe";
 const POISON_EXTRA: &[&str] = &[
+    "ANTHROPIC_API_KEY",
+    "anthropic_api_key",
+    "OPENAI_API_KEY",
+    "Openai_Api_Key",
     "CLAUDE_CONFIG_DIR",
     "claude_config_dir",
     "CLAUDE_CODE_USE_BEDROCK",
