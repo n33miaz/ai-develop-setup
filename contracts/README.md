@@ -460,15 +460,27 @@ Os sete comandos estendem `urn:ads:command:request:1` com `allOf`, fixam `method
 |---|---|
 | `urn:ads:event:routing.proposed:1` | O roteador propôs, para uma tarefa, a faixa, a ferramenta, o provedor e o modelo, citando a regra que usou. Proposta não é decisão: nada roda por causa deste evento. |
 | `urn:ads:event:routing.decided:1` | A rota em vigor de uma tarefa foi fixada: pelo dono (modo manual, ou aceite de uma proposta) ou por regra (modo auto). O autor do evento diz quem decidiu. |
-| `urn:ads:event:routing.fallback:1` | A rota de uma tarefa caiu para o plano B depois de uma falha: registra de onde saiu, para onde foi e o código do erro que causou a troca. Nunca troca de conta. |
+| `urn:ads:event:routing.fallback:1` | A rota de uma tarefa caiu para o plano B depois de uma falha: registra de onde saiu, para onde foi e o código do erro que causou a troca. Não tem campo de conta e não registra troca de perfil; o plano B que muda de perfil usa a `:2`. |
 | `urn:ads:event:routing.proposed:2` | Proposta com `account_alias`, nulo na ausência de um perfil. |
 | `urn:ads:event:routing.decided:2` | Decisão com `account_alias`, nulo na ausência de um perfil. |
-| `urn:ads:event:routing.fallback:2` | Plano B com o `account_alias` de cada rota, nulo na ausência de um perfil. |
+| `urn:ads:event:routing.fallback:2` | Plano B com o `account_alias` de cada rota, nulo na ausência de um perfil. Os apelidos de `from` e `to` podem diferir: o plano B pode mudar de perfil, só entre perfis configurados e só para a próxima sessão, aberta no perfil de destino (nunca no meio de uma sessão). Quando o perfil da ferramenta de destino muda, a seleção também é registrada por `account.switched:1`, com o modo da política de troca da ferramenta. |
 
 ### Eventos de conta
 
 Usam o stream `account/<ferramenta>`. O apelido identifica o perfil
 configurado no produto.
+
+Regra da troca de perfil, conforme a
+[ADR 0022](../docs/adr/0022-account-profile-folders-and-automatic-switching.md):
+a troca, inclusive a de um plano B (`routing.fallback:2`), vale só para a
+próxima sessão; uma sessão aberta fica no perfil em que abriu. A política
+`switch` de cada ferramenta (`manual`, `propose` ou `auto`) decide se a troca
+espera o dono, e o Antigravity fica sempre em `manual`. O modo `auto` só liga
+depois do teste de isolamento dos perfis na máquina do mantenedor. Nenhuma
+regra do validador confere isso nos eventos, e o núcleo ainda não emite a
+`routing.fallback:2` nem `account.switched:1`: o roteador produz a
+`routing.fallback:1` e a abertura de sessões ainda não usa perfil
+([README do núcleo](../crates/core/README.md#perfis-de-conta)).
 
 | Schema | O que descreve |
 |---|---|
