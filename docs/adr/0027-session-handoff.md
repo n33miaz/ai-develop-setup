@@ -44,4 +44,4 @@ Se a passagem perder estado necessário, quebrar o isolamento ou entregar materi
 
 Integrar medição, consentimento, geração dos textos, armazenamento e abertura da sessão no daemon e na interface. Verificar o isolamento, a filtragem de ambos os artefatos e a recuperação em caso de falha antes de ativar o fluxo.
 
-Para a oferta após recusa, falta detectar a recusa e o filtro na saída da ferramenta e emitir o evento. Falta também mostrar a oferta na interface e registrar a rota escolhida. Hoje o `record.session-handoff:2` não guarda a rota de destino: a escolha precisa de um registro próprio ou de uma versão nova do contrato.
+Para a oferta após recusa, falta detectar a recusa e o filtro na saída da ferramenta e emitir o evento. Falta também mostrar a oferta na interface e registrar a rota escolhida. Hoje o `record.session-handoff:2` não guarda a rota de destino: a escolha precisa de um registro próprio ou de uma versão nova do contrato. O evento de aceite também não diz qual alternativa o aparelho escolheu: hoje quem chama informa a escolha, e o núcleo só confere que ela estava na oferta. O contrato futuro deve amarrar a escolha ao aceite do aparelho.

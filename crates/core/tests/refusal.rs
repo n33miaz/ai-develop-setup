@@ -252,6 +252,33 @@ fn order_does_not_depend_on_catalog_order() {
 }
 
 #[test]
+fn equal_rank_ties_follow_the_candidate_id() {
+    let fixture = Fixture::new();
+    let refused = [refusal("harness-a", "model-x")];
+    let tied = || {
+        vec![
+            candidate("a-x", "harness-a", "model-x", 0),
+            candidate("tie-b", "harness-d", "model-d", 5),
+            candidate("tie-a", "harness-e", "model-e", 5),
+            candidate("tie-c", "harness-f", "model-f", 5),
+        ]
+    };
+    let routing = settings(true, "any-tool", "routing", 10);
+    let expected = fixture
+        .offer(&routing, &handoff("propose"), &refused, &tied())
+        .unwrap();
+    assert_eq!(models(&expected), ["model-e", "model-d", "model-f"]);
+    let mut candidates = tied();
+    for _ in 0..candidates.len() {
+        candidates.rotate_left(1);
+        assert_eq!(
+            fixture.offer(&routing, &handoff("propose"), &refused, &candidates),
+            Some(expected.clone())
+        );
+    }
+}
+
+#[test]
 fn disabled_settings_offer_nothing() {
     let fixture = Fixture::new();
     let refused = [refusal("harness-a", "model-x")];
