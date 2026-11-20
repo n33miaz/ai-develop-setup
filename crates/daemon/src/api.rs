@@ -1187,7 +1187,8 @@ async fn connection(
     drop(slot);
     send(&mut ws, response(&id, Ok(false)), &config).await?;
     let mut changed = log.lock().await.watch();
-    let mut subscriptions = HashMap::<String, (u64, Value, Arc<Stream>)>::new();
+    // Por stream: cursor, ids das assinaturas e a encarnação assinada.
+    let mut subscriptions = HashMap::<String, (u64, Vec<Value>, Arc<Stream>)>::new();
     loop {
         let message = tokio::select! {
             message = ws.next() => Some(message),
@@ -1234,9 +1235,11 @@ async fn connection(
                         .as_str()
                         .unwrap_or("")
                         .to_owned();
+                    let ids = subscriptions.values().map(|s| s.1.len()).sum::<usize>();
                     if subscribe
-                        && !subscriptions.contains_key(&stream)
-                        && subscriptions.len() >= config.max_sessions
+                        && ((!subscriptions.contains_key(&stream)
+                            && subscriptions.len() >= config.max_sessions)
+                            || ids >= 2 * config.max_sessions)
                     {
                         send(&mut ws, response(&id, Err(ApiError::Capacity)), &config).await?;
                         continue;
@@ -1249,14 +1252,39 @@ async fn connection(
                         .map_err(|_| ApiError::Unavailable)?;
                     let outcome = answer.await.map_err(|_| ApiError::Unavailable)?;
                     let replayed = outcome.as_ref().map(|r| r.replayed).map_err(|e| *e);
+                    if subscribe
+                        && let Ok(Reply {
+                            stream: Some(handle),
+                            ..
+                        }) = &outcome
+                        && let Some((cursor, mut ids, current)) = subscriptions.remove(&stream)
+                    {
+                        if Arc::ptr_eq(&current, handle) {
+                            // A mesma encarnação de novo: um cursor só, e o resultado final vai a cada id.
+                            if !ids.contains(&id) {
+                                ids.push(id.clone());
+                            }
+                            subscriptions.insert(stream.clone(), (cursor.min(after), ids, current));
+                        } else {
+                            // A encarnação anterior já terminou: o fim dela sai antes da confirmação da nova.
+                            let error = match current.poll(cursor) {
+                                Poll::End(error) | Poll::Fatal(error) => error,
+                                Poll::Events(_) | Poll::Wait => ApiError::Replay,
+                            };
+                            for old in &ids {
+                                send(&mut ws, response(old, Err(error)), &config).await?;
+                            }
+                        }
+                    }
                     send(&mut ws, response(&id, replayed), &config).await?;
                     if subscribe
                         && let Ok(Reply {
                             stream: Some(handle),
                             ..
                         }) = outcome
+                        && !subscriptions.contains_key(&stream)
                     {
-                        subscriptions.insert(stream, (after, id, handle));
+                        subscriptions.insert(stream, (after, vec![id], handle));
                     }
                 }
             }
@@ -1265,19 +1293,23 @@ async fn connection(
             hooks.before_delivery.pass().await;
         }
         let mut finished = Vec::new();
-        for (name, (after, subscription_id, stream)) in &mut subscriptions {
+        for (name, (after, subscription_ids, stream)) in &mut subscriptions {
             let events = match stream.poll(*after) {
                 // Fechamento automático em curso: a entrega espera o resultado final.
                 Poll::Wait => continue,
                 // Encarnação podada, removida ou com o fechamento resolvido: termina só esta assinatura.
                 Poll::End(error) => {
-                    send(&mut ws, response(subscription_id, Err(error)), &config).await?;
+                    for subscription_id in subscription_ids.iter() {
+                        send(&mut ws, response(subscription_id, Err(error)), &config).await?;
+                    }
                     finished.push(name.clone());
                     continue;
                 }
                 Poll::Events(events) => events,
                 Poll::Fatal(error) => {
-                    send(&mut ws, response(subscription_id, Err(error)), &config).await?;
+                    for subscription_id in subscription_ids.iter() {
+                        send(&mut ws, response(subscription_id, Err(error)), &config).await?;
+                    }
                     let _ = timeout(
                         Duration::from_millis(config.send_timeout_ms),
                         ws.close(None),

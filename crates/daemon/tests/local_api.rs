@@ -3180,3 +3180,49 @@ async fn a_client_that_never_lists_tools_only_receives_first_version_frames() {
         true
     );
 }
+
+#[tokio::test]
+async fn repeated_subscription_on_one_connection_gets_every_final_result() {
+    let f = fixture("max_sessions = 1", Arc::new(TestLauncher)).await;
+    let mut ws = authenticated(&f).await;
+    let mut control = authenticated(&f).await;
+    let subscribe = || {
+        command(
+            "events.subscribe",
+            json!({"stream": "session/a", "after_seq": 0}),
+        )
+    };
+    let (first, second) = (subscribe(), subscribe());
+    for request in [&first, &second] {
+        transmit(&mut ws, request).await;
+        let reply = receive(&mut ws).await;
+        assert_eq!(reply["id"], request["id"]);
+        assert_eq!(reply["result"]["accepted"], true);
+    }
+    // Ids per connection are bounded too.
+    let third = subscribe();
+    transmit(&mut ws, &third).await;
+    let refused = receive(&mut ws).await;
+    assert_eq!(refused["id"], third["id"]);
+    assert_eq!(refused["error"]["code"], -32003);
+    call(&mut control, "session.open", open_params("a")).await;
+    call(&mut control, "session.close", json!({"session_id": "a"})).await;
+    // Another closed session prunes "a": every subscription gets its final result.
+    call(&mut control, "session.open", open_params("b")).await;
+    call(&mut control, "session.close", json!({"session_id": "b"})).await;
+    let mut seqs = Vec::new();
+    let mut ended = Vec::new();
+    while ended.len() < 2 {
+        let frame = receive(&mut ws).await;
+        if let Some(seq) = frame["seq"].as_u64() {
+            seqs.push(seq);
+        } else {
+            assert_eq!(frame["error"]["code"], -32004);
+            ended.push(frame["id"].clone());
+        }
+    }
+    // Each event went out once, and each id got its own end.
+    assert!(!seqs.is_empty());
+    assert!(seqs.windows(2).all(|w| w[1] == w[0] + 1), "{seqs:?}");
+    assert!(ended.contains(&first["id"]) && ended.contains(&second["id"]));
+}

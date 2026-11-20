@@ -209,7 +209,11 @@ seguintes. Assinaturas novas são validadas pelo estado atual.
 Uma execução conserva no máximo `2 × max_sessions × events_per_stream` eventos
 (um stream que sai do log, mesmo ainda assinado, descarta os seus);
 o tamanho de cada saída também é limitado pelo quadro do cliente do host.
-Assinaturas por conexão são limitadas a `max_sessions`. Filas, conexões e chaves
+Assinaturas por conexão são limitadas a `max_sessions` streams. Assinar de novo, na mesma
+conexão, a mesma encarnação de um stream junta o id à assinatura existente: cada evento sai uma
+vez, a partir do menor cursor, e o resultado final chega a cada id. Os ids por conexão são
+limitados a `2 × max_sessions`; acima disso a assinatura é recusada com `-32003`. Se a encarnação
+assinada antes já terminou, o fim dela chega aos ids antigos antes da confirmação da nova. Filas, conexões e chaves
 também têm limites separados. Seq e offset recomeçam ao reiniciar.
 
 Uma chave ainda retida com o mesmo método e parâmetros devolve `replayed: true`,
