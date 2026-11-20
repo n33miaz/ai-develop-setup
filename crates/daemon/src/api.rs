@@ -730,6 +730,8 @@ pub struct LocalApi {
 #[derive(Default)]
 pub struct Gate {
     closed: AtomicBool,
+    /// Passagens liberadas uma a uma com o portão fechado.
+    passes: AtomicUsize,
     opened: Notify,
     #[cfg(test)]
     reached: Notify,
@@ -742,12 +744,22 @@ impl Gate {
         self.closed.store(false, Ordering::Release);
         self.opened.notify_waiters();
     }
+    /// Deixa passar uma espera, atual ou futura, sem abrir o portão.
+    pub fn admit_one(&self) {
+        self.passes.fetch_add(1, Ordering::AcqRel);
+        self.opened.notify_waiters();
+    }
     async fn pass(&self) {
         loop {
             let opened = self.opened.notified();
             tokio::pin!(opened);
             opened.as_mut().enable();
-            if !self.closed.load(Ordering::Acquire) {
+            if !self.closed.load(Ordering::Acquire)
+                || self
+                    .passes
+                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1))
+                    .is_ok()
+            {
                 return;
             }
             #[cfg(test)]
@@ -769,6 +781,9 @@ pub struct TestHooks {
     pub evicted_exit: Gate,
     /// Antes de cada entrega a uma conexão com assinaturas.
     pub before_delivery: Gate,
+    /// Antes de cada tentativa automática de fechamento, sem parar o resto do serviço.
+    pub automatic_close: Gate,
+    queued_closes: AtomicUsize,
     pending_live: AtomicUsize,
     pending_peak: AtomicUsize,
     waiting_peak: AtomicUsize,
@@ -781,6 +796,10 @@ impl TestHooks {
     /// Closes the daemon sent to the host on its own, without a client command.
     pub fn automatic_closes(&self) -> usize {
         self.automatic_closes.load(Ordering::Acquire)
+    }
+    /// Automatic closes still queued when the last command was answered.
+    pub fn queued_closes(&self) -> usize {
+        self.queued_closes.load(Ordering::Acquire)
     }
     pub fn accept_faults_left(&self) -> usize {
         self.accept_faults.load(Ordering::Acquire)
@@ -985,7 +1004,10 @@ impl LocalApi {
         loop {
             let retry_due = service.retries.iter().map(|r| r.due).min();
             tokio::select! {
-                _ = tokio::time::sleep_until(retry_due.unwrap_or_else(Instant::now)), if retry_due.is_some() => {
+                _ = async {
+                    tokio::time::sleep_until(retry_due.unwrap_or_else(Instant::now)).await;
+                    hooks.automatic_close.pass().await;
+                }, if retry_due.is_some() => {
                     service.retry_close().await?;
                 },
                 event = service.host.next() => {
@@ -999,6 +1021,7 @@ impl LocalApi {
                         let _ = request.reply.send(Err(ApiError::Unavailable));
                         return Err(ApiError::Unavailable);
                     }
+                    hooks.queued_closes.store(service.retries.len(), Ordering::Release);
                     let _ = request.reply.send(result);
                 }
                 admission = &mut accepting => {

@@ -1881,7 +1881,7 @@ async fn unknown_session_on_the_automatic_release_keeps_the_natural_end() {
 #[tokio::test]
 async fn refused_release_of_an_ended_session_never_reaches_a_reopened_id() {
     let (f, calls) = scripted_fixture(
-        "max_sessions = 1\nretired_sessions = 1\nclose_retry_ms = 1000",
+        "max_sessions = 1\nretired_sessions = 1\nclose_retry_ms = 20",
         "exit-on-write",
         ads_ptyhost::wire::ErrorCode::InternalError,
         0,
@@ -1889,6 +1889,9 @@ async fn refused_release_of_an_ended_session_never_reaches_a_reopened_id() {
     )
     .await;
     let mut ws = authenticated(&f).await;
+    // Only the first automatic attempt passes; the repeated one waits at the barrier.
+    f.hooks.automatic_close.hold();
+    f.hooks.automatic_close.admit_one();
     call(&mut ws, "session.open", open_params("a")).await;
     call(
         &mut ws,
@@ -1896,7 +1899,6 @@ async fn refused_release_of_an_ended_session_never_reaches_a_reopened_id() {
         json!({"session_id": "a", "data": "YQ=="}),
     )
     .await;
-    // The first automatic attempt is refused; the next one waits a second.
     wait_closes(&calls, 1).await;
     assert_eq!(
         call(&mut ws, "session.close", json!({"session_id": "a"})).await["result"]["accepted"],
@@ -1905,6 +1907,9 @@ async fn refused_release_of_an_ended_session_never_reaches_a_reopened_id() {
     // The second close of "a" was the client's: the daemon sent only the refused one.
     assert_eq!(close_calls(&calls), 2);
     assert_eq!(f.hooks.automatic_closes(), 1);
+    // Returning the slot dropped the held attempt.
+    assert_eq!(f.hooks.queued_closes(), 0);
+    f.hooks.automatic_close.release();
     // Another released session prunes "a"; its tombstone keeps the id taken.
     call(&mut ws, "session.open", open_params("b")).await;
     call(&mut ws, "session.close", json!({"session_id": "b"})).await;
@@ -1925,19 +1930,15 @@ async fn refused_release_of_an_ended_session_never_reaches_a_reopened_id() {
         true
     );
     let closes = close_calls(&calls);
-    tokio::time::sleep(Duration::from_millis(1300)).await;
-    assert_eq!(
-        call(&mut ws, "unknown", json!({})).await["error"]["code"],
-        -32601
-    );
-    assert_eq!(close_calls(&calls), closes);
-    assert_eq!(f.hooks.automatic_closes(), 1);
+    assert_eq!(f.hooks.queued_closes(), 0);
     // The new generation is still active.
     let resize = json!({"session_id": "a", "cols": 100, "rows": 30});
     assert_eq!(
         call(&mut ws, "session.resize", resize.clone()).await["result"]["accepted"],
         true
     );
+    assert_eq!(close_calls(&calls), closes);
+    assert_eq!(f.hooks.automatic_closes(), 1);
     // As documented, a close by the reused id refers to the current session.
     assert_eq!(
         call(&mut ws, "session.close", json!({"session_id": "a"})).await["result"]["accepted"],
