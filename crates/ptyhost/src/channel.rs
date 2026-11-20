@@ -263,35 +263,101 @@ mod tests {
         );
     }
 
+    /// What the server of a fresh pipe sees when a client connects with `check` as the owner
+    /// check and, if accepted, sends `sent` and leaves: whether the client was refused, and every
+    /// byte that reached the server before the end of the stream.
+    #[cfg(windows)]
+    async fn serve_one_client(
+        label: &str,
+        check: impl FnOnce(std::os::windows::io::RawHandle) -> io::Result<()>,
+        sent: &[u8],
+    ) -> (bool, Vec<u8>) {
+        use std::time::Duration;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let endpoint = test_endpoint(label);
+        let sid = crate::win::current_user_sid().unwrap();
+        let mut server = crate::win::create_user_pipe(&endpoint, &sid, true).unwrap();
+        let refused = {
+            let mut waiting = std::pin::pin!(server.connect());
+            // The server starts waiting before the client opens: a client gone before the wait
+            // began would fail the wait and hide what reached the pipe.
+            tokio::select! {
+                biased;
+                early = &mut waiting => panic!("connected with no client: {early:?}"),
+                () = std::future::ready(()) => {}
+            }
+            let refused = match connect_checked(&endpoint, check) {
+                Ok(mut client) => {
+                    client.write_all(sent).await.unwrap();
+                    false
+                }
+                Err(ConnectError::NotOwnedByUser) => true,
+                Err(other) => panic!("the pipe did not open: {other:?}"),
+            };
+            tokio::time::timeout(Duration::from_secs(5), waiting)
+                .await
+                .expect("the server never saw the client")
+                .expect("the server wait failed");
+            refused
+        };
+        let mut received = Vec::new();
+        // The client end closes: the stream ends with no error.
+        tokio::time::timeout(Duration::from_secs(5), server.read_to_end(&mut received))
+            .await
+            .expect("the client left the pipe open")
+            .expect("the stream did not end cleanly");
+        (refused, received)
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn accepted_check_lets_the_bytes_through() {
+        let (refused, received) = serve_one_client("accepted", |_| Ok(()), b"hello").await;
+        assert!(!refused);
+        assert_eq!(received, b"hello");
+    }
+
     #[cfg(windows)]
     #[tokio::test]
     async fn refused_check_closes_the_pipe_before_any_byte() {
-        use tokio::io::AsyncReadExt;
-
-        let endpoint = test_endpoint("refused");
-        let sid = crate::win::current_user_sid().unwrap();
-        let mut server = crate::win::create_user_pipe(&endpoint, &sid, true).unwrap();
         let mut checked = false;
-        let result = connect_checked(&endpoint, |_| {
-            checked = true;
-            Err(io::Error::from(io::ErrorKind::PermissionDenied))
-        });
+        let (refused, received) = serve_one_client(
+            "refused",
+            |_| {
+                checked = true;
+                Err(io::Error::from(io::ErrorKind::PermissionDenied))
+            },
+            b"hello",
+        )
+        .await;
         assert!(checked);
-        assert!(
-            matches!(result, Err(ConnectError::NotOwnedByUser)),
-            "{result:?}"
-        );
+        assert!(refused);
+        assert!(received.is_empty(), "{} bytes got through", received.len());
+    }
 
-        // The client end is already closed: the server sees the pipe end with no data.
-        let mut byte = [0_u8; 1];
-        let read = async {
-            server.connect().await?;
-            server.read(&mut byte).await
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn real_queries_refuse_a_pipe_for_another_identity() {
+        // The host's own pipe, read by the real queries, checked as if the client were someone
+        // else: the server is refused and sees no byte.
+        let stranger = crate::win::LocalUser {
+            user: "S-1-5-21-1000-2000-3000-1002".to_owned(),
+            default_owner: "S-1-5-21-1000-2000-3000-1002".to_owned(),
         };
-        let read = tokio::time::timeout(std::time::Duration::from_secs(5), read)
-            .await
-            .expect("the refused client left the pipe open");
-        assert!(matches!(read, Ok(0) | Err(_)), "{read:?}");
+        let (refused, received) = serve_one_client(
+            "stranger",
+            |pipe| crate::win::check_pipe_server_as(&stranger, pipe),
+            b"hello",
+        )
+        .await;
+        assert!(refused);
+        assert!(received.is_empty(), "{} bytes got through", received.len());
+
+        let (refused, received) =
+            serve_one_client("self", crate::win::check_pipe_server, b"hello").await;
+        assert!(!refused);
+        assert_eq!(received, b"hello");
     }
 
     #[cfg(windows)]

@@ -351,7 +351,14 @@ pub fn is_own_server(local: &LocalUser, server: &PipeServer) -> bool {
 /// Confirms that the pipe behind the client handle `pipe` is served by the current user.
 /// A failure to read who serves it is a refusal too.
 pub fn check_pipe_server(pipe: RawHandle) -> io::Result<()> {
-    if is_own_server(&local_user()?, &pipe_server(pipe)?) {
+    check_pipe_server_as(&local_user()?, pipe)
+}
+
+/// `check_pipe_server` against a given identity instead of the current one: the queries of the
+/// pipe are the real ones. Tests use it to have a real pipe refused without a second account.
+#[doc(hidden)]
+pub fn check_pipe_server_as(local: &LocalUser, pipe: RawHandle) -> io::Result<()> {
+    if is_own_server(local, &pipe_server(pipe)?) {
         Ok(())
     } else {
         Err(io::Error::new(
@@ -468,6 +475,16 @@ mod tests {
     fn a_pipe_served_by_another_user_is_refused() {
         assert!(!is_own_server(&me(ME), &server(OTHER, ME)));
         assert!(!is_own_server(&me(ME), &server(OTHER, OTHER)));
+    }
+
+    #[test]
+    fn another_administrators_pipe_is_refused_by_an_elevated_client() {
+        // Both elevated: the pipe is owned by the administrators group, which is also the
+        // client's default owner; the process user still differs.
+        assert!(!is_own_server(
+            &me(ADMINISTRATORS),
+            &server(OTHER, ADMINISTRATORS)
+        ));
     }
 
     #[test]
