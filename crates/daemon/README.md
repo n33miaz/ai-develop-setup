@@ -154,7 +154,7 @@ Padrões em [defaults/daemon.toml](../../defaults/daemon.toml), aplicados ao ini
 | `send_timeout_ms` | 5000 | Prazo por envio; cliente lento é desconectado. |
 | `host_timeout_ms` | 10000 | Prazo único por comando no host e na conexão inicial. Cada chamada ao host começa dentro do prazo. Falha encerra o serviço para evitar repetir efeito incerto. Duas exceções não encerram: no fechamento automático o prazo esgotado conta como tentativa falha, e na preparação depois de um `session.open` confirmado ele responde `-32014` (`session setup timed out`), guarda o registro e agenda o fechamento. |
 | `retired_sessions` | 1024 | Ids de sessões podadas que não podem ser reabertos nesta execução (acima do limite, o mais antigo volta a ser aceito) e, em separado, streams assinados antes do `session.open` (acima do limite, a espera mais antiga termina com `-32004` no id da assinatura, mesmo se a conexão estiver ociosa). |
-| `close_retries` | 3 | Tentativas do fechamento automático de sessão invalidada ou de `open` que falhou; esgotadas, a assinatura do stream recebe `-32013`. |
+| `close_retries` | 3 | Tentativas do fechamento automático de sessão invalidada, de `open` que falhou ou de sessão que terminou sozinha; esgotadas numa sessão invalidada, a assinatura do stream recebe `-32013`. |
 | `close_retry_ms` | 1000 | Espera entre tentativas do fechamento automático. |
 
 Os inteiros de capacidade aceitam de 1 a 1048576 (`max_message_bytes`: mínimo
@@ -172,9 +172,22 @@ retido. Cada tentativa vale só para a instância da sessão que a gerou e é
 descartada quando a vaga é devolvida. Se um `open` falhar depois de o host abrir o
 terminal, o fechamento vai para a mesma fila, com prazo próprio por tentativa;
 o registro e a vaga ficam até o host confirmar, e então o id volta a ser aceito.
-`UnknownSession` no fechamento libera a vaga e grava `ended` com `reason: "error"`. Uma sessão cujo processo já terminou continua
-no host, ocupando a vaga, até receber `session.close`; o fechamento encerra a
-árvore de processos que restar e devolve a vaga. Ao atingir o limite de registros fechados,
+`UnknownSession` no fechamento libera a vaga; num stream válido (não invalidado) que ainda não
+tinha evento terminal, grava `ended` com `reason: "error"`. Um `ended` já gravado fica como está, e
+um stream invalidado não recebe `ended`. Quando o processo de uma
+sessão termina sozinho, o daemon grava `ended` e pede o fechamento ao host pela mesma fila, sem
+esperar a interface, inclusive se um `session.close` do cliente estiver em andamento e o host o
+recusar. Cada encarnação tem no máximo uma tentativa pendente, contando a que está em execução; reagendar mantém o saldo e o prazo dela. O fechamento encerra a árvore de
+processos que restar e devolve a vaga: um servidor de desenvolvimento ou outro processo que a
+ferramenta tenha iniciado e que ainda esteja vivo é encerrado nessa hora, mesmo sem pedido da
+interface. O stream liberado mantém os eventos ainda retidos, dentro de `events_per_stream` e até a
+poda descrita abaixo. Um `session.close` dessa sessão depois da liberação é aceito sem novo efeito
+enquanto o registro dela estiver retido, ou seja, até ela ser podada; depois disso recebe `-32602`.
+O id podado não pode ser reaberto enquanto a lápide existir, e nenhuma tentativa automática da
+encarnação anterior alcança uma reaberta. Quando a lápide expira e o id volta a ser aceito, um
+`session.close` com ele se refere à sessão atual: o protocolo identifica a sessão só pelo id, e a
+interface gera um id novo a cada abertura. Se as tentativas se esgotarem, a vaga fica ocupada e o
+stream não muda; um `session.close` do cliente continua aceito e a libera. Ao atingir o limite de registros fechados,
 o daemon descarta os mais antigos conforme novas sessões são fechadas. O stream
 descartado vira lápide e o mesmo `session_id` é recusado com `-32012` enquanto
 ela existir (`retired_sessions`). Cada assinatura fica presa à encarnação do
