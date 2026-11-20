@@ -1,0 +1,83 @@
+name: Dependabot coauthor
+
+# Acrescenta o mantenedor como coautor nos commits de cada PR do Dependabot, depois do CI verde (defaults/dependencies.toml).
+# Só as mensagens mudam: a árvore é conferida igual à que o CI aprovou. É a única reescrita de histórico permitida no
+# repositório, restrita a branches dependabot/* ainda não juntadas e feita por este workflow, nunca por pessoa ou agente.
+# O push com o token do workflow não dispara CI; por isso o CI é pedido de novo, para o check ci-ok existir no commit
+# reescrito. Nenhum código do PR é executado aqui. O GitHub lê workflow_run da branch padrão, que é a develop.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependabot-coauthor-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
+jobs:
+  coauthor:
+    name: dependabot-coauthor
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.actor.login == 'dependabot[bot]' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      startsWith(github.event.workflow_run.head_branch, 'dependabot/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      BRANCH: ${{ github.event.workflow_run.head_branch }}
+      HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      # Parâmetros lidos da develop, não da branch do PR.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: develop
+          fetch-depth: 0
+      - name: Acrescentar o coautor e pedir o CI de novo
+        run: |
+          set -euo pipefail
+          mode=$(sed -n 's/^coauthor = "\(.*\)"$/\1/p' defaults/dependencies.toml)
+          if [ "$mode" != "owner" ]; then
+            echo "Coautoria nos PRs do Dependabot: $mode."
+            exit 0
+          fi
+          owner=$(sed -n 's/^coauthor\.owner = "\(.*\)"$/\1/p' defaults/devflow.toml)
+          if [ -z "$owner" ]; then
+            echo "::error::coauthor.owner ausente em defaults/devflow.toml."
+            exit 1
+          fi
+          trailer="Co-authored-by: $owner"
+          git fetch origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"
+          git checkout -q -B work "origin/$BRANCH"
+          # A branch andou depois do CI (o Dependabot refez o PR): o próximo CI verde chama de novo.
+          if [ "$(git rev-parse HEAD)" != "$HEAD_SHA" ]; then
+            echo "A branch não está mais no commit que o CI aprovou; nada a fazer."
+            exit 0
+          fi
+          base=$(git merge-base HEAD origin/develop)
+          missing=0
+          for sha in $(git rev-list "$base..HEAD"); do
+            git show -s --format=%B "$sha" | grep -qxF "$trailer" || missing=1
+          done
+          if [ "$missing" -eq 0 ]; then
+            echo "Todos os commits já têm o coautor."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          export TRAILER="$trailer"
+          # Reescreve só as mensagens: autor, datas e conteúdo ficam iguais.
+          git rebase --committer-date-is-author-date "$base" \
+            --exec 'git show -s --format=%B HEAD | grep -qxF "$TRAILER" || git commit --amend --no-edit --trailer "$TRAILER"'
+          test "$(git rev-parse 'HEAD^{tree}')" = "$(git rev-parse "$HEAD_SHA^{tree}")"
+          git push --force-with-lease="$BRANCH:$HEAD_SHA" origin "HEAD:$BRANCH"
+          gh workflow run ci.yml --repo "$REPO" --ref "$BRANCH"
