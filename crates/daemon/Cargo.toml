@@ -30,4 +30,4 @@ ads-ptyhost = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["time"] }
+tokio = { workspace = true, features = ["test-util", "time"] }
