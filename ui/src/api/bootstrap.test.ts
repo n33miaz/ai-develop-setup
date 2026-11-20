@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { selectCoreClient } from './bootstrap'
+import { replaySettings, selectCoreClient } from './bootstrap'
 import { createFakeCoreClient } from './fake'
 
 beforeEach(() => {
@@ -64,5 +64,16 @@ describe('client selection', () => {
   it('ignores malformed stored data', () => {
     window.sessionStorage.setItem('ads.local-api', '{')
     expect(selectCoreClient(window).live).toBe(false)
+  })
+})
+
+describe('replay settings', () => {
+  it('keeps limits from 1 up and leaves the rest to the client default', () => {
+    expect(replaySettings('1', '2048')).toEqual({ replayEvents: 1, replayBytes: 2048 })
+    // With 0 nothing would be kept: a remounted terminal would stay empty.
+    expect(replaySettings('0', '0')).toEqual({})
+    expect(replaySettings('-3', '1.5')).toEqual({})
+    expect(replaySettings(undefined, '')).toEqual({})
+    expect(replaySettings('abc', 'NaN')).toEqual({})
   })
 })

@@ -667,29 +667,28 @@ describe('one core subscription per stream', () => {
     expect(ended).toEqual([])
   })
 
-  it('keeps nothing with replayEvents 0 and ends a late listener for old events', async () => {
-    const { client, socket } = await keeping({ replayEvents: 0 })
-    client.subscribe('session/session-a', 0, () => undefined)
-    socket.answer(1)
-    socket.receive(event(1))
-    const ended: number[] = []
-    const seen: number[] = []
-    client.subscribe(
-      'session/session-a',
-      0,
-      (event) => seen.push(event.seq),
-      (code) => ended.push(code),
-    )
-    await Promise.resolve()
-    expect(ended).toEqual([-32004])
-    // A listener that asks only for new events keeps working.
-    const fresh: number[] = []
-    client.subscribe('session/session-a', 1, (event) => fresh.push(event.seq))
-    socket.receive(event(2))
-    expect(seen).toEqual([])
-    expect(fresh).toEqual([2])
-    expect(subscribes(socket)).toHaveLength(1)
-  })
+  it.each([{ replayEvents: 0 }, { replayBytes: 0 }, { replayEvents: -1, replayBytes: 0.5 }])(
+    'falls back to the default limits below 1 (%o)',
+    async (options) => {
+      const { client, socket } = await keeping(options)
+      client.subscribe('session/session-a', 0, () => undefined)
+      socket.answer(1)
+      for (const seq of [1, 2]) socket.receive(event(seq))
+      // A remounted terminal still gets what was received, and nothing ends.
+      const ended: number[] = []
+      const seen: number[] = []
+      client.subscribe(
+        'session/session-a',
+        0,
+        (event) => seen.push(event.seq),
+        (code) => ended.push(code),
+      )
+      await Promise.resolve()
+      expect(seen).toEqual([1, 2])
+      expect(ended).toEqual([])
+      expect(subscribes(socket)).toHaveLength(1)
+    },
+  )
 
   it('bounds what it keeps by bytes as well', async () => {
     const one = JSON.stringify(event(1)).length

@@ -4,10 +4,30 @@ import { createWsCoreClient, type WsClientOptions } from './ws'
 
 const STORAGE_KEY = 'ads.local-api'
 
+type ReplaySettings = Pick<WsClientOptions, 'replayEvents' | 'replayBytes'>
+
+/** Inteiro de 1 em diante da configuração, ou `undefined` para o padrão do cliente. */
+function positive(value: unknown): number | undefined {
+  const parsed = Number(value)
+  return value !== undefined && value !== '' && Number.isSafeInteger(parsed) && parsed >= 1
+    ? parsed
+    : undefined
+}
+
+/** Limites de replay da configuração da interface; ausentes ou abaixo de 1 ficam no padrão. */
+export function replaySettings(events: unknown, bytes: unknown): ReplaySettings {
+  const replayEvents = positive(events)
+  const replayBytes = positive(bytes)
+  return {
+    ...(replayEvents === undefined ? {} : { replayEvents }),
+    ...(replayBytes === undefined ? {} : { replayBytes }),
+  }
+}
+
 export function selectCoreClient(
   browser: Pick<Window, 'location' | 'history' | 'sessionStorage'>,
   createReal: (options: WsClientOptions) => CoreClient = createWsCoreClient,
-  replay: Pick<WsClientOptions, 'replayEvents' | 'replayBytes'> = {},
+  replay: ReplaySettings = {},
 ): { client: CoreClient; live: boolean } {
   const fragment = new URLSearchParams(browser.location.hash.slice(1))
   let credentials: { url: string; token: string } | null = null
