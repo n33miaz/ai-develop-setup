@@ -11,11 +11,17 @@ const LABEL: Record<ConnectionState, MessageKey> = {
 /** Estado da conexão com o núcleo. A forma do ponto muda com o estado, para não depender só de cor. */
 export function ConnectionStatus({ state }: { state: ConnectionState }) {
   const t = useT()
+  const label = `${t('connection.label')}: ${t(LABEL[state])}`
   return (
-    <p className={[styles.status, styles[state]].join(' ')} role="status" data-state={state}>
+    <p
+      className={[styles.status, styles[state]].join(' ')}
+      role="status"
+      aria-label={label}
+      data-state={state}
+    >
       <span className={styles.dot} aria-hidden="true" />
-      <span className={styles.text}>
-        {t('connection.label')}: {t(LABEL[state])}
+      <span className={styles.text} aria-hidden="true">
+        {label}
       </span>
     </p>
   )

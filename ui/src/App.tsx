@@ -254,21 +254,23 @@ export function App({
         </button>
       </header>
 
-      {live &&
-        harnesses.map((harness) => (
-          <button
-            key={harness}
-            type="button"
-            className={styles.button}
-
-            disabled={connection !== 'connected' || opening}
-            onClick={() => {
-              void open(harness)
-            }}
-          >
-            {t('session.open', { harness })}
-          </button>
-        ))}
+      {live && harnesses.length > 0 && (
+        <div className={styles.actions}>
+          {harnesses.map((harness) => (
+            <button
+              key={harness}
+              type="button"
+              className={styles.button}
+              disabled={connection !== 'connected' || opening}
+              onClick={() => {
+                void open(harness)
+              }}
+            >
+              {t('session.open', { harness })}
+            </button>
+          ))}
+        </div>
+      )}
 
       {warning && <p role="alert">{t('session.commandFailed')}</p>}
 

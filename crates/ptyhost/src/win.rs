@@ -8,7 +8,9 @@ use std::mem::size_of;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
 
 use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
-use windows::Win32::Foundation::{ERROR_SUCCESS, HANDLE, HLOCAL, LocalFree};
+use windows::Win32::Foundation::{
+    ERROR_SUCCESS, HANDLE, HLOCAL, LocalFree, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
+};
 use windows::Win32::Security::Authorization::{
     ConvertSecurityDescriptorToStringSecurityDescriptorW, ConvertSidToStringSidW,
     ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1,
@@ -31,7 +33,7 @@ use windows::Win32::System::JobObjects::{
 use windows::Win32::System::Pipes::GetNamedPipeServerProcessId;
 use windows::Win32::System::Threading::{
     GetCurrentProcess, GetProcessHandleCount, OpenProcess, OpenProcessToken,
-    PROCESS_QUERY_LIMITED_INFORMATION,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, WaitForSingleObject,
 };
 use windows::core::{PCWSTR, PWSTR};
 
@@ -114,6 +116,39 @@ impl JobObject {
 
     fn raw(&self) -> HANDLE {
         HANDLE(self.handle.as_raw_handle())
+    }
+}
+
+/// Keeps the identity of a process across exit and PID reuse.
+#[derive(Debug)]
+pub struct ProcessProbe {
+    id: u32,
+    handle: OwnedHandle,
+}
+
+impl ProcessProbe {
+    pub fn open(id: u32) -> io::Result<Self> {
+        // SAFETY: the call opens a non-inheritable handle with wait access only.
+        let raw = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, id) }?;
+        // SAFETY: `raw` was just opened, is valid and has no other owner.
+        let handle = unsafe { OwnedHandle::from_raw_handle(raw.0) };
+        Ok(Self { id, handle })
+    }
+
+    pub fn id(&self) -> u32 {
+        self.id
+    }
+
+    pub fn is_alive(&self) -> io::Result<bool> {
+        // SAFETY: the owned handle stays valid during the zero-timeout wait.
+        match unsafe { WaitForSingleObject(HANDLE(self.handle.as_raw_handle()), 0) } {
+            WAIT_TIMEOUT => Ok(true),
+            WAIT_OBJECT_0 => Ok(false),
+            WAIT_FAILED => Err(io::Error::last_os_error()),
+            status => Err(io::Error::other(format!(
+                "unexpected process wait status: {status:?}"
+            ))),
+        }
     }
 }
 
