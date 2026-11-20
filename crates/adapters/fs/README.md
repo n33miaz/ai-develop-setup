@@ -24,11 +24,13 @@ O [portão](../../core/README.md#portão-de-ações-destrutivas-srcgate) decide 
 ```
 Executor::new(cerca, política)            // resolve o caminho e abre a cerca nome a nome; recusa raiz de unidade, `/`, caminho de rede, link que aparece no caminho depois da resolução e sistema sem suporte
 executor.execute(licença, action.started, diário) -> Completed | Failure { motivo, etapa, relatório }
+executor.execute_recorded(início_confirmado) -> Completed | Failure { motivo, etapa, relatório }
 executor.rehearse(&licença) -> relatório  // ensaio: todas as conferências, nenhuma alteração
 executor.measure(raiz de trabalho, alvo)  // fatos reais, para o plano nascer com dado e não com palpite
 ```
 
 - `execute` consome a licença (`ExecutionPermit`), que só `Action::authorize` constrói, e **não a devolve**. `Completed` guarda a licença gasta fora do alcance de quem chamou; `Completed::close(ação, meta)` a entrega direto ao portão (`Command::Executed`) e devolve a ação fechada, o evento `action.executed` e o relatório. Aceita ou recusada pelo portão, a licença não volta. Na falha, `motivo.error_code()` vai em `Command::Fail`.
+- **Início gravado.** O daemon usa `execute_recorded` com a licença que o portão emitiu após a gravação durável de [`action.started`](../../storage/README.md#diário-do-portão). Chamadores de `execute` fornecem sua própria implementação do diário.
 - **Ordem com o log e uso único.** Nada é lido nem alterado antes de o diário (`Journal::consume`) registrar que a licença daquele `action.started` foi gasta. O evento tem de ser o da licença (mesma ação, mesmo hash, mesma aprovação). O contrato do traço: devolver `Ok` no máximo uma vez por ação, para sempre, com registro durável, atômico, compartilhado entre executores e que sobrevive a reinício. Este crate não traz nenhum diário: o de memória mora só nos testes (`tests/common`). Como segunda barreira, cada `Executor` lembra as ações de que já recebeu licença e recusa a segunda (`E_FS_PERMIT_REUSED`), mesmo com outro diário; essa memória acaba com o processo.
 - **A política é a de quem constrói o executor**, não a do plano: o plano da licença é julgado de novo com ela antes de qualquer coisa.
 - **Sistemas.** Linux e Windows de 64 bits. Em outro sistema `Executor::new` recusa (`UnsupportedSystem`); Windows de 32 bits não compila. Nada é simulado por caminho.
@@ -182,7 +184,6 @@ Não garantido em (b): o que outro processo escreve num arquivo entre a última 
 - **Entradas criadas numa árvore entre a comparação com o inventário e o movimento.** Vão junto com a árvore (para a quarentena ou para a pasta de espera, onde a segunda comparação as recusa antes de qualquer remoção).
 - **Contenção de quarentena e restauração contra processo hostil** (item (c)): a pasta de origem ou de destino, e no Windows a própria entrada movida, podem ser movidas entre a abertura e a chamada. No Windows daria para segurá-las e reivindicar a entrada sem conceder o direito de apagar, como no apagar; não foi feito nesta entrega.
 - **Apagar definitivo no Linux sob concorrência hostil.** Não há primitiva que segure uma pasta no lugar; o padrão é recusar. Consequência: no Linux o executor não esvazia a quarentena.
-- **Diário persistente e uso único entre reinícios.** O contrato do traço exige; a implementação não existe. Com a quarentena desligada não fica marca no disco, e depois de um reinício só o diário impede a segunda execução.
 - **Montagem real.** A recusa de montagem é testada pela função de decisão com respostas sintéticas do sistema; a coleta pelo `statx` só é exercitada no caso "mesma montagem". Montar de verdade pede privilégio.
 - **Corte de energia real.** Garante-se a ordem das sincronizações (`fsync` de pasta no Linux, `FlushFileBuffers` no Windows), testada pela sequência de chamadas; nenhum teste corta a energia.
 - **Letra de unidade remapeada no Windows** (`subst`, mapeamento por usuário): a raiz do volume é aberta pelo caminho `\\?\C:\`, e quem pode remapear a letra muda o que ela é.

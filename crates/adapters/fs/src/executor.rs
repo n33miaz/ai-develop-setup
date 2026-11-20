@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use ads_core::gate::{AbsPath, Event, ExecutionPermit, GatePolicy};
+use ads_core::gate::{AbsPath, Event, ExecutionPermit, GatePolicy, StartedExecution};
 
 use crate::disk::{Disk, Probe};
 use crate::fence::{Fence, FenceError};
@@ -133,6 +133,24 @@ impl Executor {
                 "the event is not the action.started of this permit",
             )));
         }
+        self.run(permit, started, |started| journal.consume(started))
+    }
+
+    /// Runs an authorization obtained after the gate committed its start.
+    pub fn execute_recorded(
+        &mut self,
+        started: StartedExecution,
+    ) -> Result<Completed, Box<Failure>> {
+        let (permit, event) = started.into_parts();
+        self.run(permit, &event, |_| Ok(()))
+    }
+
+    fn run(
+        &mut self,
+        permit: ExecutionPermit,
+        started: &Event,
+        consume: impl FnOnce(&Event) -> Result<(), crate::JournalError>,
+    ) -> Result<Completed, Box<Failure>> {
         let action_id = permit.action_id().as_str().to_owned();
         if self.spent.contains(&action_id) {
             return Err(Failure::before_anything(Stop::new(
@@ -140,7 +158,7 @@ impl Executor {
                 format!("a permit of {action_id} was already taken by this executor"),
             )));
         }
-        journal.consume(started).map_err(|error| {
+        consume(started).map_err(|error| {
             Failure::before_anything(Stop::caused_by(Reason::JournalRefused, error))
         })?;
         self.spent.insert(action_id);

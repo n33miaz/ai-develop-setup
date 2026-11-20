@@ -166,11 +166,18 @@ impl Completed {
         action: Action,
         meta: EventMeta,
     ) -> Result<(Action, Event, Report), Box<Refused>> {
-        let command = Command::Executed {
-            permit: self.permit,
-        };
+        let (command, report) = self.into_result();
         let (action, event) = action.apply(command, meta)?;
-        Ok((action, event, self.report))
+        Ok((action, event, report))
+    }
+
+    pub fn into_result(self) -> (Command, Report) {
+        (
+            Command::Executed {
+                permit: self.permit,
+            },
+            self.report,
+        )
     }
 }
 
