@@ -6,6 +6,7 @@ pub mod gate;
 pub mod queue;
 pub mod routing;
 pub mod tool_launch;
+pub mod vault;
 
 /// Package name as declared in the manifest.
 pub const fn crate_name() -> &'static str {

@@ -26,7 +26,7 @@ limitados em memória; `pty_client` transporta o contrato público do host;
 | `ads-adapter-codex` | `crates/adapters/codex` | Adapta a ferramenta de linha de comando Codex ao contrato do núcleo. | Implementado: identifica a ferramenta para a política de abertura do núcleo, com testes compartilhados. |
 | `ads-adapter-antigravity` | `crates/adapters/antigravity` | Adapta a ferramenta de linha de comando Antigravity ao contrato do núcleo. | Esqueleto. |
 | `ads-adapter-api` | `crates/adapters/api` | Adapta as chamadas diretas às APIs de provedores ao contrato do núcleo. | Esqueleto. |
-| `ads-adapter-vault` | `crates/adapters/vault` | Adapta o cofre de segredos do sistema operacional ao contrato do núcleo. | Esqueleto. |
+| `ads-adapter-vault` | `crates/adapters/vault` | Adapta o cofre de segredos do sistema operacional ao contrato do núcleo. | Gerenciador de Credenciais do Windows, com operações por nome fixo ([README](../crates/adapters/vault/README.md)). |
 | `ads-adapter-collectors` | `crates/adapters/collectors` | Coleta, só em leitura, os dados de uso das ferramentas. | Esqueleto. |
 | `ads-adapter-relay` | `crates/adapters/relay` | Adapta o transporte do relé remoto ao contrato do núcleo. | Esqueleto; só os Schemas do relé existem. |
 | `ads-adapter-fs` | `crates/adapters/fs` | Executa no sistema de arquivos, dentro de uma cerca, as ações que o portão do núcleo licenciou. | Implementado e testado, ainda não chamado por nenhum módulo ([README](../crates/adapters/fs/README.md)). |
