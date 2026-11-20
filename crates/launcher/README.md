@@ -8,9 +8,12 @@ do executável. Com `--config`, só os caminhos `daemon_config` e
 `ptyhost_config` relativos partem da pasta do TOML.
 O arquivo sobrepõe as chaves de [`defaults/launcher.toml`](../../defaults/launcher.toml).
 Use uma pasta de controle exclusiva da instalação, gravável apenas pela sua conta.
-A trava de sistema operacional fica ativa enquanto o lançador está rodando.
+Uma trava de sistema operacional limita a execução a um lançador por pasta de
+controle e fica ativa enquanto ele roda.
 Os arquivos de trava são reutilizados após a saída. O daemon supervisionado
-mantém sua própria trava (`daemon.lock`) na mesma pasta. Se o lançador
+mantém sua própria trava (`daemon.lock`) na mesma pasta. Ao sair pelo sinal
+`stop`, o lançador encerra o daemon. Na saída do supervisor que passa pela
+limpeza de processos, ele também tenta encerrá-lo. Se o lançador
 for encerrado à força, o daemon pode continuar vivo, mas outro daemon da mesma
 instalação receberá uma recusa até o primeiro sair. Para recuperar a supervisão,
 encerre o daemon anterior e peça um reinício pelo sinal `restart`.
@@ -31,8 +34,9 @@ o lançador. Um sinal de parada pendente na partida continua válido e fica
 registrado no estado em `stop_pending_at_startup`. Se os dois arquivos
 estiverem presentes, a parada prevalece. O host
 permanece em execução com as sessões existentes. Enquanto supervisionado, ele
-só é reiniciado após sair. Para retomar o acompanhamento do host em uma nova
-execução do launcher, encerre o host anterior depois de fechar suas sessões.
+só é reiniciado após sair. Reassumir a supervisão de um host que ficou ativo
+depois de `stop` ainda está pendente. Para retomar a supervisão em uma nova
+execução do lançador, encerre o host anterior depois de fechar suas sessões.
 Se o host anterior continuar ativo, ele mantém a exclusividade do canal e o
 novo processo do host acaba desistindo após atingir o limite de tentativas.
 Para voltar a tentar após a desistência do host, reinicie o lançador.
@@ -51,7 +55,7 @@ são um instantâneo e podem ficar desatualizados se o lançador sair abruptamen
 O arquivo tem duração local e pode ser lido por outras ferramentas autorizadas
 pela pasta de controle.
 
-Este passo acompanha saídas de processos. A consulta de saúde e confirmação do
+A consulta de saúde e a confirmação do
 commit dependem de um contrato ainda ausente no daemon. Manifesto, troca de
 versão e rollback ficam para a entrega de atualização da
 [ADR 0015](../../docs/adr/0015-ci-built-artifact-with-verified-self-update.md).

@@ -16,7 +16,7 @@ flowchart LR
     Host <-->|Entrada, saída e tamanho| Terminal
     Terminal <--> Tool
     Launcher -. supervisão .-> Daemon
-    Launcher -. inicialização .-> Host
+    Launcher -. supervisão .-> Host
     Daemon -. persistência .-> Storage
 ```
 
@@ -26,4 +26,4 @@ flowchart LR
 - **Daemon e ptyhost.** No Windows, o host restringe o pipe ao usuário. Antes de enviar mensagens, o cliente confere a identidade do processo servidor e o dono do objeto do pipe. O host mantém sessões e replay em memória, independentemente da conexão do daemon. Veja a [ADR 0003](adr/0003-separate-pty-host-process.md) e o [canal do host](../crates/ptyhost/README.md#como-roda).
 - **Host e ferramenta.** O daemon prepara a abertura usando configuração local e a política do núcleo. O host inicia o executável via ConPTY com o ambiente do pedido. A ferramenta roda com as permissões do usuário. Veja a [fronteira das credenciais](risks.md#credencial-de-cli-de-ia-vaza-para-o-processo-filho).
 - **Armazenamento.** O módulo abre o banco local e grava eventos com dados cifrados e cadeia com chave. A ligação com o daemon e a integração da chave com o cofre estão pendentes. Veja as ADRs [0004](adr/0004-local-sqlite-no-cloud-database.md), [0005](adr/0005-column-level-encryption.md) e [0021](adr/0021-storage-atomic-file-and-cipher.md).
-- **Lançador.** A supervisão e a atualização com verificação de artefato são responsabilidades previstas na [ADR 0015](adr/0015-ci-built-artifact-with-verified-self-update.md). O fluxo atual inicia host e daemon conforme o [README do daemon](../crates/daemon/README.md).
+- **Lançador.** O lançador supervisiona o daemon e o host de terminais. O [README do lançador](../crates/launcher/README.md) descreve o comportamento atual e as pendências. A atualização com verificação de artefato está prevista na [ADR 0015](adr/0015-ci-built-artifact-with-verified-self-update.md).

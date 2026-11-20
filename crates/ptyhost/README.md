@@ -57,7 +57,7 @@ O contrato está em [`contracts/README.md`](../../contracts/README.md). O que es
 - No Windows o processo raiz entra no Job Object logo depois de criado, não antes de começar a rodar. Um neto iniciado nesse instante ficaria fora do job. Fechar essa janela pede criar o processo suspenso, o que a biblioteca não expõe; é o que o plano B (ConPTY direto) resolve.
 - O ConPTY abre perguntando a posição do cursor e segura o processo filho até a resposta. Como pode não haver cliente conectado, o backend responde "canto superior esquerdo" ao abrir. A pergunta continua na saída; um cliente que também responda manda uma resposta repetida ao programa.
 - Fora do Windows só o processo raiz recebe o sinal de encerramento; o resto da árvore depende do fechamento do terminal. O produto roda no Windows; o caminho Unix existe para os testes do CI em Linux.
-- O processo roda até ser encerrado por quem o iniciou; não há pedido de desligamento no contrato `pty-host/1`. Quem o inicia destacado é o lançador, que ainda não existe.
+- O contrato `pty-host/1` ainda não prevê um pedido de desligamento do host. Veja como o [lançador](../launcher/README.md) inicia e supervisiona o host destacado.
 - Um cliente conectado que para de ler não segura memória além da fila dele (`subscriber_queue_chunks`), mas a conexão fica aberta até ele sair.
 - Não há teto para o número de conexões nem de assinaturas vivas ao mesmo tempo, nem prazo para um pedido que espera pelo terminal: um terminal que nunca responde segura a conexão que pediu e uma thread de trabalho até a sessão ser encerrada.
 - Fora do Windows, sem `XDG_RUNTIME_DIR` o processo só sobe com `channel_path` preenchido.
