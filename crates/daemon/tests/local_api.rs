@@ -1,7 +1,4 @@
-use ads_contracts::{
-    CommandSessionOpenV1Params, ContractLocalApiErrorCodeV1InternalError,
-    ContractLocalApiErrorCodeV1SessionSetupFailed,
-};
+use ads_contracts::CommandSessionOpenV1Params;
 use ads_daemon::api::{ApiConfig, ApiError, DisabledLauncher, Launcher, LocalApi, TestHooks};
 use ads_daemon::auth::Token;
 use ads_daemon::events::{EventLog, Poll, new_id};
@@ -1782,7 +1779,7 @@ close_retry_ms = 20",
     })
     .await;
     // Both automatic attempts were refused: the stream stays whole and the slot stays taken.
-    // The existing subscription stays open: the next frame answers this request, not -32004 or -32013.
+    // The next frame answers this request while the existing subscription stays open.
     assert_eq!(
         call(
             &mut ws,
@@ -2084,10 +2081,7 @@ async fn failed_host_resubscribe_invalidates_only_the_affected_stream() {
 #[test]
 fn unavailable_service_and_host_timeout_share_the_internal_error_code() {
     for error in [ApiError::Unavailable, ApiError::HostTimeout] {
-        assert_eq!(
-            error.code(),
-            ContractLocalApiErrorCodeV1InternalError::VALUE
-        );
+        assert_eq!(error.code(), -32603);
     }
 }
 
@@ -2548,7 +2542,7 @@ async fn failed_open_cleanup_timeout_keeps_the_record_until_the_host_closes() {
     let mut ws = authenticated(&f).await;
     assert_eq!(
         call(&mut ws, "session.open", open_params("session")).await["error"]["code"],
-        ContractLocalApiErrorCodeV1SessionSetupFailed::VALUE
+        -32014
     );
     // The host opened a real terminal; the first close never gets a reply.
     assert_eq!(f.host.sessions().len(), 1);

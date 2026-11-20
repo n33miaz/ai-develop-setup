@@ -1,4 +1,4 @@
-// Gera os tipos TypeScript (.d.ts) a partir dos Schemas. A saída fica versionada em generated/ts.
+// Gera tipos e constantes TypeScript a partir dos Schemas em generated/ts.
 import fs from "node:fs";
 import path from "node:path";
 import { compile } from "json-schema-to-typescript";
@@ -9,6 +9,28 @@ export function tsName(id) {
   const [, , tipo, nome, versao] = id.split(":");
   const words = [tipo, ...nome.split(/[._-]/), `v${versao}`];
   return words.map((w) => w[0].toUpperCase() + w.slice(1)).join("");
+}
+
+function integerConstants(schema) {
+  if (!Array.isArray(schema.anyOf) || schema.anyOf.length === 0) return [];
+
+  const refPrefix = "#/$defs/";
+  const names = schema.anyOf.map((branch) => {
+    const ref = branch?.$ref;
+    return Object.keys(branch ?? {}).length === 1 && typeof ref === "string" && ref.startsWith(refPrefix)
+      ? ref.slice(refPrefix.length)
+      : null;
+  });
+  if (!names.every((name) => name !== null && schema.$defs?.[name]?.type === "integer")) return [];
+
+  return names.map((name) => {
+    const { const: value, description } = schema.$defs[name];
+    if (!/^[a-z][a-z0-9_]*$/.test(name) || !Number.isSafeInteger(value)) {
+      throw new Error(`${schema.$id}: $defs/${name} precisa de um nome minúsculo e um const inteiro seguro`);
+    }
+    const doc = description ? `/** ${description.replaceAll("*/", "* /")} */\n` : "";
+    return `${doc}export const ${name.toUpperCase()} = ${value}`;
+  });
 }
 
 export async function generateAll(root) {
@@ -46,12 +68,8 @@ export async function generateAll(root) {
       format: true,
     });
     out.set(`${idToKey(id)}.d.ts`, text.replace(/\r\n/g, "\n"));
-    if (id === "urn:ads:contract:local-api.error-code:1") {
-      const constants = schema.anyOf.map(({ $ref: ref }) => {
-        const name = ref.slice("#/$defs/".length);
-        const { const: value, description } = schema.$defs[name];
-        return `/** ${description} */\nexport const ${name.toUpperCase()} = ${value}`;
-      });
+    const constants = integerConstants(schema);
+    if (constants.length) {
       out.set(`${idToKey(id)}.constants.ts`, `${banner}\n\n${constants.join("\n\n")}\n`);
     }
   }

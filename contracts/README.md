@@ -10,7 +10,7 @@ Fonte única de toda mensagem e todo registro do produto: JSON Schema 2020-12, u
 | `golden/<tipo>.<nome>.v<versão>/valid/` | Exemplos que têm de passar (pelo menos 2) |
 | `golden/<tipo>.<nome>.v<versão>/invalid/` | Exemplos que têm de falhar (pelo menos 3), mais `index.json` |
 | `corpus/` | Casos comuns a dois validadores: o Schema e o código que lê o mesmo dado. Hoje, `abspath.json` ([caminho absoluto](#caminho-absoluto-o-schema-e-o-núcleo)) e `title-chars.json` ([título da tarefa](#fila-contínua)) |
-| `generated/ts/` | Tipos TypeScript gerados, versionados; o CI reprova se estiverem desatualizados. A interface os importa por `ui/src/api/contracts.ts` |
+| `generated/ts/` | Tipos e constantes TypeScript gerados, versionados; o CI reprova se estiverem desatualizados. A interface os importa por `ui/src/api/contracts.ts` |
 | `../crates/contracts/src/generated/` | Tipos Rust gerados (crate `ads-contracts`), versionados; o CI reprova se estiverem desatualizados. Como cada parte do Schema vira tipo está no [README do crate](../crates/contracts/README.md) |
 | `tools/` | Validador, geradores (`gen-ts.mjs`, `gen-rust.mjs`), regras entre campos (`rules.mjs`) e os testes deles |
 
@@ -20,11 +20,19 @@ Fonte única de toda mensagem e todo registro do produto: JSON Schema 2020-12, u
 cd contracts
 npm ci
 npm run validate   # Schemas válidos, referências resolvidas, URNs únicas, dourados no lugar
-npm run gen:ts     # regera generated/ts
+npm run gen:ts     # regera tipos e constantes em generated/ts
 npm run gen:rust   # regera ../crates/contracts/src/generated
-npm run gen:check  # reprova se os tipos gerados (TypeScript e Rust) não forem o que os geradores produzem agora
+npm run gen:check  # confere os tipos e constantes gerados em TypeScript e Rust
 npm test           # testes do próprio validador e dos geradores
 ```
+
+Cada Schema gera um `.d.ts`. Um catálogo com `anyOf` composto apenas de
+referências locais a `$defs` do tipo `integer` gera também um `.constants.ts`.
+Cada definição referenciada precisa de um `const` inteiro seguro em JavaScript
+e um nome em minúsculas, com letras, dígitos e sublinhados e começando por uma
+letra. O gerador exporta o nome em maiúsculas com seu valor literal.
+O catálogo de erros da API local segue esse formato, e a interface acessa as
+constantes pelo mesmo módulo dos tipos, `ui/src/api/contracts.ts`.
 
 O gerador de Rust passa a saída pelo `rustfmt` da versão fixada em `rust-toolchain.toml`, então `gen:rust`, `gen:check` e `npm test` precisam do Rust instalado. Ele para com erro diante de palavra-chave ou expressão regular que não sabe traduzir, em vez de gerar um tipo mais frouxo que o Schema, e nunca apaga arquivo: módulo que sobrou de um Schema removido é acusado e sai pelo nome. Cada dourado é conferido também contra os tipos Rust (`cargo test -p ads-contracts`): o válido tem de ir e voltar igual, o inválido tem de ser recusado.
 

@@ -112,6 +112,19 @@ política `[env]`; o daemon guarda só o resultado, sem as variáveis negadas.
 Os nomes, valores e significados dos erros emitidos pela API local estão no
 [contrato de códigos de erro](../../contracts/schemas/contract.local-api.error-code.v1.schema.json).
 
+| Nome | Código na resposta |
+|---|---|
+| `METHOD_NOT_FOUND` | `-32601` |
+| `INVALID_PARAMS` | `-32602` |
+| `INTERNAL_ERROR` | `-32603` |
+| `CAPACITY_EXCEEDED` | `-32003` |
+| `SUBSCRIPTION_REPLAY_UNAVAILABLE` | `-32004` |
+| `REMOTE_ORIGIN_REFUSED` | `-32010` |
+| `HARNESS_NOT_CONFIGURED` | `-32011` |
+| `CONFLICT` | `-32012` |
+| `SESSION_CLOSE_PENDING` | `-32013` |
+| `SESSION_SETUP_FAILED` | `-32014` |
+
 `api::Launcher::prepare` recebe os parâmetros gerados de `session.open` (ferramenta,
 apelido de pasta, identificador e tamanho) e devolve `OpenParams` do ptyhost.
 O daemon confere que identificador e tamanho foram preservados. Cada adaptador

@@ -1,9 +1,11 @@
-import { SESSION_CLOSE_PENDING, SUBSCRIPTION_REPLAY_UNAVAILABLE } from '../../../contracts/generated/ts/contract.local-api.error-code.v1.constants'
-import type {
-  CommandRequestV1,
-  CommandResponseV2,
-  EventEnvelopeV1,
-  HarnessCatalog,
+import {
+  SESSION_CLOSE_PENDING,
+  SESSION_SETUP_FAILED,
+  SUBSCRIPTION_REPLAY_UNAVAILABLE,
+  type CommandRequestV1,
+  type CommandResponseV2,
+  type EventEnvelopeV1,
+  type HarnessCatalog,
 } from './contracts'
 
 export type Unsubscribe = () => void
@@ -15,7 +17,7 @@ export {
   SESSION_CLOSE_PENDING,
   SESSION_SETUP_FAILED,
   SUBSCRIPTION_REPLAY_UNAVAILABLE,
-} from '../../../contracts/generated/ts/contract.local-api.error-code.v1.constants'
+}
 
 /** Códigos que encerram uma assinatura sem derrubar a conexão. */
 export type SubscriptionEndCode =

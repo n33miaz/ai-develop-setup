@@ -1,4 +1,3 @@
-import { METHOD_NOT_FOUND } from '../../../contracts/generated/ts/contract.local-api.error-code.v1.constants'
 import {
   CoreClientError,
   HarnessListError,
@@ -8,11 +7,13 @@ import {
   type SubscriptionEndCode,
 } from './client'
 import { newCommand } from './command'
-import type {
-  CommandHarnessListResponseV1,
-  CommandRequestV1,
-  CommandResponseV2,
-  EventEnvelopeV1,
+import {
+  METHOD_NOT_FOUND,
+  SUBSCRIPTION_REPLAY_UNAVAILABLE,
+  type CommandHarnessListResponseV1,
+  type CommandRequestV1,
+  type CommandResponseV2,
+  type EventEnvelopeV1,
 } from './contracts'
 import { isHarnessList, isLocalCommand, isServerMessage } from './wire'
 
@@ -269,7 +270,7 @@ export function createWsCoreClient({
               return
             }
             pending.delete(response.id)
-            // Resposta de assinatura, inicial ou tardia: -32004 e -32013 encerram só o stream dela;
+            // Uma resposta que encerra a assinatura, inicial ou tardia, afeta só o stream dela;
             // outro erro não tem explicação e derruba a conexão, a menos que ninguém mais ouça o stream.
             const shared = subscriptionRequests.get(response.id)
             if (shared && 'error' in response) {
@@ -373,7 +374,7 @@ export function createWsCoreClient({
         // antigo aumenta `replayEvents`/`replayBytes` até `events_per_stream` do daemon.
         let cancelled = false
         queueMicrotask(() => {
-          if (!cancelled && streams.get(stream) === existing) listener.onEnd?.(-32004)
+          if (!cancelled && streams.get(stream) === existing) listener.onEnd?.(SUBSCRIPTION_REPLAY_UNAVAILABLE)
         })
         return () => {
           cancelled = true
