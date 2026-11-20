@@ -391,3 +391,165 @@ fn a_real_program_and_folder_on_disk_open() {
     );
     assert_eq!(result, Err(LaunchError::ProgramMissing));
 }
+
+/// `text` as a TOML basic string, so that control characters reach the path check.
+fn toml_string(text: &str) -> String {
+    let mut quoted = String::from('"');
+    for c in text.chars() {
+        match c {
+            '\\' => quoted.push_str("\\\\"),
+            '"' => quoted.push_str("\\\""),
+            c if c.is_control() => quoted.push_str(&format!("\\u{:04X}", u32::from(c))),
+            c => quoted.push(c),
+        }
+    }
+    quoted.push('"');
+    quoted
+}
+
+/// Path forms that name something other than a literal absolute file or folder, with the
+/// reason they are refused.
+const DANGEROUS_PATHS: &[(&str, PathError)] = &[
+    // Special prefixes and network paths.
+    (r"\\?\C:\Tools\tool.exe", PathError::DevicePrefix),
+    (r"\\.\C:\Tools\tool.exe", PathError::DevicePrefix),
+    (r"\\.\pipe\tool", PathError::DevicePrefix),
+    (r"\\?\UNC\server\share\tool.exe", PathError::DevicePrefix),
+    ("//?/C:/Tools/tool.exe", PathError::DevicePrefix),
+    (r"\\server\share\tool.exe", PathError::Network),
+    ("//server/share/tool.exe", PathError::Network),
+    (r"\??\C:\Tools\tool.exe", PathError::Relative),
+    // Alternate data streams; `$` is refused first.
+    (r"C:\Tools\tool.exe:hidden", PathError::AlternateStream),
+    (r"C:\Tools:hidden\tool.exe", PathError::AlternateStream),
+    (r"C:\Tools\tool.exe::$DATA", PathError::UnexpandedVariable),
+    // Short names.
+    (r"C:\PROGRA~1\Tools\tool.exe", PathError::ShortName),
+    (r"C:\Tools\TOOL~1.EXE", PathError::ShortName),
+    (r"C:\Tools\TOOL~12", PathError::ShortName),
+    // Device names, with or without an extension.
+    (r"C:\Tools\NUL", PathError::DeviceName),
+    (r"C:\Tools\con.exe", PathError::DeviceName),
+    (r"C:\Tools\COM1\tool.exe", PathError::DeviceName),
+    ("C:\\Tools\\LPT\u{b9}.exe", PathError::DeviceName),
+    ("C:\\Tools\\aux\u{a0}.exe", PathError::DeviceName),
+    (r"C:\Tools\CONIN$", PathError::UnexpandedVariable),
+    // Control characters.
+    ("C:\\Tools\\tool\0.exe", PathError::ControlCharacter),
+    ("C:\\Tools\\tool\n.exe", PathError::ControlCharacter),
+    ("C:\\Tools\\tool\u{1b}[0m.exe", PathError::ControlCharacter),
+    ("C:\\Tools\\tool\u{7f}.exe", PathError::ControlCharacter),
+    ("C:\\Tools\\tool\u{85}.exe", PathError::ControlCharacter),
+    ("/usr/bin/tool\t", PathError::ControlCharacter),
+    // Spaces that Windows drops or that hide the root.
+    ("   ", PathError::Empty),
+    (r" C:\Tools\tool.exe", PathError::Relative),
+    (r"C:\Tools \tool.exe", PathError::TrailingDotOrSpace),
+    (r"C:\Tools\tool.exe ", PathError::TrailingDotOrSpace),
+    (r"C:\Tools\tool.exe.", PathError::TrailingDotOrSpace),
+    // Reserved characters and wildcards.
+    (r"C:\Tools\a|b.exe", PathError::ReservedCharacter),
+    (r"C:\Tools\a<b.exe", PathError::ReservedCharacter),
+    ("C:\\Tools\\a\"b.exe", PathError::ReservedCharacter),
+    (r"C:\Tools\*.exe", PathError::WildcardNotAllowed),
+    (r"C:\Tools\tool?.exe", PathError::WildcardNotAllowed),
+    // POSIX paths.
+    ("/usr/local/bin/../tool", PathError::ParentComponent),
+    (r"/usr/local/bin/a\b", PathError::ReservedCharacter),
+    ("~/bin/tool", PathError::UnexpandedTilde),
+    ("/home/~someone/tool", PathError::UnexpandedTilde),
+    ("/home/$USER/tool", PathError::UnexpandedVariable),
+    ("usr/local/bin/tool", PathError::Relative),
+    // Relative forms, also as a folder.
+    (r"C:\work\..\tool", PathError::ParentComponent),
+    ("C:/work/tool/..", PathError::ParentComponent),
+    ("C:work", PathError::DriveRelative),
+    (r"\work", PathError::Relative),
+    (r".\work", PathError::Relative),
+    ("tool.exe", PathError::Relative),
+];
+
+/// Path forms that stay accepted, with the text the configuration keeps.
+const SAFE_PATHS: &[(&str, &str)] = &[
+    (
+        r"C:\Program Files\My Tools\tool.exe",
+        r"C:\Program Files\My Tools\tool.exe",
+    ),
+    ("c:/Program Files/tool.exe", r"C:\Program Files\tool.exe"),
+    (r"C:\Tools\ leading space", r"C:\Tools\ leading space"),
+    (r"C:\Tools\a~b\tool.exe", r"C:\Tools\a~b\tool.exe"),
+    (r"C:\Tools\COM10\console.exe", r"C:\Tools\COM10\console.exe"),
+    ("/usr/local/bin/tool", "/usr/local/bin/tool"),
+    ("/opt/my tools//bin/./tool", "/opt/my tools/bin/tool"),
+    ("/srv/NUL/CON~1/tool", "/srv/NUL/CON~1/tool"),
+];
+
+#[test]
+fn the_path_corpus_is_refused_as_program_and_as_folder() {
+    for (path, error) in DANGEROUS_PATHS {
+        let program = format!("[tools.{HARNESS_ID}]\nprogram = {}\n", toml_string(path));
+        assert_eq!(
+            ToolConfig::from_toml_str(&program, NameCase::Insensitive),
+            Err(ConfigError::Program(*error)),
+            "program {path:?}"
+        );
+        let folder = format!("[workdirs]\nscratch = {}\n", toml_string(path));
+        assert_eq!(
+            ToolConfig::from_toml_str(&folder, NameCase::Insensitive),
+            Err(ConfigError::Workdir {
+                index: 0,
+                error: *error
+            }),
+            "folder {path:?}"
+        );
+    }
+    // An empty program turns the tool off (tested above); an empty folder is refused.
+    assert_eq!(
+        ToolConfig::from_toml_str("[workdirs]\nscratch = ''\n", NameCase::Insensitive),
+        Err(ConfigError::Workdir {
+            index: 0,
+            error: PathError::Empty
+        })
+    );
+}
+
+#[test]
+fn a_drive_root_is_refused_as_folder() {
+    for root in [r"C:\", "c:/", r"D:\.\", "C://", "/", "//", "/./"] {
+        let text = format!(
+            "[workdirs]\nother = 'C:\\work'\nscratch = {}\n",
+            toml_string(root)
+        );
+        let result = ToolConfig::from_toml_str(&text, NameCase::Insensitive);
+        // `//` is a network prefix before it is a root.
+        if root == "//" {
+            assert_eq!(
+                result,
+                Err(ConfigError::Workdir {
+                    index: 1,
+                    error: PathError::Network
+                })
+            );
+        } else {
+            assert_eq!(result, Err(ConfigError::WorkdirIsRoot(1)), "{root:?}");
+        }
+    }
+    // One level down is a folder like any other.
+    let text = "[workdirs]\nscratch = 'C:\\work'\nposix = '/work'\n";
+    assert!(ToolConfig::from_toml_str(text, NameCase::Insensitive).is_ok());
+}
+
+#[test]
+fn safe_path_forms_are_kept_as_program_and_as_folder() {
+    let alias = ads_contracts::CommonIdV1::new("scratch").unwrap();
+    for (path, kept) in SAFE_PATHS {
+        let text = format!(
+            "[workdirs]\nscratch = {quoted}\n[tools.{HARNESS_ID}]\nprogram = {quoted}\n",
+            quoted = toml_string(path)
+        );
+        let config = ToolConfig::from_toml_str(&text, NameCase::Insensitive)
+            .unwrap_or_else(|error| panic!("{path:?}: {error}"));
+        assert_eq!(config.program().map(|p| p.as_str()), Some(*kept));
+        assert_eq!(config.workdir(&alias).map(|c| c.as_str()), Some(*kept));
+    }
+}

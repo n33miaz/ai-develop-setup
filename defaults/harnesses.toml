@@ -13,6 +13,13 @@
 # Variaveis copiadas do processo pai, se existirem. A camada do usuario SUBSTITUI a lista.
 # Padrao: o minimo para um programa do Windows achar o sistema, o PATH, a pasta do usuario e a
 # temporaria. Nada de credencial: o login de cada ferramenta fica com ela, fora do produto.
+# Linux e macOS: a lista nao tem `HOME` nem `TMPDIR` (a pasta temporaria nesses sistemas). A
+# ferramenta costuma achar a propria pasta pelo sistema mesmo sem `HOME`, mas git, npm e outros
+# programas que ela abre leem `HOME` (`~/.gitconfig`, `~/.npmrc`) e, sem ele, rodam sem a
+# configuracao da pessoa. Como a camada do usuario SUBSTITUI `allow`, o arquivo do usuario escreve a
+# lista inteira que quer passar, por exemplo:
+#   [env]
+#   allow = ["PATH", "HOME", "TMPDIR", "LANG", "USER"]
 allow = [
   "SystemRoot",
   "windir",
@@ -29,12 +36,13 @@ allow = [
 ]
 
 # Nomes que nunca passam. `NOME` exato, `PREFIXO*`, `*SUFIXO` ou `*TRECHO*`; sem diferenca de
-# maiusculas. Nome em `allow` ou em `env.set` que case com um destes e recusado na carga. Esta lista so
-# cresce: a camada do usuario ACRESCENTA padroes, nunca tira.
+# maiusculas, nem nas letras Unicode que viram as do padrao (s longo, i sem ponto, largura cheia). Nome
+# em `allow` ou em `env.set` que case com um destes e recusado na carga. Esta lista so cresce: a camada
+# do usuario ACRESCENTA padroes, nunca tira.
 # Cobre o nome de credenciais (chave, token, segredo, senha), o nome de variaveis que APONTAM para elas
-# (`*_TOKEN_FILE`, `*_KEY_FILE`, `*_CREDENTIALS`) e a configuracao de login das ferramentas e provedores
-# (`CLAUDE_CONFIG_DIR`, `GOOGLE_APPLICATION_CREDENTIALS`). Um padrao de nome nao reconhece um segredo
-# guardado sob um nome qualquer: o que passa e so o que esta em `allow`, revisavel neste lugar.
+# (`*_TOKEN_FILE`, `*_KEY_FILE`, `*_CREDENTIALS`, `KUBECONFIG`) e a configuracao de login das
+# ferramentas e provedores (`CLAUDE_CONFIG_DIR`, `GOOGLE_APPLICATION_CREDENTIALS`). Um padrao de nome nao
+# reconhece um segredo guardado sob um nome qualquer: o que passa e so o que esta em `allow`.
 deny = [
   # Credenciais pelo nome, em qualquer posicao.
   "*TOKEN*",
@@ -54,6 +62,15 @@ deny = [
   "*_PASS*",
   "*_SESSION*",
   "*_COOKIE*",
+  "*_JWT*",
+  "*_PWD",
+  "MYSQL_PWD",
+  "*_DSN",
+  "*_KEY_ID",
+  "AUTHORIZATION",
+  # Variaveis que levam a credencial dentro do valor ou apontam para o arquivo dela.
+  "DATABASE_URL",
+  "KUBECONFIG",
   # Ferramentas e provedores: login, configuracao de login e chaves.
   "ANTHROPIC_*",
   "CLAUDE_*",
@@ -86,6 +103,7 @@ COLORTERM = "truecolor"
 # Pastas de trabalho por apelido: `apelido = "caminho absoluto"`. Quem pede a sessao manda so o
 # apelido; apelido que nao esta aqui e recusado. A camada do usuario ACRESCENTA ou troca apelidos.
 # Apelido: letras, digitos e . _ : -, ate 64 caracteres. Padrao vazio: nenhuma pasta.
+# A raiz de uma unidade (`C:\`) ou `/` e recusada: a ferramenta trabalharia no disco inteiro.
 [workdirs]
 
 # Uma tabela por ferramenta. Cada adaptador le so a sua.

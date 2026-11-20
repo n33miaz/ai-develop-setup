@@ -11,6 +11,7 @@ use ads_contracts::{
 };
 
 use super::{Harness, Mode, ToolConfig};
+use crate::gate::{AbsPath, PathStyle};
 
 /// Checks whether the configured program and working folder exist.
 pub trait Probe {
@@ -18,18 +19,32 @@ pub trait Probe {
     fn is_dir(&self, path: &str) -> bool;
 }
 
-/// The real file system.
+/// The real file system. A path absolute only in the other system's style is never found: on
+/// Windows `/x` is relative to the current drive, and elsewhere `C:\x` is a relative name.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DiskProbe;
 
 impl Probe for DiskProbe {
     fn is_file(&self, path: &str) -> bool {
-        Path::new(path).is_file()
+        absolute_on(path, host_style()) && Path::new(path).is_file()
     }
 
     fn is_dir(&self, path: &str) -> bool {
-        Path::new(path).is_dir()
+        absolute_on(path, host_style()) && Path::new(path).is_dir()
     }
+}
+
+const fn host_style() -> PathStyle {
+    if cfg!(windows) {
+        PathStyle::Windows
+    } else {
+        PathStyle::Posix
+    }
+}
+
+/// Whether `path` is a literal absolute path in `style`, written as the configuration keeps it.
+fn absolute_on(path: &str, style: PathStyle) -> bool {
+    AbsPath::parse(path).is_ok_and(|parsed| parsed.style() == style && parsed.to_string() == path)
 }
 
 /// Why no session is opened. Carries no path, value or variable.
@@ -112,4 +127,57 @@ pub fn process_env() -> Vec<(String, String)> {
     std::env::vars_os()
         .filter_map(|(name, value)| Some((name.into_string().ok()?, value.into_string().ok()?)))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_path_in_the_style_of_the_system_is_looked_up() {
+        for (path, style, other) in [
+            (r"C:\Tools\claude.exe", PathStyle::Windows, PathStyle::Posix),
+            (
+                r"C:\Program Files\work dir",
+                PathStyle::Windows,
+                PathStyle::Posix,
+            ),
+            ("/usr/local/bin/codex", PathStyle::Posix, PathStyle::Windows),
+            (
+                "/home/someone/work dir",
+                PathStyle::Posix,
+                PathStyle::Windows,
+            ),
+        ] {
+            assert!(absolute_on(path, style), "{path}");
+            assert!(!absolute_on(path, other), "{path}");
+        }
+        // Not written as the configuration keeps it: never looked up.
+        for path in [
+            "c:/Tools/claude.exe",
+            "/usr//bin",
+            r"\\?\C:\x",
+            "tool.exe",
+            "",
+        ] {
+            assert!(!absolute_on(path, PathStyle::Windows), "{path}");
+            assert!(!absolute_on(path, PathStyle::Posix), "{path}");
+        }
+    }
+
+    #[test]
+    fn the_disk_probe_does_not_find_a_folder_written_for_the_other_system() {
+        if cfg!(windows) {
+            // The current folder without its drive, written `/a/b`, resolves against the current
+            // drive, so it exists whichever drive the checkout is on.
+            let here = std::env::current_dir().unwrap().display().to_string();
+            let posix = here.get(2..).unwrap_or_default().replace('\\', "/");
+            assert!(DiskProbe.is_dir(&here), "{here}");
+            assert!(Path::new(&posix).is_dir(), "{posix}");
+            assert!(!DiskProbe.is_dir(&posix), "{posix}");
+        } else {
+            assert!(DiskProbe.is_dir("/"));
+            assert!(!DiskProbe.is_dir(r"C:\"));
+        }
+    }
 }

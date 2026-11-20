@@ -47,7 +47,11 @@ impl<C, X> ToolLauncher<C, X> {
         let claude = claude::ClaudeConfig::from_toml_str(overrides, case).map_err(|error| {
             let shared = matches!(
                 error,
-                A::Env(_) | A::Alias(_) | A::Workdir { .. } | A::WorkdirTooLong(_)
+                A::Env(_)
+                    | A::Alias(_)
+                    | A::Workdir { .. }
+                    | A::WorkdirTooLong(_)
+                    | A::WorkdirIsRoot(_)
             );
             let error = match error {
                 A::Toml { .. } => A::Toml { line: None },
@@ -58,7 +62,11 @@ impl<C, X> ToolLauncher<C, X> {
         let codex = codex::CodexConfig::from_toml_str(overrides, case).map_err(|error| {
             let shared = matches!(
                 error,
-                B::Env(_) | B::Alias(_) | B::Workdir { .. } | B::WorkdirTooLong(_)
+                B::Env(_)
+                    | B::Alias(_)
+                    | B::Workdir { .. }
+                    | B::WorkdirTooLong(_)
+                    | B::WorkdirIsRoot(_)
             );
             let error = match error {
                 B::Toml { .. } => B::Toml { line: None },
@@ -129,6 +137,22 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_root_folder_is_reported_as_a_shared_error() {
+        let error = ToolLauncher::from_toml_str(
+            "[workdirs]\nscratch = '/'\n",
+            Vec::<(String, String)>::new(),
+            claude::DiskProbe,
+            codex::DiskProbe,
+        )
+        .err()
+        .unwrap();
+        assert_eq!(
+            error,
+            "invalid user configuration: folder at entry 0 is a drive root"
+        );
+    }
 
     #[test]
     fn only_the_filtered_environment_is_kept() {
