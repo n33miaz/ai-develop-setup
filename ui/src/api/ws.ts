@@ -343,7 +343,9 @@ export function createWsCoreClient({
       return Promise.race([transmit(command), deadline])
         .then((response) => {
           if (isHarnessList(response)) return response.result
-          throw new HarnessListError(response.error?.code === METHOD_NOT_FOUND ? 'unsupported' : 'refused')
+          throw new HarnessListError(
+            response.error?.code === METHOD_NOT_FOUND ? 'unsupported' : 'refused',
+          )
         })
         .finally(() => {
           clearTimeout(timer)
@@ -374,7 +376,8 @@ export function createWsCoreClient({
         // antigo aumenta `replayEvents`/`replayBytes` até `events_per_stream` do daemon.
         let cancelled = false
         queueMicrotask(() => {
-          if (!cancelled && streams.get(stream) === existing) listener.onEnd?.(SUBSCRIPTION_REPLAY_UNAVAILABLE)
+          if (!cancelled && streams.get(stream) === existing)
+            listener.onEnd?.(SUBSCRIPTION_REPLAY_UNAVAILABLE)
         })
         return () => {
           cancelled = true

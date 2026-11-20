@@ -13,11 +13,7 @@ export type Unsubscribe = () => void
 /** Estado da ligação com o núcleo. É estado do cliente, não mensagem: não vem dos contratos. */
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected'
 
-export {
-  SESSION_CLOSE_PENDING,
-  SESSION_SETUP_FAILED,
-  SUBSCRIPTION_REPLAY_UNAVAILABLE,
-}
+export { SESSION_CLOSE_PENDING, SESSION_SETUP_FAILED, SUBSCRIPTION_REPLAY_UNAVAILABLE }
 
 /** Códigos que encerram uma assinatura sem derrubar a conexão. */
 export type SubscriptionEndCode =
