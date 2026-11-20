@@ -99,12 +99,7 @@ export function actionPlanErrors(plan) {
 export function crossRuleErrors(key, data) {
   if (key.startsWith("event.")) {
     const problem = streamBindingError(data);
-    const errors = problem ? [problem] : [];
-    if (/^event\.queue\.(created|enabled|stopped)\.v1$/.test(key)
-        && data.actor.id !== data.data.owner_id) {
-      errors.push("actor.id difere de data.owner_id");
-    }
-    return errors;
+    return problem ? [problem] : [];
   }
   if (/^record\.action-plan\.v\d+$/.test(key)) return actionPlanErrors(data);
   if (key === "record.queue-task.v1") return queueTaskErrors(data);

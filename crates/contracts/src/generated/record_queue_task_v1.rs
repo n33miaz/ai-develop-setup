@@ -140,8 +140,10 @@ pub struct RecordQueueTaskV1OriginBugRule {
     pub target_id: CommonIdV1,
 }
 
-static RECORD_QUEUE_TASK_V1_TITLE_PATTERN: Pattern = Pattern::new(
-    r"^[^\x{0000}-\x{001f}\x{007f}-\x{009f}\x{061c}\x{200b}-\x{200f}\x{2028}-\x{202e}\x{2060}-\x{206f}\x{feff}]*$",
+static RECORD_QUEUE_TASK_V1_TITLE_PATTERN: Pattern =
+    Pattern::new(r"^[\p{L}\p{M}\p{N}\p{P}\p{S} ]*$");
+static RECORD_QUEUE_TASK_V1_TITLE_EXCLUDED: Pattern = Pattern::new(
+    r"[\x{034f}\x{115f}\x{1160}\x{180b}-\x{180f}\x{3164}\x{fe00}-\x{fe0f}\x{ffa0}\x{E0100}-\x{E01EF}]",
 );
 
 /// `title` in `urn:ads:record:queue-task:1`.
@@ -161,7 +163,9 @@ impl RecordQueueTaskV1Title {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        (1..=120).contains(&length) && RECORD_QUEUE_TASK_V1_TITLE_PATTERN.matches(text)
+        (1..=120).contains(&length)
+            && RECORD_QUEUE_TASK_V1_TITLE_PATTERN.matches(text)
+            && !RECORD_QUEUE_TASK_V1_TITLE_EXCLUDED.matches(text)
     }
 
     pub fn as_str(&self) -> &str {
@@ -336,8 +340,9 @@ impl Serialize for RecordQueueTaskV1AttemptLimit {
 }
 
 static RECORD_QUEUE_TASK_V1_BRANCH_PATTERN: Pattern =
-    Pattern::new(r"^(feature|fix)/[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*$");
-static RECORD_QUEUE_TASK_V1_BRANCH_EXCLUDED: Pattern = Pattern::new(r"\.\.|\.lock(/|$)|\.$");
+    Pattern::new(r"^(feature|fix)/[a-z0-9][a-z0-9._-]*(/[a-z0-9][a-z0-9._-]*)*$");
+static RECORD_QUEUE_TASK_V1_BRANCH_EXCLUDED: Pattern =
+    Pattern::new(r"\.\.|\.lock(/|$)|\.(/|$)|(^|/)(con|prn|aux|nul|com[0-9]|lpt[0-9])(\.|/|$)");
 
 /// `branch` in `urn:ads:record:queue-task:1`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]

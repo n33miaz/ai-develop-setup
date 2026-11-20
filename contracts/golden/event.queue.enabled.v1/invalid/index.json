@@ -19,11 +19,5 @@
     "rule": "O evento exige um aparelho autenticado.",
     "keyword": "const",
     "instancePath": "/actor/kind"
-  },
-  "owner-mismatch.json": {
-    "rule": "O ator identifica o dono registrado no evento.",
-    "keyword": "crossRule",
-    "instancePath": "",
-    "messagePrefix": "actor.id difere de data.owner_id"
   }
 }

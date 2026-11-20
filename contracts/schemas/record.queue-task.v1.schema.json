@@ -91,7 +91,10 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 120,
-      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f\\u061c\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u206f\\ufeff]*$"
+      "pattern": "^[\\p{L}\\p{M}\\p{N}\\p{P}\\p{S} ]*$",
+      "not": {
+        "pattern": "[\\u034f\\u115f\\u1160\\u180b-\\u180f\\u3164\\ufe00-\\ufe0f\\uffa0\\u{E0100}-\\u{E01EF}]"
+      }
     },
     "workspace_alias": {
       "type": "string",
@@ -126,9 +129,9 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 255,
-      "pattern": "^(feature|fix)/[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*$",
+      "pattern": "^(feature|fix)/[a-z0-9][a-z0-9._-]*(/[a-z0-9][a-z0-9._-]*)*$",
       "not": {
-        "pattern": "\\.\\.|\\.lock(/|$)|\\.$"
+        "pattern": "\\.\\.|\\.lock(/|$)|\\.(/|$)|(^|/)(con|prn|aux|nul|com[0-9]|lpt[0-9])(\\.|/|$)"
       }
     },
     "pull_request": {

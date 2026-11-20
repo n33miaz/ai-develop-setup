@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:ads:event:queue.stopped:1",
-  "title": "Fila parada pelo dono",
-  "description": "Registra a parada solicitada pelo dono autenticado, identificado em data.owner_id.",
+  "title": "Fila parada",
+  "description": "Registra a parada da fila: pelo dono autenticado, identificado em data.owner_id, ou pelo daemon na partida, no teto de custo ou na falta de recursos.",
   "allOf": [
     {
       "$ref": "urn:ads:event:envelope:1"
@@ -28,12 +28,19 @@
           "additionalProperties": false,
           "required": [
             "queue_id",
-            "owner_id",
-            "via"
+            "reason"
           ],
           "properties": {
             "queue_id": {
               "$ref": "urn:ads:common:id:1"
+            },
+            "reason": {
+              "enum": [
+                "owner",
+                "restart",
+                "budget",
+                "resources"
+              ]
             },
             "owner_id": {
               "$ref": "urn:ads:common:id:1"
@@ -46,13 +53,64 @@
               ]
             }
           }
-        },
-        "actor": {
-          "type": "object",
-          "additionalProperties": true,
-          "properties": {
-            "kind": {
-              "const": "device"
+        }
+      },
+      "if": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "properties": {
+              "reason": {
+                "const": "owner"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "actor": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "device"
+              }
+            }
+          },
+          "data": {
+            "type": "object",
+            "required": [
+              "owner_id",
+              "via"
+            ]
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "actor": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "daemon"
+              }
+            }
+          },
+          "data": {
+            "type": "object",
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "owner_id"
+                  ]
+                },
+                {
+                  "required": [
+                    "via"
+                  ]
+                }
+              ]
             }
           }
         }
@@ -68,12 +126,13 @@
       "seq": 1,
       "actor": {
         "kind": "device",
-        "id": "owner-01"
+        "id": "device-01"
       },
       "cause": null,
       "data_class": "internal",
       "data": {
         "queue_id": "queue-01",
+        "reason": "owner",
         "owner_id": "owner-01",
         "via": "local_ui"
       }

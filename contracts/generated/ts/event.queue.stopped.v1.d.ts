@@ -1,19 +1,16 @@
 /* Gerado por tools/gen-ts.mjs a partir de schemas/event.queue.stopped.v1.schema.json. Não edite à mão. */
 
 /**
- * Fila parada pelo dono. Registra a parada solicitada pelo dono autenticado, identificado em data.owner_id.
+ * Fila parada. Registra a parada da fila: pelo dono autenticado, identificado em data.owner_id, ou pelo daemon na partida, no teto de custo ou na falta de recursos.
  */
 export type EventQueueStoppedV1 = EventEnvelopeV1 & {
   type: "urn:ads:event:queue.stopped:1";
   stream: string;
   data: {
     queue_id: CommonIdV1;
-    owner_id: CommonIdV1;
-    via: "local_ui" | "tray" | "remote_device";
-  };
-  actor: {
-    kind?: "device";
-    [k: string]: unknown;
+    reason: "owner" | "restart" | "budget" | "resources";
+    owner_id?: CommonIdV1;
+    via?: "local_ui" | "tray" | "remote_device";
   };
 };
 /**

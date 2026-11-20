@@ -6,12 +6,13 @@
   "seq": 1,
   "actor": {
     "kind": "device",
-    "id": "other-01"
+    "id": "device-01"
   },
   "cause": null,
   "data_class": "internal",
   "data": {
     "queue_id": "queue-01",
+    "reason": "policy",
     "owner_id": "owner-01",
     "via": "local_ui"
   }

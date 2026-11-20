@@ -75,7 +75,7 @@
     "instancePath": "/workspace_alias"
   },
   "title-bidi.json": {
-    "rule": "O título exclui controles direcionais.",
+    "rule": "O título recusa controles direcionais.",
     "keyword": "pattern",
     "instancePath": "/title"
   },
@@ -125,5 +125,65 @@
     "rule": "A regra de bug exige um alvo.",
     "keyword": "required",
     "instancePath": "/origin"
+  },
+  "title-tag.json": {
+    "rule": "O título recusa caracteres de tag invisíveis.",
+    "keyword": "pattern",
+    "instancePath": "/title"
+  },
+  "title-variation.json": {
+    "rule": "O título recusa seletores de variação.",
+    "keyword": "not",
+    "instancePath": "/title"
+  },
+  "title-variation-supplement.json": {
+    "rule": "O título recusa seletores de variação suplementares.",
+    "keyword": "not",
+    "instancePath": "/title"
+  },
+  "title-soft-hyphen.json": {
+    "rule": "O título recusa o hífen suave.",
+    "keyword": "pattern",
+    "instancePath": "/title"
+  },
+  "title-hangul-filler.json": {
+    "rule": "O título recusa preenchedores Hangul invisíveis.",
+    "keyword": "not",
+    "instancePath": "/title"
+  },
+  "title-private-use.json": {
+    "rule": "O título recusa caracteres de uso privado.",
+    "keyword": "pattern",
+    "instancePath": "/title"
+  },
+  "title-format.json": {
+    "rule": "O título recusa caracteres de formatação.",
+    "keyword": "pattern",
+    "instancePath": "/title"
+  },
+  "title-unassigned.json": {
+    "rule": "O título recusa pontos de código não atribuídos.",
+    "keyword": "pattern",
+    "instancePath": "/title"
+  },
+  "title-nbsp.json": {
+    "rule": "O título usa só o espaço comum.",
+    "keyword": "pattern",
+    "instancePath": "/title"
+  },
+  "branch-device.json": {
+    "rule": "A branch evita nomes de dispositivo do Windows.",
+    "keyword": "not",
+    "instancePath": "/branch"
+  },
+  "branch-dot-component.json": {
+    "rule": "Nenhum componente da branch termina em ponto.",
+    "keyword": "not",
+    "instancePath": "/branch"
+  },
+  "branch-upper.json": {
+    "rule": "A branch usa só minúsculas.",
+    "keyword": "pattern",
+    "instancePath": "/branch"
   }
 }

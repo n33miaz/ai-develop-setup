@@ -286,13 +286,15 @@ WebSocket em loopback entre a interface (navegador ou casca) e o núcleo. Como a
 
 ## Fila contínua
 
-A criação fica registrada em `queue.created`, sempre em `stopped`. Na partida, o núcleo restaura toda fila em `stopped`, inclusive se o retrato persistido ou o último evento indicar `enabled`. Uma nova ativação precisa de `queue.enabled` após a partida.
+A criação fica registrada em `queue.created`, sempre em `stopped`. Na partida, o núcleo restaura toda fila em `stopped`, inclusive se o retrato persistido ou o último evento indicar `enabled`. Se a fila estava ligada, ele anexa `queue.stopped` com `reason: restart`. Uma nova ativação precisa de `queue.enabled` após a partida.
 
-O produtor obtém `owner_id` do cadastro de identidade autenticada ao criar a fila. Em `queue.enabled` e `queue.stopped`, compara o aparelho autenticado com esse cadastro e registra o identificador em `actor.id` e `data.owner_id`. A ativação aceita só `local_ui` e `tray`. Criação, parada e aceite de tarefa também aceitam `remote_device`, reservado para um futuro transporte autenticado e assinado.
+`owner_id` identifica a pessoa dona da fila, e `actor.id` identifica o aparelho que agiu. O cadastro de aparelhos autenticados liga cada aparelho a um dono. Por isso o PC e o celular do mesmo dono são aceitos, e o aparelho de outro dono é recusado. Essa ligação é dado de cadastro, conferido pelo núcleo e não pelo Schema. Em `queue.created`, `queue.enabled` e na parada pelo dono, o ator é um `device` e `data.owner_id` repete o dono cadastrado da fila. A ativação aceita só `local_ui` e `tray`. Criação, parada e aceite de tarefa também aceitam `remote_device`, reservado para um futuro transporte autenticado e assinado.
+
+`queue.stopped` informa o motivo da parada. Com `owner`, o ator é o aparelho do dono e o evento leva `owner_id` e `via`. Com `restart` (partida do núcleo), `budget` (teto de custo) ou `resources` (falta de recursos da máquina), o ator é o `daemon`, sem `owner_id` nem `via`. Parar a fila só impede novos inícios: a tarefa em `running` continua até terminar a tentativa atual e segue para `review`, `failed` ou `cancelled`.
 
 `queue.task_created` registra o estado inicial `queued`, zero tentativas e o teto imutável de 1 a 10, incluindo a primeira. O teto e a origem são recuperados do evento de criação. A chave de deduplicação combina fila, apelido e origem. A origem manual usa um identificador estável do pedido, a issue usa seu número no repositório do apelido e a regra de bug usa o par regra e alvo estável. O produtor reserva a chave e aplica o limite da fila ao anexar a criação, em uma operação, preservando chaves de tarefas encerradas e no replay.
 
-O apelido é um identificador de cadastro e a resolução da pasta usa esse cadastro. Branch opcional segue a forma ASCII `feature/...` ou `fix/...` e referências opcionais de pull request são números positivos do repositório cadastrado. O executor passa `--` antes da referência em comandos Git que aceitam esse separador.
+O apelido é um identificador de cadastro e a resolução da pasta usa esse cadastro. Branch opcional segue a forma ASCII `feature/...` ou `fix/...`, em minúsculas, sem componente terminado em ponto nem nome de dispositivo do Windows. Referências opcionais de pull request são números positivos do repositório cadastrado. O título aceita só letras, marcas, números, pontuação, símbolos e o espaço comum. Ele recusa caracteres de formatação e de uso privado, pontos de código não atribuídos, caracteres de tag, seletores de variação e preenchedores invisíveis. O executor passa `--` antes da referência em comandos Git que aceitam esse separador.
 
 | Estado atual | Destinos permitidos |
 |---|---|
@@ -302,7 +304,7 @@ O apelido é um identificador de cadastro e a resolução da pasta usa esse cada
 | `failed` | `queued` se houver tentativa, ou `cancelled` |
 | `done`, `cancelled` | nenhum |
 
-`failed` sem saldo encerra a execução. Cancelar continua permitido para encerrar administrativamente a tarefa, inclusive com contagem inconsistente. A entrada em `running` consome uma tentativa. As outras transições preservam a contagem. O produtor confere a mudança contra o registro atual antes de emitir `queue.task_state_changed`. A contagem respeita o teto e a data de atualização é igual ou posterior à criação.
+`failed` sem saldo encerra a execução. Cancelar continua permitido para encerrar administrativamente a tarefa, inclusive com contagem inconsistente. Cancelar não exige aparelho autenticado de propósito: encerrar trabalho é o lado seguro, e o agente ou o daemon podem fazê-lo. A entrada em `running` consome uma tentativa. As outras transições preservam a contagem. O produtor confere a mudança contra o registro atual antes de emitir `queue.task_state_changed`. A contagem respeita o teto e a data de atualização é igual ou posterior à criação.
 
 ## Atualização
 
@@ -385,7 +387,7 @@ Os seis comandos estendem `urn:ads:command:request:1` com `allOf`, fixam `method
 | `urn:ads:event:queue.task_state_changed:1` | Uma tarefa mudou de estado. |
 | `urn:ads:event:queue.created:1` | A fila foi criada parada. |
 | `urn:ads:event:queue.enabled:1` | O dono ligou a fila. |
-| `urn:ads:event:queue.stopped:1` | O dono parou a fila. |
+| `urn:ads:event:queue.stopped:1` | A fila parou, pelo dono ou pelo daemon, com o motivo. |
 
 ### Eventos de aprovação
 

@@ -5,8 +5,16 @@ fn id(text: &str) -> CommonIdV1 {
     CommonIdV1::new(text).unwrap()
 }
 
-fn device(text: &str, via: EventQueueStoppedV1DataVia) -> AuthenticatedDevice {
-    AuthenticatedDevice { id: id(text), via }
+fn device(device: &str, owner: &str, via: EventQueueStoppedV1DataVia) -> AuthenticatedDevice {
+    AuthenticatedDevice {
+        device_id: id(device),
+        owner_id: id(owner),
+        via,
+    }
+}
+
+fn policy() -> QueuePolicy {
+    toml::from_str(DEFAULT_POLICY).unwrap()
 }
 
 fn task() -> RecordQueueTaskV1 {
@@ -18,11 +26,12 @@ fn task() -> RecordQueueTaskV1 {
 
 #[test]
 fn queue_changes_require_the_authenticated_owner_and_enable_is_local() {
-    let owner = device("owner-01", LocalUi);
-    let remote = device("owner-01", RemoteDevice);
-    let other = device("owner-02", Tray);
+    let owner = device("device-01", "owner-01", LocalUi);
+    let remote = device("phone-01", "owner-01", RemoteDevice);
+    let other = device("device-01", "owner-02", Tray);
     let queue = new_stopped(id("queue-01"), &owner);
     assert_eq!(queue.state, Stopped);
+    assert_eq!(queue.owner_id, id("owner-01"));
     for (device, state, refusal) in [
         (None, Enabled, QueueRefusal::Unauthenticated),
         (Some(&other), Enabled, QueueRefusal::NotOwner),
@@ -36,9 +45,9 @@ fn queue_changes_require_the_authenticated_owner_and_enable_is_local() {
     }
     let (enabled, actor) = change_queue_state(&queue, Some(&owner), Enabled).unwrap();
     assert_eq!(enabled.state, Enabled);
-    assert_eq!(actor.id(), &queue.owner_id);
+    assert_eq!(actor.device_id(), &id("device-01"));
+    assert_eq!(actor.owner_id(), &queue.owner_id);
     assert_eq!(actor.via(), LocalUi);
-    assert_eq!(restore_stopped(enabled.clone()).state, Stopped);
     assert_eq!(
         change_queue_state(&enabled, None, Stopped).err(),
         Some(QueueRefusal::Unauthenticated)
@@ -47,18 +56,44 @@ fn queue_changes_require_the_authenticated_owner_and_enable_is_local() {
         change_queue_state(&enabled, Some(&other), Stopped).err(),
         Some(QueueRefusal::NotOwner)
     );
-    assert_eq!(
-        change_queue_state(&enabled, Some(&owner), Stopped)
-            .unwrap()
-            .0
-            .state,
-        Stopped
-    );
+    let (stopped, by) = change_queue_state(&enabled, Some(&remote), Stopped).unwrap();
+    assert_eq!(stopped.state, Stopped);
+    let data = owner_stop_data(&enabled, by);
+    assert_eq!(data.reason, EventQueueStoppedV1DataReason::Owner);
+    assert_eq!(data.owner_id, Some(id("owner-01")));
+    assert_eq!(data.via, Some(RemoteDevice));
+}
+
+#[test]
+fn restart_and_automatic_stops_record_the_daemon_reason() {
+    let owner = device("device-01", "owner-01", LocalUi);
+    let stopped = new_stopped(id("queue-01"), &owner);
+    let enabled = change_queue_state(&stopped, Some(&owner), Enabled)
+        .unwrap()
+        .0;
+    let (restored, event) = restore_stopped(enabled.clone());
+    assert_eq!(restored.state, Stopped);
+    let event = event.unwrap();
+    assert_eq!(event.reason, EventQueueStoppedV1DataReason::Restart);
+    assert_eq!(event.queue_id, enabled.id);
+    assert_eq!((event.owner_id, event.via), (None, None));
+    assert_eq!(restore_stopped(stopped.clone()), (stopped.clone(), None));
+    for (cause, reason) in [
+        (AutomaticStop::Budget, EventQueueStoppedV1DataReason::Budget),
+        (
+            AutomaticStop::Resources,
+            EventQueueStoppedV1DataReason::Resources,
+        ),
+    ] {
+        let (after, event) = stop_automatically(&enabled, cause);
+        assert_eq!(after.state, Stopped);
+        assert_eq!(event.map(|data| data.reason), Some(reason));
+    }
 }
 
 #[test]
 fn task_transitions_cover_every_state_at_each_attempt_boundary() {
-    let owner = device("owner-01", LocalUi);
+    let owner = device("device-01", "owner-01", LocalUi);
     let mut task = task();
     let stopped = new_stopped(task.queue_id.clone(), &owner);
     let queue = change_queue_state(&stopped, Some(&owner), Enabled)
@@ -121,8 +156,9 @@ fn task_transitions_cover_every_state_at_each_attempt_boundary() {
 
 #[test]
 fn starting_requires_the_enabled_queue_and_acceptance_requires_its_owner() {
-    let owner = device("owner-01", LocalUi);
-    let other = device("owner-02", LocalUi);
+    let owner = device("device-01", "owner-01", LocalUi);
+    let phone = device("phone-01", "owner-01", RemoteDevice);
+    let other = device("device-01", "owner-02", LocalUi);
     let mut task = task();
     let stopped = new_stopped(task.queue_id.clone(), &owner);
     let mut enabled = change_queue_state(&stopped, Some(&owner), Enabled)
@@ -142,6 +178,18 @@ fn starting_requires_the_enabled_queue_and_acceptance_requires_its_owner() {
         next_attempt_count(&stopped, &task, Done, Some(&owner)),
         Some(task.attempts)
     );
+    assert_eq!(
+        next_attempt_count(&stopped, &task, Done, Some(&phone)),
+        Some(task.attempts)
+    );
+    task.state = Running;
+    for next in [Review, Failed, Cancelled] {
+        assert_eq!(
+            next_attempt_count(&stopped, &task, next, None),
+            Some(task.attempts),
+            "a running task finishes its attempt after the queue stops: {next:?}"
+        );
+    }
 }
 
 fn creation() -> EventQueueTaskCreatedV1 {
@@ -161,17 +209,32 @@ fn task_admission_uses_the_origin_after_a_retry_or_restart() {
     let independent = serde_json::from_value(alternate.clone()).unwrap();
     alternate["data"]["queue_id"] = "queue-02".into();
     alternate["stream"] = "queue/queue-02".into();
-    let different_queue = serde_json::from_value(alternate).unwrap();
-    for (candidate, limit, expected) in [
+    alternate["data"]["task_id"] = "task-03".into();
+    let different_queue = serde_json::from_value(alternate.clone()).unwrap();
+    alternate["data"]["task_id"] = "task-01".into();
+    let same_id_other_queue = serde_json::from_value(alternate.clone()).unwrap();
+    alternate["data"]["task_id"] = "task-04".into();
+    alternate["data"]["attempt_limit"] = 3.into();
+    let above_ceiling = serde_json::from_value(alternate).unwrap();
+    let limited = |admission: usize| QueuePolicy {
+        admission_limit: std::num::NonZeroUsize::new(admission).unwrap(),
+        ..policy()
+    };
+    for (candidate, admission, expected) in [
         (&base, 2, false),
         (&duplicate, 2, false),
         (&independent, 2, true),
         (&independent, 1, false),
         (&different_queue, 1, true),
+        (&same_id_other_queue, 2, false),
+        (&above_ceiling, 2, false),
     ] {
-        assert_eq!(can_admit_task(candidate, [&base], limit), expected);
+        assert_eq!(
+            can_admit_task(candidate, [&base], &limited(admission)),
+            expected
+        );
     }
-    assert!(!can_admit_task(&base, [], 0));
+    assert!(can_admit_task(&base, [], &policy()));
 }
 
 #[test]

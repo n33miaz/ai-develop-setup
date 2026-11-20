@@ -30,10 +30,24 @@
     "keyword": "const",
     "instancePath": "/actor/kind"
   },
-  "owner-mismatch.json": {
-    "rule": "O ator identifica o dono registrado no evento.",
-    "keyword": "crossRule",
-    "instancePath": "",
-    "messagePrefix": "actor.id difere de data.owner_id"
+  "restart-device.json": {
+    "rule": "A parada automática é registrada pelo daemon.",
+    "keyword": "const",
+    "instancePath": "/actor/kind"
+  },
+  "budget-owner.json": {
+    "rule": "A parada automática não declara dono nem canal.",
+    "keyword": "not",
+    "instancePath": "/data"
+  },
+  "owner-no-via.json": {
+    "rule": "A parada pelo dono registra o canal.",
+    "keyword": "required",
+    "instancePath": "/data"
+  },
+  "unknown-reason.json": {
+    "rule": "O motivo da parada pertence à lista conhecida.",
+    "keyword": "enum",
+    "instancePath": "/data/reason"
   }
 }

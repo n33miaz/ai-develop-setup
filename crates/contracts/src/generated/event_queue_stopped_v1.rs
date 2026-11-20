@@ -15,17 +15,54 @@ use crate::support;
 use crate::support::{ContractError, JsonType, Literal, Pattern, Rule};
 
 static EVENT_QUEUE_STOPPED_V1_RULES: &[(&str, Rule)] = &[(
-    "#/allOf/1/properties/actor",
-    Rule::Properties(&[(
-        "actor",
-        Rule::AllOf(&[
-            Rule::Type(&[JsonType::Object]),
-            Rule::Properties(&[("kind", Rule::Const(Literal::Str("device")))]),
-        ]),
-    )]),
+    "#/allOf/1/if",
+    Rule::If {
+        when: &Rule::Properties(&[(
+            "data",
+            Rule::AllOf(&[
+                Rule::Type(&[JsonType::Object]),
+                Rule::Properties(&[("reason", Rule::Const(Literal::Str("owner")))]),
+            ]),
+        )]),
+        then: Some(&Rule::Properties(&[
+            (
+                "actor",
+                Rule::AllOf(&[
+                    Rule::Type(&[JsonType::Object]),
+                    Rule::Properties(&[("kind", Rule::Const(Literal::Str("device")))]),
+                ]),
+            ),
+            (
+                "data",
+                Rule::AllOf(&[
+                    Rule::Type(&[JsonType::Object]),
+                    Rule::Required(&["owner_id", "via"]),
+                ]),
+            ),
+        ])),
+        otherwise: Some(&Rule::Properties(&[
+            (
+                "actor",
+                Rule::AllOf(&[
+                    Rule::Type(&[JsonType::Object]),
+                    Rule::Properties(&[("kind", Rule::Const(Literal::Str("daemon")))]),
+                ]),
+            ),
+            (
+                "data",
+                Rule::AllOf(&[
+                    Rule::Type(&[JsonType::Object]),
+                    Rule::Not(&Rule::AnyOf(&[
+                        Rule::Required(&["owner_id"]),
+                        Rule::Required(&["via"]),
+                    ])),
+                ]),
+            ),
+        ])),
+    },
 )];
 
-/// Fila parada pelo dono. Registra a parada solicitada pelo dono autenticado, identificado em data.owner_id.
+/// Fila parada. Registra a parada da fila: pelo dono autenticado, identificado em data.owner_id, ou pelo daemon na partida, no teto de custo ou na falta de recursos.
 ///
 /// `urn:ads:event:queue.stopped:1`.
 ///
@@ -171,8 +208,43 @@ impl Serialize for EventQueueStoppedV1Stream {
 #[serde(deny_unknown_fields)]
 pub struct EventQueueStoppedV1Data {
     pub queue_id: CommonIdV1,
-    pub owner_id: CommonIdV1,
-    pub via: EventQueueStoppedV1DataVia,
+    pub reason: EventQueueStoppedV1DataReason,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "support::present"
+    )]
+    pub owner_id: Option<CommonIdV1>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "support::present"
+    )]
+    pub via: Option<EventQueueStoppedV1DataVia>,
+}
+
+/// `data.reason` in `urn:ads:event:queue.stopped:1`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum EventQueueStoppedV1DataReason {
+    #[serde(rename = "owner")]
+    Owner,
+    #[serde(rename = "restart")]
+    Restart,
+    #[serde(rename = "budget")]
+    Budget,
+    #[serde(rename = "resources")]
+    Resources,
+}
+
+impl EventQueueStoppedV1DataReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Owner => "owner",
+            Self::Restart => "restart",
+            Self::Budget => "budget",
+            Self::Resources => "resources",
+        }
+    }
 }
 
 /// `data.via` in `urn:ads:event:queue.stopped:1`.
