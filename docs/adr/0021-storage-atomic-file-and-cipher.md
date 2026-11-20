@@ -225,10 +225,11 @@ contrato), conferidos no `append` e no esquema.
 `append` lê o último `seq` do stream dentro de `BEGIN IMMEDIATE` e só grava se o
 evento trouxer o seguinte: de duas conexões disputando o mesmo `seq`, uma entra e
 a outra recebe `Conflict` (ler `head` e remontar). `Busy` é o lock além de
-`busy_timeout_ms` (repetir o mesmo evento); `Constraint` é recusa do banco (não
-repetir igual). `verify_chain` é chamada pela composição ao iniciar e em
-intervalos; a abertura não a chama, porque o custo cresce com o log. Invariantes
-do portão e ligação com o daemon ficam para entregas seguintes.
+`busy_timeout_ms`. Antes de tentar gravar novamente, confira o banco contra a
+âncora. `Constraint` indica recusa do banco. A abertura ancorada confere a cadeia
+inteira sob o lock de escrita ([log de eventos](../../crates/storage/README.md#log-de-eventos)).
+O daemon fornece a âncora do cofre. As invariantes do portão e a ligação com o
+executor ficam para entregas seguintes.
 
 ## Riscos, demonstração e reversão
 

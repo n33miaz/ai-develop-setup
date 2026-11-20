@@ -1,7 +1,10 @@
 //! Append-only event log: encrypted `data`, authenticated clear columns, keyed chain.
 use crate::{
     AuditStore, StorageConfig, StorageError,
-    anchor::{AnchorStore, Commitment, ReanchorPlan},
+    anchor::{
+        AnchorStore, COMMITMENT_VERSION, Commitment, GENESIS, POSITION, REGISTERED_KEYS,
+        ReanchorPlan,
+    },
     cipher::{self, AssociatedData, ChainKey, Ciphertext, KeyId, KeyProvider, SecretKey},
 };
 use ads_contracts::{
@@ -340,9 +343,9 @@ fn commitment(tx: &rusqlite::Connection) -> Result<Commitment, StorageError> {
         .optional()?;
     let (position, chain) = head.unwrap_or_else(|| (0, genesis.clone()));
     let mut result = [0; 105];
-    result[0] = 1;
-    result[1..33].copy_from_slice(&genesis);
-    result[33..41].copy_from_slice(&position.to_be_bytes());
+    result[0] = COMMITMENT_VERSION;
+    result[GENESIS].copy_from_slice(&genesis);
+    result[POSITION].copy_from_slice(&position.to_be_bytes());
     result[41..73].copy_from_slice(
         <&[u8; 32]>::try_from(chain.as_slice()).map_err(|_| StorageError::Corrupt)?,
     );
@@ -363,7 +366,7 @@ fn commitment(tx: &rusqlite::Connection) -> Result<Commitment, StorageError> {
             hash.update(value);
         }
     }
-    result[73..].copy_from_slice(&hash.finalize());
+    result[REGISTERED_KEYS].copy_from_slice(&hash.finalize());
     Ok(result)
 }
 
@@ -415,15 +418,16 @@ fn genesis(tx: &rusqlite::Connection) -> Result<Vec<u8>, StorageError> {
 }
 
 impl EventLog {
-    /// Opens against the commitment in the independent vault slot.
+    /// Checks the independent vault commitment and authenticates the full chain
+    /// under one write lock. Verification processes all stored ciphertext.
     pub fn open(
         path: &Path,
         config: &StorageConfig,
         keys: Box<dyn KeyProvider + Send>,
         anchor: Box<dyn AnchorStore>,
     ) -> Result<Self, StorageError> {
-        anchor.read()?;
-        let mut log = Self::open_store(path, config, keys)?;
+        let create = anchor.read()?.is_none();
+        let mut log = Self::open_store(path, config, keys, create)?;
         let tx = log
             .store
             .connection
@@ -438,6 +442,7 @@ impl EventLog {
         }
         let (id, _) = log.keys.current()?;
         check_registered(&tx, &*log.keys, &id)?;
+        verify_in(&tx, &*log.keys)?;
         tx.commit()?;
         log.anchor = Some(anchor);
         Ok(log)
@@ -451,7 +456,7 @@ impl EventLog {
         anchor: &dyn AnchorStore,
     ) -> Result<ReanchorPlan, StorageError> {
         anchor.read()?;
-        let mut log = Self::open_store(path, config, keys)?;
+        let mut log = Self::open_store(path, config, keys, false)?;
         let tx = log
             .store
             .connection
@@ -468,7 +473,7 @@ impl EventLog {
         confirmed: ReanchorPlan,
     ) -> Result<(), StorageError> {
         anchor.read()?;
-        let mut log = Self::open_store(path, config, keys)?;
+        let mut log = Self::open_store(path, config, keys, false)?;
         let tx = log
             .store
             .connection
@@ -489,7 +494,7 @@ impl EventLog {
         config: &StorageConfig,
         keys: Box<dyn KeyProvider + Send>,
     ) -> Result<Self, StorageError> {
-        let log = Self::open_store(path, config, keys)?;
+        let log = Self::open_store(path, config, keys, true)?;
         let (id, _) = log.keys.current()?;
         check_registered(&log.store.connection, &*log.keys, &id)?;
         Ok(log)
@@ -499,8 +504,13 @@ impl EventLog {
         path: &Path,
         config: &StorageConfig,
         keys: Box<dyn KeyProvider + Send>,
+        create: bool,
     ) -> Result<Self, StorageError> {
-        let store = AuditStore::open(path, config)?;
+        let store = if create {
+            AuditStore::open(path, config)?
+        } else {
+            AuditStore::open_existing(path, config)?
+        };
         consistent(&*keys)?;
         Ok(Self {
             store,
@@ -508,6 +518,11 @@ impl EventLog {
             config: config.clone(),
             anchor: None,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_commit_hook(&mut self, hook: Option<fn() -> bool>) {
+        self.store.connection.commit_hook(hook).unwrap();
     }
 
     /// Last `seq` of the stream, 0 when it has no events.
@@ -521,8 +536,12 @@ impl EventLog {
     /// The database row is committed after the vault update. If SQLite fails
     /// after that update, the next open or append refuses the mismatch.
     /// `Conflict`: the `seq` is no longer
-    /// the next one; read `head` again and rebuild the event. `Busy`: another
-    /// writer held the lock past `busy_timeout_ms`; retrying the same event is safe.
+    /// the next one; read `head` again and rebuild the event. `Busy`: SQLite
+    /// could not obtain a lock in time. Check the log against the vault before
+    /// attempting another write.
+    /// `AnchorUnavailable`: restore access to the vault before trying again.
+    /// `AnchorMissing`: the vault entry is absent. Stop and follow recovery.
+    /// `AnchorMismatch`: the vault and database differ. Stop and follow recovery.
     /// `Constraint`: the database refused the row (repeated `id`, or a trigger);
     /// do not retry unchanged. `InvalidEvent`: `type` or stream family over its
     /// bound, or a gate event whose `action_id`/`approval_id` disagree with its

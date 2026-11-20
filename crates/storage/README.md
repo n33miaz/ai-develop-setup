@@ -23,14 +23,17 @@ API: `EventLog::open(caminho, configuração, provedor de chaves, cofre da ânco
 | Erro | Quando | O que fazer |
 |---|---|---|
 | `Conflict` | o `seq` já não é o próximo do stream | ler `head` de novo e remontar o evento |
-| `Busy` | outro escritor segurou o lock além de `busy_timeout_ms` | repetir o mesmo evento |
+| `Busy` | o SQLite não conseguiu obter um lock em `busy_timeout_ms` | conferir o banco contra a âncora antes de tentar gravar de novo |
+| `AnchorUnavailable` | falha de acesso ao cofre | restabelecer o acesso antes de tentar gravar de novo |
+| `AnchorMissing` | entrada da âncora ausente | parar a escrita e seguir a recuperação |
+| `AnchorMismatch` | banco e âncora divergem | parar a escrita e seguir a recuperação |
 | `Constraint` | o banco recusou a linha (`id` repetido ou gatilho) | não repetir igual |
 | `InvalidEvent` | limite de `type` ou família, ou id do portão que não é o do stream | corrigir o evento |
 | `TooLarge` | `data` serializado acima de `max_event_bytes` | guardar em outro lugar |
 | `WrongKey` | provedor diferente da chave registrada, incoerente consigo ou usando um identificador anterior | conferir o cofre, rodar `verify_chain` e comparar o fim com a âncora, quando disponível, antes de girar |
 | `ChainBroken { position: 1 }` | falta a gênese ao gravar a primeira linha | conferir a integridade do banco |
 
-Quem chama `verify_chain`: a composição (daemon), ao iniciar e depois em intervalos, quando estiver ligada ao log; a abertura não chama, porque o custo cresce com o log inteiro. `read_stream` não depende dela para cada linha que lê: decifra e autentica a linha e recusa com `ChainBroken` um `seq` faltando dentro da página, inclusive no `de_seq` pedido. Não percebe linhas faltando fora da página nem o corte do fim.
+A abertura ancorada autentica a cadeia sob o lock de escrita. Ela percorre todas as linhas uma vez, com custo proporcional ao total de bytes armazenados, sem decifrar os dados. A verificação é obrigatória. `read_stream` não depende dela para cada linha que lê: decifra e autentica a linha e recusa com `ChainBroken` um `seq` faltando dentro da página, inclusive no `de_seq` pedido. Não percebe linhas faltando fora da página nem o corte do fim.
 
 `verify_chain` aceita cada `key_id` em um único trecho contíguo da cadeia global e aponta a primeira posição que volta a usar um identificador anterior. A ordem vem das linhas, pois identificadores de chave são opacos.
 
@@ -38,11 +41,11 @@ O teste `reading_numeric_arrays_measures_retained_event_memory` registra a difer
 
 ### Âncora no cofre
 
-O daemon fornece ao armazenamento a entrada `audit-anchor` do cofre do usuário. A entrada de 105 bytes contém a versão do formato, a gênese, a última posição, o MAC correspondente e SHA-256 dos registros de chaves ordenados por identificador, incluindo nonce e `key_check`. O mesmo slot atende a um banco canônico por usuário. A abertura confere esse registro. Com o slot ausente, só inicializa automaticamente um banco sem eventos nem chaves registradas. Um banco com histórico exige recuperação explícita (`AnchorMissing`). Uma divergência retorna `AnchorMismatch`, incluindo corte do fim, restauração de cópia antiga, troca de banco e registro antecipado de chave.
+O daemon fornece ao armazenamento a entrada `audit-anchor` do cofre do usuário. A entrada de 105 bytes contém a versão do formato, a gênese, a última posição, o MAC correspondente e SHA-256 dos registros de chaves ordenados por identificador, incluindo nonce e `key_check`. O mesmo slot atende a um banco canônico por usuário. A abertura confere esse registro e, com uma âncora presente, exige que o banco já exista. O daemon recusa uma versão de âncora desconhecida com `UnsupportedSchema`. Durante a sessão, `head`, `read_stream` e `verify_chain` consultam apenas o banco. A comparação com a âncora ocorre na abertura e no `append`. Com o slot ausente, só inicializa automaticamente um banco sem eventos nem chaves registradas. Um banco com histórico exige recuperação explícita (`AnchorMissing`). Uma divergência retorna `AnchorMismatch`, incluindo corte do fim, restauração de cópia antiga, troca de banco e registro antecipado de chave.
 
 O cofre é obrigatório. Falha de acesso retorna `AnchorUnavailable` e impede abrir ou acrescentar eventos. O `append` publica a nova âncora antes do commit do SQLite e mantém o lock de escrita durante as duas operações. Se o cofre recusar a gravação, a transação é desfeita. Uma interrupção entre a publicação e o commit pode deixar a âncora adiantada. A próxima abertura ou tentativa de escrita recusa a divergência.
 
-Para recuperar, pare os produtores e faça backup consistente do banco e do WAL, se existir. Recupere as chaves antigas e procure uma cópia que coincida com a âncora. Se decidir aceitar outro estado verificado, execute `EventLog::plan_reanchor`, confira o registro anterior e o proposto e confirme a perda de histórico ou a troca de banco antes de passar o plano a `EventLog::reanchor`. As duas operações verificam a cadeia completa e recusam chaves registradas sem evento. A aplicação confere novamente os dois estados sob o lock antes de substituir a entrada. O procedimento é uma API da composição. Confira reabrindo o banco e verificando a cadeia. [Riscos da auditoria](../../docs/risks.md#licença-de-execução-usada-duas-vezes).
+Para recuperar, pare os produtores e faça backup consistente do banco e do WAL, se existir. Recupere as chaves antigas e procure uma cópia que coincida com a âncora. Se decidir aceitar outro estado verificado, prepare o plano com `ads_daemon::audit::plan_reanchor`. Use `ReanchorPlan::summary` para conferir as posições anterior e proposta, a diferença entre elas e a correspondência da gênese e dos registros de chaves. Confirme o estado proposto antes de passar o plano a `ads_daemon::audit::reanchor`. O armazenamento oferece as mesmas operações em `EventLog` com um cofre injetado. As duas operações verificam a cadeia completa e recusam chaves registradas sem evento. A aplicação confere novamente os dois estados sob o lock antes de substituir a entrada. Confira o resultado reabrindo o banco ancorado. [Riscos da auditoria](../../docs/risks.md#licença-de-execução-usada-duas-vezes).
 
 ## Reparo de `-journal` sobrando
 

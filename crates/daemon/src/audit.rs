@@ -6,7 +6,7 @@ use ads_adapter_vault::OsVault;
 use ads_core::vault::{Secret, SecretName, Vault};
 use ads_storage::{
     EventLog, StorageConfig, StorageError,
-    anchor::{AnchorStore, Commitment},
+    anchor::{AnchorStore, COMMITMENT_VERSION, Commitment, ReanchorPlan},
     cipher::KeyProvider,
 };
 
@@ -18,10 +18,14 @@ impl<V: Vault + Send> AnchorStore for VaultAnchor<V> {
             .read(SecretName::AuditAnchor)
             .map_err(|_| StorageError::AnchorUnavailable)?
             .map(|secret| {
-                secret
+                let commitment: Commitment = secret
                     .expose()
                     .try_into()
-                    .map_err(|_| StorageError::AnchorMismatch)
+                    .map_err(|_| StorageError::AnchorMismatch)?;
+                if commitment[0] != COMMITMENT_VERSION {
+                    return Err(StorageError::UnsupportedSchema);
+                }
+                Ok(commitment)
             })
             .transpose()
     }
@@ -41,6 +45,25 @@ pub fn open(
     keys: Box<dyn KeyProvider + Send>,
 ) -> Result<EventLog, StorageError> {
     EventLog::open(path, config, keys, Box::new(VaultAnchor(OsVault)))
+}
+
+/// Prepares a plan against the OS vault. Review its summary before confirming.
+pub fn plan_reanchor(
+    path: &Path,
+    config: &StorageConfig,
+    keys: Box<dyn KeyProvider + Send>,
+) -> Result<ReanchorPlan, StorageError> {
+    EventLog::plan_reanchor(path, config, keys, &VaultAnchor(OsVault))
+}
+
+/// Applies the exact plan confirmed by the owner after making a backup.
+pub fn reanchor(
+    path: &Path,
+    config: &StorageConfig,
+    keys: Box<dyn KeyProvider + Send>,
+    confirmed: ReanchorPlan,
+) -> Result<(), StorageError> {
+    EventLog::reanchor(path, config, keys, &VaultAnchor(OsVault), confirmed)
 }
 
 #[cfg(test)]
@@ -80,7 +103,8 @@ mod tests {
     fn commitment_uses_only_the_reserved_audit_slot() {
         let store = VaultAnchor(MemoryVault::default());
         assert_eq!(store.read(), Ok(None));
-        let commitment = [17; size_of::<Commitment>()];
+        let mut commitment = [17; size_of::<Commitment>()];
+        commitment[0] = COMMITMENT_VERSION;
         store.store(&commitment).unwrap();
         assert_eq!(store.read(), Ok(Some(commitment)));
         store
@@ -88,5 +112,8 @@ mod tests {
             .store(SecretName::AuditAnchor, &Secret::new(vec![1]).unwrap())
             .unwrap();
         assert_eq!(store.read(), Err(StorageError::AnchorMismatch));
+        commitment[0] += 1;
+        store.store(&commitment).unwrap();
+        assert_eq!(store.read(), Err(StorageError::UnsupportedSchema));
     }
 }

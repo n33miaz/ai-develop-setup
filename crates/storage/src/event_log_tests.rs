@@ -120,9 +120,15 @@ fn unavailable_anchor_blocks_open_and_rolls_back_append() {
     anchor.0.lock().unwrap().deny_reads = false;
     let mut log = anchored(&path, &anchor).unwrap();
     let event = event("task/t1", 1, 1, serde_json::json!({}));
-    anchor.0.lock().unwrap().deny_writes = true;
-    assert_eq!(log.append(&event), Err(StorageError::AnchorUnavailable));
-    assert_eq!(log.head(&event.stream), Ok(0));
+    for deny_reads in [true, false] {
+        {
+            let mut state = anchor.0.lock().unwrap();
+            state.deny_reads = deny_reads;
+            state.deny_writes = !deny_reads;
+        }
+        assert_eq!(log.append(&event), Err(StorageError::AnchorUnavailable));
+        assert_eq!(log.head(&event.stream), Ok(0));
+    }
     anchor.0.lock().unwrap().deny_writes = false;
     assert_eq!(log.append(&event).unwrap().get(), 1);
     assert_eq!(anchored(&path, &anchor).unwrap().head(&event.stream), Ok(1));
@@ -143,6 +149,8 @@ fn recovery_rechecks_the_confirmed_plan_and_never_silently_enrolls_history() {
         StorageError::AnchorMissing
     );
     let stale = plan();
+    assert_eq!(stale.summary().previous_position, None);
+    assert_eq!(stale.summary().proposed_position, 1);
     log.append(&event("task/t1", 2, 2, serde_json::json!({})))
         .unwrap();
     assert_eq!(
@@ -151,9 +159,100 @@ fn recovery_rechecks_the_confirmed_plan_and_never_silently_enrolls_history() {
     );
     EventLog::reanchor(&path, &config, key(), &anchor, plan()).unwrap();
     assert_eq!(anchored(&path, &anchor).unwrap().verify_chain(), Ok(2));
+    let missing = fixture();
     assert_eq!(
-        anchored(&fixture(), &anchor).unwrap_err(),
+        anchored(&missing, &anchor).unwrap_err(),
         StorageError::AnchorMismatch
+    );
+    assert!(!missing.exists());
+}
+
+#[test]
+fn anchored_open_and_recovery_refuse_a_missing_middle_row() {
+    let path = fixture();
+    let anchor = MemoryAnchor::default();
+    let mut log = anchored(&path, &anchor).unwrap();
+    log.append(&event("task/t1", 1, 1, serde_json::json!({})))
+        .unwrap();
+    log.append(&gate_event(
+        "urn:ads:event:action.started:1",
+        "action/a1",
+        1,
+        2,
+        serde_json::json!({ "action_id": "a1", "approval_id": "ap1" }),
+    ))
+    .unwrap();
+    log.append(&event("task/t1", 2, 3, serde_json::json!({})))
+        .unwrap();
+    drop(log);
+    tamper(&path, "DELETE FROM event WHERE position = 2", None);
+
+    let error = StorageError::ChainBroken { position: 3 };
+    assert_eq!(anchored(&path, &anchor).unwrap_err(), error);
+    assert_eq!(
+        EventLog::plan_reanchor(&path, &StorageConfig::defaults(), keys("key-a", 1), &anchor)
+            .unwrap_err(),
+        error
+    );
+}
+
+#[test]
+fn failed_sqlite_commit_leaves_the_anchor_ahead_until_confirmed_recovery() {
+    let path = fixture();
+    let anchor = MemoryAnchor::default();
+    let config = StorageConfig::defaults();
+    let mut log = anchored(&path, &anchor).unwrap();
+    let first = event("task/t1", 1, 1, serde_json::json!({}));
+    let second = event("task/t1", 2, 2, serde_json::json!({}));
+    log.append(&first).unwrap();
+
+    log.set_commit_hook(Some(|| true));
+    assert_eq!(log.append(&second), Err(StorageError::Constraint));
+    log.set_commit_hook(None);
+    assert_eq!(log.head(&first.stream), Ok(1));
+    assert_eq!(log.append(&second), Err(StorageError::AnchorMismatch));
+    assert_eq!(
+        anchored(&path, &anchor).unwrap_err(),
+        StorageError::AnchorMismatch
+    );
+
+    let plan = EventLog::plan_reanchor(&path, &config, keys("key-a", 1), &anchor).unwrap();
+    assert_eq!(
+        plan.summary(),
+        crate::anchor::ReanchorSummary {
+            previous_position: Some(2),
+            proposed_position: 1,
+            position_delta: Some(-1),
+            same_genesis: Some(true),
+            same_registered_keys: Some(true),
+        }
+    );
+    EventLog::reanchor(&path, &config, keys("key-a", 1), &anchor, plan).unwrap();
+    assert_eq!(
+        anchored(&path, &anchor)
+            .unwrap()
+            .append(&second)
+            .unwrap()
+            .get(),
+        2
+    );
+}
+
+#[test]
+fn recovery_refuses_a_registered_key_without_an_event() {
+    let path = fixture();
+    let anchor = MemoryAnchor::default();
+    let mut log = anchored(&path, &anchor).unwrap();
+    log.append(&event("task/t1", 1, 1, serde_json::json!({})))
+        .unwrap();
+    drop(log);
+    Connection::open(&path).unwrap().execute(
+        "INSERT INTO cipher_key VALUES ('key-b', 'xchacha20poly1305', zeroblob(24), zeroblob(16))",
+        [],
+    ).unwrap();
+    assert_eq!(
+        EventLog::plan_reanchor(&path, &StorageConfig::defaults(), keys("key-a", 1), &anchor),
+        Err(StorageError::AnchorMismatch)
     );
 }
 
