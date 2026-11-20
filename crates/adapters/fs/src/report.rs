@@ -3,7 +3,10 @@
 
 use std::fmt;
 
-use ads_core::gate::{Action, Command, Event, EventMeta, ExecutionPermit, Refused};
+use ads_core::gate::{
+    Action, ActionSnapshot, Command, Event, EventMeta, ExecutionPermit, Id, JournalError,
+    JournalGate, Refused,
+};
 
 use crate::reason::{Reason, Stop};
 use crate::survey::Facts;
@@ -151,7 +154,37 @@ pub enum Stage {
 }
 
 /// The plan ran to the end. The permit is spent and never comes back: it is used here, once,
-/// to close the action.
+/// to close the action, and no method hands it, or the command that holds it, to the caller.
+///
+/// ```compile_fail,E0599
+/// fn take(completed: ads_adapter_fs::Completed) {
+///     let _ = completed.into_result();
+/// }
+/// ```
+///
+/// ```compile_fail,E0451
+/// fn take(completed: ads_adapter_fs::Completed) {
+///     let ads_adapter_fs::Completed { permit, .. } = completed;
+/// }
+/// ```
+///
+/// ```compile_fail,E0308
+/// fn copy(started: &ads_core::gate::StartedExecution) {
+///     let _: ads_core::gate::ExecutionPermit = started.permit().clone();
+/// }
+/// ```
+///
+/// What stays open to the caller is the report:
+///
+/// ```
+/// fn read(completed: ads_adapter_fs::Completed) {
+///     let ads_adapter_fs::Completed { report, .. } = completed;
+///     let _ = report.untouched();
+/// }
+/// fn look(started: &ads_core::gate::StartedExecution) {
+///     let _ = started.permit().action_id();
+/// }
+/// ```
 #[derive(Debug)]
 pub struct Completed {
     pub(crate) permit: ExecutionPermit,
@@ -166,12 +199,25 @@ impl Completed {
         action: Action,
         meta: EventMeta,
     ) -> Result<(Action, Event, Report), Box<Refused>> {
-        let (command, report) = self.into_result();
+        let (command, report) = self.into_command();
         let (action, event) = action.apply(command, meta)?;
         Ok((action, event, report))
     }
 
-    pub fn into_result(self) -> (Command, Report) {
+    /// Records `action.executed` for `action_id` through the journal gate. The permit goes
+    /// into the gate and nowhere else: recorded or refused, it is gone, and the report comes
+    /// back either way.
+    pub fn record(
+        self,
+        gate: &mut JournalGate<'_>,
+        action_id: &Id,
+        meta: EventMeta,
+    ) -> (Result<ActionSnapshot, JournalError>, Report) {
+        let (command, report) = self.into_command();
+        (gate.apply(action_id, command, meta), report)
+    }
+
+    fn into_command(self) -> (Command, Report) {
         (
             Command::Executed {
                 permit: self.permit,

@@ -24,20 +24,22 @@ pub fn execute(
 ) -> Result<ExecutionOutcome, JournalError> {
     let mut gate = JournalGate::new(policy, log);
     let started = gate.authorize(action_id, start)?;
-    let (command, operation) = match executor.execute_recorded(started) {
+    match executor.execute_recorded(started) {
         Ok(completed) => {
-            let (command, report) = completed.into_result();
-            (command, Ok(report))
+            let (recorded, report) = completed.record(&mut gate, action_id, finish);
+            Ok(ExecutionOutcome {
+                operation: Ok(report),
+                recorded,
+            })
         }
         Err(failure) => {
             let command = Command::Fail {
                 error_code: failure.reason.error_code(),
             };
-            (command, Err(failure))
+            Ok(ExecutionOutcome {
+                operation: Err(failure),
+                recorded: gate.apply(action_id, command, finish),
+            })
         }
-    };
-    Ok(ExecutionOutcome {
-        operation,
-        recorded: gate.apply(action_id, command, finish),
-    })
+    }
 }

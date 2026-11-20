@@ -118,16 +118,7 @@ impl Executor {
         started: &Event,
         journal: &mut dyn Journal,
     ) -> Result<Completed, Box<Failure>> {
-        let matches = match started {
-            Event::ActionStarted(envelope) => {
-                let data = envelope.data();
-                &data.action_id == permit.action_id()
-                    && &data.plan_hash == permit.plan_hash()
-                    && data.approval_id.as_ref() == permit.approval_id()
-            }
-            _ => false,
-        };
-        if !matches {
+        if !started_by(&permit, started) {
             return Err(Failure::before_anything(Stop::new(
                 Reason::StartedMismatch,
                 "the event is not the action.started of this permit",
@@ -142,6 +133,8 @@ impl Executor {
         started: StartedExecution,
     ) -> Result<Completed, Box<Failure>> {
         let (permit, event) = started.into_parts();
+        // Only `JournalGate::authorize` builds a `StartedExecution`, with the two together.
+        debug_assert!(started_by(&permit, &event));
         self.run(permit, &event, |_| Ok(()))
     }
 
@@ -197,5 +190,18 @@ impl Executor {
                 report,
             })),
         }
+    }
+}
+
+/// `started` is the `action.started` of `permit`: same action, same plan, same approval.
+fn started_by(permit: &ExecutionPermit, started: &Event) -> bool {
+    match started {
+        Event::ActionStarted(envelope) => {
+            let data = envelope.data();
+            &data.action_id == permit.action_id()
+                && &data.plan_hash == permit.plan_hash()
+                && data.approval_id.as_ref() == permit.approval_id()
+        }
+        _ => false,
     }
 }
