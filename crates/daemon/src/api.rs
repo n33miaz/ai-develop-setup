@@ -786,6 +786,7 @@ pub struct TestHooks {
     /// Antes de cada tentativa automática de fechamento, sem parar o resto do serviço.
     pub automatic_close: Gate,
     queued_closes: AtomicUsize,
+    queued_commands: AtomicUsize,
     pending_live: AtomicUsize,
     pending_peak: AtomicUsize,
     waiting_peak: AtomicUsize,
@@ -798,6 +799,10 @@ impl TestHooks {
     /// Closes the daemon sent to the host on its own, without a client command.
     pub fn automatic_closes(&self) -> usize {
         self.automatic_closes.load(Ordering::Acquire)
+    }
+    /// Commands the connections have handed to the service so far.
+    pub fn queued_commands(&self) -> usize {
+        self.queued_commands.load(Ordering::Acquire)
     }
     /// Automatic closes still queued when the last command was answered.
     pub fn queued_closes(&self) -> usize {
@@ -1283,6 +1288,7 @@ async fn connection(
                         .send(Request { command, reply })
                         .await
                         .map_err(|_| ApiError::Unavailable)?;
+                    hooks.queued_commands.fetch_add(1, Ordering::AcqRel);
                     let outcome = answer.await.map_err(|_| ApiError::Unavailable)?;
                     let replayed = outcome.as_ref().map(|r| r.replayed).map_err(|e| *e);
                     if subscribe

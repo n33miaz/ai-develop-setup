@@ -3409,6 +3409,7 @@ async fn ended_incarnation_answers_its_ids_before_the_new_subscription() {
     let close = command("session.close", json!({"session_id": "s"}));
     transmit(&mut control, &close).await;
     wait_until(|| calls.lock().unwrap().iter().any(|c| c == "close")).await;
+    let queued = f.hooks.queued_commands();
     // Queued first: a subscription that pushes the waiting "a" out of the quota.
     transmit(
         &mut other,
@@ -3418,14 +3419,14 @@ async fn ended_incarnation_answers_its_ids_before_the_new_subscription() {
         ),
     )
     .await;
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_until(|| f.hooks.queued_commands() == queued + 1).await;
     // Queued second: the watcher subscribes "a" again and waits for the answer, without delivering.
     let second = command(
         "events.subscribe",
         json!({"stream": "session/a", "after_seq": 0}),
     );
     transmit(&mut watcher, &second).await;
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_until(|| f.hooks.queued_commands() == queued + 2).await;
     f.release.notify_one();
     assert_eq!(receive(&mut control).await["id"], close["id"]);
     let ended = receive(&mut watcher).await;
