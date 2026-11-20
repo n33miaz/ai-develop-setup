@@ -348,3 +348,9 @@ Riscos da troca de conta por pasta de perfil ([ADR 0022](adr/0022-account-profil
 - **Mitigação existente (implementada e testada).** `unsafe_code = "forbid"` no workspace; exceção só em um módulo Windows de cada crate, com cada bloco listado e comentado; o lint reprova a compilação fora deles.
 - **Plano B.** Não há.
 - **O que falta.** O cofre vai precisar de exceção própria quando ganhar código.
+
+## Compatibilidade dos contratos da fila contínua
+
+- **Dono.** Núcleo e contratos.
+- **Limite.** Os contratos aceitam as formas atuais de apelido, origem e marca combinante, inclusive quando a marca não segue uma letra ou um número.
+- **Plano.** Compartilhar apelido e origem em tipos `common` e exigir que marcas combinantes sigam letra ou número em uma versão futura dos contratos afetados, incluindo `queue.task_created:3` quando aplicável. Até lá, preservar a leitura das versões existentes.

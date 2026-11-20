@@ -1,0 +1,17 @@
+{
+  "manual-agent.json": {
+    "rule": "Origem manual exige um aparelho.",
+    "keyword": "const",
+    "instancePath": "/actor/kind"
+  },
+  "manual-daemon.json": {
+    "rule": "Origem manual exige um aparelho.",
+    "keyword": "const",
+    "instancePath": "/actor/kind"
+  },
+  "wrong-version.json": {
+    "rule": "O tipo identifica a versão do evento.",
+    "keyword": "const",
+    "instancePath": "/type"
+  }
+}

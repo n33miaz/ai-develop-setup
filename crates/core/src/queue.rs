@@ -4,10 +4,12 @@ use std::num::{NonZeroU64, NonZeroUsize};
 
 use ads_contracts::{
     CommonActorV1, CommonActorV1Kind, CommonIdV1, CommonQueueTaskStateV1, CommonTimestampV1,
-    EventQueueCreatedV1, EventQueueCreatedV1DataVia, EventQueueEnabledV1, EventQueueEnabledV1Data,
-    EventQueueEnabledV1DataVia, EventQueueStoppedV1, EventQueueStoppedV1Data,
-    EventQueueStoppedV1DataReason, EventQueueStoppedV1DataVia, EventQueueTaskCreatedV1,
-    EventQueueTaskCreatedV1DataOrigin, EventQueueTaskStateChangedV1,
+    EventQueueClockReanchoredV1, EventQueueClockReanchoredV1Data,
+    EventQueueClockReanchoredV1DataVia, EventQueueCreatedV1, EventQueueCreatedV1DataVia,
+    EventQueueEnabledV1, EventQueueEnabledV1Data, EventQueueEnabledV1DataVia, EventQueueStoppedV1,
+    EventQueueStoppedV1Data, EventQueueStoppedV1DataReason, EventQueueStoppedV1DataVia,
+    EventQueueTaskCreatedV1, EventQueueTaskCreatedV1DataOrigin, EventQueueTaskCreatedV2,
+    EventQueueTaskCreatedV2DataOrigin, EventQueueTaskStateChangedV1,
     EventQueueTaskStateChangedV1Data, EventQueueTaskStateChangedV1DataAttempts,
     EventQueueTaskStateChangedV1DataFields, EventQueueTaskStateChangedV1DataVia, RecordQueueTaskV1,
     RecordQueueTaskV1Attempts, RecordTaskQueueV1, RecordTaskQueueV1State, RecordTaskQueueV1Version,
@@ -307,7 +309,9 @@ pub enum QueueLogEvent<'a> {
     Created(&'a EventQueueCreatedV1),
     Enabled(&'a EventQueueEnabledV1),
     Stopped(&'a EventQueueStoppedV1),
+    ClockReanchored(&'a EventQueueClockReanchoredV1),
     TaskCreated(&'a EventQueueTaskCreatedV1),
+    TaskCreatedV2(&'a EventQueueTaskCreatedV2),
     TaskStateChanged(&'a EventQueueTaskStateChangedV1),
 }
 
@@ -317,7 +321,9 @@ macro_rules! each_event {
             QueueLogEvent::Created($name) => $body,
             QueueLogEvent::Enabled($name) => $body,
             QueueLogEvent::Stopped($name) => $body,
+            QueueLogEvent::ClockReanchored($name) => $body,
             QueueLogEvent::TaskCreated($name) => $body,
+            QueueLogEvent::TaskCreatedV2($name) => $body,
             QueueLogEvent::TaskStateChanged($name) => $body,
         }
     };
@@ -343,6 +349,14 @@ impl<'a> QueueLogEvent<'a> {
     fn ts(self) -> &'a CommonTimestampV1 {
         each_event!(self, event => &event.ts)
     }
+
+    fn task_creation(self) -> Option<TaskCreation<'a>> {
+        match self {
+            Self::TaskCreated(event) => Some(event.into()),
+            Self::TaskCreatedV2(event) => Some(event.into()),
+            _ => None,
+        }
+    }
 }
 
 /// Why a queue log does not rebuild a task.
@@ -363,6 +377,18 @@ pub enum ReplayRefusal {
     InvalidChange,
     /// The task was created twice or never.
     TaskCreation,
+    /// The core clock reading used at creation was unavailable.
+    MissingAdmissionContext,
+    /// A task in the stream fails the loaded admission policy.
+    Admission(AdmissionRefusal),
+}
+
+/// State restored from the queue log for use after restart.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ReplayedTask {
+    pub state: CommonQueueTaskStateV1,
+    pub attempts: u64,
+    pub anchor: Option<ClockAnchor>,
 }
 
 /// Rebuilds the state and the retry budget of one task from the whole stream of its queue,
@@ -377,14 +403,16 @@ pub enum ReplayRefusal {
 /// `running` only while the queue is enabled; and `review → done` is accepted by a device of the
 /// owner. Agents and the daemon may still cancel or fail tasks.
 ///
-/// The replay does not run the admission again: neither the policy in force nor the clock anchor
-/// of each creation is in the log, so checking old creations against the current policy would
-/// refuse a legitimate history once the owner lowers a limit.
-pub fn replay_task<'a>(
+/// Every creation is checked against the loaded policy and the historical clock reading supplied
+/// by sequence number. Anchors come from the log. The stream cannot establish uniqueness across
+/// queues or verify the supplied clock readings.
+pub fn replay_task<'a, 'context>(
     task_id: &CommonIdV1,
     log: impl IntoIterator<Item = QueueLogEvent<'a>>,
     owner_at: impl Fn(&CommonIdV1, &CommonTimestampV1) -> Option<CommonIdV1>,
-) -> Result<(CommonQueueTaskStateV1, u64), ReplayRefusal> {
+    policy: &QueuePolicy,
+    now_at: impl Fn(u64) -> Option<&'context CommonTimestampV1>,
+) -> Result<ReplayedTask, ReplayRefusal> {
     let mut log = log.into_iter();
     let Some(QueueLogEvent::Created(created)) = log.next() else {
         return Err(ReplayRefusal::NotFromCreation);
@@ -410,6 +438,8 @@ pub fn replay_task<'a>(
     let mut queue_state = Stopped;
     // (state, attempts, ceiling) once the task is created.
     let mut task: Option<(CommonQueueTaskStateV1, u64, u64)> = None;
+    let mut admissions = Vec::new();
+    let mut anchor = None;
     for (seq, event) in (2..).zip(log) {
         if event.seq() != seq {
             return Err(ReplayRefusal::SeqGap);
@@ -436,17 +466,33 @@ pub fn replay_task<'a>(
                 }
                 queue_state = Stopped;
             }
-            QueueLogEvent::TaskCreated(admitted) => {
-                if is_manual(&admitted.data.origin) && !owner_device(event) {
+            QueueLogEvent::ClockReanchored(reanchored) => {
+                if reanchored.data.owner_id != *owner || !owner_device(event) {
                     return Err(ReplayRefusal::NotOwnerDevice);
                 }
-                if admitted.data.task_id != *task_id {
-                    continue;
+                anchor = Some(ClockAnchor::from_event(reanchored));
+            }
+            QueueLogEvent::TaskCreated(_) | QueueLogEvent::TaskCreatedV2(_) => {
+                let admitted = event.task_creation().expect("task creation event");
+                if admitted.origin.is_manual() && !owner_device(event) {
+                    return Err(ReplayRefusal::NotOwnerDevice);
                 }
-                if task.is_some() {
+                if admitted.task_id == task_id && task.is_some() {
                     return Err(ReplayRefusal::TaskCreation);
                 }
-                task = Some((Queued, 0, admitted.data.attempt_limit.get().into()));
+                let now = now_at(seq).ok_or(ReplayRefusal::MissingAdmissionContext)?;
+                let inputs = AdmissionInputs {
+                    policy,
+                    now,
+                    anchor: anchor.as_ref(),
+                };
+                check_admission(admitted, admissions.iter().copied(), owner, inputs)
+                    .map_err(ReplayRefusal::Admission)?;
+                admissions.push(admitted);
+                if admitted.task_id != task_id {
+                    continue;
+                }
+                task = Some((Queued, 0, admitted.attempt_limit.into()));
             }
             QueueLogEvent::TaskStateChanged(change) => {
                 if change.data.task_id != *task_id {
@@ -475,8 +521,12 @@ pub fn replay_task<'a>(
             }
         }
     }
-    task.map(|(state, attempts, _)| (state, attempts))
-        .ok_or(ReplayRefusal::TaskCreation)
+    task.map(|(state, attempts, _)| ReplayedTask {
+        state,
+        attempts,
+        anchor,
+    })
+    .ok_or(ReplayRefusal::TaskCreation)
 }
 
 /// Seconds since 1970-01-01T00:00:00Z, ignoring the fraction.
@@ -495,16 +545,66 @@ fn epoch_seconds(ts: &CommonTimestampV1) -> Option<i64> {
     Some(days * 86_400 + hour * 3_600 + minute * 60 + second)
 }
 
-fn bug_rule(origin: &EventQueueTaskCreatedV1DataOrigin) -> Option<&CommonIdV1> {
-    match origin {
-        EventQueueTaskCreatedV1DataOrigin::BugRule(bug) => Some(&bug.rule_id),
-        _ => None,
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TaskOrigin<'a> {
+    Manual(&'a CommonIdV1),
+    Issue(u64),
+    BugRule(&'a CommonIdV1, &'a CommonIdV1),
+}
+
+impl<'a> TaskOrigin<'a> {
+    fn is_manual(self) -> bool {
+        matches!(self, Self::Manual(_))
+    }
+
+    fn bug_rule(self) -> Option<&'a CommonIdV1> {
+        match self {
+            Self::BugRule(rule, _) => Some(rule),
+            _ => None,
+        }
     }
 }
 
-fn is_manual(origin: &EventQueueTaskCreatedV1DataOrigin) -> bool {
-    matches!(origin, EventQueueTaskCreatedV1DataOrigin::Manual(_))
+/// A borrowed task creation from either version of the queue contract.
+#[derive(Clone, Copy)]
+pub struct TaskCreation<'a> {
+    queue_id: &'a CommonIdV1,
+    task_id: &'a CommonIdV1,
+    attempt_limit: u16,
+    origin: TaskOrigin<'a>,
+    workspace_alias: &'a str,
+    ts: &'a CommonTimestampV1,
+    seq: u64,
+    actor: &'a CommonActorV1,
 }
+
+macro_rules! task_creation_from {
+    ($event:ident, $origin:ident) => {
+        impl<'a> From<&'a $event> for TaskCreation<'a> {
+            fn from(event: &'a $event) -> Self {
+                let data = &event.data;
+                let origin = match &data.origin {
+                    $origin::Manual(manual) => TaskOrigin::Manual(&manual.request_id),
+                    $origin::Issue(issue) => TaskOrigin::Issue(issue.r#ref.get()),
+                    $origin::BugRule(bug) => TaskOrigin::BugRule(&bug.rule_id, &bug.target_id),
+                };
+                Self {
+                    queue_id: &data.queue_id,
+                    task_id: &data.task_id,
+                    attempt_limit: data.attempt_limit.get(),
+                    origin,
+                    workspace_alias: data.workspace_alias.as_str(),
+                    ts: &event.ts,
+                    seq: event.seq.get(),
+                    actor: &event.actor,
+                }
+            }
+        }
+    };
+}
+
+task_creation_from!(EventQueueTaskCreatedV1, EventQueueTaskCreatedV1DataOrigin);
+task_creation_from!(EventQueueTaskCreatedV2, EventQueueTaskCreatedV2DataOrigin);
 
 /// Why the admission refuses a task.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -545,8 +645,7 @@ pub enum AdmissionRefusal {
 /// that follows the anchor. The admission refuses an anchor that covers the candidate or a later
 /// `seq`, or whose `at` is ahead of the core clock.
 ///
-/// Only `reanchor_admission_clock` builds one, from a device of the owner. Reading one back from
-/// the log arrives with its event.
+/// Built from an authenticated owner action or restored by replay after validating the event.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClockAnchor {
     queue_id: CommonIdV1,
@@ -558,6 +657,34 @@ pub struct ClockAnchor {
 }
 
 impl ClockAnchor {
+    fn from_event(event: &EventQueueClockReanchoredV1) -> Self {
+        Self {
+            queue_id: event.data.queue_id.clone(),
+            owner_id: event.data.owner_id.clone(),
+            device_id: event.actor.id.clone(),
+            via: match event.data.via {
+                EventQueueClockReanchoredV1DataVia::LocalUi => Channel::LocalUi,
+                EventQueueClockReanchoredV1DataVia::Tray => Channel::Tray,
+                EventQueueClockReanchoredV1DataVia::RemoteDevice => Channel::RemoteDevice,
+            },
+            at: event.ts.clone(),
+            through_seq: event.seq.get() - 1,
+        }
+    }
+
+    /// Payload to append at `through_seq + 1`, with `at` as the envelope timestamp.
+    pub fn event_data(&self) -> EventQueueClockReanchoredV1Data {
+        EventQueueClockReanchoredV1Data {
+            queue_id: self.queue_id.clone(),
+            owner_id: self.owner_id.clone(),
+            via: match self.via {
+                Channel::LocalUi => EventQueueClockReanchoredV1DataVia::LocalUi,
+                Channel::Tray => EventQueueClockReanchoredV1DataVia::Tray,
+                Channel::RemoteDevice => EventQueueClockReanchoredV1DataVia::RemoteDevice,
+            },
+        }
+    }
+
     pub fn queue_id(&self) -> &CommonIdV1 {
         &self.queue_id
     }
@@ -588,8 +715,8 @@ impl ClockAnchor {
 /// Builds the anchor from the owner action. `now` is the core clock when the owner acts, with
 /// the same contract as `created.ts`; `through_seq` is the `seq` the owner acted on, and
 /// `stream_last_seq` the last `seq` of the queue stream read from storage, which must be equal.
-/// Recording the anchor needs an event the contracts do not have yet, so until then the caller
-/// keeps it.
+/// The producer conditionally appends the event at the next sequence, using the owner device as
+/// actor and `now` as `ts`. The anchor takes effect only after the append succeeds.
 pub fn reanchor_admission_clock(
     queue: &RecordTaskQueueV1,
     device: Option<&AuthenticatedDevice>,
@@ -627,7 +754,16 @@ pub struct AdmissionContext<'a> {
     pub anchor: Option<&'a ClockAnchor>,
 }
 
-fn authored_by_owner(created: &EventQueueTaskCreatedV1, context: &AdmissionContext<'_>) -> bool {
+struct AdmissionInputs<'a> {
+    /// Policy in force at the decision.
+    pub policy: &'a QueuePolicy,
+    /// Core clock at the decision.
+    pub now: &'a CommonTimestampV1,
+    /// Latest owner anchor at the decision, if any.
+    pub anchor: Option<&'a ClockAnchor>,
+}
+
+fn authored_by_owner(created: TaskCreation<'_>, context: &AdmissionContext<'_>) -> bool {
     context.author.is_some_and(|author| {
         author.owner_id == *context.queue_owner
             && created.actor.kind == CommonActorV1Kind::Device
@@ -643,8 +779,8 @@ fn authored_by_owner(created: &EventQueueTaskCreatedV1, context: &AdmissionConte
 /// when the producer decides. A candidate stamped more than `clock_skew_seconds` after `now`, or
 /// more than `clock_rewind_seconds` before an earlier admission of the queue, is refused, so a
 /// stamp ahead of the core clock does not empty the window. If the core clock itself runs ahead,
-/// the window empties once; once the clock is corrected, admissions stop until real time reaches
-/// the last one or the owner re-anchors the clock with `reanchor_admission_clock`.
+/// the window can empty. After correction, `BehindLastAdmission` takes precedence over count
+/// limits until the clock returns within tolerance or the owner re-anchors it.
 ///
 /// In any `window_seconds` ending at the candidate `ts`, the queue admits at most
 /// `manual_window_admissions` manual requests and `window_admissions` tasks from issues and bug
@@ -656,17 +792,43 @@ pub fn can_admit_task<'a>(
     history: impl IntoIterator<Item = &'a EventQueueTaskCreatedV1>,
     context: &AdmissionContext<'_>,
 ) -> Result<(), AdmissionRefusal> {
+    can_admit_creation(created.into(), history.into_iter().map(Into::into), context)
+}
+
+/// Checks admission of either event version against a history that can mix versions.
+pub fn can_admit_creation<'a>(
+    created: TaskCreation<'_>,
+    history: impl IntoIterator<Item = TaskCreation<'a>>,
+    context: &AdmissionContext<'_>,
+) -> Result<(), AdmissionRefusal> {
+    if created.origin.is_manual() && !authored_by_owner(created, context) {
+        return Err(AdmissionRefusal::ManualNotOwnerDevice);
+    }
+    check_admission(
+        created,
+        history,
+        context.queue_owner,
+        AdmissionInputs {
+            policy: context.policy,
+            now: context.now,
+            anchor: context.anchor,
+        },
+    )
+}
+
+fn check_admission<'a>(
+    created: TaskCreation<'_>,
+    history: impl IntoIterator<Item = TaskCreation<'a>>,
+    queue_owner: &CommonIdV1,
+    inputs: AdmissionInputs<'_>,
+) -> Result<(), AdmissionRefusal> {
     use AdmissionRefusal as Refusal;
-    let policy = context.policy;
-    if created.data.attempt_limit.get() > policy.attempt_limit.get() {
+    let policy = inputs.policy;
+    if created.attempt_limit > policy.attempt_limit.get() {
         return Err(Refusal::AttemptCeiling);
     }
-    let manual = is_manual(&created.data.origin);
-    if manual && !authored_by_owner(created, context) {
-        return Err(Refusal::ManualNotOwnerDevice);
-    }
-    let (Some(stamp), Some(clock)) = (epoch_seconds(&created.ts), epoch_seconds(context.now))
-    else {
+    let manual = created.origin.is_manual();
+    let (Some(stamp), Some(clock)) = (epoch_seconds(created.ts), epoch_seconds(inputs.now)) else {
         return Err(Refusal::UnreadableInstant);
     };
     let seconds = |value: u64| i64::try_from(value).unwrap_or(i64::MAX);
@@ -674,14 +836,11 @@ pub fn can_admit_task<'a>(
     if stamp > latest_now {
         return Err(Refusal::AheadOfClock);
     }
-    let anchor = match context.anchor {
-        Some(anchor)
-            if anchor.queue_id != created.data.queue_id
-                || anchor.owner_id != *context.queue_owner =>
-        {
+    let anchor = match inputs.anchor {
+        Some(anchor) if &anchor.queue_id != created.queue_id || anchor.owner_id != *queue_owner => {
             return Err(Refusal::ForeignAnchor);
         }
-        Some(anchor) if anchor.through_seq >= created.seq.get() => {
+        Some(anchor) if anchor.through_seq >= created.seq => {
             return Err(Refusal::AnchorAfterCandidate);
         }
         Some(anchor) => {
@@ -695,7 +854,7 @@ pub fn can_admit_task<'a>(
     };
     let latest_prior = stamp.saturating_add(seconds(policy.clock_rewind_seconds));
     let window = seconds(policy.window_seconds.get());
-    let rule = bug_rule(&created.data.origin);
+    let rule = created.origin.bug_rule();
     let (class_limit, rule_limit) = if manual {
         (policy.manual_window_admissions.get(), usize::MAX)
     } else {
@@ -706,21 +865,19 @@ pub fn can_admit_task<'a>(
     };
     let (mut count, mut same_class, mut same_rule) = (0, 0, 0);
     for prior in history {
-        if prior.data.task_id == created.data.task_id {
+        if prior.task_id == created.task_id {
             return Err(Refusal::TaskIdUsed);
         }
-        if prior.data.queue_id != created.data.queue_id {
+        if prior.queue_id != created.queue_id {
             continue;
         }
-        if prior.data.workspace_alias == created.data.workspace_alias
-            && prior.data.origin == created.data.origin
-        {
+        if prior.workspace_alias == created.workspace_alias && prior.origin == created.origin {
             return Err(Refusal::OriginRepeated);
         }
         // The anchor moves only covered creations still ahead of the clock, so an old anchor
         // never takes an ordinary creation out of the window.
-        let then = epoch_seconds(&prior.ts).map(|then| match anchor {
-            Some((through, at)) if prior.seq.get() <= through && then > latest_now => then.min(at),
+        let then = epoch_seconds(prior.ts).map(|then| match anchor {
+            Some((through, at)) if prior.seq <= through && then > latest_now => then.min(at),
             _ => then,
         });
         if then.is_some_and(|then| then > latest_prior) {
@@ -729,21 +886,21 @@ pub fn can_admit_task<'a>(
         count += 1;
         // A prior stamped after the candidate, within the rewind, is recent too.
         let recent = then.is_none_or(|then| stamp.saturating_sub(then) < window);
-        if recent && is_manual(&prior.data.origin) == manual {
+        if recent && prior.origin.is_manual() == manual {
             same_class += 1;
-            if rule.is_some() && bug_rule(&prior.data.origin) == rule {
+            if rule.is_some() && prior.origin.bug_rule() == rule {
                 same_rule += 1;
             }
         }
-        if count >= policy.admission_limit.get() {
-            return Err(Refusal::AdmissionLimit);
-        }
-        if same_class >= class_limit {
-            return Err(Refusal::WindowFull);
-        }
-        if same_rule >= rule_limit {
-            return Err(Refusal::BugRuleWindowFull);
-        }
+    }
+    if count >= policy.admission_limit.get() {
+        return Err(Refusal::AdmissionLimit);
+    }
+    if same_class >= class_limit {
+        return Err(Refusal::WindowFull);
+    }
+    if same_rule >= rule_limit {
+        return Err(Refusal::BugRuleWindowFull);
     }
     Ok(())
 }

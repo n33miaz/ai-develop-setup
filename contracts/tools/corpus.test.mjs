@@ -141,10 +141,11 @@ test("título aceita exatamente o alfabeto do corpus em cada posição", () => {
   }
 });
 
-// Os dois Schemas repetem o apelido e a origem até a versão 2 extraí-los para `common`; até lá, não podem divergir.
 test("o apelido e a origem da tarefa são os mesmos no registro e em queue.task_created", () => {
   const read = (name) => JSON.parse(fs.readFileSync(path.join(root, "schemas", name), "utf8"));
   const record = read("record.queue-task.v1.schema.json").properties;
-  const created = read("event.queue.task_created.v1.schema.json").allOf[1].properties.data.properties;
-  for (const field of ["workspace_alias", "origin"]) assert.deepEqual(created[field], record[field], field);
+  for (const version of [1, 2]) {
+    const created = read(`event.queue.task_created.v${version}.schema.json`).allOf[1].properties.data.properties;
+    for (const field of ["workspace_alias", "origin"]) assert.deepEqual(created[field], record[field], field);
+  }
 });
