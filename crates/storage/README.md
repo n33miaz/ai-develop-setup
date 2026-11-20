@@ -38,8 +38,9 @@ A reautenticação roda dentro do lock de escrita. Enquanto ela dura, outro escr
 | `UnsupportedSchema` | a mesma conferência encontrou o esquema diferente do esperado | parar a escrita e conferir a integridade do banco |
 | `KeyUnavailable` | a mesma conferência encontrou uma linha com chave registrada que este provedor não entrega (outro processo girou a chave) | entregar a chave ao provedor desta conexão e reabrir; a abertura ancorada verifica a cadeia inteira e distingue adulteração |
 | `Constraint` | o banco recusou a linha (`id` repetido ou gatilho) | não repetir igual |
-| `InvalidEvent` | limite de `type` ou família, ou id do portão que não é o do stream | corrigir o evento |
+| `InvalidEvent` | limite de `type` ou família, id do portão que não é o do stream, ou evento da fila fora de `queue/<data.queue_id>` | corrigir o evento |
 | `TooLarge` | `data` serializado acima de `max_event_bytes` | guardar em outro lugar |
+| `Full` | o stream da fila já tem `queue_max_events` eventos | o dono sobe o teto ou cria outra fila |
 | `WrongKey` | provedor diferente da chave registrada, incoerente consigo ou usando um identificador anterior | conferir o cofre, rodar `verify_chain` e comparar o fim com a âncora, quando disponível, antes de girar |
 | `ChainBroken { position: 1 }` | falta a gênese ao gravar a primeira linha | conferir a integridade do banco |
 
@@ -48,6 +49,15 @@ A abertura ancorada autentica a cadeia sob o lock de escrita. Ela percorre todas
 `verify_chain` aceita cada `key_id` em um único trecho contíguo da cadeia global e aponta a primeira posição que volta a usar um identificador anterior. A ordem vem das linhas, pois identificadores de chave são opacos.
 
 O teste `reading_numeric_arrays_measures_retained_event_memory` registra a diferença entre o tamanho cifrado e a memória ocupada pelos arrays JSON interpretados e pelo vetor de eventos. Os valores variam conforme o layout das estruturas e a capacidade alocada. Essa contagem é um limite inferior da memória retida. Metadados, demais alocações, buffers transitórios e o cache do SQLite ficam fora dela.
+
+### Streams da fila
+
+Cada fila de tarefas tem um stream `queue/<id>` no mesmo log ancorado, com as mesmas garantias: só-anexo, cifra do `data`, cadeia HMAC, âncora no cofre e `verify_on_append` (`src/queue.rs`). O registro de cada tarefa não é guardado à parte: é reconstruído do stream pelo replay do núcleo, a única fonte de verdade.
+
+- `append` só aceita tipo `urn:ads:event:queue.*` no stream `queue/<id>` e vice-versa, com `data.queue_id` igual a `<id>`; fora disso recusa com `InvalidEvent`, sem escrever. A leitura confere o mesmo vínculo depois de decifrar e recusa com `Tampered`, como faz com os ids do portão. O `append` continua condicionado ao `seq` que o produtor leu: não há gravação "no próximo `seq`", porque a mudança de política e a reancoragem do relógio dependem do `seq` que o dono viu.
+- `read_queue(queue_id)` lê o `head` no início e percorre o stream a partir do `seq` 1 em páginas de `read_page_limit`, até esse `head`. Cada página é autenticada como em `read_stream`, e a seguinte começa no `seq` depois do último recebido, então uma linha faltando entre páginas também recusa com `ChainBroken`. Quem chama passa os eventos a `QueueStreamEvent::from_envelope` do núcleo e daí ao replay ([fila contínua](../core/README.md#fila-contínua)); o armazenamento não depende do núcleo.
+- `queue_max_events` (padrão 100000, de 1 a 10000000) limita os eventos por fila: atingido, o `append` seguinte da fila recusa com `Full`. A leitura nunca recusa pelo tamanho: baixar o teto só impede gravar, e o histórico continua legível. `queue_retention` só aceita `"all"`: apagar o começo do stream quebraria a cadeia e o replay, que começa em `queue.created`.
+- O banco ainda não confere o vínculo da fila com `CHECK` (o do portão confere); a conferência é do `append` e da leitura. O daemon ainda não grava nem lê filas: a fila continua parada até o dono ligá-la.
 
 ### Âncora no cofre
 

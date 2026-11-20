@@ -9,6 +9,7 @@ pub struct StorageConfig {
     pub(crate) inspection_max_bytes: usize,
     pub(crate) integrity_check_on_open: bool,
     pub(crate) max_event_bytes: usize,
+    pub(crate) queue_max_events: u64,
     pub(crate) read_key_candidates: u32,
     pub(crate) read_page_limit: u32,
     pub(crate) read_page_max_bytes: usize,
@@ -31,6 +32,8 @@ struct Layer {
     inspection_max_bytes: Option<usize>,
     integrity_check_on_open: Option<bool>,
     max_event_bytes: Option<usize>,
+    queue_max_events: Option<u64>,
+    queue_retention: Option<String>,
     read_key_candidates: Option<u32>,
     read_page_limit: Option<u32>,
     read_page_max_bytes: Option<usize>,
@@ -53,6 +56,7 @@ impl StorageConfig {
             (over.encryption.or(base.encryption), "column"),
             (over.cipher.or(base.cipher), "xchacha20poly1305"),
             (over.journal_mode.or(base.journal_mode), "wal"),
+            (over.queue_retention.or(base.queue_retention), "all"),
         ] {
             if value.as_deref() != Some(expected) {
                 return Err(StorageError::Configuration);
@@ -93,6 +97,11 @@ impl StorageConfig {
                 .ok_or(StorageError::Configuration)?,
             max_event_bytes,
             read_page_max_bytes,
+            queue_max_events: over
+                .queue_max_events
+                .or(base.queue_max_events)
+                .filter(|n| (1..=10_000_000).contains(n))
+                .ok_or(StorageError::Configuration)?,
             read_key_candidates: over
                 .read_key_candidates
                 .or(base.read_key_candidates)
@@ -114,6 +123,9 @@ impl StorageConfig {
     }
     pub fn max_event_bytes(&self) -> usize {
         self.max_event_bytes
+    }
+    pub fn queue_max_events(&self) -> u64 {
+        self.queue_max_events
     }
     pub fn read_page_limit(&self) -> u32 {
         self.read_page_limit
@@ -163,6 +175,13 @@ read_page_limit = 1",
                 .read_key_candidates,
             0
         );
+        assert_eq!(base.queue_max_events(), 100_000);
+        assert_eq!(
+            StorageConfig::from_toml_str("queue_max_events = 1")
+                .unwrap()
+                .queue_max_events(),
+            1
+        );
         assert_eq!(base.verify_on_append(), VerifyOnAppend::Changed);
         assert_eq!(
             StorageConfig::from_toml_str("verify_on_append = 'always'")
@@ -175,6 +194,9 @@ read_page_limit = 1",
             "verify_on_append = 'Always'",
             "verify_on_append = 1",
             "read_key_candidates = 129",
+            "queue_max_events = 0",
+            "queue_max_events = 10000001",
+            "queue_retention = 'days'",
             "unknown = 1",
             "inspection_max_bytes = 511",
             "inspection_max_bytes = 1073741825",

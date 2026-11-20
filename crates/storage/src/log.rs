@@ -97,6 +97,7 @@ fn gate_ids(
     if (gate(type_family) || gate(stream_family)) && type_family != stream_family {
         return Err(StorageError::InvalidEvent);
     }
+    crate::queue::check_binding(type_family, stream_family, entity, data)?;
     let id = |name: &str| match data.get(name) {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(text)) if CommonIdV1::new(text.as_str()).is_ok() => {
@@ -603,8 +604,9 @@ impl EventLog {
     /// rotated); give this provider the key and reopen.
     /// `Constraint`: the database refused the row (repeated `id`, or a trigger);
     /// do not retry unchanged. `InvalidEvent`: `type` or stream family over its
-    /// bound, or a gate event whose `action_id`/`approval_id` disagree with its
-    /// stream. `TooLarge`: `data` over `max_event_bytes`. `WrongKey`: the provider
+    /// bound, a gate event whose `action_id`/`approval_id` disagree with its
+    /// stream, or a queue event outside `queue/<data.queue_id>` (and back).
+    /// `Full`: a queue stream already holds `queue_max_events`. `TooLarge`: `data` over `max_event_bytes`. `WrongKey`: the provider
     /// disagrees with itself or with the registered key, or tries to reuse a retired id.
     /// `ChainBroken { position: 1 }`: the log has no genesis for the first row.
     pub fn append(&mut self, event: &EventEnvelopeV1) -> Result<Position, StorageError> {
@@ -615,6 +617,9 @@ impl EventLog {
             return Err(StorageError::InvalidEvent);
         }
         let (action_id, approval_id) = gate_ids(kind, stream, &event.data)?;
+        if family == crate::queue::QUEUE_FAMILY && event.seq.get() > self.config.queue_max_events {
+            return Err(StorageError::Full);
+        }
         let data = Zeroizing::new(
             serde_json::to_vec(&event.data).map_err(|_| StorageError::InvalidEvent)?,
         );

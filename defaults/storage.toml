@@ -41,3 +41,14 @@ read_key_candidates = 8
 # verify_chain. "always" revalida em todo append, com custo proporcional aos
 # bytes guardados e dentro do lock de escrita. Outro valor recusa.
 verify_on_append = "changed"
+
+# Eventos de uma fila de tarefas (stream queue/<id>) guardados no log ancorado.
+# Teto de eventos por fila: recomendado 100000 (1000 admissões com folga para
+# as tentativas e as mudanças de estado). Aceita 1 a 10000000. Atingido, o
+# append seguinte da fila recusa com Full; a leitura nunca recusa pelo tamanho,
+# então baixar o teto só impede gravar e o histórico continua legível.
+queue_max_events = 100000
+# Retenção dos eventos da fila: "all" é o único valor. O log é só-anexo e
+# encadeado, e o replay da fila começa em queue.created; apagar o começo
+# quebraria a cadeia e o replay. Outro valor recusa com Configuration.
+queue_retention = "all"
