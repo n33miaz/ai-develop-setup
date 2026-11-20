@@ -12,14 +12,43 @@ O [roteador](src/routing.rs) interpreta [routing.toml](../../defaults/routing.to
 
 ## Fila contínua
 
-A [política da fila](src/queue.rs) restaura a fila parada e calcula transições usando o registro atual e, quando exigido, o aparelho autenticado. O aparelho autenticado leva o dono a que pertence, e a política confere esse dono contra o da fila. A partida, o teto de custo e a falta de recursos param a fila com os dados de `queue.stopped` do daemon. Na partida, a restauração considera o retrato e o último estado registrado no log, e registra a parada se qualquer um dos dois indicar a fila ligada. Os dados da parada pelo dono só saem para um aparelho do dono da fila. O replay reconstitui o saldo a partir da criação e das mudanças ordenadas da tarefa. O produtor usa o estado e o saldo reconstituídos antes de autorizar novas transições e reserva a origem na mesma operação que anexa a criação.
+A [política da fila](src/queue.rs) restaura a fila parada e calcula transições usando o registro atual e, quando exigido, o aparelho autenticado. O aparelho autenticado leva o dono a que pertence e o canal (`Channel`, do próprio núcleo, convertido no `via` de cada evento). A política confere esse dono contra o da fila. A partida, o teto de custo e a falta de recursos param a fila com os dados de `queue.stopped` do daemon. Na partida, a restauração considera o retrato e o último estado registrado no log, e registra a parada se qualquer um dos dois indicar a fila ligada.
 
-[queue.toml](../../defaults/queue.toml) fornece os padrões de duas tentativas por tarefa e 1000 admissões por fila. O integrador pode passar uma política diferente com `QueuePolicy`. A admissão recusa criação com teto acima do configurado, `task_id` já usado em qualquer fila e origem repetida na fila. O limite de admissão inclui origens encerradas. Ao atingir o limite, novas criações são recusadas. O cadastro de aparelhos autenticados e o produtor que anexa os eventos serão integrados com a persistência e a execução da fila. Ficam para a [issue #121](https://github.com/n33miaz/ai-develop-setup/issues/121):
-- a conferência de autorização no replay;
-- o construtor de `AuthenticatedDevice` para a camada de autenticação;
-- os limites por regra e por janela;
-- o `common` do apelido e da origem;
-- a tarefa em `running` quando o núcleo reinicia e o host mantém o processo.
+`change_queue_state` devolve o novo estado junto com os dados do evento (`queue.enabled` ou `queue.stopped` com `reason: owner`), montados do aparelho conferido. Uma mudança para o estado atual é recusada com `Unchanged`, então nunca sai parada para uma fila já parada. O produtor monta o envelope com `actor.id` igual ao `device_id` do aparelho devolvido.
+
+Na partida, `restore_running_task` decide o destino da tarefa cujo último estado é `running`, em três casos:
+- `Keep`: o host manteve o processo, e a tarefa continua em `running`. O núcleo volta a acompanhar a sessão, e a tentativa termina normalmente, mesmo com a fila parada.
+- `Fail`: o host não manteve o processo, e a tarefa passa para `failed` com a mesma contagem, porque a tentativa interrompida já foi contada.
+- `Cancel`: a contagem é inconsistente (zero ou acima do teto). A tarefa passa para `cancelled` com a contagem gravada, e o chamador encerra o processo se o host o manteve.
+
+O replay (`replay_task`) recebe o stream inteiro da fila, a partir de `queue.created` com `seq` 1 e sem buraco, e uma consulta ao cadastro de aparelhos no instante de cada evento. Ele devolve o estado e o saldo, ou o motivo da recusa (`ReplayRefusal`). Além da ordem e do saldo, ele confere:
+- todo evento é da fila e do stream `queue/<id>`;
+- todo ator que é aparelho pertencia ao dono da fila naquele instante;
+- a criação, a ativação e a parada pelo dono vêm de um aparelho do dono e repetem o dono da fila;
+- a tarefa só entra em `running` com a fila ligada naquele ponto do log;
+- `review → done` foi aceito por um aparelho do dono.
+
+O agente e o daemon continuam podendo reprovar e cancelar tarefas. O replay confere a coerência dos atores que o log declara, não a autenticidade deles: o log não é assinado por aparelho, e uma linha forjada é recusada pela cadeia HMAC do armazenamento ([ADR 0021](../../docs/adr/0021-storage-atomic-file-and-cipher.md)). O replay protege contra erro do produtor e contra log montado de forma errada.
+
+O cadastro responde pelo dono do aparelho em cada instante. Um aparelho mantém o dono que tinha quando agiu, e a revogação é uma marca com data: ela recusa os atos posteriores sem apagar os anteriores. O produtor usa o estado e o saldo reconstituídos antes de autorizar novas transições e reserva a origem na mesma operação que anexa a criação.
+
+[queue.toml](../../defaults/queue.toml) fornece os limites. O integrador pode passar uma política diferente com `QueuePolicy`. Chave ausente num arquivo anterior assume o valor de `queue.toml`. A admissão recusa:
+- criação com teto de tentativas acima do configurado;
+- `task_id` já usado em qualquer fila;
+- origem repetida na fila;
+- a fila que atingiu o total de admissões (`admission_limit`, 1000), que inclui origens encerradas;
+- na janela de `window_seconds` (uma hora) que termina no `ts` da criação:
+  - mais de `manual_window_admissions` (10) pedidos manuais;
+  - mais de `window_admissions` (10) tarefas vindas de issue ou de regra de bug;
+  - mais de `bug_rule_window_admissions` (3) da mesma regra de bug.
+
+Os pedidos manuais contam à parte, para que as origens automáticas não ocupem o espaço do dono.
+
+O `ts` da criação vem do relógio do núcleo, nunca do pedido, e o produtor informa esse relógio em `now`. A admissão recusa a criação com `ts` anterior à última admissão da fila ou mais de `clock_skew_seconds` (5) adiante de `now`. Assim, um relógio ou um carimbo que salta para a frente não esvazia a janela.
+
+Os limites da janela se liberam sozinhos com o tempo. Uma fila que atingiu o total só volta a admitir quando o dono aumenta `admission_limit`. Criar outra fila também resolve, mas a chave de deduplicação inclui a fila: a fila nova não herda as origens reservadas, e a mesma issue pode ser admitida de novo.
+
+`AuthenticatedDevice` não tem construtor público. Toda função pública deste crate pode ser chamada por qualquer crate que dependa dele, e a matriz de dependências deixa a camada de autenticação fora do núcleo. Por isso nenhum construtor aqui distingue a camada de autenticação de um chamador que copia o id do aparelho de um pedido. O construtor entra junto com essa camada e com o cadastro de aparelhos.
 
 ## Ambiente do processo filho (`src/child_env.rs`)
 
