@@ -89,7 +89,8 @@ impl ReadCredential {
         if credential.CredentialBlobSize == 0 {
             return &mut [];
         }
-        // SAFETY: the nonempty blob is writable within the same owned allocation.
+        // SAFETY: the nonempty blob lies in the same owned allocation; Microsoft's CredRead guidance
+        // is to zero CredentialBlob before CredFree, so writing to it is supported.
         unsafe {
             slice::from_raw_parts_mut(
                 credential.CredentialBlob,
@@ -134,6 +135,17 @@ mod tests {
             if self.0.remove().is_err() {
                 eprintln!("could not clean up the vault test entry");
             }
+        }
+    }
+
+    #[test]
+    fn product_targets_are_exact() {
+        for (name, expected) in [
+            (SecretName::StorageKey, "urn:ads:vault:storage-key:1"),
+            (SecretName::AuditAnchor, "urn:ads:vault:audit-anchor:1"),
+        ] {
+            let wide: Vec<u16> = expected.encode_utf16().chain(iter::once(0)).collect();
+            assert_eq!(Target::product(name).0, wide);
         }
     }
 
