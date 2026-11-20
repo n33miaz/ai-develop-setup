@@ -535,15 +535,27 @@ impl Service {
         Ok(())
     }
     /// Uma sessão que terminou sozinha devolve a vaga pela mesma fila do fechamento automático.
+    /// Vale também com um `session.close` em andamento: se o host o recusar, a tentativa já está na fila;
+    /// se confirmar, o fechamento descarta a tentativa.
     fn release_ended(&mut self, id: &SessionId) {
         if let Some(session) = self.sessions.get(id.as_str())
-            && !session.closing
             && !session.released
             && !session.invalidated
         {
+            let generation = session.generation;
+            self.schedule_close(id, generation);
+        }
+    }
+    /// Uma entrada por geração: uma tentativa já na fila mantém o orçamento que tem.
+    fn schedule_close(&mut self, id: &SessionId, generation: u64) {
+        if !self
+            .retries
+            .iter()
+            .any(|r| r.id == *id && r.generation == generation)
+        {
             self.retries.push_back(Retry {
                 id: id.clone(),
-                generation: session.generation,
+                generation,
                 attempts: 0,
                 due: Instant::now(),
             });
@@ -558,12 +570,8 @@ impl Service {
             let closing = if session.released {
                 Closing::Closed
             } else {
-                self.retries.push_back(Retry {
-                    id: id.clone(),
-                    generation: session.generation,
-                    attempts: 0,
-                    due: Instant::now(),
-                });
+                let generation = session.generation;
+                self.schedule_close(&id, generation);
                 Closing::Pending
             };
             self.log.lock().await.invalidate(id.as_str(), closing);
@@ -1403,6 +1411,30 @@ mod tests {
         );
         assert_eq!(host.sessions().len(), 1);
         assert!(api.service.retries.is_empty());
+        peer.abort();
+    }
+
+    #[tokio::test]
+    async fn one_pending_close_per_generation() {
+        let (mut api, _, _, peer) = fake_service().await;
+        let params = json!({"session_id": "session", "harness": "test", "workdir_alias": "workspace", "cols": 80, "rows": 24, "_meta": {"origin": "local", "idempotency_key": "01ARZ3NDEKTSV4RRFFQ69G5FAB"}});
+        api.service
+            .execute(
+                "session.open",
+                &params,
+                None,
+                Instant::now() + Duration::from_secs(5),
+            )
+            .await
+            .unwrap();
+        let id: SessionId = "session".to_owned().try_into().unwrap();
+        api.service.release_ended(&id);
+        api.service.retries[0].attempts = 2;
+        api.service.release_ended(&id);
+        api.service.invalidate(id).await;
+        assert_eq!(api.service.retries.len(), 1);
+        // The attempt already queued keeps its budget.
+        assert_eq!(api.service.retries[0].attempts, 2);
         peer.abort();
     }
 

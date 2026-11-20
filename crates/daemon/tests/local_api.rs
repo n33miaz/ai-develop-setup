@@ -1151,6 +1151,23 @@ async fn scripted_fixture(
                 .unwrap();
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
+            if let Call::Close(params) = &request.call
+                && target == "closed-before-close-response"
+            {
+                far.write_all(
+                    &wire::encode_json(&wire::Notification::SubscriptionClosed(
+                        wire::SubscriptionClosed {
+                            session_id: params.session_id.clone(),
+                            last_seq: 0,
+                            reason: wire::CloseReason::SessionClosed,
+                        },
+                    ))
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
             if let Call::Write(params) = &request.call {
                 if target == "stall" {
                     std::future::pending::<()>().await;
@@ -1485,8 +1502,76 @@ async fn host_sessions_settle(f: &Fixture, count: usize) {
     .await;
 }
 
+fn close_calls(calls: &std::sync::Mutex<Vec<String>>) -> usize {
+    calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|c| *c == "close")
+        .count()
+}
+async fn wait_closes(calls: &std::sync::Mutex<Vec<String>>, count: usize) {
+    bounded(async {
+        while close_calls(calls) < count {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+}
+
 #[tokio::test]
-async fn ended_sessions_return_their_slots_without_a_client_close() {
+async fn ended_session_returns_its_slot_before_any_client_close() {
+    let (f, calls) = scripted_fixture(
+        "max_sessions = 1",
+        "exit-on-write",
+        ads_ptyhost::wire::ErrorCode::InternalError,
+        0,
+        &[],
+    )
+    .await;
+    let mut ws = authenticated(&f).await;
+    call(&mut ws, "session.open", open_params("first")).await;
+    call(
+        &mut ws,
+        "session.write",
+        json!({"session_id": "first", "data": "YQ=="}),
+    )
+    .await;
+    // The host sees the close before answering it; the daemon reads the answer before the next open.
+    wait_closes(&calls, 1).await;
+    assert_eq!(
+        call(&mut ws, "session.open", open_params("replacement")).await["result"]["accepted"],
+        true
+    );
+    // A client that still closes the ended session is answered as before, without reaching the host.
+    assert_eq!(
+        call(&mut ws, "session.close", json!({"session_id": "first"})).await["result"]["accepted"],
+        true
+    );
+    assert_eq!(close_calls(&calls), 1);
+    // A session the client closed itself still refuses a second close.
+    assert_eq!(
+        call(
+            &mut ws,
+            "session.close",
+            json!({"session_id": "replacement"})
+        )
+        .await["result"]["accepted"],
+        true
+    );
+    assert_eq!(
+        call(
+            &mut ws,
+            "session.close",
+            json!({"session_id": "replacement"})
+        )
+        .await["error"]["code"],
+        -32602
+    );
+}
+
+#[tokio::test]
+async fn released_streams_stay_whole_and_pruning_ends_only_its_subscription() {
     let f = fixture("max_sessions = 2", Arc::new(TestLauncher)).await;
     let mut watcher = authenticated(&f).await;
     let mut control = authenticated(&f).await;
@@ -1510,14 +1595,6 @@ async fn ended_sessions_return_their_slots_without_a_client_close() {
     }
     host_sessions_settle(&f, 0).await;
     assert!(f.host.sessions().is_empty());
-    // A client that still closes an ended session is answered as before, without a second close.
-    for id in ["first", "second"] {
-        assert_eq!(
-            call(&mut control, "session.close", json!({"session_id": id})).await["result"]["accepted"],
-            true
-        );
-    }
-    // The released stream is intact: nothing reached the watcher after `ended`, and replay has both events.
     call(
         &mut control,
         "events.subscribe",
@@ -1526,11 +1603,7 @@ async fn ended_sessions_return_their_slots_without_a_client_close() {
     .await;
     assert_eq!(receive(&mut control).await["seq"], 1);
     assert_eq!(receive(&mut control).await["seq"], 2);
-    assert_eq!(
-        call(&mut control, "session.open", open_params("third")).await["result"]["accepted"],
-        true
-    );
-    // A session the client closed itself still refuses a second close.
+    call(&mut control, "session.open", open_params("third")).await;
     assert_eq!(
         call(
             &mut control,
@@ -1540,21 +1613,30 @@ async fn ended_sessions_return_their_slots_without_a_client_close() {
         .await["result"]["accepted"],
         true
     );
-    // Three released records exceed max_sessions = 2: the oldest is pruned, as before this change.
+    // Three released records exceed max_sessions = 2: only the oldest is pruned, as before this change.
     let pruned = receive(&mut watcher).await;
     assert_eq!(pruned["id"], subscriptions[0]);
     assert_eq!(pruned["error"]["code"], -32004);
-    let pruned = receive(&mut control).await;
-    assert_eq!(pruned["error"]["code"], -32004);
+    assert_eq!(receive(&mut control).await["error"]["code"], -32004);
+    // The next frame on the watcher answers its own request: the second subscription did not end.
     assert_eq!(
         call(
-            &mut control,
+            &mut watcher,
             "session.close",
-            json!({"session_id": "third"})
+            json!({"session_id": "first"})
         )
         .await["error"]["code"],
         -32602
     );
+    // The second stream is still retained and replays whole.
+    call(
+        &mut control,
+        "events.subscribe",
+        json!({"stream": "session/second", "after_seq": 0}),
+    )
+    .await;
+    assert_eq!(receive(&mut control).await["seq"], 1);
+    assert_eq!(receive(&mut control).await["seq"], 2);
 }
 
 #[tokio::test]
@@ -1602,6 +1684,16 @@ close_retry_ms = 20",
     })
     .await;
     // Both automatic attempts were refused: the stream stays whole and the slot stays taken.
+    // The existing subscription stays open: the next frame answers this request, not -32004 or -32013.
+    assert_eq!(
+        call(
+            &mut ws,
+            "session.resize",
+            json!({"session_id": "session", "cols": 100, "rows": 30})
+        )
+        .await["error"]["code"],
+        -32602
+    );
     let mut late = authenticated(&f).await;
     assert_eq!(
         call(
@@ -1625,6 +1717,136 @@ close_retry_ms = 20",
     );
     assert_eq!(
         call(&mut late, "session.open", open_params("other")).await["result"]["accepted"],
+        true
+    );
+}
+
+async fn terminal_event_during_a_refused_client_close_still_releases(target: &'static str) {
+    let (f, calls) = scripted_fixture(
+        "max_sessions = 1\nclose_retry_ms = 20",
+        target,
+        ads_ptyhost::wire::ErrorCode::InternalError,
+        0,
+        &[("close", 1)],
+    )
+    .await;
+    let mut ws = authenticated(&f).await;
+    call(&mut ws, "session.open", open_params("session")).await;
+    // The host sends the terminal event and then refuses the client's close.
+    let refused = call(&mut ws, "session.close", json!({"session_id": "session"})).await;
+    assert!(refused.get("error").is_some(), "{refused}");
+    wait_closes(&calls, 2).await;
+    assert_eq!(
+        call(&mut ws, "session.open", open_params("replacement")).await["result"]["accepted"],
+        true
+    );
+    assert_eq!(close_calls(&calls), 2);
+}
+
+#[tokio::test]
+async fn exit_during_a_refused_client_close_still_releases_the_slot() {
+    terminal_event_during_a_refused_client_close_still_releases("exit-before-close-response").await;
+}
+
+#[tokio::test]
+async fn session_closed_during_a_refused_client_close_still_releases_the_slot() {
+    terminal_event_during_a_refused_client_close_still_releases("closed-before-close-response")
+        .await;
+}
+
+#[tokio::test]
+async fn unknown_session_on_the_automatic_release_keeps_the_natural_end() {
+    let (f, calls) = scripted_fixture(
+        "max_sessions = 1",
+        "exit-on-write",
+        ads_ptyhost::wire::ErrorCode::UnknownSession,
+        0,
+        &[("close", 1)],
+    )
+    .await;
+    let mut ws = authenticated(&f).await;
+    call(&mut ws, "session.open", open_params("session")).await;
+    call(
+        &mut ws,
+        "session.write",
+        json!({"session_id": "session", "data": "YQ=="}),
+    )
+    .await;
+    wait_closes(&calls, 1).await;
+    assert_eq!(
+        call(&mut ws, "session.open", open_params("replacement")).await["result"]["accepted"],
+        true
+    );
+    call(
+        &mut ws,
+        "events.subscribe",
+        json!({"stream": "session/session", "after_seq": 0}),
+    )
+    .await;
+    assert_eq!(receive(&mut ws).await["seq"], 1);
+    let ended = receive(&mut ws).await;
+    assert_eq!(ended["seq"], 2);
+    assert_eq!(ended["data"]["reason"], "exit");
+    assert_eq!(
+        call(&mut ws, "session.close", json!({"session_id": "session"})).await["result"]["accepted"],
+        true
+    );
+    assert_eq!(close_calls(&calls), 1);
+}
+
+#[tokio::test]
+async fn refused_release_of_an_ended_session_never_reaches_a_reopened_id() {
+    let (f, calls) = scripted_fixture(
+        "max_sessions = 1\nretired_sessions = 1\nclose_retry_ms = 400",
+        "exit-on-write",
+        ads_ptyhost::wire::ErrorCode::InternalError,
+        0,
+        &[("close", 1)],
+    )
+    .await;
+    let mut ws = authenticated(&f).await;
+    call(&mut ws, "session.open", open_params("a")).await;
+    call(
+        &mut ws,
+        "session.write",
+        json!({"session_id": "a", "data": "YQ=="}),
+    )
+    .await;
+    // The first automatic attempt is refused; the next one waits 400 ms.
+    wait_closes(&calls, 1).await;
+    assert_eq!(
+        call(&mut ws, "session.close", json!({"session_id": "a"})).await["result"]["accepted"],
+        true
+    );
+    // Two more released sessions prune "a" and push its tombstone out.
+    for id in ["b", "c"] {
+        call(&mut ws, "session.open", open_params(id)).await;
+        call(&mut ws, "session.close", json!({"session_id": id})).await;
+    }
+    // A late close of the pruned id, with a fresh key, is refused instead of accepted without effect.
+    assert_eq!(
+        call(&mut ws, "session.close", json!({"session_id": "a"})).await["error"]["code"],
+        -32602
+    );
+    assert_eq!(
+        call(&mut ws, "session.open", open_params("a")).await["result"]["accepted"],
+        true
+    );
+    let closes = close_calls(&calls);
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(
+        call(&mut ws, "unknown", json!({})).await["error"]["code"],
+        -32601
+    );
+    assert_eq!(close_calls(&calls), closes);
+    // The new generation is still active.
+    assert_eq!(
+        call(
+            &mut ws,
+            "session.resize",
+            json!({"session_id": "a", "cols": 100, "rows": 30})
+        )
+        .await["result"]["accepted"],
         true
     );
 }
