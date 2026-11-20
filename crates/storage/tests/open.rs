@@ -177,6 +177,22 @@ fn refused(path: &std::path::Path, config: &StorageConfig, expected: StorageErro
     );
 }
 
+/// Like `refused`, but a WAL-format product file that SQLite inspected may gain an
+/// empty `-wal` and a `-shm`: closing without a checkpoint does not remove them.
+fn refused_by_sqlite(path: &std::path::Path, config: &StorageConfig, expected: StorageError) {
+    let before = snapshot(path);
+    assert_eq!(AuditStore::open(path, config).unwrap_err(), expected);
+    let name = |suffix| sibling(path, suffix).file_name().unwrap().to_os_string();
+    let after: Vec<_> = snapshot(path)
+        .into_iter()
+        .filter(|(entry, bytes)| {
+            let new = !before.iter().any(|(old, _)| old == entry);
+            !(new && (*entry == name("-shm") || (*entry == name("-wal") && bytes.is_empty())))
+        })
+        .collect();
+    assert!(after == before, "directory entries or bytes changed");
+}
+
 #[test]
 fn rejects_entire_unknown_schema_without_directory_changes() {
     for sql in [
@@ -192,7 +208,7 @@ fn rejects_entire_unknown_schema_without_directory_changes() {
         let c = Connection::open(&path).unwrap();
         c.execute_batch(sql).unwrap();
         drop(c);
-        refused(
+        refused_by_sqlite(
             &path,
             &StorageConfig::defaults(),
             StorageError::UnsupportedSchema,
@@ -305,7 +321,8 @@ fn corrupt_internal_page_obeys_integrity_setting() {
     let page = u16::from_be_bytes([bytes[16], bytes[17]]) as usize;
     bytes[2 * page..2 * page + 4].copy_from_slice(&3u32.to_be_bytes());
     std::fs::write(&path, bytes).unwrap();
-    refused(&path, &StorageConfig::defaults(), StorageError::Corrupt);
+    refused_by_sqlite(&path, &StorageConfig::defaults(), StorageError::Corrupt);
+    // The leftover empty `-wal` and `-shm` do not block the next open.
     let config = StorageConfig::from_toml_str("integrity_check_on_open = false").unwrap();
     drop(AuditStore::open(&path, &config).unwrap());
 }
@@ -694,6 +711,132 @@ fn damaged_product_wal_frame_before_later_commit_is_refused() {
     assert_eq!(keys, ["first", "second"]);
 }
 
+fn keys(path: &std::path::Path) -> Vec<String> {
+    Connection::open(path)
+        .unwrap()
+        .prepare("SELECT key FROM meta ORDER BY key")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+}
+
+#[test]
+fn product_wal_with_older_generation_tail_opens() {
+    let source = fixture();
+    drop(AuditStore::open(&source, &StorageConfig::defaults()).unwrap());
+    let c = Connection::open(&source).unwrap();
+    c.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
+    for key in ["a", "b", "c"] {
+        c.execute("INSERT INTO meta VALUES (?1, zeroblob(5000))", [key])
+            .unwrap();
+    }
+    c.query_row("PRAGMA wal_checkpoint(RESTART)", [], |_| Ok(()))
+        .unwrap();
+    c.execute("INSERT INTO meta VALUES ('d', x'04')", [])
+        .unwrap();
+    let main = std::fs::read(&source).unwrap();
+    let wal = std::fs::read(sibling(&source, "-wal")).unwrap();
+    drop(c);
+    let page = word(&wal[8..]) as usize;
+    let frames: Vec<&[u8]> = wal[32..].chunks_exact(24 + page).collect();
+    let current = frames
+        .iter()
+        .take_while(|f| f[8..16] == wal[16..24])
+        .count();
+    let older = &frames[current..];
+    assert!(current > 0);
+    assert!(older.iter().all(|f| f[8..16] != wal[16..24]));
+    assert!(older.iter().filter(|f| word(&f[4..]) != 0).count() >= 2);
+    let path = write_pair(&main, &wal);
+    drop(AuditStore::open(&path, &StorageConfig::defaults()).unwrap());
+    assert_eq!(keys(&path), ["a", "b", "c", "d"]);
+}
+
+#[test]
+fn product_wal_frame_with_other_salt_before_two_commits_is_refused() {
+    let (main, wal) = pending_product_wal(&[
+        "INSERT INTO meta VALUES ('first', x'01')",
+        "INSERT INTO meta VALUES ('second', zeroblob(20000))",
+        "INSERT INTO meta VALUES ('third', zeroblob(20000))",
+    ]);
+    let all = transactions(&wal);
+    assert_eq!(all.len(), 3);
+    assert!(all[1].len() > 1 && all[2].len() > 1);
+    // The salt is outside the frame checksum, so no reseal is needed.
+    let mut middle = wal.clone();
+    middle[all[1][0] + 8] ^= 1;
+    refused_keeping_pair(&write_pair(&main, &middle), StorageError::Corrupt);
+    // Only the commit of the transaction holding the break follows: a torn write.
+    let mut last = wal.clone();
+    last[all[2][0] + 8] ^= 1;
+    let path = write_pair(&main, &last);
+    drop(AuditStore::open(&path, &StorageConfig::defaults()).unwrap());
+    assert_eq!(keys(&path), ["first", "second"]);
+}
+
+#[test]
+fn product_wal_with_partial_last_frame_opens() {
+    let (main, wal) = pending_product_wal(&[
+        "INSERT INTO meta VALUES ('first', x'01')",
+        "INSERT INTO meta VALUES ('second', x'02')",
+    ]);
+    let path = write_pair(&main, &wal[..wal.len() - 100]);
+    drop(AuditStore::open(&path, &StorageConfig::defaults()).unwrap());
+    assert_eq!(keys(&path), ["first"]);
+}
+
+#[test]
+fn integrity_refusal_with_pending_wal_keeps_main_file_and_wal() {
+    let source = fixture();
+    drop(AuditStore::open(&source, &StorageConfig::defaults()).unwrap());
+    let c = Connection::open(&source).unwrap();
+    c.execute("INSERT INTO meta VALUES ('payload', zeroblob(20000))", [])
+        .unwrap();
+    drop(c);
+    // The last page is the end of the payload's overflow chain: make it loop.
+    let mut bytes = std::fs::read(&source).unwrap();
+    let page = u16::from_be_bytes([bytes[16], bytes[17]]) as usize;
+    let last = bytes.len() / page;
+    bytes[(last - 1) * page..(last - 1) * page + 4].copy_from_slice(&(last as u32).to_be_bytes());
+    std::fs::write(&source, &bytes).unwrap();
+    let c = Connection::open(&source).unwrap();
+    c.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
+    c.execute("INSERT INTO meta VALUES ('pending', x'01')", [])
+        .unwrap();
+    let main = std::fs::read(&source).unwrap();
+    let wal = std::fs::read(sibling(&source, "-wal")).unwrap();
+    drop(c);
+    assert_eq!(main, bytes);
+    assert!(wal.len() > 32);
+    assert!(
+        wal[32..]
+            .chunks_exact(24 + page)
+            .all(|frame| word(frame) as usize != last)
+    );
+    refused_keeping_pair(&write_pair(&main, &wal), StorageError::Corrupt);
+    let config = StorageConfig::from_toml_str("integrity_check_on_open = false").unwrap();
+    drop(AuditStore::open(&write_pair(&main, &wal), &config).unwrap());
+}
+
+#[test]
+fn short_wal_beside_refused_product_file_is_kept() {
+    let (_, wal) = pending_product_wal(&["INSERT INTO meta VALUES ('pending', x'01')"]);
+    let source = fixture();
+    drop(AuditStore::open(&source, &StorageConfig::defaults()).unwrap());
+    Connection::open(&source)
+        .unwrap()
+        .execute_batch("CREATE TABLE extra (x)")
+        .unwrap();
+    assert!(!sibling(&source, "-wal").exists());
+    let main = std::fs::read(&source).unwrap();
+    // A valid header with no frames, and lengths SQLite reads as no WAL at all.
+    for short in [wal[..32].to_vec(), vec![], vec![7], vec![7; 31]] {
+        refused_keeping_pair(&write_pair(&main, &short), StorageError::UnsupportedSchema);
+    }
+}
+
 #[test]
 fn leftover_journal_with_zero_timeout_is_busy() {
     let path = fixture();
@@ -724,6 +867,25 @@ fn journal_still_changing_at_deadline_is_busy() {
         assert_eq!(result, Err(StorageError::Busy));
     });
     assert_eq!(std::fs::read(&path).unwrap(), b"");
+}
+
+#[test]
+fn journal_changed_once_then_still_until_deadline_is_corrupt() {
+    let path = fixture();
+    std::fs::write(&path, []).unwrap();
+    let journal = sibling(&path, "-journal");
+    std::fs::write(&journal, b"0").unwrap();
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            std::fs::write(&journal, b"01").unwrap();
+        });
+        let config = StorageConfig::from_toml_str("busy_timeout_ms = 600").unwrap();
+        let result = AuditStore::open(&path, &config).map(drop);
+        assert_eq!(result, Err(StorageError::Corrupt));
+    });
+    assert_eq!(std::fs::read(&path).unwrap(), b"");
+    assert_eq!(std::fs::read(&journal).unwrap(), b"01");
 }
 
 #[test]

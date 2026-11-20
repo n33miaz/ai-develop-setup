@@ -2,7 +2,7 @@
 
 Guarda o estado local: SQLite, cifra por coluna e auditoria encadeada.
 
-Estado: abre e confere o banco de auditoria (`AuditStore`, `src/open.rs`), recusando arquivo estranho, mais novo ou corrompido e `-journal` ou `-wal` sobrando que o SQLite desfaria ou apagaria; arquivo ainda não marcado é recusado sem alteração nenhuma, e o do produto, sem alterar os bytes do banco nem do `-wal` (pode sobrar um `-shm`), cifra e decifra valores com XChaCha20-Poly1305 (`src/cipher.rs`) e guarda eventos num log só-anexo, cifrado e encadeado (`EventLog`, `src/log.rs`). Ainda não confere as invariantes do portão, a chave ainda não vem do cofre e o daemon ainda não usa o log. Decisões na [ADR 0005](../../docs/adr/0005-column-level-encryption.md) e na [ADR 0021](../../docs/adr/0021-storage-atomic-file-and-cipher.md) (proposta); parâmetros em [`defaults/storage.toml`](../../defaults/storage.toml).
+Estado: abre e confere o banco de auditoria (`AuditStore`, `src/open.rs`), recusando arquivo estranho, mais novo ou corrompido e `-journal` ou `-wal` sobrando que o SQLite desfaria ou apagaria; arquivo ainda não marcado é recusado sem alteração nenhuma, e o do produto, sem alterar os bytes do banco nem do `-wal` (pode sobrar um `-shm` e, sem `-wal` antes, um `-wal` vazio), cifra e decifra valores com XChaCha20-Poly1305 (`src/cipher.rs`) e guarda eventos num log só-anexo, cifrado e encadeado (`EventLog`, `src/log.rs`). Ainda não confere as invariantes do portão, a chave ainda não vem do cofre e o daemon ainda não usa o log. Decisões na [ADR 0005](../../docs/adr/0005-column-level-encryption.md) e na [ADR 0021](../../docs/adr/0021-storage-atomic-file-and-cipher.md) (proposta); parâmetros em [`defaults/storage.toml`](../../defaults/storage.toml).
 
 ## Log de eventos
 
@@ -31,7 +31,7 @@ API: `EventLog::open(caminho, configuração, provedor de chaves)`; `head(stream
 
 Quem chama `verify_chain`: a composição (daemon), ao iniciar e depois em intervalos, quando estiver ligada ao log; a abertura não chama, porque o custo cresce com o log inteiro. `read_stream` não depende dela para cada linha que lê: decifra e autentica a linha e recusa com `ChainBroken` um `seq` faltando dentro da página, inclusive no `de_seq` pedido. Não percebe linhas faltando fora da página nem o corte do fim.
 
-Detecta: alteração, remoção no meio, reordenação, troca de texto cifrado entre linhas e linha acrescentada por quem não tem a chave, mesmo com os gatilhos intactos e um `INSERT` simples. Não detecta: cortar o fim do log nem voltar uma cópia anterior do arquivo inteiro, porque a cadeia não tem âncora fora do arquivo; nem o que faz quem tem a chave ([riscos](../../docs/risks.md#licença-de-execução-usada-duas-vezes)).
+Detecta: alteração, remoção no meio, reordenação, troca de texto cifrado entre linhas e linha acrescentada por quem não tem a chave, mesmo com os gatilhos intactos e um `INSERT` simples. Não detecta: cortar o fim do log nem voltar uma cópia anterior do arquivo inteiro, porque a cadeia não tem âncora fora do arquivo; nem um `-wal` inteiro de outro banco do produto posto ao lado do arquivo, porque nada liga o WAL ao arquivo principal e o SQLite aplica qualquer WAL de checksums válidos (a defesa é a mesma âncora); nem o que faz quem tem a chave ([riscos](../../docs/risks.md#licença-de-execução-usada-duas-vezes)).
 
 ## Reparo de `-journal` sobrando
 
@@ -41,3 +41,12 @@ A abertura recusa qualquer `audit.db-journal` ao lado do banco, inclusive vazio 
 2. Copie `audit.db`, `audit.db-journal` e, se existirem, `audit.db-wal` e `audit.db-shm` para uma pasta de quarentena. Não apague nada.
 3. Se o journal começa com os bytes `d9 d5 05 f9 20 a1 63 d7`, ele guarda as páginas anteriores a uma transação interrompida. Mantenha a cópia junto do `audit.db` da mesma hora.
 4. Mova `audit.db-journal` para a quarentena e abra de novo. A abertura confere cabeçalho, esquema e integridade; se recusar, restaure o backup.
+
+## Reparo de `-wal` recusado
+
+A abertura recusa com `Corrupt` um `audit.db-wal` em que o SQLite descartaria um commit já confirmado: depois do primeiro quadro inválido, há um commit com o salt atual além do commit da transação que contém a quebra. Duas quedas seguidas, cada uma rasgando uma escrita mas deixando o quadro de commit dela no disco, podem produzir esse desenho num banco legítimo, sem nenhum commit confirmado perdido; a abertura não tem como distinguir os dois casos e recusa. Para reparar:
+
+1. Pare o produto e confira que nenhum processo usa o banco.
+2. Copie `audit.db`, `audit.db-wal` e, se existir, `audit.db-shm` para uma pasta de quarentena. Não apague nada.
+3. Mova `audit.db-wal` e `audit.db-shm` para a quarentena e abra de novo. O banco volta ao último checkpoint: todas as transações que estavam só no WAL somem, não só as posteriores à quebra, e o log de eventos perde o fim sem que `verify_chain` perceba.
+4. Para ver o que estava no WAL, abra a cópia da quarentena (banco e `-wal` juntos) com outra ferramenta SQLite, que aplica os quadros até o primeiro inválido. Se a recusa vier de adulteração e não de queda, restaure o backup.
