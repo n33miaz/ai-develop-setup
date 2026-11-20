@@ -21,12 +21,14 @@ use windows::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows::Wdk::Storage::FileSystem::{
     FILE_CREATE, FILE_INFORMATION_CLASS, FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_IF,
     FILE_OPEN_REPARSE_POINT, FILE_RENAME_INFORMATION, FILE_SYNCHRONOUS_IO_NONALERT,
-    FileDispositionInformationEx, FileRenameInformationEx, NTCREATEFILE_CREATE_DISPOSITION,
-    NTCREATEFILE_CREATE_OPTIONS, NtCreateFile, NtSetInformationFile,
+    FileDispositionInformation, FileDispositionInformationEx, FileRenameInformation,
+    FileRenameInformationEx, NTCREATEFILE_CREATE_DISPOSITION, NTCREATEFILE_CREATE_OPTIONS,
+    NtCreateFile, NtSetInformationFile,
 };
 use windows::Win32::Foundation::{
     ERROR_SUCCESS, HANDLE, HLOCAL, LocalFree, NTSTATUS, OBJECT_ATTRIBUTE_FLAGS,
-    STATUS_ACCESS_DENIED, STATUS_OBJECT_NAME_COLLISION, STATUS_OBJECT_NAME_NOT_FOUND,
+    STATUS_ACCESS_DENIED, STATUS_INVALID_INFO_CLASS, STATUS_INVALID_PARAMETER,
+    STATUS_NOT_SUPPORTED, STATUS_OBJECT_NAME_COLLISION, STATUS_OBJECT_NAME_NOT_FOUND,
     STATUS_OBJECT_PATH_NOT_FOUND, UNICODE_STRING,
 };
 use windows::Win32::Security::Authorization::{
@@ -307,8 +309,13 @@ fn open_at(
 }
 
 /// Applies the first `size` bytes of `words` to the open `file`.
-fn apply(file: &File, class: FILE_INFORMATION_CLASS, words: &[u64], size: usize) -> io::Result<()> {
-    let size = u32::try_from(size.min(size_of_val(words))).map_err(io::Error::other)?;
+fn apply(
+    file: &File,
+    class: FILE_INFORMATION_CLASS,
+    words: &[u64],
+    size: usize,
+) -> Result<(), NTSTATUS> {
+    let size = u32::try_from(size.min(size_of_val(words))).map_err(|_| STATUS_INVALID_PARAMETER)?;
     let mut block = IO_STATUS_BLOCK::default();
     // SAFETY: the buffer is at least `size` readable bytes, aligned for the structures used,
     // and `block` is a valid place to write to.
@@ -322,9 +329,20 @@ fn apply(file: &File, class: FILE_INFORMATION_CLASS, words: &[u64], size: usize)
         )
     };
     if status.is_err() {
-        return Err(status_error(status));
+        return Err(status);
     }
     Ok(())
+}
+
+/// Whether the volume refused an extended class, which only some file systems know: the
+/// classic class is tried next.
+fn unsupported(status: NTSTATUS) -> bool {
+    [
+        STATUS_INVALID_PARAMETER,
+        STATUS_NOT_SUPPORTED,
+        STATUS_INVALID_INFO_CLASS,
+    ]
+    .contains(&status)
 }
 
 /// Opens the regular file `name` of the folder for reading and writing, creating it with the
@@ -368,33 +386,48 @@ pub(super) fn open_to_remove(root: &File, name: &str) -> io::Result<File> {
 
 /// Removes the open entry, the one the handle points to, whatever its name is now.
 pub(super) fn remove(file: &File) -> io::Result<()> {
-    // FILE_DISPOSITION_INFO_EX: flags.
+    // FILE_DISPOSITION_INFO_EX: flags. Without it, FILE_DISPOSITION_INFO: the entry goes when
+    // the handle, about to be dropped, is closed.
     apply(
         file,
         FileDispositionInformationEx,
         &[u64::from(DISPOSITION_DELETE)],
         4,
     )
+    .or_else(|status| match unsupported(status) {
+        true => apply(file, FileDispositionInformation, &[1], 1),
+        false => Err(status),
+    })
+    .map_err(status_error)
 }
 
 /// Moves the open entry to `name` in the open folder `root`, replacing what is there.
 pub(super) fn rename(file: &File, root: &File, name: &str) -> io::Result<()> {
     // FILE_RENAME_INFORMATION: the flags, the root folder, the length of the name and the
     // name. The offsets are checked against the structure of the system at compile time.
+    // Without the extended class, the first field is the single byte "replace if exists".
     let units: Vec<u16> = name.encode_utf16().collect();
     let length = u32::try_from(units.len() * 2).map_err(io::Error::other)?;
     let mut bytes = vec![0_u8; RENAME_NAME];
-    bytes[..4].copy_from_slice(&RENAME_REPLACE.to_le_bytes());
     bytes[RENAME_ROOT..RENAME_LENGTH].copy_from_slice(&(raw(root).0 as u64).to_le_bytes());
     bytes[RENAME_LENGTH..RENAME_NAME].copy_from_slice(&length.to_le_bytes());
     bytes.extend(units.iter().flat_map(|unit| unit.to_le_bytes()));
     let size = bytes.len().max(RENAME_SIZE);
     bytes.resize(size.div_ceil(8) * 8, 0);
-    let words: Vec<u64> = bytes
-        .chunks_exact(8)
-        .map(|chunk| u64::from_le_bytes(chunk.try_into().expect("chunks of eight")))
-        .collect();
-    apply(file, FileRenameInformationEx, &words, size)
+    let words = |flags: u32| -> Vec<u64> {
+        let mut bytes = bytes.clone();
+        bytes[..4].copy_from_slice(&flags.to_le_bytes());
+        bytes
+            .chunks_exact(8)
+            .map(|chunk| u64::from_le_bytes(chunk.try_into().expect("chunks of eight")))
+            .collect()
+    };
+    apply(file, FileRenameInformationEx, &words(RENAME_REPLACE), size)
+        .or_else(|status| match unsupported(status) {
+            true => apply(file, FileRenameInformation, &words(1), size),
+            false => Err(status),
+        })
+        .map_err(status_error)
 }
 
 /// The owner and access list of an open file or folder.

@@ -658,6 +658,34 @@ pub(crate) mod tests {
         assert!(!dir.0.join(&settings.state_file).exists());
     }
 
+    /// A link or junction in place of the folder is refused, never followed to its target.
+    #[test]
+    fn refuses_a_link_in_place_of_the_control_folder() {
+        let dir = TestDir::new();
+        let target = TestDir::new();
+        let link = dir.0.join("control");
+        #[cfg(windows)]
+        {
+            // `mklink` reads `/` as an option: hand it backslashes only.
+            let native = |path: &Path| path.to_string_lossy().replace('/', "\\");
+            let status = Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(native(&link))
+                .arg(native(&target.0))
+                .stdout(Stdio::null())
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target.0, &link).unwrap();
+        let error = ControlDir::open(&link, &Identity::current().unwrap())
+            .err()
+            .unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(error.to_string().contains("not a plain folder"), "{error}");
+    }
+
     /// Once open, the folder checked is the one used: replacing it by name changes nothing.
     #[test]
     fn keeps_using_the_folder_it_checked() {
