@@ -1,5 +1,6 @@
 //! Supervises the daemon and terminal host for one installation.
 
+mod private;
 mod supervisor;
 
 use std::{

@@ -1,16 +1,19 @@
 use std::{
     collections::VecDeque,
-    fs::{self, File, OpenOptions, TryLockError},
+    fs::{File, TryLockError},
     io,
     path::Path,
     process::{Child, Command, ExitStatus, Stdio},
     thread,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
 use serde::Serialize;
 
-use crate::Config;
+use crate::{
+    Config,
+    private::{ControlDir, Identity, Signal},
+};
 
 #[derive(Default, Serialize)]
 struct ProcessState {
@@ -173,13 +176,8 @@ fn detach(host: &mut Command) {
     }
 }
 
-fn open_lock(path: &Path) -> io::Result<File> {
-    let lock = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(path)?;
+fn open_lock(control: &ControlDir, name: &str) -> io::Result<File> {
+    let lock = control.lock_file(name)?;
     lock.try_lock().map_err(|error| match error {
         TryLockError::WouldBlock => io::Error::new(
             io::ErrorKind::AlreadyExists,
@@ -190,21 +188,9 @@ fn open_lock(path: &Path) -> io::Result<File> {
     Ok(lock)
 }
 
-fn consume_signal(path: &Path) -> io::Result<bool> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.is_file() => match fs::remove_file(path) {
-            Ok(()) => Ok(true),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
-            Err(error) => Err(error),
-        },
-        Ok(_) => Ok(false),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error),
-    }
-}
-
 fn write_state(
-    path: &Path,
+    control: &ControlDir,
+    name: &str,
     daemon: &Process,
     host: &Process,
     stopped: bool,
@@ -220,35 +206,17 @@ fn write_state(
         daemon: &'a ProcessState,
         ptyhost: &'a ProcessState,
     }
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let temp = path.with_extension(format!("{}-{stamp}.tmp", std::process::id()));
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temp)?;
-    let result = serde_json::to_writer(
-        &mut file,
-        &State {
-            launcher_pid: std::process::id(),
-            stopped,
-            stop_pending_at_startup: publication.stop_pending_at_startup,
-            last_error: publication.last_error.as_deref(),
-            state_write_error: publication.state_write_error.as_deref(),
-            daemon: &daemon.state,
-            ptyhost: &host.state,
-        },
-    )
-    .map_err(io::Error::other)
-    .and_then(|()| file.sync_all());
-    drop(file);
-    let result = result.and_then(|()| fs::rename(&temp, path));
-    if result.is_err() {
-        let _ = fs::remove_file(&temp);
-    }
-    result
+    let bytes = serde_json::to_vec(&State {
+        launcher_pid: std::process::id(),
+        stopped,
+        stop_pending_at_startup: publication.stop_pending_at_startup,
+        last_error: publication.last_error.as_deref(),
+        state_write_error: publication.state_write_error.as_deref(),
+        daemon: &daemon.state,
+        ptyhost: &host.state,
+    })
+    .map_err(io::Error::other)?;
+    control.publish(name, &bytes)
 }
 
 #[derive(Default)]
@@ -264,13 +232,31 @@ impl Publication {
         match result {
             Ok(value) => Some(value),
             Err(error) => {
-                let message = format!("{operation}: {error}");
-                if self.last_error.as_deref() != Some(&message) {
-                    eprintln!("ads-launcher: {message}");
-                    self.last_error = Some(message);
-                    self.dirty = true;
-                }
+                self.report(format!("{operation}: {error}"));
                 None
+            }
+        }
+    }
+
+    fn report(&mut self, message: String) {
+        if self.last_error.as_deref() != Some(&message) {
+            eprintln!("ads-launcher: {message}");
+            self.last_error = Some(message);
+            self.dirty = true;
+        }
+    }
+
+    /// `Some(true)` when the signal was accepted; a foreign signal file is reported and ignored.
+    fn signal(&mut self, operation: &str, control: &ControlDir, name: &str) -> Option<bool> {
+        match self.attempt(operation, control.signal(name, true))? {
+            Signal::Accepted => Some(true),
+            Signal::Absent => Some(false),
+            Signal::Foreign => {
+                self.report(format!(
+                    "{operation}: ignored {}, owned by or open to another account",
+                    control.path().join(name).display()
+                ));
+                Some(false)
             }
         }
     }
@@ -282,11 +268,11 @@ pub(crate) fn run(
     mut daemon: Command,
     mut host: Command,
 ) -> io::Result<()> {
-    fs::create_dir_all(control)?;
-    let _lock = open_lock(&control.join(&config.lock_file))?;
-    let state = control.join(&config.state_file);
-    let stop = control.join(&config.stop_file);
-    let restart = control.join(&config.restart_file);
+    let control = ControlDir::open(control, &Identity::current()?)?;
+    let _lock = open_lock(&control, &config.lock_file)?;
+    let state = config.state_file.as_str();
+    let stop = config.stop_file.as_str();
+    let restart = config.restart_file.as_str();
     detach(&mut host);
     daemon.stdin(Stdio::null());
     let mut daemon = Process::new(daemon, true);
@@ -294,29 +280,27 @@ pub(crate) fn run(
 
     // Publish before starting children so an unusable state path fails early.
     let mut publication = Publication {
-        stop_pending_at_startup: fs::symlink_metadata(&stop)
-            .is_ok_and(|metadata| metadata.is_file()),
+        stop_pending_at_startup: matches!(control.signal(stop, false), Ok(Signal::Accepted)),
         ..Publication::default()
     };
-    write_state(&state, &daemon, &host, false, &publication)?;
+    write_state(&control, state, &daemon, &host, false, &publication)?;
     let mut stopping = false;
     let mut restarting = false;
     loop {
         if !stopping {
-            stopping =
-                publication.attempt("consume stop signal", consume_signal(&stop)) == Some(true);
+            stopping = publication.signal("consume stop signal", &control, stop) == Some(true);
         }
         let stopped = if stopping {
             let daemon_stopped = publication.attempt("stop daemon", daemon.stop()).is_some();
             let signal_cleared = publication
-                .attempt("clear restart signal", consume_signal(&restart))
+                .signal("clear restart signal", &control, restart)
                 .is_some();
             publication.attempt("check host exit", host.tick_exit_only());
             publication.dirty = true;
             daemon_stopped && signal_cleared
         } else {
-            restarting |= publication.attempt("consume restart signal", consume_signal(&restart))
-                == Some(true);
+            restarting |=
+                publication.signal("consume restart signal", &control, restart) == Some(true);
             if restarting
                 && publication
                     .attempt("restart daemon", daemon.restart())
@@ -332,7 +316,7 @@ pub(crate) fn run(
             false
         };
         if publication.dirty {
-            match write_state(&state, &daemon, &host, stopped, &publication) {
+            match write_state(&control, state, &daemon, &host, stopped, &publication) {
                 Ok(()) => {
                     publication.dirty = false;
                     if stopped {
@@ -366,8 +350,11 @@ impl Process {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::private;
     use serde_json::Value;
+    use std::fs;
     use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     pub(crate) struct TestDir(pub(crate) PathBuf);
 
@@ -381,7 +368,7 @@ pub(crate) mod tests {
                 .join("../../target")
                 .join(format!("launcher-test-{}-{stamp}", std::process::id()));
             fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::create_dir(&path).unwrap();
+            private::create_dir(&path, &Identity::current().unwrap()).unwrap();
             Self(path)
         }
     }
@@ -544,6 +531,288 @@ pub(crate) mod tests {
         fs::write(host_release, []).unwrap();
     }
 
+    /// Grants every account of the machine full access to `path`; on a folder, also to what
+    /// is created inside, as an inherited open list would.
+    fn open_to_everyone(path: &Path) {
+        #[cfg(windows)]
+        {
+            let rule = if path.is_dir() {
+                "*S-1-1-0:(OI)(CI)F"
+            } else {
+                "*S-1-1-0:F"
+            };
+            icacls(path, &["/grant", rule]);
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o777)).unwrap();
+        }
+    }
+
+    #[cfg(windows)]
+    fn icacls(path: &Path, args: &[&str]) {
+        let status = Command::new("icacls")
+            .arg(path)
+            .args(args)
+            .stdout(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+
+    /// Asserts the exact access list of the folder and of the lock and state files: protected,
+    /// with the user's entry alone, inherited by new files only from the folder.
+    fn assert_private(control: &Path, settings: &Config, local: &Identity) {
+        let files = [&settings.lock_file, &settings.state_file].map(|name| control.join(name));
+        #[cfg(windows)]
+        {
+            let folder =
+                private::canonical_access_list(&format!("D:P(A;OICI;FA;;;{})", local.user))
+                    .unwrap();
+            assert_eq!(private::access_list_text(control).unwrap(), folder);
+            let file =
+                private::canonical_access_list(&format!("D:P(A;;FA;;;{})", local.user)).unwrap();
+            for path in files {
+                assert_eq!(private::access_list_text(&path).unwrap(), file, "{path:?}");
+            }
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let _ = local;
+            assert_eq!(fs::metadata(control).unwrap().mode() & 0o777, 0o700);
+            for path in files {
+                assert_eq!(fs::metadata(&path).unwrap().mode() & 0o777, 0o600);
+            }
+        }
+    }
+
+    #[test]
+    fn creates_a_private_control_folder() {
+        let dir = TestDir::new();
+        let control = dir.0.join("control");
+        let settings = config();
+        let local = Identity::current().unwrap();
+        fs::create_dir_all(&dir.0).unwrap();
+        ControlDir::open(&control, &local).unwrap();
+        fs::write(control.join(&settings.stop_file), []).unwrap();
+        run(&settings, &control, fixture(None), fixture(None)).unwrap();
+        assert_private(&control, &settings, &local);
+        // The folder, lock and state now exist: a second run reuses and keeps them private.
+        fs::write(control.join(&settings.stop_file), []).unwrap();
+        run(&settings, &control, fixture(None), fixture(None)).unwrap();
+        assert_private(&control, &settings, &local);
+    }
+
+    /// A folder whose single entry is not inherited: the files still get the private list,
+    /// set when they are created rather than taken from the folder.
+    #[cfg(windows)]
+    #[test]
+    fn creates_private_files_in_a_folder_without_inherited_entries() {
+        let dir = TestDir::new();
+        let settings = config();
+        let local = Identity::current().unwrap();
+        fs::write(dir.0.join(&settings.stop_file), []).unwrap();
+        let user = format!("*{}", local.user);
+        icacls(&dir.0, &["/remove:g", &user]);
+        icacls(&dir.0, &["/grant", &format!("{user}:F")]);
+        let folder = private::access_list_text(&dir.0).unwrap();
+        assert!(!folder.contains("OI") && !folder.contains("CI"), "{folder}");
+        run(&settings, &dir.0, fixture(None), fixture(None)).unwrap();
+        let file = private::canonical_access_list(&format!("D:P(A;;FA;;;{})", local.user)).unwrap();
+        for name in [&settings.lock_file, &settings.state_file] {
+            assert_eq!(private::access_list_text(&dir.0.join(name)).unwrap(), file);
+        }
+    }
+
+    #[test]
+    fn refuses_a_control_folder_other_accounts_can_use() {
+        let dir = TestDir::new();
+        let settings = config();
+        open_to_everyone(&dir.0);
+        let stop = dir.0.join(&settings.stop_file);
+        fs::write(&stop, []).unwrap();
+        let daemon = Command::new(dir.0.join("missing-daemon"));
+        let host = Command::new(dir.0.join("missing-host"));
+        let error = run(&settings, &dir.0, daemon, host).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(error.to_string().contains("another account"), "{error}");
+        assert!(stop.exists());
+        assert!(!dir.0.join(&settings.lock_file).exists());
+        assert!(!dir.0.join(&settings.state_file).exists());
+    }
+
+    #[test]
+    fn refuses_a_lock_file_other_accounts_can_use() {
+        let dir = TestDir::new();
+        let settings = config();
+        let lock = dir.0.join(&settings.lock_file);
+        fs::write(&lock, []).unwrap();
+        open_to_everyone(&lock);
+        let stop = dir.0.join(&settings.stop_file);
+        fs::write(&stop, []).unwrap();
+        let daemon = Command::new(dir.0.join("missing-daemon"));
+        let host = Command::new(dir.0.join("missing-host"));
+        let error = run(&settings, &dir.0, daemon, host).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(error.to_string().contains("another account"), "{error}");
+        assert!(stop.exists());
+        assert!(!dir.0.join(&settings.state_file).exists());
+    }
+
+    /// A link or junction in place of the folder is refused, never followed to its target.
+    #[test]
+    fn refuses_a_link_in_place_of_the_control_folder() {
+        let dir = TestDir::new();
+        let target = TestDir::new();
+        let link = dir.0.join("control");
+        #[cfg(windows)]
+        {
+            // `mklink` reads `/` as an option: hand it backslashes only.
+            let native = |path: &Path| path.to_string_lossy().replace('/', "\\");
+            let status = Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(native(&link))
+                .arg(native(&target.0))
+                .stdout(Stdio::null())
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target.0, &link).unwrap();
+        let error = ControlDir::open(&link, &Identity::current().unwrap())
+            .err()
+            .unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(error.to_string().contains("not a plain folder"), "{error}");
+    }
+
+    /// Once open, the folder checked is the one used: replacing it by name changes nothing.
+    #[test]
+    fn keeps_using_the_folder_it_checked() {
+        let dir = TestDir::new();
+        let path = dir.0.join("control");
+        let local = Identity::current().unwrap();
+        let control = ControlDir::open(&path, &local).unwrap();
+        let moved = dir.0.join("moved");
+        #[cfg(windows)]
+        {
+            // The handle holds the folder and the folders above it where they are.
+            assert!(fs::rename(&path, &moved).is_err());
+            let parent_moved = dir.0.with_extension("moved");
+            assert!(fs::rename(&dir.0, &parent_moved).is_err());
+            assert!(!parent_moved.exists());
+            drop(control);
+            fs::rename(&path, &moved).unwrap();
+        }
+        #[cfg(unix)]
+        {
+            fs::rename(&path, &moved).unwrap();
+            private::create_dir(&path, &local).unwrap();
+            let planted = path.join("restart");
+            fs::write(&planted, []).unwrap();
+            assert_eq!(control.signal("restart", true).unwrap(), Signal::Absent);
+            assert!(planted.exists());
+            fs::write(moved.join("restart"), []).unwrap();
+            assert_eq!(control.signal("restart", true).unwrap(), Signal::Accepted);
+            assert!(!moved.join("restart").exists());
+        }
+    }
+
+    /// Another account, derived from the current one and different from it: a second account
+    /// cannot be created here, so the files are checked against this identity instead.
+    fn another_account(local: &Identity) -> Identity {
+        let shift = |id: &str, by: u32| -> String {
+            #[cfg(windows)]
+            {
+                let (domain, rid) = id.rsplit_once('-').unwrap();
+                format!("{domain}-{}", rid.parse::<u32>().unwrap().wrapping_add(by))
+            }
+            #[cfg(unix)]
+            {
+                id.parse::<u32>().unwrap().wrapping_add(by).to_string()
+            }
+        };
+        let user = (1..)
+            .map(|by| shift(&local.user, by))
+            .find(|id| !local.owns(id))
+            .unwrap();
+        let other = Identity {
+            user: user.clone(),
+            default_owner: user,
+        };
+        assert!(!local.owns(&other.user));
+        assert!(!other.owns(&local.user) && !other.owns(&local.default_owner));
+        other
+    }
+
+    #[test]
+    fn ignores_a_signal_file_owned_by_another_account() {
+        let dir = TestDir::new();
+        let signal = dir.0.join("restart");
+        fs::write(&signal, []).unwrap();
+        let local = Identity::current().unwrap();
+        let control = ControlDir::open(&dir.0, &local).unwrap();
+        let as_other = ControlDir::open(&dir.0, &local)
+            .unwrap()
+            .judged_as(another_account(&local));
+        assert_eq!(as_other.signal("restart", true).unwrap(), Signal::Foreign);
+        assert!(signal.exists());
+        assert_eq!(control.signal("restart", false).unwrap(), Signal::Accepted);
+        assert!(signal.exists());
+        assert_eq!(control.signal("restart", true).unwrap(), Signal::Accepted);
+        assert!(!signal.exists());
+        assert_eq!(control.signal("restart", true).unwrap(), Signal::Absent);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn ignores_a_signal_file_other_accounts_can_use() {
+        let dir = TestDir::new();
+        let signal = dir.0.join("restart");
+        fs::write(&signal, []).unwrap();
+        open_to_everyone(&signal);
+        let control = ControlDir::open(&dir.0, &Identity::current().unwrap()).unwrap();
+        assert_eq!(control.signal("restart", true).unwrap(), Signal::Foreign);
+        assert!(signal.exists());
+    }
+
+    /// The entry removed is the one checked, even if the name is reused in between.
+    #[test]
+    fn removes_only_the_signal_it_checked() {
+        let dir = TestDir::new();
+        let signal = dir.0.join("restart");
+        fs::write(&signal, []).unwrap();
+        let control = ControlDir::open(&dir.0, &Identity::current().unwrap()).unwrap();
+        let moved = dir.0.join("moved");
+        let swap = {
+            let (signal, moved) = (signal.clone(), moved.clone());
+            move || {
+                if fs::rename(&signal, &moved).is_ok() {
+                    fs::write(&signal, b"replacement").unwrap();
+                }
+            }
+        };
+        private::BEFORE_REMOVE.with(|hook| *hook.borrow_mut() = Some(Box::new(swap)));
+        let outcome = control.signal("restart", true);
+        #[cfg(windows)]
+        {
+            // The signal is open without sharing the right to delete: the swap is refused.
+            assert_eq!(outcome.unwrap(), Signal::Accepted);
+            assert!(!moved.exists());
+            assert!(!signal.exists());
+        }
+        #[cfg(unix)]
+        {
+            // The swap goes through; the name now points elsewhere, so nothing is removed.
+            assert!(outcome.is_err());
+            assert!(moved.exists());
+            assert_eq!(fs::read(&signal).unwrap(), b"replacement");
+        }
+    }
+
     fn state_value(path: &Path) -> Option<Value> {
         fs::read(path)
             .ok()
@@ -568,7 +837,7 @@ pub(crate) mod tests {
         let worker = thread::spawn(move || run(&settings, &control, daemon, host).unwrap());
         let read = || state_value(&state);
         let initial = until(|| read().filter(|value| value["daemon"]["pid"].is_u64()));
-        let blocked_signal = OpenOptions::new()
+        let blocked_signal = fs::OpenOptions::new()
             .read(true)
             .write(true)
             .create_new(true)
@@ -634,7 +903,8 @@ pub(crate) mod tests {
         assert!(!stop.exists());
         assert!(stopped["daemon"]["pid"].is_null());
         assert_eq!(stopped["ptyhost"]["pid"], initial["ptyhost"]["pid"]);
-        assert!(open_lock(&dir.0.join(config().lock_file)).is_ok());
+        let control = ControlDir::open(&dir.0, &Identity::current().unwrap()).unwrap();
+        assert!(open_lock(&control, &config().lock_file).is_ok());
         fs::write(host_release, []).unwrap();
     }
 }
