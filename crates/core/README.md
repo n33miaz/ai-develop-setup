@@ -203,6 +203,12 @@ O plano só existe com todos os caminhos absolutos e normalizados (separadores r
 
 Alvo com curinga é julgado como a pasta sobre a qual o curinga age: `pasta/*` vale como `pasta`.
 
+#### Identidade de um alvo no Windows
+
+No estilo Windows, dois alvos que só diferem na caixa de letras ASCII, no caminho ou no curinga (`C:\w\Build` e `c:\W\build`, `*.LOG` e `*.log`), são o mesmo alvo: é a mesma medida da contenção que permite (`is_within`). Eles viram um só, com `repo_root` verdadeiro se qualquer grafia o tinha, e fica a grafia que vem primeiro na ordem canônica do contrato (bytes, maiúscula antes de minúscula). A grafia gravada e o `plan_hash` não dependem, então, da ordem do pedido. Letra fora do ASCII (`é` e `É`) e qualquer caixa no estilo POSIX continuam alvos diferentes.
+
+A ordem e a serialização do contrato não mudam: o registro guarda uma grafia real do pedido, para exibição, e o hash é tomado sobre ela. Por isso um plano pedido só como `C:\w\Build` e outro só como `C:\w\build` têm hashes diferentes, e a aprovação de um não serve para o outro. Dobrar a caixa no hash pediria nova serialização e nova versão do registro, e faria uma aprovação valer para outra grafia, que numa pasta com diferença de caixa ligada no Windows pode ser outra pasta.
+
 O Schema `urn:ads:common:abspath:2` recusa o mesmo que esta normalização recusa num caminho já normalizado; um corpus comum (`contracts/corpus/abspath.json`) roda pelos dois e um teste de cada lado cobra o mesmo veredito ([contracts/README.md](../../contracts/README.md#caminho-absoluto-o-schema-e-o-núcleo)). Tudo aqui é comparação de texto: duas grafias Unicode do mesmo nome (NFC e NFD, largura total) são nomes diferentes. Para permitir isso é o lado seguro (a outra grafia fica de fora); para negar é um limite: uma pasta protegida escrita na outra forma de normalização não é reconhecida só pelo texto, e quem executa tem de conferir no disco.
 
 ### Regras
@@ -268,7 +274,7 @@ Nome só compartilhado com pasta protegida do outro estilo ou do primeiro nível
 
 ### `plan_hash`
 
-SHA-256 da [serialização canônica dos contratos](../../contracts/README.md#serialização-canônica-do-plan_hash), que este documento não repete: uma linha por campo, em ordem fixa, cada caminho precedido do seu tamanho em bytes, alvos na ordem canônica e sem repetição. A ordem e a grafia dos alvos no pedido não mudam o hash; trocar um alvo, a operação, a raiz, o destino, a estimativa ou a marca de raiz de repositório muda. O vetor de exemplo do contrato (o primeiro dourado válido de `record.action-plan`) é montado por um teste a partir de um plano e tem de dar o mesmo registro e o mesmo hash.
+SHA-256 da [serialização canônica dos contratos](../../contracts/README.md#serialização-canônica-do-plan_hash), que este documento não repete: uma linha por campo, em ordem fixa, cada caminho precedido do seu tamanho em bytes, alvos na ordem canônica e sem repetição. A ordem e a grafia dos alvos no pedido não mudam o hash, inclusive a caixa de um alvo repetido no Windows ([identidade](#identidade-de-um-alvo-no-windows)); trocar um alvo, a operação, a raiz, o destino, a estimativa ou a marca de raiz de repositório muda. O vetor de exemplo do contrato (o primeiro dourado válido de `record.action-plan`) é montado por um teste a partir de um plano e tem de dar o mesmo registro e o mesmo hash.
 
 ### Registro do plano
 

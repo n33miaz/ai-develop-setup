@@ -1,9 +1,11 @@
 //! The plan of a file system action, written down before anything happens.
 
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::fmt;
 
 use super::event::{PlanEstimate, PlanHash, PlanOperation, Verb, canonical_plan};
-use super::path::{AbsPath, PathError, TargetPath};
+use super::path::{AbsPath, PathError, TargetIdentity, TargetPath};
 
 /// What the caller wants done, as raw text. Nothing here is trusted until normalized.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -161,9 +163,21 @@ impl ActionPlan {
                 repo_root: target.repo_root,
             });
         }
-        // Repeats of one path collapse into one target that keeps the stricter fact.
-        targets.sort_by(|a, b| a.path.cmp(&b.path).then(b.repo_root.cmp(&a.repo_root)));
-        targets.dedup_by(|later, first| later.path == first.path);
+        // Repeats of one target collapse into the first spelling in canonical order, which
+        // keeps the stricter fact. On Windows a repeat ignores ASCII case, as containment does.
+        targets.sort_by(|a, b| a.path.cmp(&b.path));
+        let mut kept: HashMap<TargetIdentity, usize> = HashMap::with_capacity(targets.len());
+        let mut unique: Vec<Target> = Vec::with_capacity(targets.len());
+        for target in targets {
+            match kept.entry(target.path.identity()) {
+                Entry::Occupied(first) => unique[*first.get()].repo_root |= target.repo_root,
+                Entry::Vacant(slot) => {
+                    slot.insert(unique.len());
+                    unique.push(target);
+                }
+            }
+        }
+        let targets = unique;
         if targets.len() > ads_contracts::RecordActionPlanV2Targets::MAX_ITEMS {
             return Err(PlanError::TooManyTargets {
                 count: targets.len(),
@@ -428,10 +442,58 @@ mod tests {
     }
 
     #[test]
+    fn windows_spellings_that_differ_only_in_ascii_case_are_one_target() {
+        let windows = |targets: &[(&str, bool)]| {
+            let mut asked = request(&[]);
+            asked.work_root = "C:\\w".to_owned();
+            asked.targets = targets
+                .iter()
+                .map(|(path, repo_root)| TargetRequest {
+                    path: (*path).to_owned(),
+                    repo_root: *repo_root,
+                })
+                .collect();
+            ActionPlan::normalize(&asked).unwrap()
+        };
+        let texts = |plan: &ActionPlan| -> Vec<String> {
+            plan.targets()
+                .iter()
+                .map(|target| target.path().to_string())
+                .collect()
+        };
+        // `C:\w\Y` sorts between the two spellings, so the repeats are not neighbours. The
+        // mark of a repository root sits on the spelling that is not kept, and still counts.
+        let plan = windows(&[
+            ("C:\\w\\x", true),
+            ("C:\\w\\Y", false),
+            ("c:\\W\\X", false),
+            ("C:\\w\\b\\*.O", false),
+            ("C:\\w\\B\\*.o", false),
+        ]);
+        assert_eq!(texts(&plan), ["C:\\W\\X", "C:\\w\\B\\*.o", "C:\\w\\Y"]);
+        assert!(plan.targets()[0].is_repo_root());
+        // The kept spelling, and so the hash, does not depend on the order of the request.
+        let reversed = windows(&[
+            ("C:\\w\\B\\*.o", false),
+            ("C:\\w\\b\\*.O", false),
+            ("c:\\W\\X", false),
+            ("C:\\w\\Y", false),
+            ("C:\\w\\x", true),
+        ]);
+        assert_eq!(plan.hash(), reversed.hash());
+
+        // Only ASCII letters, as in containment; and on POSIX case always matters.
+        let plan = windows(&[("C:\\w\\\u{e9}", false), ("C:\\w\\\u{c9}", false)]);
+        assert_eq!(plan.targets().len(), 2);
+        let plan = ActionPlan::normalize(&request(&["/work/proj/a", "/work/proj/A"])).unwrap();
+        assert_eq!(plan.targets().len(), 2);
+    }
+
+    #[test]
     fn targets_follow_the_canonical_order_of_the_contract() {
         let spelled = [
             "/a-b", "/a/b/*.o", "/a/b", "/a/B", "/a", "D:\\x", "c:\\x\\?", "C:\\x\\*", "C:\\x",
-            "C:\\X",
+            "C:\\_",
         ];
         let mut request = request(&spelled);
         request.work_root = "/a".to_owned();
@@ -442,11 +504,12 @@ mod tests {
             .map(|target| target.path().to_string())
             .collect();
         // Windows first, then by drive, then component by component (bytes, the shorter path
-        // first), then no wildcard before a wildcard: `/a/b` comes before `/a-b`.
+        // first, `_` between upper and lower case), then no wildcard before a wildcard: `/a/b`
+        // comes before `/a-b`.
         assert_eq!(
             ordered,
             [
-                "C:\\X", "C:\\x", "C:\\x\\*", "C:\\x\\?", "D:\\x", "/a", "/a/B", "/a/b",
+                "C:\\_", "C:\\x", "C:\\x\\*", "C:\\x\\?", "D:\\x", "/a", "/a/B", "/a/b",
                 "/a/b/*.o", "/a-b",
             ]
         );

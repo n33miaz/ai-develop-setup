@@ -205,6 +205,31 @@ impl TargetPath {
     pub fn pattern(&self) -> Option<&str> {
         self.pattern.as_deref()
     }
+
+    /// What makes two targets the same one: on Windows the case of ASCII letters is ignored,
+    /// in the path and in the wildcard (Windows matches it that way), as in
+    /// [`AbsPath::is_within`]; elsewhere the text is the identity.
+    pub(crate) fn identity(&self) -> TargetIdentity {
+        let fold = |text: &str| match self.base.style {
+            PathStyle::Windows => text.to_ascii_lowercase(),
+            PathStyle::Posix => text.to_owned(),
+        };
+        TargetIdentity {
+            style: self.base.style,
+            drive: self.base.drive,
+            components: self.base.components.iter().map(|name| fold(name)).collect(),
+            pattern: self.pattern.as_deref().map(fold),
+        }
+    }
+}
+
+/// The key two spellings of one target share; see [`TargetPath::identity`].
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct TargetIdentity {
+    style: PathStyle,
+    drive: Option<char>,
+    components: Vec<String>,
+    pattern: Option<String>,
 }
 
 impl fmt::Display for TargetPath {
