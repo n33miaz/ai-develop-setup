@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:event:account.status_observed:1",
+  "title": "Status de conta observado",
+  "description": "Metadados permitidos do status de um perfil. A pasta é um dado privado.",
+  "allOf": [
+    {
+      "$ref": "urn:ads:event:envelope:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "type",
+        "stream",
+        "data"
+      ],
+      "properties": {
+        "type": {
+          "const": "urn:ads:event:account.status_observed:1"
+        },
+        "stream": {
+          "type": "string",
+          "pattern": "^account/"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "harness",
+            "account_alias",
+            "logged_in"
+          ],
+          "properties": {
+            "harness": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "account_alias": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "logged_in": {
+              "type": "boolean"
+            },
+            "auth_method": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "provider": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "plan_type": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "config_directory": {
+              "$ref": "urn:ads:common:abspath:2"
+            }
+          }
+        },
+        "data_class": {
+          "const": "private"
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+      "type": "urn:ads:event:account.status_observed:1",
+      "ts": "2030-01-02T03:04:05Z",
+      "stream": "account/harness-a",
+      "seq": 1,
+      "actor": {
+        "kind": "daemon",
+        "id": "core-01"
+      },
+      "cause": null,
+      "data_class": "private",
+      "data": {
+        "harness": "harness-a",
+        "account_alias": "primary",
+        "logged_in": true,
+        "auth_method": "subscription",
+        "provider": "provider-a",
+        "plan_type": "standard",
+        "config_directory": "/profiles/primary"
+      }
+    }
+  ]
+}

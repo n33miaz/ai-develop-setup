@@ -2,9 +2,11 @@
 
 mod config;
 mod launch;
+mod profile;
 
 pub use config::{ConfigError, HostRules, Mode, ToolConfig};
 pub use launch::{DiskProbe, LaunchError, Probe, open_params, process_env};
+pub use profile::{ProfileBinding, SwitchMode, SwitchPolicy};
 
 /// A tool an adapter launches: its identifier and its static configuration keys for
 /// diagnostics. Declare one with [`tool_harness!`](crate::tool_harness), which takes every key
@@ -22,6 +24,7 @@ pub trait Harness {
     const PROGRAM_KEY: &'static str;
     const ARGS_KEY: &'static str;
     const MODE_KEY: &'static str;
+    const PROFILE_ENV: Option<&'static str> = None;
     /// The shipped parameters, which the core's test tool extends with its own table.
     #[cfg(test)]
     const DEFAULTS: &'static str = config::DEFAULTS_TOML;
@@ -39,7 +42,7 @@ pub trait Harness {
 /// ```
 #[macro_export]
 macro_rules! tool_harness {
-    ($(#[$attr:meta])* $name:ident = $id:literal) => {
+    ($(#[$attr:meta])* $name:ident = $id:literal $(, profile_env = $profile_env:literal)?) => {
         $(#[$attr])*
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         pub struct $name;
@@ -49,6 +52,7 @@ macro_rules! tool_harness {
             const TABLE_KEY: &'static str = concat!("tools.", $id);
             const PROGRAM_KEY: &'static str = concat!("tools.", $id, ".program");
             const ARGS_KEY: &'static str = concat!("tools.", $id, ".args");
+            $(const PROFILE_ENV: Option<&'static str> = Some($profile_env);)?
             const MODE_KEY: &'static str = concat!("tools.", $id, ".mode");
         }
     };

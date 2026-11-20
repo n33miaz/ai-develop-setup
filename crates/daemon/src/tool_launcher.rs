@@ -80,6 +80,11 @@ impl<C, X> ToolLauncher<C, X> {
         if claude.env() != codex.env() {
             return Err("invalid user configuration: tools disagree on `[env]`".into());
         }
+        if claude.has_overlapping_profiles(&codex) {
+            return Err(
+                "invalid user configuration: account profile folders overlap across tools".into(),
+            );
+        }
         let child_env = claude.env().child_env(parent_env);
         Ok(Self {
             claude,
@@ -143,12 +148,13 @@ mod tests {
 
     #[test]
     fn launcher_configuration_refuses_credentials_before_a_session_exists() {
+        let drive = if cfg!(windows) { "C:" } else { "" };
         for (setting, key) in [
             ("allow = ['AWS_PROFILE']", "env.allow"),
             ("set = { AWS_PROFILE = 'fixture' }", "env.set"),
         ] {
             let error = ToolLauncher::from_toml_str(
-                &format!("[env]\n{setting}"),
+                &format!("[env]\n{setting}\n[accounts.claude.primary]\nprofile_dir = '{drive}/profiles/primary'"),
                 HostRules::host(),
                 [("AWS_PROFILE", "fixture")],
                 claude::DiskProbe,
@@ -161,6 +167,29 @@ mod tests {
                     format!("invalid user configuration: denied variable name at `{key}` entry 0")
                         .as_str()
                 )
+            );
+        }
+    }
+
+    #[test]
+    fn tools_reject_overlapping_profile_folders() {
+        let drive = if cfg!(windows) { "C:" } else { "" };
+        for second in ["profiles/./main", "profiles/main/nested"] {
+            let overrides = format!(
+                "[accounts.claude.a]\nprofile_dir = '{drive}/profiles/main'\n[accounts.codex.b]\nprofile_dir = '{drive}/{second}'"
+            );
+            let error = ToolLauncher::from_toml_str(
+                &overrides,
+                HostRules::host(),
+                Vec::<(String, String)>::new(),
+                claude::DiskProbe,
+                codex::DiskProbe,
+            )
+            .err()
+            .unwrap();
+            assert_eq!(
+                error, "invalid user configuration: account profile folders overlap across tools",
+                "{second}"
             );
         }
     }
@@ -184,13 +213,23 @@ mod tests {
 
     #[test]
     fn a_path_written_for_another_system_is_refused_at_load() {
-        for (host, folder, program) in [
-            (HostRules::WINDOWS, "/work", "/usr/bin/tool"),
-            (HostRules::POSIX, r"C:\work", r"C:\tools\tool.exe"),
+        for (host, profile, folder, program) in [
+            (
+                HostRules::WINDOWS,
+                "C:/profiles/primary",
+                "/work",
+                "/usr/bin/tool",
+            ),
+            (
+                HostRules::POSIX,
+                "/profiles/primary",
+                r"C:\work",
+                r"C:\tools\tool.exe",
+            ),
         ] {
             let error = |text: String| {
                 ToolLauncher::from_toml_str(
-                    &text,
+                    &format!("{text}[accounts.codex.primary]\nprofile_dir = '{profile}'"),
                     host,
                     Vec::<(String, String)>::new(),
                     claude::DiskProbe,

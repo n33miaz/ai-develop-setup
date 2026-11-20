@@ -142,6 +142,10 @@ Títulos e descrições de issue e PR, nomes de branch, assuntos de commit, come
 - Termos do produto continuam valendo: eventos e contratos de revisão de código, o campo `model`, "tipos gerados", "round trip" no sentido de ida e volta de serialização, e "revisão" no sentido genérico ("fica aberto para revisão antes de juntar").
 - O checador de commits aplica a parte mecânica desta regra (ver "Commits"); o resto é conferido na revisão do PR.
 
+## Versões
+
+Até a primeira versão estável, quando o CI de uma junção na `develop` termina verde, sai um pré-lançamento (junções muito próximas podem sair num só) em SemVer, `0.1.0-dev.<AAAAMMDD>.<N>+<commit curto>`, com tag `v0.1.0-dev.<AAAAMMDD>.<N>` e notas geradas dos PRs; ficam os dez mais novos ([ADR 0025](docs/adr/0025-semver-dev-prereleases-until-first-installer.md)). Os parâmetros estão em `defaults/release.toml`. Ninguém cria tag nem release à mão: o workflow `prerelease.yml` faz isso.
+
 ## Segredos e dados
 
 Nunca commite segredos, `.env`, chaves, bancos, logs ou dados de usuário. O CI varre segredos (gitleaks) e uma lista de termos proibidos mantida fora do repo.

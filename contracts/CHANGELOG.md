@@ -2,6 +2,14 @@
 
 Formato: uma seção por data. Contrato novo, campo opcional acrescentado, versão nova de uma URN e contrato aposentado entram aqui. As regras de versão estão no [README](README.md).
 
+## 2026-11-20
+
+- Eventos de roteamento `proposed`, `decided` e `fallback` ganham a versão
+  `:2` com `account_alias` (nulo quando não há perfil). As versões `:1` convivem com as novas.
+- `account.switched:1` registra a seleção de perfil para a próxima sessão.
+- `account.status_observed:1` registra metadados permitidos pelo status da
+  ferramenta em evento privado.
+
 ## 2026-11-19
 
 Lista de ferramentas na API local. Nenhum contrato existente foi alterado.

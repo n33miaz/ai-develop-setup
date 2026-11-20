@@ -44,7 +44,13 @@ allow = ["ads-contracts"]
 
 [crates.ads-ptyhost]
 path = "crates/ptyhost"
-allow = ["ads-contracts"]
+allow = ["ads-contracts", "ads-testkit"]
+
+# Auxiliares so de teste: entram apenas como dependencia de desenvolvimento, nunca num binario do produto.
+
+[crates.ads-testkit]
+path = "crates/testkit"
+allow = []
 
 # Sessao cifrada compartilhada por PC e PWA: so contratos (compila tambem para WebAssembly).
 
@@ -110,4 +116,4 @@ allow = ["ads-contracts", "ads-core"]
 
 [crates.ads-daemon]
 path = "crates/daemon"
-allow = ["ads-contracts", "ads-core", "ads-storage", "ads-ptyhost", "ads-e2e", "ads-adapter-claude", "ads-adapter-codex", "ads-adapter-antigravity", "ads-adapter-api", "ads-adapter-vault", "ads-adapter-collectors", "ads-adapter-relay", "ads-adapter-fs"]
+allow = ["ads-contracts", "ads-core", "ads-storage", "ads-ptyhost", "ads-e2e", "ads-adapter-claude", "ads-adapter-codex", "ads-adapter-antigravity", "ads-adapter-api", "ads-adapter-vault", "ads-adapter-collectors", "ads-adapter-relay", "ads-adapter-fs", "ads-testkit"]

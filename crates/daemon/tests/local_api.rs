@@ -2191,6 +2191,10 @@ impl ads_core::tool_launch::Probe for FakeProbe {
 #[tokio::test]
 async fn configured_adapters_supply_the_host_with_filtered_parameters() {
     let overrides = r#"
+[accounts.claude.primary]
+profile_dir = 'C:/profiles/claude'
+[accounts.codex.primary]
+profile_dir = 'C:/profiles/codex'
 [workdirs]
 workspace = 'C:/workspace'
 [tools.claude]

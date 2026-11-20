@@ -64,7 +64,7 @@ Política pura do ambiente que um processo de ferramenta recebe: só passam os n
 
 Em `src/tool_launch/`, o núcleo carrega
 [`defaults/harnesses.toml`](../../defaults/harnesses.toml) com as substituições do
-usuário em `[tools.<id>]`, `[workdirs]` e `[env]`. Outras tabelas de ferramenta
+usuário em `[tools.<id>]`, `[workdirs]`, `[accounts]` e `[env]`. Outras tabelas de ferramenta
 são tratadas pelos adaptadores correspondentes.
 
 Cada adaptador declara a ferramenta com `ads_core::tool_harness!`, que tira do
@@ -86,6 +86,27 @@ confere que os dois só diferem na ferramenta).
 
 `Probe` permite conferir a existência do programa e da pasta na hora da
 abertura. `DiskProbe` faz essa consulta no disco.
+
+### Perfis de conta
+
+No arquivo de configuração do usuário, `[accounts.<ferramenta>.<apelido>]`
+define `profile_dir`. O apelido segue as regras de `workdirs`. O caminho é
+absoluto no estilo do sistema em que o núcleo roda e segue as mesmas regras
+de sintaxe. A validação compara os componentes do caminho normalizado e
+recusa pastas iguais ou aninhadas entre perfis e em relação às pastas de
+`[workdirs]`. Configure pastas de perfil sem links simbólicos nem junções
+no caminho, conforme o [risco registrado](../../docs/risks.md#contas-por-pasta-de-perfil).
+A futura ligação na abertura deve ocorrer após o filtro final de `open_params`.
+
+Em `[tools.<id>]`, `switch` aceita `manual`, `propose` (padrão) e `auto`.
+`switch_at_pct` aceita inteiros de 1 a 100, com padrão 90% da cota observada.
+Antigravity fica em `manual` sem configuração de troca.
+
+`ProfileBinding` aplica a constante de ambiente do adaptador depois do filtro.
+O processo pai e `env.set` continuam sujeitos a `env.deny`. A abertura de
+sessões ainda usa o ambiente sem perfil. O teste de isolamento do mantenedor
+e a medição de cota precedem a ativação da troca, conforme a
+[ADR 0022](../../docs/adr/0022-account-profile-folders-and-automatic-switching.md).
 
 ### O que a abertura garante
 

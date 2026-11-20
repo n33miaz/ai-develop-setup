@@ -86,9 +86,11 @@ inválidos recebem o mesmo HTTP 403 antes do upgrade; cabeçalhos repetidos,
 origem ausente e query string também são recusados.
 
 O arquivo de `--config` é opcional. As tabelas `[tools.claude]`,
-`[tools.codex]`, `[workdirs]` e `[env]` sobrepõem os
-[padrões das ferramentas](../../defaults/harnesses.toml); `[env]` e
-`[workdirs]` valem para as duas. Sem arquivo, ambas ficam desligadas. As chaves
+`[tools.codex]`, `[workdirs]`, `[accounts]` e `[env]` sobrepõem os
+[padrões das ferramentas](../../defaults/harnesses.toml). `[env]` e
+`[workdirs]` valem para as duas. As tabelas de perfil em `[accounts]`
+são aceitas para as duas ferramentas citadas. Entradas para outras ferramentas
+são recusadas. Sem arquivo, ambas ficam desligadas. As chaves
 da API na raiz do mesmo TOML sobrepõem os padrões do daemon listados abaixo.
 Reinicie o daemon para reler a configuração. A configuração inválida impede a
 partida e a mensagem omite o conteúdo do arquivo.
@@ -283,7 +285,7 @@ reexportados pelo host; o cliente não constrói JSON nem quadros próprios.
 `connect` recebe `HostConfig` para resolver o canal com `channel::endpoint`, abre-o
 com `channel::connect` e completa `host.hello`. No Windows o canal só entrega a
 conexão depois de confirmar que o pipe é servido pelo usuário atual; senão o erro é
-`NotOwnedByUser` e nenhum byte foi enviado (`tests/channel_owner.rs`). O host precisa
+`NotOwnedByUser` e nenhum byte foi enviado (`tests/channel_owner.rs`, também contra um servidor real cujo processo ou token o cliente não consegue abrir). O host precisa
 estar disponível; iniciar o processo e decidir quando tentar conectar novamente cabe ao chamador. `over` permite fornecer outro
 transporte assíncrono, inclusive `tokio::io::duplex` nos testes.
 

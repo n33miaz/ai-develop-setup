@@ -45,6 +45,8 @@ pub enum PathError {
     ControlCharacter,
 }
 
+impl std::error::Error for PathError {}
+
 impl fmt::Display for PathError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let text = match self {

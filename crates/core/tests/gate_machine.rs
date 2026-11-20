@@ -753,4 +753,9 @@ fn approval_decided_and_used_before_it_was_asked_yields_no_permit() {
         .authorize(verdict.plan(), meta(LONG_BEFORE, 2))
         .unwrap_err();
     assert_eq!(refusal.error, TransitionError::ApprovalRequired);
+    let cause = std::error::Error::source(&*refusal).unwrap();
+    assert_eq!(
+        cause.downcast_ref::<TransitionError>(),
+        Some(&refusal.error)
+    );
 }

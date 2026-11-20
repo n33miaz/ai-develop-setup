@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::process::Command;
 
-use super::{DiskProbe, HARNESS_ID, HostRules, ToolConfig, literal, open_params};
+use super::{DiskProbe, HARNESS_ID, Harness, HostRules, ToolConfig, literal, open_params};
 
 const SECRET: &str = "leaked-sentinel";
 
@@ -24,16 +24,20 @@ fn printer() -> (String, Vec<&'static str>) {
 fn run(user_toml: &str, parent: &[(&str, &str)]) -> String {
     let config = ToolConfig::from_toml_str(user_toml, HostRules::host())
         .unwrap_or_else(|error| panic!("{error}"));
+    run_config(&config, parent)
+}
+
+fn run_config<H: Harness>(config: &super::super::ToolConfig<H>, parent: &[(&str, &str)]) -> String {
     let request = serde_json::from_value(serde_json::json!({
         "session_id": "sess-01",
-        "harness": HARNESS_ID,
+        "harness": H::ID,
         "workdir_alias": "scratch",
         "cols": 80,
         "rows": 24,
         "_meta": {"idempotency_key": "01ARZ3NDEKTSV4RRFFQ69G5FAE", "origin": "local"}
     }))
     .unwrap();
-    let params = open_params(&config, &request, parent.iter().copied(), &DiskProbe).unwrap();
+    let params = open_params(config, &request, parent.iter().copied(), &DiskProbe).unwrap();
     let output = Command::new(params.program.as_str())
         .args(params.args.iter().map(|arg| arg.as_str()))
         .current_dir(params.cwd.as_ref().unwrap().as_str())
@@ -46,6 +50,10 @@ fn run(user_toml: &str, parent: &[(&str, &str)]) -> String {
 }
 
 fn user_toml(env: &str, args: &[&str]) -> String {
+    user_toml_for(HARNESS_ID, env, args)
+}
+
+fn user_toml_for(harness: &str, env: &str, args: &[&str]) -> String {
     let (program, default_args) = printer();
     let args = if args.is_empty() {
         default_args
@@ -54,7 +62,7 @@ fn user_toml(env: &str, args: &[&str]) -> String {
     };
     let folder = literal(std::env::current_exe().unwrap().parent().unwrap());
     format!(
-        "{env}\n[workdirs]\nscratch = {folder:?}\n[tools.{HARNESS_ID}]\nprogram = {program:?}\nargs = {args:?}\n"
+        "{env}\n[workdirs]\nscratch = {folder:?}\n[tools.{harness}]\nprogram = {program:?}\nargs = {args:?}\n"
     )
 }
 
@@ -104,6 +112,42 @@ set = { ADS_SET_SENTINEL = "set-value", TERM = "xterm-256color" }"#;
     );
     assert!(child == expected, "a value differs");
     assert!(!printed.contains(SECRET));
+}
+
+#[test]
+fn configured_accounts_do_not_set_profile_variables_in_real_children() {
+    crate::tool_harness!(ProfileA = "claude", profile_env = "CLAUDE_CONFIG_DIR");
+    crate::tool_harness!(ProfileB = "codex", profile_env = "CODEX_HOME");
+
+    fn check<H: Harness>() {
+        let drive = if cfg!(windows) { "C:" } else { "" };
+        let toml = user_toml_for(
+            H::ID,
+            &format!(
+                "[accounts.{}.primary]\nprofile_dir = '{drive}/profiles/primary'",
+                H::ID
+            ),
+            &[],
+        );
+        let config =
+            super::super::ToolConfig::<H>::from_toml_str(&toml, HostRules::host()).unwrap();
+        let root = std::env::var("SystemRoot").unwrap_or_default();
+        let printed = run_config(
+            &config,
+            &[
+                ("SystemRoot", &root),
+                ("CLAUDE_CONFIG_DIR", SECRET),
+                ("CODEX_HOME", SECRET),
+            ],
+        );
+        for (name, _) in printed.lines().filter_map(|line| line.split_once('=')) {
+            assert!(!name.eq_ignore_ascii_case("CLAUDE_CONFIG_DIR"));
+            assert!(!name.eq_ignore_ascii_case("CODEX_HOME"));
+        }
+    }
+
+    check::<ProfileA>();
+    check::<ProfileB>();
 }
 
 /// Whether the child finds `name` among its variables, compared by the system's own rule.

@@ -92,9 +92,9 @@ Estado da mitigação, em cada risco:
 - **Impacto.** Quebra do isolamento entre usuários (P3).
 - **Dono.** Host de terminais e daemon.
 - **Teto.** Não se aplica.
-- **Mitigação existente (implementada e testada).** Named pipe com lista de acesso de uma entrada só, a do usuário, e recusa de subir se o nome já existe; socket Unix `0600` ([como roda](../crates/ptyhost/README.md#como-roda)). No Windows o cliente só entrega a conexão depois de confirmar que o pipe é servido pelo usuário atual, antes de enviar qualquer byte ([daemon](../crates/daemon/README.md)). Testes `pipe_grants_access_to_the_current_user_only` em `crates/ptyhost/src/channel.rs` e `crates/daemon/tests/channel_owner.rs`.
+- **Mitigação existente (implementada e testada).** Named pipe com lista de acesso de uma entrada só, a do usuário, e recusa de subir se o nome já existe; socket Unix `0600` ([como roda](../crates/ptyhost/README.md#como-roda)). No Windows o cliente só entrega a conexão depois de confirmar que o pipe é servido pelo usuário atual, antes de enviar qualquer byte ([daemon](../crates/daemon/README.md)). Testes `pipe_grants_access_to_the_current_user_only` em `crates/ptyhost/src/channel.rs`, `crates/ptyhost/tests/pipe_owner.rs` (recusa e liberação dos handles com falhas repetidas das consultas reais) e `crates/daemon/tests/channel_owner.rs` (pela entrada pública, o servidor filho que fecha processo ou token aos outros não recebe o `host.hello`; o pipe do próprio usuário recebe um `host.hello` completo).
 - **Plano B.** Não há.
-- **O que falta.** O teste com duas contas que o P3 pede não existe: a recusa de um pipe de outro usuário é testada com identificadores sintéticos e sondas ([limites conhecidos](../crates/ptyhost/README.md#limites-conhecidos)). Fora do Windows o cliente não confere quem serve o socket. Host e cliente em níveis de elevação diferentes não se conectam.
+- **O que falta.** O teste com duas contas que o P3 pede não roda sozinho: a recusa de um pipe de outro usuário é testada com identificadores sintéticos, com as consultas reais comparadas a outra identidade e com um servidor do mesmo usuário cujo processo ou token os outros não abrem; os casos com outra conta e com níveis de elevação diferentes são testes manuais, ignorados por padrão e ainda não rodados ([limites conhecidos](../crates/ptyhost/README.md#limites-conhecidos)). Fora do Windows o cliente não confere quem serve o socket. Um host elevado que dá o pipe ao grupo de administradores é recusado por um cliente não elevado do mesmo usuário; um cliente elevado aceita o host não elevado do mesmo usuário (o que o código decide, ainda não conferido na máquina).
 
 ### Credencial de CLI de IA vaza para o processo filho
 
@@ -255,7 +255,7 @@ Estado da mitigação, em cada risco:
 
 ## Contas por pasta de perfil
 
-Riscos da troca de conta por pasta de perfil ([ADR 0022](adr/0022-account-profile-folders-and-automatic-switching.md)). Nenhum código de perfil existe ainda; o adaptador atual nega `CLAUDE_*` e `CODEX_*` no ambiente do filho.
+Riscos da troca de conta por pasta de perfil ([ADR 0022](adr/0022-account-profile-folders-and-automatic-switching.md)). O núcleo valida a configuração de perfil e oferece a ligação após o filtro de ambiente. A abertura ainda usa o filtro sem ligação a perfil.
 
 ### Login sem chave do Console desfaz os perfis do Claude
 
@@ -283,9 +283,9 @@ Riscos da troca de conta por pasta de perfil ([ADR 0022](adr/0022-account-profil
 - **Impacto.** Quebra da regra C1; credencial exposta.
 - **Dono.** Núcleo (ligação ao perfil) e coletores de uso.
 - **Teto.** Lista de subpastas permitidas por ferramenta.
-- **Mitigação existente (decidida, não implementada).** A variável de pasta é constante do adaptador, injetada depois do filtro de ambiente; `CLAUDE_*` e `CODEX_*` continuam em `env.deny`. Coletores que leiam subpastas do perfil dependem de decisão do mantenedor e de exceção explícita na regra C1; até lá, só o comando de status.
+- **Mitigação existente.** O núcleo valida a sobreposição de caminhos por texto. A ligação ao perfil está fora da abertura de ferramentas. O filtro `env.deny` continua barrando `CLAUDE_*` e `CODEX_*`. Coletores que leiam subpastas do perfil dependem de decisão do mantenedor e de exceção explícita na regra C1; até lá, só o comando de status.
 - **Plano B.** Remover a ligação ao perfil (condição de reversão da ADR 0022).
-- **O que falta.** O tipo de ligação ao perfil no núcleo; teste de arquivo sentinela nos coletores; teste com duas pastas de perfil e variável de chave envenenada no processo pai.
+- **O que falta.** A pasta do perfil e seus ancestrais ainda podem conter links simbólicos ou junções que contornem a comparação por texto. O núcleo deve conferir esses caminhos no PR que ligar os perfis à abertura, após a validação do isolamento na máquina do mantenedor. Até lá, a abertura segue sem seleção de perfil. Qualquer coletor de perfil exige a decisão prevista na ADR e um teste de arquivo sentinela.
 
 ### Chave passa na frente do login do perfil
 

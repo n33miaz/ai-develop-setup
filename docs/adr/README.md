@@ -20,7 +20,7 @@ Uma decisão por arquivo. Número nunca é reutilizado; decisão substituída ga
 | [0014](0014-pull-request-with-auto-merge-into-develop.md) | 0014. Pull request with auto-merge into develop |
 | [0015](0015-ci-built-artifact-with-verified-self-update.md) | 0015. CI-built artifact with verified self-update |
 | [0016](0016-sanitized-public-issue-per-delivery.md) | 0016. Sanitized public issue per delivery |
-| [0017](0017-date-and-commit-versioning-during-express.md) | 0017. Date-and-commit versioning during the express period |
+| [0017](0017-date-and-commit-versioning-during-express.md) | 0017. Date-and-commit versioning during the express period (substituída pela 0025) |
 | [0018](0018-mpl-2-0-exception-for-the-tauri-dependency-tree.md) | 0018. MPL-2.0 exception for the Tauri dependency tree |
 | [0019](0019-descriptive-issue-and-pr-titles.md) | 0019. Descriptive issue and pull request titles |
 | [0020](0020-local-api-authentication.md) | 0020. Local API authentication (proposta) |
@@ -28,3 +28,4 @@ Uma decisão por arquivo. Número nunca é reutilizado; decisão substituída ga
 | [0022](0022-account-profile-folders-and-automatic-switching.md) | 0022. Account profile folders and automatic account switching (substitui em parte a 0010) |
 | [0023](0023-remote-session-encryption.md) | 0023. Remote session encryption (proposta) |
 | [0024](0024-agent-authored-commits.md) | 0024. Autoria de commits por agentes (substitui em parte a 0011) |
+| [0025](0025-semver-dev-prereleases-until-first-installer.md) | 0025. SemVer dev pre-releases until the first installer (substitui a 0017) |

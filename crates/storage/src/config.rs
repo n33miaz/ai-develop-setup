@@ -9,6 +9,7 @@ pub struct StorageConfig {
     pub(crate) inspection_max_bytes: usize,
     pub(crate) integrity_check_on_open: bool,
     pub(crate) max_event_bytes: usize,
+    pub(crate) read_key_candidates: u32,
     pub(crate) read_page_limit: u32,
     pub(crate) read_page_max_bytes: usize,
 }
@@ -20,6 +21,7 @@ struct Layer {
     inspection_max_bytes: Option<usize>,
     integrity_check_on_open: Option<bool>,
     max_event_bytes: Option<usize>,
+    read_key_candidates: Option<u32>,
     read_page_limit: Option<u32>,
     read_page_max_bytes: Option<usize>,
     encryption: Option<String>,
@@ -74,6 +76,11 @@ impl StorageConfig {
                 .ok_or(StorageError::Configuration)?,
             max_event_bytes,
             read_page_max_bytes,
+            read_key_candidates: over
+                .read_key_candidates
+                .or(base.read_key_candidates)
+                .filter(|n| *n <= 128)
+                .ok_or(StorageError::Configuration)?,
             read_page_limit: over
                 .read_page_limit
                 .or(base.read_page_limit)
@@ -129,7 +136,15 @@ read_page_limit = 1",
             over.integrity_check_on_open(),
             base.integrity_check_on_open()
         );
+        assert_eq!(base.read_key_candidates, 8);
+        assert_eq!(
+            StorageConfig::from_toml_str("read_key_candidates = 0")
+                .unwrap()
+                .read_key_candidates,
+            0
+        );
         for text in [
+            "read_key_candidates = 129",
             "unknown = 1",
             "inspection_max_bytes = 511",
             "inspection_max_bytes = 1073741825",

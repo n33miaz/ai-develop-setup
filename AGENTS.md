@@ -2,7 +2,7 @@
 
 Repositório público: todo commit é permanente e visível. Este arquivo é o contrato de qualquer pessoa ou agente de IA que altere o repo. Mudança que viole uma regra abaixo volta antes de ser aceita.
 
-Estado: em construção, sem versão publicada. O que cada módulo já tem e o que ainda é esqueleto está em [docs/modules.md](docs/modules.md); os riscos conhecidos e o que falta para cada um, em [docs/risks.md](docs/risks.md).
+Estado: em construção, sem versão estável; só pré-lançamentos de desenvolvimento ([ADR 0025](docs/adr/0025-semver-dev-prereleases-until-first-installer.md)). O que cada módulo já tem e o que ainda é esqueleto está em [docs/modules.md](docs/modules.md); os riscos conhecidos e o que falta para cada um, em [docs/risks.md](docs/risks.md).
 
 ## Produto e nome
 - `ai-develop-setup` é um codinome. Identificadores de contrato usam a URN `urn:ads:<tipo>:<nome>:<versão>`, sem domínio e sem nome comercial, para o nome comercial poder mudar depois sem quebrar contratos.
