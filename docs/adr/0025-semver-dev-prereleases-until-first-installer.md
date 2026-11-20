@@ -22,6 +22,7 @@ O formato `dev-<data>-<commit>` fica fora do versionamento semântico (SemVer 2.
 - Tudo é parâmetro em `defaults/release.toml`: ligar ou desligar, versão base, canal, prefixo da tag, quantos guardar e modo da poda (`apply`, `dry-run`, `off`). A numeração e o plano de poda saem de `tools/release.py`, testado em `tools/test_release.py`.
 
 ## Consequências
+- Modelo de ameaças: o código no topo conferido da `develop` tem a mesma confiança que o próprio workflow, que o GitHub lê de lá; quem muda um muda o outro. As conferências da publicação e da poda protegem contra execuções concorrentes do workflow e contra engano, não contra uma `develop` hostil nem contra quem tem escrita no repositório e mexe nas tags do canal.
 - Ainda não há o que baixar: enquanto o CI não gerar o programa ([ADR 0015](0015-ci-built-artifact-with-verified-self-update.md)), cada pré-lançamento é só tag e notas. Quando houver binário, ele leva a versão completa, com o `+commit`, e o endereço de saúde do núcleo informa o commit, que é o que o atualizador confere (ADR 0015).
 - Os manifestos (`Cargo.toml`, `package.json`) continuam em `0.0.0` até a build do CI injetar a versão. A fonte da versão é `defaults/release.toml`.
 - Junções muito próximas podem ganhar um pré-lançamento só, o do commit mais novo: quem chega com a `develop` já adiante não publica. Se o CI desse commit mais novo falhar, a próxima junção verde publica, e as notas dela cobrem também os PRs que ficaram sem pré-lançamento.

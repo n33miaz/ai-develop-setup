@@ -5,6 +5,9 @@ name: Pre-release
 # testado no job rust do CI. Ainda não há binário: a release leva a tag e as notas.
 # Os jobs que calculam rodam com leitura; os que escrevem não executam código do repositório, só conferem os dados
 # recebidos e chamam a API. O GitHub lê workflow_run da branch padrão, que neste repositório é a develop.
+# Modelo de ameaças: o código no topo conferido da develop tem a mesma confiança que este arquivo, que vem dela.
+# As conferências protegem contra execuções concorrentes deste workflow e contra engano, não contra uma develop
+# hostil nem contra quem tem escrita no repositório e mexe nas tags do canal.
 on:
   workflow_run:
     workflows: [CI]
@@ -91,6 +94,11 @@ jobs:
           [[ "$TAG" =~ $pattern ]] || { echo "::error::tag inválida: $TAG"; exit 1; }
           [[ "$VERSION" == "${TAG#v}+${HEAD_SHA:0:7}" ]] || { echo "::error::versão inválida: $VERSION"; exit 1; }
           if [ -n "$PREVIOUS" ] && ! [[ "$PREVIOUS" =~ $pattern ]]; then echo "::error::tag anterior inválida"; exit 1; fi
+          develop_head=$(gh api "repos/$REPO/commits/develop" --jq .sha)
+          if [ "$develop_head" != "$HEAD_SHA" ]; then
+            echo "A develop andou para $develop_head; o pré-lançamento sai para ele."
+            exit 0
+          fi
           # A tag nasce antes da release, no commit avaliado; se o nome já existir, a criação falha e nada é publicado.
           gh api -X POST "repos/$REPO/git/refs" -f "ref=refs/tags/$TAG" -f "sha=$HEAD_SHA" > /dev/null
           notes="Versão \`$VERSION\`, do commit $HEAD_SHA. Pré-lançamento de desenvolvimento: só tag e notas, ainda sem binário."
@@ -208,5 +216,5 @@ jobs:
               gh api -X DELETE "repos/$REPO/git/refs/tags/$tag" > /dev/null
               absent "repos/$REPO/git/ref/tags/$tag" || { echo "::error::a tag $tag continua lá."; exit 1; }
             fi
-            echo "Apagados: release $id e tag $tag."
+            if [ "$sha" = "-" ]; then echo "Apagada: release $id ($tag já sem tag)."; else echo "Apagadas: release $id e tag $tag."; fi
           done < targets.txt

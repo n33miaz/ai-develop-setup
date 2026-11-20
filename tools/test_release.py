@@ -208,6 +208,67 @@ class PrunePlanTest(unittest.TestCase):
                 self.plan([item])
 
 
+WORKFLOW = Path(__file__).resolve().parent.parent / ".github" / "workflows" / "prerelease.yml"
+
+
+def workflow_jobs():
+    """Corpo de cada job do workflow, pelo recuo de duas colunas sob `jobs:`."""
+    text = WORKFLOW.read_text(encoding="utf-8")
+    header, body = text.split("\njobs:\n", 1)
+    jobs, name = {}, None
+    for line in body.splitlines():
+        if line.startswith("  ") and not line.startswith("   ") and line.rstrip().endswith(":"):
+            name = line.strip()[:-1]
+            jobs[name] = []
+        elif name:
+            jobs[name].append(line)
+    return header, {key: "\n".join(lines) for key, lines in jobs.items()}
+
+
+class WorkflowContractTest(unittest.TestCase):
+    def setUp(self):
+        self.header, self.jobs = workflow_jobs()
+
+    def test_jobs_are_the_expected_ones(self):
+        self.assertEqual(list(self.jobs), ["plan", "publish", "prune-plan", "prune"])
+
+    def test_write_permission_only_where_nothing_from_the_repository_runs(self):
+        self.assertIn("permissions:\n  contents: read", self.header)
+        for name, body in self.jobs.items():
+            writes = "contents: write" in body
+            self.assertEqual(writes, name in ("publish", "prune"), name)
+            if writes:
+                self.assertNotIn("actions/checkout", body, name)
+                self.assertNotIn("python", body, name)
+
+    def test_only_green_develop_pushes_are_planned(self):
+        plan = self.jobs["plan"]
+        for condition in (
+            "github.event.workflow_run.conclusion == 'success'",
+            "github.event.workflow_run.event == 'push'",
+            "github.event.workflow_run.head_branch == 'develop'",
+            "github.event.workflow_run.head_repository.full_name == github.repository",
+        ):
+            self.assertIn(condition, plan)
+
+    def test_release_is_a_prerelease_that_is_never_latest(self):
+        publish = self.jobs["publish"]
+        self.assertIn("needs.plan.outputs.enabled == 'on' && needs.plan.outputs.publish == 'yes'", publish)
+        create = publish[publish.index("gh release create") :]
+        for flag in ("--verify-tag", "--prerelease", "--latest=false", "--generate-notes"):
+            self.assertIn(flag, create.split("\n\n")[0])
+        self.assertLess(publish.index('-f "ref=refs/tags/$TAG"'), publish.index("gh release create"))
+
+    def test_deletions_only_run_from_a_non_empty_applied_plan(self):
+        self.assertIn("needs.prune-plan.outputs.targets != ''", self.jobs["prune"])
+        plan = self.jobs["prune-plan"]
+        self.assertIn("needs.plan.outputs.prune != 'off'", plan)
+        self.assertIn('if [ "$MODE" != "apply" ]; then', plan)
+        self.assertIn(": > targets.txt", plan[plan.index('if [ "$MODE" != "apply" ]; then') :])
+        for name in ("plan", "publish", "prune-plan"):
+            self.assertNotIn("-X DELETE", self.jobs[name], name)
+
+
 class CommandLineTest(unittest.TestCase):
     def setUp(self):
         self.folder = tempfile.TemporaryDirectory()
