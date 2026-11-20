@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:record:session-handoff:1",
+  "title": "Passagem entre sessões",
+  "description": "Passagem autorizada para uma nova sessão, com referências opacas aos artefatos mantidos pelo produto.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "source_session_id",
+    "target_session_id",
+    "previous_handoff_id",
+    "trigger",
+    "lineage",
+    "number",
+    "created_at",
+    "state_document_id",
+    "opening_prompt_id",
+    "consent"
+  ],
+  "properties": {
+    "id": {
+      "$ref": "urn:ads:common:id:1"
+    },
+    "source_session_id": {
+      "$ref": "urn:ads:common:id:1"
+    },
+    "target_session_id": {
+      "$ref": "urn:ads:common:id:1"
+    },
+    "previous_handoff_id": {
+      "anyOf": [
+        {
+          "$ref": "urn:ads:common:id:1"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "trigger": {
+      "enum": [
+        "context_limit",
+        "account_switch",
+        "model_refusal"
+      ]
+    },
+    "lineage": {
+      "$ref": "urn:ads:common:id:1"
+    },
+    "number": {
+      "type": "integer",
+      "minimum": 2,
+      "maximum": 9007199254740991
+    },
+    "created_at": {
+      "$ref": "urn:ads:common:timestamp:1"
+    },
+    "state_document_id": {
+      "$ref": "urn:ads:common:id:1"
+    },
+    "opening_prompt_id": {
+      "$ref": "urn:ads:common:id:1"
+    },
+    "consent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "user_id",
+        "channel"
+      ],
+      "properties": {
+        "user_id": {
+          "$ref": "urn:ads:common:id:1"
+        },
+        "channel": {
+          "enum": [
+            "local",
+            "remote"
+          ]
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "id": "handoff-1",
+      "source_session_id": "session-1",
+      "target_session_id": "session-2",
+      "previous_handoff_id": null,
+      "trigger": "context_limit",
+      "lineage": "project-a",
+      "number": 2,
+      "created_at": "2030-01-02T03:04:05Z",
+      "state_document_id": "document-1",
+      "opening_prompt_id": "prompt-1",
+      "consent": {
+        "user_id": "user-1",
+        "channel": "local"
+      }
+    }
+  ]
+}

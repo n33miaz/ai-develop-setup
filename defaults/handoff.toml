@@ -1,0 +1,9 @@
+# off desativa propostas. propose pede uma decisão para cada passagem.
+# auto-with-consent só autoriza continuidade após consentimento confirmado
+# para a passagem. Recusa de modelo sempre começa com uma proposta.
+mode = "propose"
+
+# Percentual inteiro de 1 a 100 da janela de contexto ocupada.
+# A partir de 80%, propõe com margem para concluir o turno atual.
+# Sem medição da janela, o tamanho do contexto não dispara proposta.
+context_threshold_pct = 80

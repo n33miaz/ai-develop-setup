@@ -79,6 +79,8 @@ pub mod event_routing_proposed_v2;
 pub mod event_session_activity_changed_v1;
 pub mod event_session_created_v1;
 pub mod event_session_ended_v1;
+pub mod event_session_handoff_v1;
+pub mod event_session_handoff_v2;
 pub mod event_session_output_v1;
 pub mod event_session_permission_asked_v1;
 pub mod event_session_resized_v1;
@@ -97,6 +99,8 @@ pub mod record_host_sample_v1;
 pub mod record_parameter_v1;
 pub mod record_queue_task_v1;
 pub mod record_queue_task_v2;
+pub mod record_session_handoff_v1;
+pub mod record_session_handoff_v2;
 pub mod record_task_packet_v1;
 pub mod record_task_queue_v1;
 pub mod record_update_manifest_v1;
@@ -180,6 +184,8 @@ pub use event_routing_proposed_v2::*;
 pub use event_session_activity_changed_v1::*;
 pub use event_session_created_v1::*;
 pub use event_session_ended_v1::*;
+pub use event_session_handoff_v1::*;
+pub use event_session_handoff_v2::*;
 pub use event_session_output_v1::*;
 pub use event_session_permission_asked_v1::*;
 pub use event_session_resized_v1::*;
@@ -198,6 +204,8 @@ pub use record_host_sample_v1::*;
 pub use record_parameter_v1::*;
 pub use record_queue_task_v1::*;
 pub use record_queue_task_v2::*;
+pub use record_session_handoff_v1::*;
+pub use record_session_handoff_v2::*;
 pub use record_task_packet_v1::*;
 pub use record_task_queue_v1::*;
 pub use record_update_manifest_v1::*;
@@ -421,6 +429,14 @@ pub const SCHEMAS: &[(&str, &str)] = &[
         "urn:ads:event:session.created:1",
     ),
     ("event.session.ended.v1", "urn:ads:event:session.ended:1"),
+    (
+        "event.session.handoff.v1",
+        "urn:ads:event:session.handoff:1",
+    ),
+    (
+        "event.session.handoff.v2",
+        "urn:ads:event:session.handoff:2",
+    ),
     ("event.session.output.v1", "urn:ads:event:session.output:1"),
     (
         "event.session.permission_asked.v1",
@@ -448,6 +464,14 @@ pub const SCHEMAS: &[(&str, &str)] = &[
     ("record.parameter.v1", "urn:ads:record:parameter:1"),
     ("record.queue-task.v1", "urn:ads:record:queue-task:1"),
     ("record.queue-task.v2", "urn:ads:record:queue-task:2"),
+    (
+        "record.session-handoff.v1",
+        "urn:ads:record:session-handoff:1",
+    ),
+    (
+        "record.session-handoff.v2",
+        "urn:ads:record:session-handoff:2",
+    ),
     ("record.task-packet.v1", "urn:ads:record:task-packet:1"),
     ("record.task-queue.v1", "urn:ads:record:task-queue:1"),
     (
@@ -498,6 +522,7 @@ pub const PATTERNS: &[&str] = &[
     r"^action/",
     r"^approval/",
     r"^dev-[0-9]{8}-[0-9a-f]{7,12}$",
+    r"^handoff/",
     r"^host/",
     r"^host\.disk\.free_(gb|pct)$",
     r"^queue/",
@@ -625,6 +650,8 @@ pub fn reencode(id: &str, value: Value) -> Option<Result<Value, serde_json::Erro
         }
         "urn:ads:event:session.created:1" => support::reencode::<EventSessionCreatedV1>(value),
         "urn:ads:event:session.ended:1" => support::reencode::<EventSessionEndedV1>(value),
+        "urn:ads:event:session.handoff:1" => support::reencode::<EventSessionHandoffV1>(value),
+        "urn:ads:event:session.handoff:2" => support::reencode::<EventSessionHandoffV2>(value),
         "urn:ads:event:session.output:1" => support::reencode::<EventSessionOutputV1>(value),
         "urn:ads:event:session.permission_asked:1" => {
             support::reencode::<EventSessionPermissionAskedV1>(value)
@@ -645,6 +672,8 @@ pub fn reencode(id: &str, value: Value) -> Option<Result<Value, serde_json::Erro
         "urn:ads:record:parameter:1" => support::reencode::<RecordParameterV1>(value),
         "urn:ads:record:queue-task:1" => support::reencode::<RecordQueueTaskV1>(value),
         "urn:ads:record:queue-task:2" => support::reencode::<RecordQueueTaskV2>(value),
+        "urn:ads:record:session-handoff:1" => support::reencode::<RecordSessionHandoffV1>(value),
+        "urn:ads:record:session-handoff:2" => support::reencode::<RecordSessionHandoffV2>(value),
         "urn:ads:record:task-packet:1" => support::reencode::<RecordTaskPacketV1>(value),
         "urn:ads:record:task-queue:1" => support::reencode::<RecordTaskQueueV1>(value),
         "urn:ads:record:update-manifest:1" => support::reencode::<RecordUpdateManifestV1>(value),

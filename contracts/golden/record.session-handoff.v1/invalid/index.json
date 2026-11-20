@@ -1,0 +1,17 @@
+{
+  "number.json": {
+    "rule": "Uma passagem cria no mínimo a sessão n2.",
+    "keyword": "minimum",
+    "instancePath": "/number"
+  },
+  "channel.json": {
+    "rule": "O canal é local ou remoto.",
+    "keyword": "enum",
+    "instancePath": "/consent/channel"
+  },
+  "trigger.json": {
+    "rule": "O gatilho precisa ser um dos três previstos.",
+    "keyword": "enum",
+    "instancePath": "/trigger"
+  }
+}
