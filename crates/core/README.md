@@ -12,9 +12,14 @@ O [roteador](src/routing.rs) interpreta [routing.toml](../../defaults/routing.to
 
 ## Fila contínua
 
-A [política da fila](src/queue.rs) restaura a fila parada e calcula transições usando o registro atual e, quando exigido, o aparelho autenticado. O aparelho autenticado leva o dono a que pertence, e a política confere esse dono contra o da fila. A partida, o teto de custo e a falta de recursos param a fila com os dados de `queue.stopped` do daemon. O replay reconstitui o saldo a partir da criação e das mudanças ordenadas da tarefa. O produtor usa o estado e o saldo reconstituídos antes de autorizar novas transições e reserva a origem na mesma operação que anexa a criação.
+A [política da fila](src/queue.rs) restaura a fila parada e calcula transições usando o registro atual e, quando exigido, o aparelho autenticado. O aparelho autenticado leva o dono a que pertence, e a política confere esse dono contra o da fila. A partida, o teto de custo e a falta de recursos param a fila com os dados de `queue.stopped` do daemon. Na partida, a restauração considera o retrato e o último estado registrado no log, e registra a parada se qualquer um dos dois indicar a fila ligada. Os dados da parada pelo dono só saem para um aparelho do dono da fila. O replay reconstitui o saldo a partir da criação e das mudanças ordenadas da tarefa. O produtor usa o estado e o saldo reconstituídos antes de autorizar novas transições e reserva a origem na mesma operação que anexa a criação.
 
-[queue.toml](../../defaults/queue.toml) fornece os padrões de duas tentativas por tarefa e 1000 admissões por fila. O integrador pode passar uma política diferente com `QueuePolicy`. A admissão recusa criação com teto acima do configurado, `task_id` já usado em qualquer fila e origem repetida na fila. O limite de admissão inclui origens encerradas. Ao atingir o limite, novas criações são recusadas. O cadastro de aparelhos autenticados e o produtor que anexa os eventos serão integrados com a persistência e a execução da fila.
+[queue.toml](../../defaults/queue.toml) fornece os padrões de duas tentativas por tarefa e 1000 admissões por fila. O integrador pode passar uma política diferente com `QueuePolicy`. A admissão recusa criação com teto acima do configurado, `task_id` já usado em qualquer fila e origem repetida na fila. O limite de admissão inclui origens encerradas. Ao atingir o limite, novas criações são recusadas. O cadastro de aparelhos autenticados e o produtor que anexa os eventos serão integrados com a persistência e a execução da fila. Ficam para a [issue #121](https://github.com/n33miaz/ai-develop-setup/issues/121):
+- a conferência de autorização no replay;
+- o construtor de `AuthenticatedDevice` para a camada de autenticação;
+- os limites por regra e por janela;
+- o `common` do apelido e da origem;
+- a tarefa em `running` quando o núcleo reinicia e o host mantém o processo.
 
 ## Ambiente do processo filho (`src/child_env.rs`)
 

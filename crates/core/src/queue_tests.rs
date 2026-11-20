@@ -58,7 +58,11 @@ fn queue_changes_require_the_authenticated_owner_and_enable_is_local() {
     );
     let (stopped, by) = change_queue_state(&enabled, Some(&remote), Stopped).unwrap();
     assert_eq!(stopped.state, Stopped);
-    let data = owner_stop_data(&enabled, by);
+    assert_eq!(
+        owner_stop_data(&enabled, &other).err(),
+        Some(QueueRefusal::NotOwner)
+    );
+    let data = owner_stop_data(&enabled, by).unwrap();
     assert_eq!(data.reason, EventQueueStoppedV1DataReason::Owner);
     assert_eq!(data.owner_id, Some(id("owner-01")));
     assert_eq!(data.via, Some(RemoteDevice));
@@ -71,13 +75,26 @@ fn restart_and_automatic_stops_record_the_daemon_reason() {
     let enabled = change_queue_state(&stopped, Some(&owner), Enabled)
         .unwrap()
         .0;
-    let (restored, event) = restore_stopped(enabled.clone());
+    let (restored, event) = restore_stopped(enabled.clone(), None);
     assert_eq!(restored.state, Stopped);
     let event = event.unwrap();
     assert_eq!(event.reason, EventQueueStoppedV1DataReason::Restart);
     assert_eq!(event.queue_id, enabled.id);
     assert_eq!((event.owner_id, event.via), (None, None));
-    assert_eq!(restore_stopped(stopped.clone()), (stopped.clone(), None));
+    assert_eq!(
+        restore_stopped(stopped.clone(), None),
+        (stopped.clone(), None)
+    );
+    assert_eq!(
+        restore_stopped(stopped.clone(), Some(Stopped)),
+        (stopped.clone(), None)
+    );
+    let (after_crash, event) = restore_stopped(stopped.clone(), Some(Enabled));
+    assert_eq!(after_crash.state, Stopped);
+    assert_eq!(
+        event.map(|data| data.reason),
+        Some(EventQueueStoppedV1DataReason::Restart)
+    );
     for (cause, reason) in [
         (AutomaticStop::Budget, EventQueueStoppedV1DataReason::Budget),
         (

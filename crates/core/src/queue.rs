@@ -70,9 +70,17 @@ pub fn stop_automatically(
     queue: &RecordTaskQueueV1,
     cause: AutomaticStop,
 ) -> (RecordTaskQueueV1, Option<EventQueueStoppedV1Data>) {
+    automatic_stop(queue, cause, queue.state == Enabled)
+}
+
+fn automatic_stop(
+    queue: &RecordTaskQueueV1,
+    cause: AutomaticStop,
+    was_enabled: bool,
+) -> (RecordTaskQueueV1, Option<EventQueueStoppedV1Data>) {
     let mut stopped = queue.clone();
     stopped.state = Stopped;
-    if queue.state == Stopped {
+    if !was_enabled {
         return (stopped, None);
     }
     let reason = match cause {
@@ -89,24 +97,30 @@ pub fn stop_automatically(
     (stopped, Some(data))
 }
 
-/// Every start restores the queue stopped and records why when the persisted state was enabled.
+/// Every start restores the queue stopped. The restart is recorded when the snapshot or the
+/// last logged queue state says enabled, which covers a crash between the event and the snapshot.
 pub fn restore_stopped(
     persisted: RecordTaskQueueV1,
+    last_logged: Option<RecordTaskQueueV1State>,
 ) -> (RecordTaskQueueV1, Option<EventQueueStoppedV1Data>) {
-    stop_automatically(&persisted, AutomaticStop::Restart)
+    let was_enabled = persisted.state == Enabled || last_logged == Some(Enabled);
+    automatic_stop(&persisted, AutomaticStop::Restart, was_enabled)
 }
 
-/// Data of the `queue.stopped` event for an accepted owner stop.
+/// Data of the `queue.stopped` event for a stop by a device of the queue owner.
 pub fn owner_stop_data(
     queue: &RecordTaskQueueV1,
     device: &AuthenticatedDevice,
-) -> EventQueueStoppedV1Data {
-    EventQueueStoppedV1Data {
+) -> Result<EventQueueStoppedV1Data, QueueRefusal> {
+    if device.owner_id != queue.owner_id {
+        return Err(QueueRefusal::NotOwner);
+    }
+    Ok(EventQueueStoppedV1Data {
         queue_id: queue.id.clone(),
         reason: EventQueueStoppedV1DataReason::Owner,
-        owner_id: Some(queue.owner_id.clone()),
+        owner_id: Some(device.owner_id.clone()),
         via: Some(device.via),
-    }
+    })
 }
 
 /// The returned state and device identify the change to append before scheduling.
