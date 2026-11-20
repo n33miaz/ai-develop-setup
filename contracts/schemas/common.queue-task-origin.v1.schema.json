@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:common:queue-task-origin:1",
+  "title": "Origem de uma tarefa da fila",
+  "description": "De onde veio a tarefa: pedido manual (id estável do pedido), issue (número no repositório do apelido) ou regra de bug (par regra e alvo estável).",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "request_id"
+      ],
+      "properties": {
+        "kind": {
+          "const": "manual"
+        },
+        "request_id": {
+          "$ref": "urn:ads:common:id:1"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "ref"
+      ],
+      "properties": {
+        "kind": {
+          "const": "issue"
+        },
+        "ref": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "rule_id",
+        "target_id"
+      ],
+      "properties": {
+        "kind": {
+          "const": "bug_rule"
+        },
+        "rule_id": {
+          "$ref": "urn:ads:common:id:1"
+        },
+        "target_id": {
+          "$ref": "urn:ads:common:id:1"
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "kind": "manual",
+      "request_id": "request-01"
+    }
+  ]
+}

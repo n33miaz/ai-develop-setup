@@ -3,16 +3,16 @@
 use std::num::{NonZeroU64, NonZeroUsize};
 
 use ads_contracts::{
-    CommonActorV1, CommonActorV1Kind, CommonIdV1, CommonQueueTaskStateV1, CommonTimestampV1,
-    EventQueueClockReanchoredV1, EventQueueClockReanchoredV1Data,
+    CommonActorV1, CommonActorV1Kind, CommonIdV1, CommonQueueTaskOriginV1, CommonQueueTaskStateV1,
+    CommonTimestampV1, EventQueueClockReanchoredV1, EventQueueClockReanchoredV1Data,
     EventQueueClockReanchoredV1DataVia, EventQueueCreatedV1, EventQueueCreatedV1DataVia,
     EventQueueEnabledV1, EventQueueEnabledV1Data, EventQueueEnabledV1DataVia, EventQueueStoppedV1,
     EventQueueStoppedV1Data, EventQueueStoppedV1DataReason, EventQueueStoppedV1DataVia,
     EventQueueTaskCreatedV1, EventQueueTaskCreatedV1DataOrigin, EventQueueTaskCreatedV2,
-    EventQueueTaskCreatedV2DataOrigin, EventQueueTaskStateChangedV1,
+    EventQueueTaskCreatedV2DataOrigin, EventQueueTaskCreatedV3, EventQueueTaskStateChangedV1,
     EventQueueTaskStateChangedV1Data, EventQueueTaskStateChangedV1DataAttempts,
-    EventQueueTaskStateChangedV1DataFields, EventQueueTaskStateChangedV1DataVia, RecordQueueTaskV1,
-    RecordQueueTaskV1Attempts, RecordTaskQueueV1, RecordTaskQueueV1State, RecordTaskQueueV1Version,
+    EventQueueTaskStateChangedV1DataFields, EventQueueTaskStateChangedV1DataVia, RecordQueueTaskV2,
+    RecordQueueTaskV2Attempts, RecordTaskQueueV1, RecordTaskQueueV1State, RecordTaskQueueV1Version,
 };
 
 use CommonQueueTaskStateV1::{Cancelled, Done, Failed, Queued, Review, Running};
@@ -24,7 +24,7 @@ pub const DEFAULT_POLICY: &str = include_str!("../../../defaults/queue.toml");
 #[derive(Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct QueuePolicy {
-    pub attempt_limit: ads_contracts::RecordQueueTaskV1AttemptLimit,
+    pub attempt_limit: ads_contracts::RecordQueueTaskV2AttemptLimit,
     pub admission_limit: NonZeroUsize,
     #[serde(default = "default_window_seconds")]
     pub window_seconds: NonZeroU64,
@@ -232,7 +232,7 @@ pub enum RunningAfterRestart {
 }
 
 /// Decides, on start, the fate of a task whose last recorded state is `running`.
-pub fn restore_running_task(task: &RecordQueueTaskV1, host: HostProcess) -> RunningAfterRestart {
+pub fn restore_running_task(task: &RecordQueueTaskV2, host: HostProcess) -> RunningAfterRestart {
     if task.state != Running {
         return RunningAfterRestart::Keep;
     }
@@ -312,6 +312,7 @@ pub enum QueueLogEvent<'a> {
     ClockReanchored(&'a EventQueueClockReanchoredV1),
     TaskCreated(&'a EventQueueTaskCreatedV1),
     TaskCreatedV2(&'a EventQueueTaskCreatedV2),
+    TaskCreatedV3(&'a EventQueueTaskCreatedV3),
     TaskStateChanged(&'a EventQueueTaskStateChangedV1),
 }
 
@@ -324,6 +325,7 @@ macro_rules! each_event {
             QueueLogEvent::ClockReanchored($name) => $body,
             QueueLogEvent::TaskCreated($name) => $body,
             QueueLogEvent::TaskCreatedV2($name) => $body,
+            QueueLogEvent::TaskCreatedV3($name) => $body,
             QueueLogEvent::TaskStateChanged($name) => $body,
         }
     };
@@ -354,6 +356,7 @@ impl<'a> QueueLogEvent<'a> {
         match self {
             Self::TaskCreated(event) => Some(event.into()),
             Self::TaskCreatedV2(event) => Some(event.into()),
+            Self::TaskCreatedV3(event) => Some(event.into()),
             _ => None,
         }
     }
@@ -475,7 +478,9 @@ pub fn replay_task<'a, 'context>(
                 }
                 anchor = Some(ClockAnchor::from_event(reanchored));
             }
-            QueueLogEvent::TaskCreated(_) | QueueLogEvent::TaskCreatedV2(_) => {
+            QueueLogEvent::TaskCreated(_)
+            | QueueLogEvent::TaskCreatedV2(_)
+            | QueueLogEvent::TaskCreatedV3(_) => {
                 let admitted = event.task_creation().expect("task creation event");
                 if admitted.origin.is_manual() && !owner_device(event) {
                     return Err(ReplayRefusal::NotOwnerDevice);
@@ -571,7 +576,7 @@ impl<'a> TaskOrigin<'a> {
     }
 }
 
-/// A borrowed task creation from either version of the queue contract.
+/// A borrowed task creation from any version of the queue contract.
 #[derive(Clone, Copy)]
 pub struct TaskCreation<'a> {
     queue_id: &'a CommonIdV1,
@@ -611,6 +616,7 @@ macro_rules! task_creation_from {
 
 task_creation_from!(EventQueueTaskCreatedV1, EventQueueTaskCreatedV1DataOrigin);
 task_creation_from!(EventQueueTaskCreatedV2, EventQueueTaskCreatedV2DataOrigin);
+task_creation_from!(EventQueueTaskCreatedV3, CommonQueueTaskOriginV1);
 
 /// Why the admission refuses a task.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -801,7 +807,7 @@ pub fn can_admit_task<'a>(
     can_admit_creation(created.into(), history.into_iter().map(Into::into), context)
 }
 
-/// Checks admission of either event version against a history that can mix versions.
+/// Checks admission of any event version against a history that can mix versions.
 pub fn can_admit_creation<'a>(
     created: TaskCreation<'_>,
     history: impl IntoIterator<Item = TaskCreation<'a>>,
@@ -914,10 +920,10 @@ fn check_admission<'a>(
 /// Returns the attempt count after an allowed transition in the current queue.
 pub fn next_attempt_count(
     queue: &RecordTaskQueueV1,
-    task: &RecordQueueTaskV1,
+    task: &RecordQueueTaskV2,
     next: CommonQueueTaskStateV1,
     device: Option<&AuthenticatedDevice>,
-) -> Option<RecordQueueTaskV1Attempts> {
+) -> Option<RecordQueueTaskV2Attempts> {
     if task.queue_id != queue.id {
         return None;
     }
@@ -933,7 +939,7 @@ pub fn next_attempt_count(
 
     match (task.state, next) {
         (Queued, Running) if queue.state == Enabled && attempts < limit => {
-            RecordQueueTaskV1Attempts::new(attempts + 1).ok()
+            RecordQueueTaskV2Attempts::new(attempts + 1).ok()
         }
         (Failed, Queued) if attempts < limit => Some(task.attempts),
         (Review, Done) if device.is_some_and(|device| device.owner_id == queue.owner_id) => {

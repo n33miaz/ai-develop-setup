@@ -102,7 +102,7 @@ export function crossRuleErrors(key, data) {
     return problem ? [problem] : [];
   }
   if (/^record\.action-plan\.v\d+$/.test(key)) return actionPlanErrors(data);
-  if (key === "record.queue-task.v1") return queueTaskErrors(data);
+  if (/^record\.queue-task\.v\d+$/.test(key)) return queueTaskErrors(data);
   return [];
 }
 

@@ -1,19 +1,20 @@
 //! The task title alphabet: for every probe in `contracts/corpus/title-chars.json`, the generated type has to accept
-//! exactly the listed code points, the same list `contracts/tools/corpus.test.mjs` checks the Schema against.
+//! exactly the listed code points, the same list `contracts/tools/corpus.test.mjs` checks the Schemas against. Both
+//! versions of the task record carry the same title.
 
 use std::path::Path;
 
-use ads_contracts::RecordQueueTaskV1Title;
+use ads_contracts::{RecordQueueTaskV1Title, RecordQueueTaskV2Title};
 use serde_json::{Value, json};
 
-fn accepted_ranges(template: &str) -> Vec<(u32, u32)> {
+fn accepted_ranges(template: &str, accepts: impl Fn(String) -> bool) -> Vec<(u32, u32)> {
     let mut ranges: Vec<(u32, u32)> = Vec::new();
     for code in 0..=0x10FFFF_u32 {
         let Some(c) = char::from_u32(code) else {
             continue;
         };
         let title = template.replace("{c}", c.encode_utf8(&mut [0; 4]));
-        if RecordQueueTaskV1Title::new(title).is_err() {
+        if !accepts(title) {
             continue;
         }
         match ranges.last_mut() {
@@ -52,8 +53,9 @@ fn title_type_accepts_exactly_the_corpus_alphabet() {
             .iter()
             .map(|pair| (hex(&pair[0]), hex(&pair[1])))
             .collect();
-        let ranges = accepted_ranges(template);
-        if ranges != expected {
+        let ranges = accepted_ranges(template, |title| RecordQueueTaskV1Title::new(title).is_ok());
+        let second = accepted_ranges(template, |title| RecordQueueTaskV2Title::new(title).is_ok());
+        if ranges != expected || second != expected {
             differ.push(template.to_owned());
         }
         actual.push(json!({ "template": template, "accepted": listed(&ranges) }));

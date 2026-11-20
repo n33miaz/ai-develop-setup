@@ -17,9 +17,9 @@ fn policy() -> QueuePolicy {
     toml::from_str(DEFAULT_POLICY).unwrap()
 }
 
-fn task() -> RecordQueueTaskV1 {
+fn task() -> RecordQueueTaskV2 {
     serde_json::from_str(include_str!(
-        "../../../contracts/golden/record.queue-task.v1/valid/01-base.json"
+        "../../../contracts/golden/record.queue-task.v2/valid/01-base.json"
     ))
     .unwrap()
 }
@@ -193,14 +193,14 @@ fn task_transitions_cover_every_state_at_each_attempt_boundary() {
         task.state = from;
         for to in states {
             for index in 0..4 {
-                task.attempts = RecordQueueTaskV1Attempts::new(index as u64).unwrap();
+                task.attempts = RecordQueueTaskV2Attempts::new(index as u64).unwrap();
                 let expected = allowed
                     .iter()
                     .find(|(state, _)| *state == to)
                     .and_then(|(_, counts)| counts[index]);
                 assert_eq!(
                     next_attempt_count(&queue, &task, to, Some(&owner))
-                        .map(RecordQueueTaskV1Attempts::get),
+                        .map(RecordQueueTaskV2Attempts::get),
                     expected,
                     "{from:?} -> {to:?} with {index} attempts"
                 );
@@ -223,7 +223,7 @@ fn starting_requires_the_enabled_queue_and_acceptance_requires_its_owner() {
     enabled.id = id("queue-02");
     assert_eq!(next_attempt_count(&enabled, &task, Running, None), None);
     task.state = Review;
-    task.attempts = RecordQueueTaskV1Attempts::new(1).unwrap();
+    task.attempts = RecordQueueTaskV2Attempts::new(1).unwrap();
     assert_eq!(next_attempt_count(&stopped, &task, Done, None), None);
     assert_eq!(
         next_attempt_count(&stopped, &task, Done, Some(&other)),
@@ -331,6 +331,7 @@ enum Owned {
     ClockReanchored(EventQueueClockReanchoredV1),
     TaskCreated(EventQueueTaskCreatedV1),
     TaskCreatedV2(EventQueueTaskCreatedV2),
+    TaskCreatedV3(EventQueueTaskCreatedV3),
     Changed(EventQueueTaskStateChangedV1),
 }
 
@@ -343,6 +344,7 @@ impl Owned {
             Self::ClockReanchored(event) => QueueLogEvent::ClockReanchored(event),
             Self::TaskCreated(event) => QueueLogEvent::TaskCreated(event),
             Self::TaskCreatedV2(event) => QueueLogEvent::TaskCreatedV2(event),
+            Self::TaskCreatedV3(event) => QueueLogEvent::TaskCreatedV3(event),
             Self::Changed(event) => QueueLogEvent::TaskStateChanged(event),
         }
     }
@@ -491,6 +493,9 @@ fn typed(values: Vec<serde_json::Value>) -> Vec<Owned> {
                 "urn:ads:event:queue.task_created:2" => {
                     Owned::TaskCreatedV2(serde_json::from_value(parse()).unwrap())
                 }
+                "urn:ads:event:queue.task_created:3" => {
+                    Owned::TaskCreatedV3(serde_json::from_value(parse()).unwrap())
+                }
                 _ => Owned::Changed(serde_json::from_value(parse()).unwrap()),
             }
         })
@@ -571,6 +576,55 @@ fn manual_creation_v2_checks_the_owner_and_reserves_v1_origins() {
         replay_values(stream),
         Err(ReplayRefusal::Admission(AdmissionRefusal::OriginRepeated))
     );
+}
+
+#[test]
+fn creation_v3_reads_the_shared_origin_and_alias_alongside_older_versions() {
+    let mut stream = Stream::new()
+        .admit("task-01", 2)
+        .admit("task-02", 2)
+        .admit("task-03", 2)
+        .numbered();
+    stream[2]["type"] = "urn:ads:event:queue.task_created:2".into();
+    stream[3]["type"] = "urn:ads:event:queue.task_created:3".into();
+    assert_eq!(replay_values(stream.clone()), Ok((Queued, 0)));
+
+    let mut foreign = stream.clone();
+    foreign[3]["actor"] = serde_json::json!({"kind": "device", "id": "device-02"});
+    assert_eq!(replay_values(foreign), Err(ReplayRefusal::NotOwnerDevice));
+
+    let mut other_alias = stream.clone();
+    other_alias[3]["data"]["origin"] = stream[2]["data"]["origin"].clone();
+    other_alias[3]["data"]["workspace_alias"] = "site".into();
+    assert_eq!(replay_values(other_alias), Ok((Queued, 0)));
+
+    for earlier in [1, 2] {
+        let mut repeated = stream.clone();
+        repeated[3]["data"]["origin"] = stream[earlier]["data"]["origin"].clone();
+        assert_eq!(
+            replay_values(repeated.clone()),
+            Err(ReplayRefusal::Admission(AdmissionRefusal::OriginRepeated)),
+            "origin of the creation at seq {}",
+            earlier + 1
+        );
+        let later: EventQueueTaskCreatedV3 = serde_json::from_value(repeated[3].clone()).unwrap();
+        let author = device("device-01", "owner-01", Tray);
+        let context = AdmissionContext {
+            policy: &policy(),
+            now: &later.ts,
+            queue_owner: &id("owner-01"),
+            author: Some(&author),
+            anchor: None,
+        };
+        let events = typed(repeated[1..3].to_vec());
+        let history = events
+            .iter()
+            .filter_map(|event| event.as_log().task_creation());
+        assert_eq!(
+            can_admit_creation((&later).into(), history, &context),
+            Err(AdmissionRefusal::OriginRepeated)
+        );
+    }
 }
 
 #[test]
@@ -983,7 +1037,7 @@ fn replay_lets_a_kept_task_finish_after_a_restart() {
 fn a_restart_keeps_fails_or_cancels_the_running_task() {
     let mut task = task();
     task.state = Running;
-    task.attempts = RecordQueueTaskV1Attempts::new(1).unwrap();
+    task.attempts = RecordQueueTaskV2Attempts::new(1).unwrap();
     assert_eq!(
         restore_running_task(&task, HostProcess::Kept),
         RunningAfterRestart::Keep
@@ -997,7 +1051,7 @@ fn a_restart_keeps_fails_or_cancels_the_running_task() {
     assert_eq!(data.via, None);
 
     let mut at_ceiling = task.clone();
-    at_ceiling.attempts = RecordQueueTaskV1Attempts::new(2).unwrap();
+    at_ceiling.attempts = RecordQueueTaskV2Attempts::new(2).unwrap();
     assert!(matches!(
         restore_running_task(&at_ceiling, HostProcess::Lost),
         RunningAfterRestart::Fail(data) if data.attempts.get() == 2
@@ -1005,7 +1059,7 @@ fn a_restart_keeps_fails_or_cancels_the_running_task() {
     for (state, attempts) in [(Queued, 0), (Review, 1), (Failed, 1)] {
         let mut other = task.clone();
         other.state = state;
-        other.attempts = RecordQueueTaskV1Attempts::new(attempts).unwrap();
+        other.attempts = RecordQueueTaskV2Attempts::new(attempts).unwrap();
         for host in [HostProcess::Kept, HostProcess::Lost] {
             assert_eq!(
                 restore_running_task(&other, host),
@@ -1015,7 +1069,7 @@ fn a_restart_keeps_fails_or_cancels_the_running_task() {
     }
     for attempts in [0, 3] {
         let mut inconsistent = task.clone();
-        inconsistent.attempts = RecordQueueTaskV1Attempts::new(attempts).unwrap();
+        inconsistent.attempts = RecordQueueTaskV2Attempts::new(attempts).unwrap();
         for host in [HostProcess::Kept, HostProcess::Lost] {
             let RunningAfterRestart::Cancel(data) = restore_running_task(&inconsistent, host)
             else {

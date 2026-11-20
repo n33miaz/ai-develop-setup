@@ -352,5 +352,5 @@ Riscos da troca de conta por pasta de perfil ([ADR 0022](adr/0022-account-profil
 ## Compatibilidade dos contratos da fila contínua
 
 - **Dono.** Núcleo e contratos.
-- **Limite.** Os contratos aceitam as formas atuais de apelido, origem e marca combinante, inclusive quando a marca não segue uma letra ou um número.
-- **Plano.** Compartilhar apelido e origem em tipos `common` e exigir que marcas combinantes sigam letra ou número em uma versão futura dos contratos afetados, incluindo `queue.task_created:3` quando aplicável. Até lá, preservar a leitura das versões existentes.
+- **Limite.** O título da tarefa aceita marca combinante que não segue uma letra ou um número. O apelido e a origem já são os tipos comuns em `queue.task_created:3` e `record.queue-task:2`; as versões anteriores repetem as mesmas regras, conferidas contra os tipos comuns por `tools/corpus.test.mjs`.
+- **Plano.** Exigir que marcas combinantes sigam letra ou número em uma versão futura do registro e da criação. Até lá, preservar a leitura das versões existentes.

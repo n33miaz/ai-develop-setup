@@ -1,0 +1,279 @@
+{
+  "01-workspace-path.json": {
+    "rule": "A pasta é identificada por apelido, sem unidade nem separadores.",
+    "keyword": "pattern",
+    "instancePath": "/workspace_alias"
+  },
+  "02-negative-attempts.json": {
+    "rule": "A contagem começa em zero.",
+    "keyword": "minimum",
+    "instancePath": "/attempts"
+  },
+  "03-zero-limit.json": {
+    "rule": "O teto inclui ao menos a primeira tentativa.",
+    "keyword": "minimum",
+    "instancePath": "/attempt_limit"
+  },
+  "04-null-branch.json": {
+    "rule": "A branch sem valor é omitida.",
+    "keyword": "type",
+    "instancePath": "/branch"
+  },
+  "branch-option.json": {
+    "rule": "A branch segue a convenção de referências do Git.",
+    "keyword": "pattern",
+    "instancePath": "/branch"
+  },
+  "branch-protected.json": {
+    "rule": "A branch segue a convenção de referências do Git.",
+    "keyword": "pattern",
+    "instancePath": "/branch"
+  },
+  "branch-dots.json": {
+    "rule": "A branch segue a convenção de referências do Git.",
+    "keyword": "not",
+    "instancePath": "/branch"
+  },
+  "branch-lock.json": {
+    "rule": "A branch segue a convenção de referências do Git.",
+    "keyword": "not",
+    "instancePath": "/branch"
+  },
+  "branch-unicode.json": {
+    "rule": "A branch segue a convenção de referências do Git.",
+    "keyword": "pattern",
+    "instancePath": "/branch"
+  },
+  "branch-ref.json": {
+    "rule": "A branch segue a convenção de referências do Git.",
+    "keyword": "pattern",
+    "instancePath": "/branch"
+  },
+  "pr-url.json": {
+    "rule": "O pull request usa um número.",
+    "keyword": "type",
+    "instancePath": "/pull_request"
+  },
+  "pr-script.json": {
+    "rule": "O pull request usa um número.",
+    "keyword": "type",
+    "instancePath": "/pull_request"
+  },
+  "pr-zero.json": {
+    "rule": "O número do pull request é positivo.",
+    "keyword": "minimum",
+    "instancePath": "/pull_request"
+  },
+  "workspace-device.json": {
+    "rule": "O apelido evita dispositivos reservados.",
+    "keyword": "not",
+    "instancePath": "/workspace_alias"
+  },
+  "workspace-dot.json": {
+    "rule": "O apelido termina sem ponto.",
+    "keyword": "pattern",
+    "instancePath": "/workspace_alias"
+  },
+  "title-bidi.json": {
+    "rule": "O título recusa controles direcionais.",
+    "keyword": "pattern",
+    "instancePath": "/title"
+  },
+  "title-long.json": {
+    "rule": "O título tem no máximo 120 caracteres.",
+    "keyword": "maxLength",
+    "instancePath": "/title"
+  },
+  "limit-high.json": {
+    "rule": "O teto é dez tentativas.",
+    "keyword": "maximum",
+    "instancePath": "/attempt_limit"
+  },
+  "attempts-over-limit.json": {
+    "rule": "A contagem respeita o teto.",
+    "keyword": "crossRule",
+    "instancePath": "",
+    "messagePrefix": "attempts excede attempt_limit"
+  },
+  "updated-before-created.json": {
+    "rule": "A atualização sucede ou coincide com a criação.",
+    "keyword": "crossRule",
+    "instancePath": "",
+    "messagePrefix": "updated_at antecede created_at"
+  },
+  "origin-unknown.json": {
+    "rule": "A origem pertence a uma categoria conhecida.",
+    "keyword": "oneOf",
+    "instancePath": "/origin"
+  },
+  "manual-ref.json": {
+    "rule": "O pedido manual usa identificador de pedido.",
+    "keyword": "additionalProperties",
+    "instancePath": "/origin"
+  },
+  "issue-missing-ref.json": {
+    "rule": "A origem issue exige a referência.",
+    "keyword": "required",
+    "instancePath": "/origin"
+  },
+  "issue-zero.json": {
+    "rule": "A referência da issue é positiva.",
+    "keyword": "minimum",
+    "instancePath": "/origin/ref"
+  },
+  "bug-missing-target.json": {
+    "rule": "A regra de bug exige um alvo.",
+    "keyword": "required",
+    "instancePath": "/origin"
+  },
+  "title-tag.json": {
+    "rule": "O título recusa caracteres de tag invisíveis.",
+    "keyword": "pattern",
+    "instancePath": "/title"
+  },
+  "title-variation.json": {
+    "rule": "O título recusa seletores de variação.",
+    "keyword": "pattern",
+    "instancePath": "/title"
+  },
+  "title-variation-supplement.json": {
+    "rule": "O título recusa seletores de variação suplementares.",
+    "keyword": "pattern",
+    "instancePath": "/title"
+  },
+  "title-soft-hyphen.json": {
+    "rule": "O título recusa o hífen suave.",
+    "keyword": "pattern",
+    "instancePath": "/title"
+  },
+  "title-hangul-filler.json": {
+    "rule": "O título recusa preenchedores Hangul invisíveis.",
+    "keyword": "pattern",
+    "instancePath": "/title"
+  },
+  "title-private-use.json": {
+    "rule": "O título recusa caracteres de uso privado.",
+    "keyword": "pattern",
+    "instancePath": "/title"
+  },
+  "title-format.json": {
+    "rule": "O título recusa caracteres de formatação.",
+    "keyword": "pattern",
+    "instancePath": "/title"
+  },
+  "title-unassigned.json": {
+    "rule": "O título recusa pontos de código não atribuídos.",
+    "keyword": "pattern",
+    "instancePath": "/title"
+  },
+  "title-nbsp.json": {
+    "rule": "O título usa só o espaço comum.",
+    "keyword": "pattern",
+    "instancePath": "/title"
+  },
+  "branch-device.json": {
+    "rule": "A branch evita nomes de dispositivo do Windows.",
+    "keyword": "not",
+    "instancePath": "/branch"
+  },
+  "branch-dot-component.json": {
+    "rule": "Nenhum componente da branch termina em ponto.",
+    "keyword": "not",
+    "instancePath": "/branch"
+  },
+  "branch-upper.json": {
+    "rule": "A branch usa só minúsculas.",
+    "keyword": "pattern",
+    "instancePath": "/branch"
+  },
+  "title-vs16-letter.json": {
+    "rule": "O título recusa o seletor de apresentação de emoji.",
+    "keyword": "pattern",
+    "instancePath": "/title"
+  },
+  "title-zwj-letters.json": {
+    "rule": "O título recusa o ZWJ.",
+    "keyword": "pattern",
+    "instancePath": "/title"
+  },
+  "title-zwj-edge.json": {
+    "rule": "O título recusa o ZWJ.",
+    "keyword": "pattern",
+    "instancePath": "/title"
+  },
+  "title-khmer-vowel.json": {
+    "rule": "O título recusa vogais inerentes invisíveis.",
+    "keyword": "pattern",
+    "instancePath": "/title"
+  },
+  "title-braille-blank.json": {
+    "rule": "O título recusa o braille em branco.",
+    "keyword": "pattern",
+    "instancePath": "/title"
+  },
+  "title-khitan-filler.json": {
+    "rule": "O título recusa preenchedores invisíveis.",
+    "keyword": "pattern",
+    "instancePath": "/title"
+  },
+  "title-null-notehead.json": {
+    "rule": "O título recusa símbolos que não aparecem.",
+    "keyword": "pattern",
+    "instancePath": "/title"
+  },
+  "title-object-replacement.json": {
+    "rule": "O título recusa o caractere de substituição de objeto.",
+    "keyword": "pattern",
+    "instancePath": "/title"
+  },
+  "title-spaces.json": {
+    "rule": "O título tem ao menos uma letra ou um número.",
+    "keyword": "not",
+    "instancePath": "/title"
+  },
+  "title-marks.json": {
+    "rule": "O título tem ao menos uma letra ou um número.",
+    "keyword": "not",
+    "instancePath": "/title"
+  },
+  "title-stacked-marks.json": {
+    "rule": "O título aceita no máximo três marcas combinantes seguidas.",
+    "keyword": "not",
+    "instancePath": "/title"
+  },
+  "title-new-unicode.json": {
+    "rule": "O título aceita só pontos de código atribuídos no Unicode 16.",
+    "keyword": "pattern",
+    "instancePath": "/title"
+  },
+  "title-emoji-selector.json": {
+    "rule": "O emoji entra sem o seletor de apresentação.",
+    "keyword": "pattern",
+    "instancePath": "/title"
+  },
+  "title-zwj-sequence.json": {
+    "rule": "Sequências de emoji unidas por ZWJ são recusadas.",
+    "keyword": "pattern",
+    "instancePath": "/title"
+  },
+  "title-leading-space.json": {
+    "rule": "O título não começa com espaço.",
+    "keyword": "not",
+    "instancePath": "/title"
+  },
+  "title-trailing-space.json": {
+    "rule": "O título não termina com espaço.",
+    "keyword": "not",
+    "instancePath": "/title"
+  },
+  "title-double-space.json": {
+    "rule": "O título não repete espaços.",
+    "keyword": "not",
+    "instancePath": "/title"
+  },
+  "wrong-version.json": {
+    "rule": "O version acompanha a versão da URN.",
+    "keyword": "const",
+    "instancePath": "/version"
+  }
+}

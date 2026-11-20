@@ -7,7 +7,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { createAjv, loadSchemas } from "./lib.mjs";
 import { planHash } from "./rules.mjs";
-import { readAlphabet, titlePatterns } from "./title-alphabet.mjs";
+import { TITLE_SCHEMA_FILES, readAlphabet, titlePatterns } from "./title-alphabet.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const corpus = JSON.parse(fs.readFileSync(path.join(root, "corpus", "abspath.json"), "utf8"));
@@ -114,9 +114,12 @@ test("todo caminho dos dourados válidos de record.action-plan cabe na abspath:2
 // os dois aceitam o mesmo conjunto em qualquer versão de Unicode do motor.
 test("o Schema do título é montado das faixas do corpus", () => {
   const { pattern, not } = titlePatterns(readAlphabet().classes);
-  const schema = JSON.parse(fs.readFileSync(path.join(root, "schemas", "record.queue-task.v1.schema.json"), "utf8"));
-  assert.equal(schema.properties.title.pattern, pattern, "rode node tools/title-alphabet.mjs --write");
-  assert.deepEqual(schema.properties.title.not, { pattern: not }, "rode node tools/title-alphabet.mjs --write");
+  for (const file of TITLE_SCHEMA_FILES) {
+    const schema = JSON.parse(fs.readFileSync(file, "utf8"));
+    const hint = `${path.basename(file)}: rode node tools/title-alphabet.mjs --write`;
+    assert.equal(schema.properties.title.pattern, pattern, hint);
+    assert.deepEqual(schema.properties.title.not, { pattern: not }, hint);
+  }
 });
 
 test("título aceita exatamente o alfabeto do corpus em cada posição", () => {
@@ -141,11 +144,23 @@ test("título aceita exatamente o alfabeto do corpus em cada posição", () => {
   }
 });
 
-test("o apelido e a origem da tarefa são os mesmos no registro e em queue.task_created", () => {
+// As versões anteriores repetem o apelido e a origem; as atuais apontam para os tipos comuns.
+test("o apelido e a origem da tarefa seguem os tipos comuns no registro e em queue.task_created", () => {
   const read = (name) => JSON.parse(fs.readFileSync(path.join(root, "schemas", name), "utf8"));
-  const record = read("record.queue-task.v1.schema.json").properties;
-  for (const version of [1, 2]) {
-    const created = read(`event.queue.task_created.v${version}.schema.json`).allOf[1].properties.data.properties;
-    for (const field of ["workspace_alias", "origin"]) assert.deepEqual(created[field], record[field], field);
+  const body = (name) => {
+    const { $schema, $id, title, description, examples, ...rest } = read(name);
+    return { id: $id, rest };
+  };
+  const shared = {
+    workspace_alias: body("common.workdir-alias.v1.schema.json"),
+    origin: body("common.queue-task-origin.v1.schema.json"),
+  };
+  const created = (version) =>
+    read(`event.queue.task_created.v${version}.schema.json`).allOf[1].properties.data.properties;
+  const inline = [read("record.queue-task.v1.schema.json").properties, created(1), created(2)];
+  const referring = [read("record.queue-task.v2.schema.json").properties, created(3)];
+  for (const [field, { id, rest }] of Object.entries(shared)) {
+    for (const properties of inline) assert.deepEqual(properties[field], rest, field);
+    for (const properties of referring) assert.deepEqual(properties[field], { $ref: id }, field);
   }
 });

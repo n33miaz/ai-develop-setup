@@ -4,6 +4,8 @@ Formato: uma seção por data. Contrato novo, campo opcional acrescentado, vers�
 
 ## 2026-11-20
 
+- Tipos comuns novos: `common.workdir-alias:1` (apelido da pasta de trabalho) e `common.queue-task-origin:1` (origem da tarefa da fila), com as mesmas regras que o registro e a criação de tarefa repetiam.
+- Versões novas que referem esses tipos, sem mudar o que aceitam: `queue.task_created:3` e `record.queue-task:2` (`version` 2). Mudam os tipos gerados; a `:1` e a `:2` da criação e a `:1` do registro continuam legíveis.
 - `queue.task_created:2` exige ator do tipo aparelho em pedidos manuais e convive com a `:1`.
 - `queue.clock_reanchored:1` registra a reancoragem do relógio de admissão pelo dono da fila.
 - `local-api.error-code:1` define os códigos de erro emitidos pela API local.
