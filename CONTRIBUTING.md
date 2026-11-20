@@ -148,4 +148,4 @@ Até a primeira versão estável, quando o CI de uma junção na `develop` termi
 
 ## Segredos e dados
 
-Nunca commite segredos, `.env`, chaves, bancos, logs ou dados de usuário. O CI varre segredos (gitleaks) e uma lista de termos proibidos mantida fora do repo.
+Nunca commite segredos, `.env`, chaves, bancos, logs ou dados de usuário. O CI varre segredos (gitleaks). A lista de termos proibidos, mantida fora do repo, é conferida localmente antes do push; o job `terms` do CI só roda com a variável de repositório `TERMS_CHECK = on` e o segredo `FORBIDDEN_TERMS`, e hoje está desligado (ver [AGENTS.md](AGENTS.md)).
