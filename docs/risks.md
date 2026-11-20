@@ -20,6 +20,7 @@ Estado da mitigação, em cada risco:
 | [Perda de sessões de terminal](#perda-de-sessões-de-terminal) | host de terminais | implementada e testada; lançador ausente |
 | [Outro usuário da máquina alcança as sessões](#outro-usuário-da-máquina-alcança-as-sessões) | host de terminais e daemon | implementada e testada no Windows; teste com duas contas ausente |
 | [Credencial de CLI de IA vaza para o processo filho](#credencial-de-cli-de-ia-vaza-para-o-processo-filho) | adaptadores de ferramenta e host | parcial |
+| [Programa ou pasta configurados por um link](#programa-ou-pasta-configurados-por-um-link) | adaptadores de ferramenta | implementada e testada; destino na raiz não recusado |
 | [Página ou programa local comanda os terminais](#página-ou-programa-local-comanda-os-terminais) | daemon (API local) | decidida (proposta); só o lado da interface implementado |
 | [Dado sensível em claro no disco](#dado-sensível-em-claro-no-disco) | armazenamento | parcial: `data` dos eventos cifrado no banco e testado; chave ainda fora do cofre |
 | [Perda do estado local](#perda-do-estado-local) | armazenamento | parcial: abertura recusa arquivo corrompido sem alterá-lo; backup ausente |
@@ -103,7 +104,18 @@ Estado da mitigação, em cada risco:
 - **Teto.** Não se aplica.
 - **Mitigação existente.** O processo filho vê só o `env` do pedido, nada herdado do host (testes `the_child_environment_is_exactly_what_the_spec_carries` e `child_sees_only_the_environment_of_the_spec`). O comando `session.open` da API local recusa `program`, `args`, `env` e `cwd` no Schema ([API local](../contracts/README.md#api-local)). Os erros do cliente do daemon não carregam ambiente (`errors_never_include_the_host_message_or_environment`).
 - **Plano B.** Não há.
-- **O que falta.** Os adaptadores de ferramenta são esqueletos: ainda não há lista permitida de ambiente por ferramenta. O teste que compara o status do CLI antes e depois, pedido pela regra C1 do [AGENTS.md](../AGENTS.md), não existe.
+- **Mitigação existente (ambiente das ferramentas).** O ambiente do filho é só o que `[env]` de `defaults/harnesses.toml` deixa passar: nomes da lista `allow` mais os valores de `env.set`; nome negado em `allow` ou `env.set` recusa a configuração. Um teste abre um programa real do sistema com os parâmetros de abertura e confere que os nomes negados não chegam, os permitidos chegam e `env.set` vale (`a_real_child_gets_exactly_the_allowed_names_and_the_set_values`). No Windows, que compara também letras fora do ASCII sem diferença de maiúscula (`ÄX` e `äx` são a mesma variável, conferido com processo real), a cópia do pai compara só ASCII e por isso deixa passar menos; nomes repetidos e a troca feita por `env.set` usam a comparação larga, para um valor de `env.set` sempre vencer.
+- **O que falta.** O teste que compara o status do CLI antes e depois, pedido pela regra C1 do [AGENTS.md](../AGENTS.md), não existe. Os padrões de `deny` reconhecem credenciais pelo nome: um nome genérico (`APP_SESSION`, `APP_SESSION_ID`) não é negado e só passa se a pessoa o puser em `allow`. Linux e macOS sem `HOME`: não foi conferido com um CLI real se a ferramenta acha o próprio login e se `git` e `npm` abertos por ela acham a configuração da pessoa; o padrão está documentado em `defaults/harnesses.toml`.
+
+### Programa ou pasta configurados por um link
+
+- **Descrição.** O programa ou a pasta de trabalho configurados são uma junção ou um link simbólico. As conferências da configuração leem só o texto; ao abrir a sessão, a busca segue o link.
+- **Impacto.** A ferramenta roda o que o link apontar naquele momento, ou trabalha numa pasta diferente da escrita, inclusive a raiz de uma unidade (a recusa de raiz olha só o texto).
+- **Dono.** Adaptadores de ferramenta (`ads-core::tool_launch`).
+- **Teto.** Não se aplica.
+- **Mitigação existente.** Decisão: seguir o link e conferir o destino. Programa só abre se o destino for arquivo, pasta só se for pasta; link quebrado é "não encontrado". Os parâmetros levam o caminho como escrito. Teste em disco com junção (Windows) ou link simbólico (Linux e macOS): `a_link_is_followed_and_its_target_must_be_of_the_right_kind`. Caminho no estilo do outro sistema é recusado já na carga.
+- **Plano B.** Resolver o caminho no disco ao abrir e aplicar ao destino as mesmas regras do texto (raiz, rede, prefixo de dispositivo).
+- **O que falta.** Uma junção para `C:\` ou um link para `/` passa a recusa de raiz.
 
 ### Página ou programa local comanda os terminais
 

@@ -33,6 +33,7 @@ const POISON_EXTRA: &[&str] = &[];
 const DENIED_EXTRA: &[&str] = &[];
 const WRONG_HARNESSES: &[&str] = &["harness-other", "Harness-Test", "harness-a"];
 
+mod links;
 mod real_process;
 mod suite;
 

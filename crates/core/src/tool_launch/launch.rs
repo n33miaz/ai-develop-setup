@@ -171,7 +171,13 @@ mod tests {
         if cfg!(windows) {
             // The current folder without its drive, written `/a/b`, resolves against the current
             // drive, so it exists whichever drive the checkout is on.
-            let here = std::env::current_dir().unwrap().display().to_string();
+            // Canonical and parsed, as the configuration keeps it: a short name or a lowercase
+            // drive letter in the current folder would make the probe refuse the text.
+            let here = std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap();
+            let here = here.display().to_string();
+            let here = AbsPath::parse(here.strip_prefix(r"\\?\").unwrap_or(&here))
+                .unwrap()
+                .to_string();
             let posix = here.get(2..).unwrap_or_default().replace('\\', "/");
             assert!(DiskProbe.is_dir(&here), "{here}");
             assert!(Path::new(&posix).is_dir(), "{posix}");
