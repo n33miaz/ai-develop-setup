@@ -89,10 +89,13 @@ fn external_commitment_refuses_a_registered_future_key_before_rotation() {
     let mut log = anchored(&path, &anchor).unwrap();
     log.append(&event("task/t1", 1, 1, serde_json::json!({})))
         .unwrap();
-    Connection::open(&path).unwrap().execute(
-        "INSERT INTO cipher_key VALUES ('key-b', 'xchacha20poly1305', zeroblob(24), zeroblob(16))",
-        [],
-    ).unwrap();
+    Connection::open(&path)
+        .unwrap()
+        .execute(
+            "INSERT INTO cipher_key VALUES (?1, 'xchacha20poly1305', zeroblob(24), zeroblob(16))",
+            ["key-b"],
+        )
+        .unwrap();
     assert_eq!(
         log.append(&event("task/t1", 2, 2, serde_json::json!({}))),
         Err(StorageError::AnchorMismatch)
@@ -246,10 +249,13 @@ fn recovery_refuses_a_registered_key_without_an_event() {
     log.append(&event("task/t1", 1, 1, serde_json::json!({})))
         .unwrap();
     drop(log);
-    Connection::open(&path).unwrap().execute(
-        "INSERT INTO cipher_key VALUES ('key-b', 'xchacha20poly1305', zeroblob(24), zeroblob(16))",
-        [],
-    ).unwrap();
+    Connection::open(&path)
+        .unwrap()
+        .execute(
+            "INSERT INTO cipher_key VALUES (?1, 'xchacha20poly1305', zeroblob(24), zeroblob(16))",
+            ["key-b"],
+        )
+        .unwrap();
     assert_eq!(
         EventLog::plan_reanchor(&path, &StorageConfig::defaults(), keys("key-a", 1), &anchor),
         Err(StorageError::AnchorMismatch)
