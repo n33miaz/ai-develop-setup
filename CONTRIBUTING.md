@@ -144,7 +144,7 @@ Títulos e descrições de issue e PR, nomes de branch, assuntos de commit, come
 
 ## Versões
 
-Até a primeira versão estável, cada junção na `develop` com o `ci-ok` verde publica um pré-lançamento em SemVer, `0.1.0-dev.<AAAAMMDD>.<N>+<commit curto>`, com tag `v0.1.0-dev.<AAAAMMDD>.<N>` e notas geradas dos PRs; ficam os dez mais novos ([ADR 0025](docs/adr/0025-semver-dev-prereleases-until-first-installer.md)). Os parâmetros estão em `defaults/release.toml`. Ninguém cria tag nem release à mão: o workflow `prerelease.yml` faz isso.
+Até a primeira versão estável, quando o CI de uma junção na `develop` termina verde, sai um pré-lançamento (junções muito próximas podem sair num só) em SemVer, `0.1.0-dev.<AAAAMMDD>.<N>+<commit curto>`, com tag `v0.1.0-dev.<AAAAMMDD>.<N>` e notas geradas dos PRs; ficam os dez mais novos ([ADR 0025](docs/adr/0025-semver-dev-prereleases-until-first-installer.md)). Os parâmetros estão em `defaults/release.toml`. Ninguém cria tag nem release à mão: o workflow `prerelease.yml` faz isso.
 
 ## Segredos e dados
 

@@ -1,7 +1,13 @@
 name: Pre-release
 
-# Pré-lançamento de desenvolvimento a cada junção na develop com CI verde (ADR 0025). Parâmetros em defaults/release.toml;
-# a numeração e a poda saem de tools/release.py, que só calcula. Ainda não há binário: a release leva a tag e as notas.
+# Pré-lançamento de desenvolvimento quando o CI de um push na develop termina verde (ADR 0025). O CI só conclui com
+# sucesso se o job ci-ok passar. Parâmetros em defaults/release.toml; numeração e plano de poda em tools/release.py,
+# testado no job rust do CI. Ainda não há binário: a release leva a tag e as notas.
+# Os jobs que calculam rodam com leitura; os que escrevem não executam código do repositório, só conferem os dados
+# recebidos e chamam a API. O GitHub lê workflow_run da branch padrão, que neste repositório é a develop.
+# Modelo de ameaças: o código no topo conferido da develop tem a mesma confiança que este arquivo, que vem dela.
+# As conferências protegem contra execuções concorrentes deste workflow e contra engano, não contra uma develop
+# hostil nem contra quem tem escrita no repositório e mexe nas tags do canal.
 on:
   workflow_run:
     workflows: [CI]
@@ -11,15 +17,19 @@ on:
 permissions:
   contents: read
 
-# Uma publicação por vez, para dois pré-lançamentos do mesmo dia não pegarem o mesmo número.
+# Só entram execuções do CI da develop. Uma por vez; junções próximas podem sair num só pré-lançamento, o do
+# commit mais novo.
 concurrency:
   group: prerelease
   cancel-in-progress: false
 
+env:
+  REPO: ${{ github.repository }}
+  HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+
 jobs:
-  publish:
-    name: publish
-    # Só o CI de push na develop deste repositório, e só verde.
+  plan:
+    name: plan
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push' &&
@@ -27,80 +37,184 @@ jobs:
       github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    outputs:
+      enabled: ${{ steps.plan.outputs.enabled }}
+      prune: ${{ steps.plan.outputs.prune }}
+      keep: ${{ steps.plan.outputs.keep }}
+      publish: ${{ steps.plan.outputs.publish }}
+      tag: ${{ steps.plan.outputs.tag }}
+      version: ${{ steps.plan.outputs.version }}
+      previous: ${{ steps.plan.outputs.previous }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Calcular
+        id: plan
+        run: |
+          set -euo pipefail
+          python3 tools/release.py config | tee -a "$GITHUB_OUTPUT"
+          develop_head=$(gh api "repos/$REPO/commits/develop" --jq .sha)
+          if [ "$develop_head" != "$HEAD_SHA" ]; then
+            echo "A develop já está em $develop_head; o pré-lançamento sai para ele."
+            echo "publish=no" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          gh api --paginate "repos/$REPO/releases?per_page=100" \
+            --jq '.[] | {id: .id, tagName: .tag_name, isPrerelease: .prerelease, isDraft: .draft} | tojson' > releases.jsonl
+          git tag -l > tags.txt
+          git tag --merged "$HEAD_SHA" > merged.txt
+          git tag --points-at "$HEAD_SHA" > points-at.txt
+          python3 tools/release.py next --sha "$HEAD_SHA" --releases releases.jsonl --tags tags.txt \
+            --merged merged.txt --points-at points-at.txt | tee -a "$GITHUB_OUTPUT"
+
+  publish:
+    name: publish
+    needs: plan
+    if: needs.plan.outputs.enabled == 'on' && needs.plan.outputs.publish == 'yes'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: write
     env:
       GH_TOKEN: ${{ github.token }}
-      REPO: ${{ github.repository }}
-      HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+      TAG: ${{ needs.plan.outputs.tag }}
+      VERSION: ${{ needs.plan.outputs.version }}
+      PREVIOUS: ${{ needs.plan.outputs.previous }}
+    steps:
+      - name: Reservar a tag e publicar
+        run: |
+          set -euo pipefail
+          pattern='^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-[a-z][a-z0-9]*\.[0-9]{8}\.[1-9][0-9]*$'
+          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::commit inválido"; exit 1; }
+          [[ "$TAG" =~ $pattern ]] || { echo "::error::tag inválida: $TAG"; exit 1; }
+          [[ "$VERSION" == "${TAG#v}+${HEAD_SHA:0:7}" ]] || { echo "::error::versão inválida: $VERSION"; exit 1; }
+          if [ -n "$PREVIOUS" ] && ! [[ "$PREVIOUS" =~ $pattern ]]; then echo "::error::tag anterior inválida"; exit 1; fi
+          develop_head=$(gh api "repos/$REPO/commits/develop" --jq .sha)
+          if [ "$develop_head" != "$HEAD_SHA" ]; then
+            echo "A develop andou para $develop_head; o pré-lançamento sai para ele."
+            exit 0
+          fi
+          # A tag nasce antes da release, no commit avaliado; se o nome já existir, a criação falha e nada é publicado.
+          gh api -X POST "repos/$REPO/git/refs" -f "ref=refs/tags/$TAG" -f "sha=$HEAD_SHA" > /dev/null
+          notes="Versão \`$VERSION\`, do commit $HEAD_SHA. Pré-lançamento de desenvolvimento: só tag e notas, ainda sem binário."
+          start=()
+          if [ -n "$PREVIOUS" ]; then start=(--notes-start-tag "$PREVIOUS"); fi
+          gh release create "$TAG" --repo "$REPO" --verify-tag --title "$VERSION" \
+            --prerelease --latest=false --notes "$notes" --generate-notes "${start[@]}"
+          target=$(gh api "repos/$REPO/git/ref/tags/$TAG" --jq .object.sha)
+          if [ "$target" != "$HEAD_SHA" ]; then
+            echo "::error::a tag $TAG aponta para $target, não para $HEAD_SHA."
+            exit 1
+          fi
+
+  prune-plan:
+    name: prune-plan
+    needs: [plan, publish]
+    # Roda também sem publicação nova, para terminar uma poda interrompida.
+    if: >-
+      always() && needs.plan.result == 'success' &&
+      (needs.publish.result == 'success' || needs.publish.result == 'skipped') &&
+      needs.plan.outputs.enabled == 'on' && needs.plan.outputs.prune != 'off'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      targets: ${{ steps.plan.outputs.targets }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      NEW_TAG: ${{ needs.publish.result == 'success' && needs.plan.outputs.tag || '' }}
+      KEEP: ${{ needs.plan.outputs.keep }}
+      MODE: ${{ needs.plan.outputs.prune }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           persist-credentials: false
-      - name: Testar o script de versões
-        run: python3 -m unittest discover -s tools -p 'test_release.py'
-      - name: Publicar
-        id: publish
+      - name: Calcular a poda
+        id: plan
         run: |
           set -euo pipefail
-          python3 tools/release.py config > config.txt
-          cat config.txt
-          if ! grep -qx 'enabled=on' config.txt; then
-            echo "Pré-lançamentos desligados em defaults/release.toml."
-            exit 0
+          gh api --paginate "repos/$REPO/releases?per_page=100" \
+            --jq '.[] | {id: .id, tagName: .tag_name, isPrerelease: .prerelease, isDraft: .draft} | tojson' > releases.jsonl
+          gh api --paginate "repos/$REPO/git/matching-refs/tags/" \
+            --jq '.[] | select(.object.type == "commit") | "\(.ref | sub("^refs/tags/"; "")) \(.object.sha)"' > remote-tags.txt
+          require=()
+          if [ -n "$NEW_TAG" ]; then require=(--require "$NEW_TAG" --require-sha "$HEAD_SHA"); fi
+          python3 tools/release.py prune --releases releases.jsonl --remote-tags remote-tags.txt "${require[@]}" > plan.txt
+          grep '^delete ' plan.txt > targets.txt || true
+          {
+            echo "### Poda: ficam os $KEEP mais novos (modo $MODE)"
+            echo
+            echo "Cópia para recriar o que for apagado: id da release, tag e commit."
+            echo
+            while read -r _ id tag sha; do echo "- release $id, tag \`$tag\` → $sha"; done < targets.txt
+            if grep -q '^orphan ' plan.txt; then
+              echo
+              echo "Tags do canal sem release (não são apagadas): $(sed -n 's/^orphan //p' plan.txt | tr '\n' ' ')"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat plan.txt
+          if [ "$MODE" != "apply" ]; then
+            echo "Modo $MODE: nada será apagado."
+            : > targets.txt
           fi
-          # Um commit mais novo já entrou: a vez é dele, e o número do dia continua em ordem.
-          develop_head=$(gh api "repos/$REPO/commits/develop" --jq .sha)
-          if [ "$develop_head" != "$HEAD_SHA" ]; then
-            echo "A develop já está em $develop_head; nada a publicar para $HEAD_SHA."
-            exit 0
-          fi
-          gh api --paginate "repos/$REPO/git/matching-refs/tags/" --jq '.[] | "\(.ref | sub("^refs/tags/"; "")) \(.object.sha)"' > tags.txt
-          if awk -v sha="$HEAD_SHA" '$2 == sha { found = 1 } END { exit !found }' tags.txt; then
-            echo "O commit $HEAD_SHA já tem tag; nada a publicar."
-            exit 0
-          fi
-          cut -d' ' -f1 tags.txt | python3 tools/release.py next --sha "$HEAD_SHA" > next.txt
-          cat next.txt
-          tag=$(sed -n 's/^tag=//p' next.txt)
-          version=$(sed -n 's/^version=//p' next.txt)
-          previous=$(sed -n 's/^previous=//p' next.txt)
-          notes="Versão \`$version\`, do commit $HEAD_SHA. Pré-lançamento de desenvolvimento: só tag e notas, ainda sem binário."
-          start=()
-          if [ -n "$previous" ]; then start=(--notes-start-tag "$previous"); fi
-          gh release create "$tag" --repo "$REPO" --target "$HEAD_SHA" --title "$version" \
-            --prerelease --latest=false --notes "$notes" --generate-notes "${start[@]}"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-      - name: Podar os mais antigos
-        if: steps.publish.outputs.tag != ''
-        env:
-          NEW_TAG: ${{ steps.publish.outputs.tag }}
+          {
+            echo "targets<<PLAN_END"
+            cat targets.txt
+            echo "PLAN_END"
+          } >> "$GITHUB_OUTPUT"
+
+  prune:
+    name: prune
+    needs: [plan, prune-plan]
+    if: always() && needs.prune-plan.result == 'success' && needs.prune-plan.outputs.targets != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TARGETS: ${{ needs.prune-plan.outputs.targets }}
+    steps:
+      - name: Apagar o que o plano listou, conferindo cada alvo
         run: |
           set -euo pipefail
-          mode=$(sed -n 's/^prune=//p' config.txt)
-          keep=$(sed -n 's/^keep=//p' config.txt)
-          if [ "$mode" = "off" ]; then
-            echo "Poda desligada."
-            exit 0
-          fi
-          gh release list --repo "$REPO" --limit 1000 --json tagName,isPrerelease > releases.json
-          python3 tools/release.py prune --keep-tag "$NEW_TAG" < releases.json > prune.txt
-          echo "A apagar (release e tag), além dos $keep mais novos:"
-          cat prune.txt
-          if [ "$mode" != "apply" ]; then
-            echo "Modo $mode: nada apagado."
-            exit 0
-          fi
-          while read -r tag; do
-            [ -n "$tag" ] || continue
-            gh release delete "$tag" --repo "$REPO" --cleanup-tag --yes
-          done < prune.txt
-          # Nova conferência: depois da poda, sobra no máximo o limite e nenhum dos apagados.
-          gh release list --repo "$REPO" --limit 1000 --json tagName,isPrerelease > after.json
-          python3 tools/release.py prune --keep-tag "$NEW_TAG" < after.json > left.txt
-          if [ -s left.txt ]; then
-            echo "::error::a poda deixou pré-lançamentos além do limite:"
-            cat left.txt
+          pattern='^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-[a-z][a-z0-9]*\.[0-9]{8}\.[1-9][0-9]*$'
+          # Só um 404 explícito conta como ausência; qualquer outra falha interrompe.
+          absent() {
+            local out
+            if out=$(gh api "$1" 2>&1); then return 1; fi
+            if grep -q 'HTTP 404' <<< "$out"; then return 0; fi
+            echo "::error::falha ao consultar $1: $out"
             exit 1
-          fi
+          }
+          printf '%s\n' "$TARGETS" > targets.txt
+          while read -r kind id tag sha; do
+            [ -n "$kind" ] || continue
+            [[ "$kind" == "delete" && "$id" =~ ^[0-9]+$ && "$tag" =~ $pattern && "$sha" =~ ^([0-9a-f]{40}|-)$ ]] \
+              || { echo "::error::linha do plano inválida"; exit 1; }
+            if ! absent "repos/$REPO/releases/$id"; then
+              current=$(gh api "repos/$REPO/releases/$id" --jq '"\(.tag_name) \(.prerelease) \(.draft)"')
+              if [ "$current" != "$tag true false" ]; then
+                echo "::error::a release $id mudou ($current); não foi apagada."
+                exit 1
+              fi
+              gh api -X DELETE "repos/$REPO/releases/$id" > /dev/null
+            fi
+            absent "repos/$REPO/releases/$id" || { echo "::error::a release $id continua lá."; exit 1; }
+            if [ "$sha" != "-" ] && ! absent "repos/$REPO/git/ref/tags/$tag"; then
+              absent "repos/$REPO/releases/tags/$tag" || { echo "::error::a tag $tag ganhou outra release."; exit 1; }
+              current=$(gh api "repos/$REPO/git/ref/tags/$tag" --jq .object.sha)
+              if [ "$current" != "$sha" ]; then
+                echo "::error::a tag $tag mudou para $current; não foi apagada."
+                exit 1
+              fi
+              gh api -X DELETE "repos/$REPO/git/refs/tags/$tag" > /dev/null
+              absent "repos/$REPO/git/ref/tags/$tag" || { echo "::error::a tag $tag continua lá."; exit 1; }
+            fi
+            if [ "$sha" = "-" ]; then echo "Apagada: release $id ($tag já sem tag)."; else echo "Apagadas: release $id e tag $tag."; fi
+          done < targets.txt
