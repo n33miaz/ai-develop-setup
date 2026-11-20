@@ -3496,7 +3496,8 @@ async fn host_event_during_a_timed_out_automatic_close_is_handled() {
     host_event_during_an_automatic_close("exit-other-then-drop-close").await;
 }
 
-/// A real shell that starts a second interpreter, which outlives it, and then exits.
+/// A real shell that starts a second interpreter in a console of its own, then exits after 3 s.
+/// The second one waits 60 s: closing the shell's console does not end it, only its Job Object does.
 #[cfg(windows)]
 struct LeftBehindLauncher;
 #[cfg(windows)]
@@ -3511,11 +3512,13 @@ impl Launcher for LeftBehindLauncher {
             })
             .map(|(name, value)| (name, Value::String(value)))
             .collect();
+        let system = r"%SystemRoot%\System32";
+        let line = format!(
+            r"start /min {system}\cmd.exe /d /c {system}\timeout.exe /t 60 /nobreak & {system}\timeout.exe /t 3 /nobreak >nul"
+        );
         serde_json::from_value(json!({
             "session_id": request.session_id, "cols": request.cols, "rows": request.rows,
-            "program": "cmd.exe",
-            "args": ["/d", "/c", r"start /b cmd.exe /d /k & %SystemRoot%\System32\timeout.exe /t 3 /nobreak >nul"],
-            "cwd": null, "env": env
+            "program": "cmd.exe", "args": ["/d", "/c", line], "cwd": null, "env": env
         }))
         .map_err(|_| ApiError::Invalid)
     }
@@ -3524,7 +3527,10 @@ impl Launcher for LeftBehindLauncher {
 #[cfg(windows)]
 #[tokio::test]
 async fn ended_session_leaves_no_child_behind_on_windows() {
-    use ads_ptyhost::{PortablePtyBackend, win::ProcessProbe};
+    use ads_ptyhost::{
+        PortablePtyBackend,
+        win::{ProcessProbe, process_table},
+    };
     let host =
         Arc::new(PtyHost::new(Arc::new(PortablePtyBackend), HostConfig::defaults()).unwrap());
     let (near, far) = tokio::io::duplex(262144);
@@ -3571,20 +3577,50 @@ async fn ended_session_leaves_no_child_behind_on_windows() {
         true
     );
     let id = ads_ptyhost::wire::SessionId::new("tree").unwrap();
-    // While the shell waits, both interpreters are in the session's tree.
-    let mut tree = Vec::new();
+    // The shell is the session process whose parent is this test, which runs the host.
+    let me = std::process::id();
+    let children_of = |parent: u32| -> Vec<u32> {
+        process_table()
+            .unwrap()
+            .into_iter()
+            .filter(|entry| entry.parent_process_id == parent)
+            .map(|entry| entry.process_id)
+            .collect()
+    };
+    let mut shell = None;
+    let mut left = Vec::new();
     bounded(async {
-        while tree.len() < 2 {
-            tree = host.tree_process_ids(&id).unwrap_or_default();
+        while left.len() < 2 {
+            let tree = host.tree_process_ids(&id).unwrap_or_default();
+            shell = shell.or_else(|| {
+                tree.iter()
+                    .copied()
+                    .find(|pid| children_of(me).contains(pid))
+            });
+            // Found by parent, not by the Job Object's list: the interpreter the shell started in a
+            // console of its own (the shell's child that has children) and its 60 s wait.
+            left = shell
+                .into_iter()
+                .flat_map(&children_of)
+                .filter_map(|pid| {
+                    let below = children_of(pid);
+                    (!below.is_empty()).then(|| [vec![pid], below].concat())
+                })
+                .next()
+                .unwrap_or_default();
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await;
-    let probes: Vec<ProcessProbe> = tree
+    let tree = host.tree_process_ids(&id).unwrap();
+    let probes: Vec<ProcessProbe> = left
         .iter()
-        .filter_map(|pid| ProcessProbe::open(*pid).ok())
+        .map(|pid| ProcessProbe::open(*pid).expect("open a left-behind process"))
         .collect();
-    assert!(probes.len() >= 2, "{tree:?}");
+    for (pid, probe) in left.iter().zip(&probes) {
+        assert!(probe.is_alive().expect("query a left-behind process"));
+        assert!(tree.contains(pid), "{pid} outside the job: {tree:?}");
+    }
     loop {
         let event = receive(&mut ws).await;
         if event["type"] == "urn:ads:event:session.ended:1" {
@@ -3592,9 +3628,14 @@ async fn ended_session_leaves_no_child_behind_on_windows() {
             break;
         }
     }
-    // The daemon gives the slot back on its own, and nothing of the tree is left running.
+    // The daemon gives the slot back on its own, and what ran in its own console is gone too.
+    let alive = || {
+        probes
+            .iter()
+            .any(|p| p.is_alive().expect("query a left-behind process"))
+    };
     bounded(async {
-        while !host.sessions().is_empty() || probes.iter().any(|p| p.is_alive().unwrap()) {
+        while !host.sessions().is_empty() || alive() {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })

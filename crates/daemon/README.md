@@ -327,9 +327,10 @@ confere que a chave chega literal ao filho (`%...%` não expandido, ou seja, a
 variável não existe nele) e que `SystemRoot`, permitida, chega com o valor do
 pai; depois encerra o host de teste. Não abre agentes nem shells interativos. Só no Windows,
 `ended_session_leaves_no_child_behind_on_windows` (`tests/local_api.rs`) roda o host no próprio
-processo de teste com ConPTY: um `cmd.exe` abre outro interpretador, que fica à espera de entrada,
-e sai depois de 3 s; o teste confere que, quando o daemon devolve a vaga sozinho, nenhum processo
-da árvore continua vivo. Os demais testes usam `FakeBackend` e rodam também em Linux.
+processo de teste com ConPTY: um `cmd.exe` abre outro, minimizado num console próprio, que espera
+60 s com `timeout.exe`, e sai depois de 3 s. O teste acha esse filho pelo processo pai, não pela lista
+do Job Object, confere que ele está no job e que, quando o daemon devolve a vaga sozinho, ele e o que
+iniciou não continuam vivos. Fechar o console do terminal não o encerraria; só o job encerra. Os demais testes usam `FakeBackend` e rodam também em Linux.
 
 Para desfazer a integração, remova o consumidor da biblioteca; nenhuma sessão é
 migrada nem formato de armazenamento é alterado. A contiguidade de `seq`, os códigos
