@@ -4,7 +4,7 @@ export {
   HarnessListError,
   isSubscriptionEndCode,
   SESSION_CLOSE_PENDING,
-  SESSION_SETUP_TIMED_OUT,
+  SESSION_SETUP_FAILED,
   SUBSCRIPTION_REPLAY_UNAVAILABLE,
 } from './client'
 export type {

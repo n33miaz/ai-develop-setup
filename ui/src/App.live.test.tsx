@@ -55,18 +55,10 @@ describe('live interface', () => {
 const CATALOG = { harnesses: ['claude'], workdir_aliases: ['default'] }
 
 describe('opening sessions', () => {
-  it('opens a schema-valid session and observes creation before the response', async () => {
+  it('opens a schema-valid session and observes creation after the response', async () => {
     const client = createFakeCoreClient(CATALOG)
     const send = vi.spyOn(client, 'send').mockImplementation((command) => {
       expect(isLocalCommand(command)).toBe(true)
-      if (command.method === 'session.open') {
-        const id = command.params.session_id as string
-        client.emit({
-          type: 'urn:ads:event:session.created:1',
-          stream: `session/${id}`,
-          data: { session_id: id, harness: 'claude', display_name: 'New session' },
-        })
-      }
       return Promise.resolve({
         jsonrpc: '2.0',
         id: command.id,
@@ -81,6 +73,16 @@ describe('opening sessions', () => {
     const button = await screen.findByRole('button', { name: 'Open claude' })
     await waitFor(() => expect(button).toBeEnabled())
     fireEvent.click(button)
+    await waitFor(() => expect(button).toBeEnabled())
+    // A conexão que abre só entrega eventos da sessão depois da resposta.
+    const id = send.mock.calls[0]?.[0].params.session_id as string
+    act(() => {
+      client.emit({
+        type: 'urn:ads:event:session.created:1',
+        stream: `session/${id}`,
+        data: { session_id: id, harness: 'claude', display_name: 'New session' },
+      })
+    })
     await waitFor(() =>
       expect(
         screen.getByRole('region', { name: 'Terminal of session New session' }),
@@ -468,6 +470,31 @@ describe('sessions the core cannot keep', () => {
     expect(screen.getByRole('button', { name: 'Close session' })).toBeInTheDocument()
   })
 
+  it('names a session without a name in the close alert', async () => {
+    const client = createFakeCoreClient(CATALOG)
+    render(
+      <I18nContext value={createTranslator('en')}>
+        <App client={client} live sessionStreams={['session/s-01']} />
+      </I18nContext>,
+    )
+    await waitFor(() => {
+      expect(client.getState()).toBe('connected')
+    })
+    act(() => {
+      client.end('session/s-01', -32013)
+    })
+    vi.spyOn(client, 'send').mockImplementation((command) =>
+      Promise.resolve({
+        jsonrpc: '2.0',
+        id: command.id,
+        error: { code: -32603, message: 'service unavailable' },
+      }),
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Close session' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not close Unnamed session.')
+    expect(screen.getByRole('alert')).not.toHaveTextContent('s-01')
+  })
+
   it('marks a session whose subscription ended without losing the connection', async () => {
     const client = createFakeCoreClient(CATALOG)
     const t = createTranslator('en')
@@ -630,21 +657,19 @@ describe('sessions the core cannot keep', () => {
     expect(screen.getByRole('button', { name: 'Close session' })).toBeInTheDocument()
   })
 
-  it('allows cleanup after the process exits during a setup that times out', async () => {
+  it('names a failed setup without events and allows cleanup when automatic cleanup fails', async () => {
     const client = createFakeCoreClient(CATALOG)
-    const { ends } = trackSubscriptions(client)
-    await openWith(client, (command) => {
-      const id = command.params.session_id as string
-      created(client, id, 'Session A')
-      exited(client, id)
-      return refused(command, -32014)
-    })
-    expect(screen.getByRole('button', { name: /Session A/ })).toHaveTextContent('Failed to start')
+    const { ends, stopped } = trackSubscriptions(client)
+    await openWith(client, (command) => refused(command, -32014))
+    expect(screen.getByRole('button', { name: /Unnamed session/ })).toHaveTextContent(
+      'Failed to start',
+    )
+    expect(stopped).toHaveLength(0)
     expect(screen.queryByRole('button', { name: 'Close session' })).not.toBeInTheDocument()
     act(() => {
       expect(ends[0]?.end(-32013)).toBe(true)
     })
-    expect(screen.getByRole('button', { name: /Session A/ })).toHaveTextContent('Closing')
+    expect(screen.getByRole('button', { name: /Unnamed session/ })).toHaveTextContent('Closing')
     expect(screen.getByRole('button', { name: 'Close session' })).toBeEnabled()
   })
 
@@ -680,46 +705,37 @@ describe('sessions the core cannot keep', () => {
   })
 
   it.each([-32004, -32013] as const)(
-    'offers manual cleanup after setup fails and observes final result %s',
+    'keeps a failed setup until its final result %s arrives',
     async (code) => {
       const client = createFakeCoreClient(CATALOG)
       const { ends } = trackSubscriptions(client)
-      await openWith(client, (command) => {
-        created(client, command.params.session_id as string, 'Session A')
-        return refused(command, -32603)
-      })
-      expect(screen.getByRole('button', { name: /Session A/ })).toHaveTextContent('Failed to start')
-      expect(screen.getByRole('button', { name: 'Close session' })).toBeEnabled()
+      await openWith(client, (command) => refused(command, -32014))
+      expect(screen.getByRole('button', { name: /Unnamed session/ })).toHaveTextContent(
+        'Failed to start',
+      )
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
       act(() => {
         expect(ends[0]?.end(code)).toBe(true)
       })
-      if (code === -32004) expect(screen.getByText('No sessions.')).toBeInTheDocument()
-      else expect(screen.getByRole('button', { name: /Session A/ })).toHaveTextContent('Closing')
+      if (code === -32004) {
+        expect(screen.getByText('No sessions.')).toBeInTheDocument()
+      } else {
+        expect(screen.getByRole('button', { name: /Unnamed session/ })).toHaveTextContent('Closing')
+        expect(screen.getByRole('button', { name: 'Close session' })).toBeEnabled()
+      }
     },
   )
 
   it('releases the subscription of a refused open', async () => {
     const client = createFakeCoreClient(CATALOG)
     const { stopped } = trackSubscriptions(client)
-    await openWith(client, (command) => refused(command, -1))
+    await openWith(client, (command) => refused(command, -32603))
     expect(stopped).toHaveLength(1)
-  })
-
-  it('removes a failed setup when automatic cleanup confirms', async () => {
-    const client = createFakeCoreClient(CATALOG)
-    const { ends } = trackSubscriptions(client)
-    await openWith(client, (command) => {
-      created(client, command.params.session_id as string, 'Session A')
-      return refused(command, -32014)
-    })
-    expect(screen.getByRole('button', { name: /Session A/ })).toBeInTheDocument()
-    act(() => {
-      expect(ends[0]?.end(-32004)).toBe(true)
-    })
+    expect(screen.getByRole('alert')).toHaveTextContent('Could not execute the session command.')
     expect(screen.getByText('No sessions.')).toBeInTheDocument()
   })
 
-  it('resumes cleanup of an opened session whose stream is also configured', async () => {
+  it('offers cleanup of a failed setup whose stream is also configured', async () => {
     const client = createFakeCoreClient(CATALOG)
     const { ends } = trackSubscriptions(client)
     const t = createTranslator('en')
@@ -742,18 +758,20 @@ describe('sessions the core cannot keep', () => {
     )
     expect(ends).toHaveLength(2)
     await act(async () => {
-      created(client, id, 'Session A')
-      exited(client, id)
       answer.resolve({
         ...refusal(command),
-        error: { code: -32014, message: 'setup timed out' },
+        error: { code: -32014, message: 'session setup failed' },
       })
       await answer.promise
     })
     expect(screen.getByRole('button', { name: /Failed to start/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Close session' })).not.toBeInTheDocument()
+    // Cada assinatura recebe o próprio resultado final, em qualquer ordem.
     act(() => {
       expect(ends[1]?.end(-32013)).toBe(true)
+      expect(ends[0]?.end(-32013)).toBe(true)
     })
+    expect(screen.getByRole('button', { name: /Closing/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Close session' })).toBeEnabled()
   })
 
