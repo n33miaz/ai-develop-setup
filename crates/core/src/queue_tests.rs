@@ -1,6 +1,6 @@
 use super::*;
 use Channel::{LocalUi, RemoteDevice, Tray};
-use ads_contracts::EventQueueTaskStateChangedV2Type;
+use ads_contracts::{CommonUlidV1, EventQueueTaskStateChangedV2Type};
 
 fn id(text: &str) -> CommonIdV1 {
     CommonIdV1::new(text).unwrap()
@@ -544,35 +544,18 @@ fn stream_event_id(seq: u64) -> CommonUlidV1 {
 }
 
 fn replay_events(events: &[Owned], policy: &QueuePolicy) -> Result<ReplayedTask, ReplayRefusal> {
-    replay_with_clocks(events, Some(policy), &[])
+    replay_with_policy(events, Some(policy))
 }
 
-fn replay_with_clocks(
+fn replay_with_policy(
     events: &[Owned],
     policy: Option<&QueuePolicy>,
-    overrides: &[(CommonUlidV1, CommonTimestampV1)],
 ) -> Result<ReplayedTask, ReplayRefusal> {
-    let clocks: Vec<_> = (1..=events.len() as u64)
-        .map(|seq| {
-            let id = stream_event_id(seq);
-            let now = overrides
-                .iter()
-                .find(|(event, _)| event == &id)
-                .map_or_else(|| ts("2030-01-02T03:04:30Z"), |(_, clock)| clock.clone());
-            (id, now)
-        })
-        .collect();
     replay_task(
         &id("task-01"),
         events.iter().map(Owned::as_log),
         registry,
         policy,
-        |id| {
-            clocks
-                .iter()
-                .find(|(event, _)| event == id)
-                .map(|(event_id, now)| ReplayAdmissionClock { event_id, now })
-        },
     )
 }
 
@@ -633,39 +616,15 @@ fn replay_requires_an_owner_policy_event_to_raise_the_ceiling() {
 }
 
 #[test]
-fn replay_checks_the_independent_clock_and_its_event_id() {
-    let events = typed(Stream::new().admit("task-01", 2).numbered());
-    let initial = policy();
+fn replay_uses_the_creation_timestamp_and_requires_a_policy() {
+    let mut events = Stream::new().admit("task-01", 2).numbered();
+    events[1]["ts"] = "2031-01-02T03:04:02Z".into();
+    let events = typed(events);
     assert_eq!(
-        replay_with_clocks(&events, None, &[]),
+        replay_with_policy(&events, None),
         Err(ReplayRefusal::MissingInitialPolicy)
     );
-    let creation_id = stream_event_id(2);
-    let early_clock = ts("2030-01-02T03:03:50Z");
-    assert_eq!(
-        replay_with_clocks(&events, Some(&initial), &[(creation_id, early_clock)]),
-        Err(ReplayRefusal::Admission(AdmissionRefusal::AheadOfClock))
-    );
-
-    let wrong_id = stream_event_id(1);
-    let now = ts("2030-01-02T03:04:02Z");
-    let replay = |clock: Option<ReplayAdmissionClock<'_>>| {
-        replay_task(
-            &id("task-01"),
-            events.iter().map(Owned::as_log),
-            registry,
-            Some(&initial),
-            |_| clock,
-        )
-    };
-    assert_eq!(
-        replay(Some(ReplayAdmissionClock {
-            event_id: &wrong_id,
-            now: &now
-        })),
-        Err(ReplayRefusal::AdmissionClockMismatch)
-    );
-    assert_eq!(replay(None), Err(ReplayRefusal::MissingAdmissionClock));
+    assert_eq!(replay_events(&events, &policy()).unwrap().state, Queued);
 }
 
 #[test]
@@ -779,13 +738,13 @@ fn replay_recovers_a_running_task_after_limits_are_lowered() {
         .restart()
         .policy_changed(&lowered);
     let events = typed(Stream(stream.0.clone()).numbered());
-    let restored = replay_with_clocks(&events, None, &[]).unwrap();
+    let restored = replay_with_policy(&events, None).unwrap();
     assert_eq!((restored.state, restored.attempts), (Running, 1));
     assert_eq!(restored.policy, lowered);
 
     let events = typed(stream.admit("task-03", 2).numbered());
     assert_eq!(
-        replay_with_clocks(&events, None, &[]),
+        replay_with_policy(&events, None),
         Err(ReplayRefusal::Admission(AdmissionRefusal::WindowFull))
     );
 }
@@ -841,14 +800,13 @@ fn replay_restores_the_owner_anchor_and_admission_after_restart() {
     };
 
     let values: Vec<serde_json::Value> = serde_json::from_slice(&persisted).unwrap();
-    let clocks = [(stream_event_id(2), ts(jumped))];
     let mut missing = values.clone();
     missing.remove(2);
     for (index, value) in missing.iter_mut().enumerate().skip(2) {
         value["seq"] = (index + 1).into();
     }
     assert_eq!(
-        replay_with_clocks(&typed(missing), Some(&policy), &clocks),
+        replay_events(&typed(missing), &policy),
         Err(ReplayRefusal::Admission(
             AdmissionRefusal::BehindLastAdmission
         ))
@@ -856,12 +814,23 @@ fn replay_restores_the_owner_anchor_and_admission_after_restart() {
     let mut wrong_owner = values.clone();
     wrong_owner[2]["data"]["owner_id"] = "owner-02".into();
     assert_eq!(
-        replay_with_clocks(&typed(wrong_owner), Some(&policy), &clocks),
+        replay_events(&typed(wrong_owner), &policy),
         Err(ReplayRefusal::NotOwnerDevice)
     );
-    let restored = replay_with_clocks(&typed(values), Some(&policy), &clocks).unwrap();
+    let restored = replay_events(&typed(values), &policy).unwrap();
     assert_eq!((restored.state, restored.attempts), (Queued, 0));
     let third = manual_at("task-03", "2030-01-02T03:04:06Z", 6);
+    let ahead = manual_at("task-03", "2030-01-02T03:04:09Z", 6);
+    assert_eq!(
+        admit_as_owner(
+            &ahead,
+            &[first.clone(), second.clone()],
+            &policy,
+            &ts(corrected),
+            restored.anchor.as_ref()
+        ),
+        Err(AdmissionRefusal::AheadOfClock)
+    );
     assert_eq!(
         admit_as_owner(
             &third,

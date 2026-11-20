@@ -357,10 +357,20 @@ Riscos da troca de conta por pasta de perfil ([ADR 0022](adr/0022-account-profil
 
 ## Perda do contexto de admissão da fila
 
-- **Descrição.** A política inicial de uma fila antiga ou a leitura histórica do relógio podem se perder. Uma leitura pode ser associada à criação errada.
+- **Descrição.** A política inicial de uma fila antiga pode se perder se o dono ainda não tinha registrado a política no stream.
 - **Impacto.** Sem os dados históricos íntegros, o núcleo pode recusar o replay e a retomada de uma tarefa em execução.
 - **Dono.** Núcleo e produtor da fila.
 - **Teto.** A fila afetada. Cada nova admissão fica sujeita aos limites vigentes em [queue.toml](../defaults/queue.toml).
-- **Mitigação existente.** O replay deriva as mudanças de política dos eventos do dono, exige o ID da criação na leitura histórica do relógio e valida cada admissão com a política da época.
-- **Plano B.** Manter a fila parada e a tarefa em `running` sem nova tentativa. Recuperar o stream, a política inicial quando necessária e o relógio do backup íntegro antes de repetir o replay e conferir a sessão no host.
-- **O que falta.** Integrar a gravação condicional das mudanças do dono e a persistência atômica do relógio ao produtor conforme o [README do núcleo](../crates/core/README.md#fila-contínua).
+- **Mitigação existente.** O replay deriva as mudanças de política dos eventos do dono, usa o `ts` de cada criação e de cada reancoragem coberto pela cadeia HMAC e valida cada admissão com a política da época.
+- **Plano B.** Manter a fila parada e a tarefa em `running` sem nova tentativa. Recuperar do backup íntegro o stream e, quando necessária, a política inicial antes de repetir o replay e conferir a sessão no host.
+- **O que falta.** Integrar a gravação condicional das mudanças do dono ao produtor conforme o [README do núcleo](../crates/core/README.md#fila-contínua).
+
+## Carimbo adiantado aceito no replay da fila
+
+- **Descrição.** No replay, o relógio de cada criação é o próprio `ts` gravado, então `AheadOfClock` não dispara. Um produtor com a chave da cadeia HMAC, por erro ou de propósito, pode gravar uma criação com carimbo adiantado, e o replay a aceita. A admissão ao vivo recusaria essa criação.
+- **Impacto.** A criação adiantada deixa de contar as admissões anteriores na própria janela e passa a ocupar a janela das seguintes. Se o adiantamento passar de `clock_rewind_seconds`, as admissões ao vivo seguintes são recusadas com `BehindLastAdmission`: a fila trava em vez de abrir.
+- **Dono.** Produtor da fila.
+- **Teto.** `admission_limit` em [queue.toml](../defaults/queue.toml), que não depende de horário, e o teto de tentativas de cada tarefa.
+- **Mitigação existente (implementada e testada).** A admissão ao vivo recusa com `AheadOfClock` o `ts` mais de `clock_skew_seconds` adiante do `now` informado pelo produtor. O replay confere a ordem dos carimbos entre si e a âncora. A âncora do dono (`reanchor_admission_clock`) faz as criações cobertas que estão adiante do relógio contarem no instante da âncora. Ver o [README do núcleo](../crates/core/README.md#fila-contínua).
+- **Plano B.** O dono reancora a fila para retomar a admissão. Se o histórico estiver adulterado, manter a fila parada e recuperar o stream do backup íntegro antes de repetir o replay.
+- **O que falta.** O daemon ainda não chama a admissão ao vivo nem o replay da fila. O replay não detecta o carimbo adiantado sozinho; a detecção vem de `BehindLastAdmission` na admissão seguinte.
