@@ -16,7 +16,6 @@ import {
   SESSION_SETUP_TIMED_OUT,
   useConnectionState,
   type CommandRequestV1,
-  type CommandResponseV2,
   type CoreClient,
   type EventEnvelopeV1,
   type SubscriptionEndCode,
@@ -64,38 +63,16 @@ function nextStatus(
   return next
 }
 
-/** Sessões cujo último evento de ciclo de vida é `session.ended`. */
-function endedSessions(events: readonly SessionEvent[]): Set<string> {
-  const ended = new Set<string>()
-  for (const event of events) {
-    if (event.type === 'urn:ads:event:session.ended:1') ended.add(event.data.session_id)
-    else if (event.type === 'urn:ads:event:session.created:1') ended.delete(event.data.session_id)
-  }
-  return ended
+function statusAfter(code: SubscriptionEndCode): SessionStatus {
+  return code === SESSION_CLOSE_PENDING ? 'closing' : 'ended'
 }
 
-function sendWithin(
-  client: CoreClient,
-  command: CommandRequestV1,
-  ms: number,
-): Promise<CommandResponseV2 | 'timeout'> {
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const timeout = new Promise<'timeout'>((resolve) => {
-    timer = setTimeout(() => {
-      resolve('timeout')
-    }, ms)
-  })
-  return Promise.race([client.send(command), timeout]).finally(() => {
-    clearTimeout(timer)
-  })
+function without(statuses: SessionStatuses, id: string): SessionStatuses {
+  return Object.fromEntries(Object.entries(statuses).filter(([key]) => key !== id))
 }
 
 /** Junta o estado local às sessões dos eventos; fechamento pendente ou falha aparecem mesmo sem `session.created`. */
-function withStatuses(
-  sessions: SessionView[],
-  statuses: SessionStatuses,
-  ended: ReadonlySet<string>,
-): SessionView[] {
+function withStatuses(sessions: SessionView[], statuses: SessionStatuses): SessionView[] {
   const views: SessionView[] = []
   for (const session of sessions) {
     const status = statuses[session.id]
@@ -104,8 +81,6 @@ function withStatuses(
   }
   for (const [id, status] of Object.entries(statuses)) {
     if (status !== 'closing' && status !== 'setupFailed') continue
-    // Um aviso tardio não recria a sessão que o núcleo já deu por encerrada.
-    if (ended.has(id)) continue
     if (!sessions.some((session) => session.id === id)) views.push({ id, activity: 'idle', status })
   }
   return views
@@ -166,24 +141,33 @@ export function App({
   const compact = useSyncExternalStore(subscribeCompact, isCompact)
   const [menuOpen, setMenuOpen] = useState(false)
 
-  const [warning, setWarning] = useState(false)
+  // Quem levantou o aviso: o fechamento de uma sessão só apaga o aviso que ele mesmo levantou.
+  const [warning, setWarning] = useState<string | null>(null)
 
   const reportError = useCallback(() => {
-    setWarning(true)
+    setWarning('command')
   }, [])
 
-  // Assinaturas abertas por `open`, por sessão, até terminarem ou a sessão ser fechada.
-  const openedSubscriptions = useRef(new Map<string, () => void>())
+  const mainRef = useRef<HTMLElement>(null)
+  const closeButtonRef = useRef<HTMLButtonElement>(null)
+
+  // Assinaturas abertas por `open`, por sessão, até terminarem ou a sessão acabar.
+  const openedSubscriptions = useRef(new Map<string, { stop: () => void }>())
 
   const releaseOpened = useCallback((id: string) => {
-    const stop = openedSubscriptions.current.get(id)
+    const entry = openedSubscriptions.current.get(id)
     openedSubscriptions.current.delete(id)
-    stop?.()
+    entry?.stop()
   }, [])
 
-  // Trava síncrona por sessão e o comando em curso, para repetir com a mesma chave depois do prazo.
-  const closeLocks = useRef(new Set<string>())
+  // A tentativa de fechamento em curso, por sessão (trava síncrona), e o comando cujo resultado
+  // ainda é incerto: repetir usa a mesma chave de idempotência.
+  const closeLocks = useRef(new Map<string, CommandRequestV1>())
   const closeCommands = useRef(new Map<string, CommandRequestV1>())
+
+  // Instâncias que o núcleo deu por encerradas: avisos tardios delas não valem mais.
+  const finished = useRef(new Set<string>())
+  const seenEvents = useRef(new Set<string>())
 
   const size = useRef({ cols: 80, rows: 24 })
 
@@ -195,45 +179,74 @@ export function App({
 
   const [closingIds, setClosingIds] = useState<ReadonlySet<string>>(new Set())
 
-  const markSession = useCallback((id: string, status: SessionStatus | 'closed') => {
+  const unlockClose = useCallback((id: string, command?: CommandRequestV1) => {
+    if (command && closeLocks.current.get(id) !== command) return
+    if (!closeLocks.current.delete(id)) return
+    setClosingIds(new Set(closeLocks.current.keys()))
+  }, [])
+
+  const markSession = useCallback((id: string, status: SessionStatus) => {
+    if (finished.current.has(id)) return
     setStatuses((previous) => {
       const next = nextStatus(previous[id], status)
       return next === previous[id] || next === undefined ? previous : { ...previous, [id]: next }
     })
   }, [])
 
-  // Só a assinatura termina: a conexão continua e as outras sessões seguem recebendo eventos.
-  const endSession = useCallback(
-    (stream: string) => (code: SubscriptionEndCode) => {
-      if (!stream.startsWith('session/')) return
-      const id = stream.slice('session/'.length)
+  /** A instância acabou (fechamento aceito ou `session.ended`): solta tudo o que era dela. */
+  const finishSession = useCallback(
+    (id: string, how: 'closed' | 'ended') => {
+      // O foco só sai do controle que vai sumir; quem já foi para outro lugar fica onde está.
+      const button = closeButtonRef.current
+      const active = document.activeElement
+      if (
+        button?.dataset.session === id &&
+        (active === button || active === null || active === document.body)
+      )
+        mainRef.current?.focus()
+      finished.current.add(id)
       releaseOpened(id)
-      markSession(id, code === SESSION_CLOSE_PENDING ? 'closing' : 'ended')
+      closeCommands.current.delete(id)
+      unlockClose(id)
+      setWarning((current) => (current === `close:${id}` ? null : current))
+      setStatuses((previous) => {
+        if (how === 'closed') return { ...previous, [id]: 'closed' }
+        return id in previous ? without(previous, id) : previous
+      })
     },
-    [markSession, releaseOpened],
+    [releaseOpened, unlockClose],
   )
 
-  const receiveSession = useCallback((event: EventEnvelopeV1) => {
-    if (
-      ![
-        'urn:ads:event:session.created:1',
-        'urn:ads:event:session.activity_changed:1',
-        'urn:ads:event:session.ended:1',
-      ].includes(event.type)
-    )
-      return
+  const receiveSession = useCallback(
+    (event: EventEnvelopeV1) => {
+      if (
+        ![
+          'urn:ads:event:session.created:1',
+          'urn:ads:event:session.activity_changed:1',
+          'urn:ads:event:session.ended:1',
+        ].includes(event.type)
+      )
+        return
+      if (seenEvents.current.has(event.id)) return
+      seenEvents.current.add(event.id)
 
-    setLiveEvents((previous) =>
-      previous.some((item) => item.id === event.id)
-        ? previous
-        : [...previous, event as SessionEvent],
-    )
-  }, [])
+      const session = event as SessionEvent
+      const id = session.data.session_id
+      if (session.type === 'urn:ads:event:session.created:1' && finished.current.delete(id)) {
+        // Uma nova instância com o mesmo id volta a aparecer.
+        setStatuses((previous) => without(previous, id))
+      }
+      if (session.type === 'urn:ads:event:session.ended:1') finishSession(id, 'ended')
+
+      setLiveEvents((previous) => [...previous, session])
+    },
+    [finishSession],
+  )
 
   useEffect(
     () => () => {
       const opened = openedSubscriptions.current
-      for (const stop of opened.values()) stop()
+      for (const entry of opened.values()) entry.stop()
 
       opened.clear()
     },
@@ -250,20 +263,24 @@ export function App({
   useEffect(() => {
     if (!live || connection !== 'connected') return
 
+    // Só esta assinatura terminou: as outras da mesma sessão continuam.
     const unsubscribe = sessionStreams.map((stream) =>
-      client.subscribe(stream, 0, receiveSession, endSession(stream)),
+      client.subscribe(stream, 0, receiveSession, (code) => {
+        if (stream.startsWith('session/'))
+          markSession(stream.slice('session/'.length), statusAfter(code))
+      }),
     )
 
     return () => {
       for (const stop of unsubscribe) stop()
     }
-  }, [client, live, connection, sessionStreams, receiveSession, endSession])
+  }, [client, live, connection, sessionStreams, receiveSession, markSession])
 
   const { tasks, sessions } = useMemo(() => {
     if (live)
       return {
         tasks: [],
-        sessions: withStatuses(sessionsFrom(liveEvents), statuses, endedSessions(liveEvents)),
+        sessions: withStatuses(sessionsFrom(liveEvents), statuses),
       }
     const replayed = events(t)
     return { tasks: tasksFrom(replayed.tasks), sessions: sessionsFrom(replayed.sessions) }
@@ -316,7 +333,7 @@ export function App({
   const open = async (harness: string) => {
     setOpening(true)
 
-    setWarning(false)
+    setWarning(null)
 
     const id = `s-${newUlid()}`
 
@@ -325,10 +342,14 @@ export function App({
     setChosenSessionId(id)
 
     try {
-      const stream = `session/${id}`
-      const stop = client.subscribe(stream, 0, receiveSession, endSession(stream))
+      const entry: { stop: () => void } = { stop: () => undefined }
+      entry.stop = client.subscribe(`session/${id}`, 0, receiveSession, (code) => {
+        // Esta assinatura já terminou; esquece só ela, sem cancelar outra da mesma sessão.
+        if (openedSubscriptions.current.get(id) === entry) releaseOpened(id)
+        markSession(id, statusAfter(code))
+      })
 
-      openedSubscriptions.current.set(id, stop)
+      openedSubscriptions.current.set(id, entry)
 
       const response = await client.send(
         newCommand('session.open', {
@@ -353,12 +374,8 @@ export function App({
     }
   }
 
-  const close = async (id: string) => {
-    if (closeLocks.current.has(id)) return
-    closeLocks.current.add(id)
-    setClosingIds(new Set(closeLocks.current))
-
-    setWarning(false)
+  const close = (id: string) => {
+    if (closeLocks.current.has(id) || finished.current.has(id)) return
 
     // Depois de um prazo sem resposta o resultado é incerto: repete com a mesma chave e outro id.
     const previous = closeCommands.current.get(id)
@@ -366,26 +383,35 @@ export function App({
       ? { ...previous, id: newUlid() }
       : newCommand('session.close', { session_id: id })
     closeCommands.current.set(id, command)
+    closeLocks.current.set(id, command)
+    setClosingIds(new Set(closeLocks.current.keys()))
+    setWarning(null)
 
-    try {
-      const response = await sendWithin(client, command, closeTimeoutMs)
-
-      if (response === 'timeout') reportError()
-      else {
-        closeCommands.current.delete(id)
-        if (response.error) reportError()
-        else {
-          releaseOpened(id)
-          markSession(id, 'closed')
-          document.getElementById(TERMINAL_ID)?.focus()
-        }
-      }
-    } catch {
-      reportError()
-    } finally {
-      closeLocks.current.delete(id)
-      setClosingIds(new Set(closeLocks.current))
+    const fail = (definitive: boolean) => {
+      // Outra tentativa da mesma chave ainda pode confirmar: só a última decide o aviso.
+      if (finished.current.has(id) || closeLocks.current.get(id) !== command) return
+      if (definitive) closeCommands.current.delete(id)
+      unlockClose(id, command)
+      setWarning(`close:${id}`)
     }
+
+    // O prazo só devolve o botão; a resposta, quando vier, ainda conclui o fechamento.
+    const timer = setTimeout(() => {
+      fail(false)
+    }, closeTimeoutMs)
+
+    client.send(command).then(
+      (response) => {
+        clearTimeout(timer)
+        if (finished.current.has(id)) return
+        if (response.error) fail(true)
+        else finishSession(id, 'closed')
+      },
+      () => {
+        clearTimeout(timer)
+        fail(false)
+      },
+    )
   }
 
   return (
@@ -430,7 +456,7 @@ export function App({
         </div>
       )}
 
-      {warning && <p role="alert">{t('session.commandFailed')}</p>}
+      {warning !== null && <p role="alert">{t('session.commandFailed')}</p>}
 
       {live && (
         <div className={styles.status} data-active={Boolean(session?.status)}>
@@ -439,11 +465,13 @@ export function App({
           </p>
           {session?.status === 'closing' && (
             <button
+              ref={closeButtonRef}
               type="button"
               className={styles.button}
+              data-session={session.id}
               disabled={connection !== 'connected' || closingIds.has(session.id)}
               onClick={() => {
-                void close(session.id)
+                close(session.id)
               }}
             >
               {t('session.close')}
@@ -468,7 +496,7 @@ export function App({
             if (compact) document.getElementById(TERMINAL_ID)?.focus()
           }}
         />
-        <main id={TERMINAL_ID} className={styles.main} tabIndex={-1}>
+        <main ref={mainRef} id={TERMINAL_ID} className={styles.main} tabIndex={-1}>
           <Terminal
             source={source}
             label={t('terminal.label', { name: sessionName })}
