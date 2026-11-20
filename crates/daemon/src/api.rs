@@ -612,17 +612,20 @@ impl Service {
         future: impl Future<Output = Result<T, ClientError>>,
         deadline: Instant,
     ) -> Result<T, ApiError> {
+        // Só a primeira sondagem confere o prazo: uma chamada nunca começa depois dele.
+        if Instant::now() >= deadline {
+            return Err(ApiError::HostTimeout);
+        }
         tokio::pin!(future);
         let expired = tokio::time::sleep_until(deadline);
         tokio::pin!(expired);
         loop {
-            if Instant::now() >= deadline {
-                return Err(ApiError::HostTimeout);
-            }
+            // A resposta pronta vence o prazo, e o prazo vence os eventos, que não podem adiá-lo.
             tokio::select! {
+                biased;
                 result = &mut future => return result.map_err(host_error),
-                event = self.host.next() => self.event(event.map_err(host_error)?).await?,
                 _ = &mut expired => return Err(ApiError::HostTimeout),
+                event = self.host.next() => self.event(event.map_err(host_error)?).await?,
             }
         }
     }
@@ -1404,7 +1407,7 @@ mod tests {
         (api, backend, host, peer)
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn confirmed_open_with_expired_setup_budget_schedules_cleanup() {
         let (mut api, backend, host, peer) = fake_service().await;
         let gate = api.service.before_setup.clone();
@@ -1418,7 +1421,6 @@ mod tests {
                 async {
                     gate.reached.notified().await;
                     assert_eq!(host.sessions().len(), 1);
-                    tokio::time::pause();
                     tokio::time::advance(budget).await;
                     gate.release();
                 }
@@ -1426,8 +1428,11 @@ mod tests {
         })
         .await
         .unwrap();
-        tokio::time::resume();
         assert_eq!(result.map(|_| ()), Err(ApiError::SetupFailed));
+        // Let the host serve anything already sent: the subscription never reached it.
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        let id: SessionId = "session".to_owned().try_into().unwrap();
+        assert_eq!(host.subscriber_count(&id), Ok(0));
         assert_eq!(api.service.retries.len(), 1);
         let mut other = params.clone();
         other["session_id"] = json!("other");
@@ -1558,6 +1563,88 @@ mod tests {
         }
         assert_eq!(polls, 0);
         peer.abort();
+    }
+
+    /// A service whose host side the test writes by hand; `host.hello` is already answered.
+    async fn hand_driven_service() -> (LocalApi, tokio::io::DuplexStream) {
+        use crate::pty_client::ClientConfig;
+        use ads_ptyhost::wire::{self, ResultBody};
+        use tokio::io::AsyncWriteExt;
+        let (near, mut far) = tokio::io::duplex(65536);
+        let hello = async {
+            let wire::Frame::Json(payload) =
+                wire::read_frame(&mut far, 131072).await.unwrap().unwrap()
+            else {
+                panic!()
+            };
+            let hello = wire::Request::parse(&payload).unwrap();
+            far.write_all(
+                &wire::encode_json(&wire::Response {
+                    id: Some(hello.id),
+                    outcome: Ok(ResultBody::Hello(wire::HelloResult {
+                        contract: Default::default(),
+                    })),
+                })
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        };
+        let config = ClientConfig {
+            max_frame_bytes: 131072,
+            queue_capacity: 8,
+        };
+        let (client, ()) = tokio::join!(PtyClient::over(near, config), hello);
+        let api = LocalApi::bind(
+            ApiConfig::from_toml_str("").unwrap(),
+            client.unwrap(),
+            Arc::new(DisabledLauncher),
+        )
+        .await
+        .unwrap();
+        (api, far)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn ready_reply_wins_over_a_deadline_crossed_by_a_host_event() {
+        use tokio::io::AsyncWriteExt;
+        let (mut api, mut far) = hand_driven_service().await;
+        api.service.sessions.insert(
+            "session".to_owned(),
+            Session {
+                generation: 1,
+                offset: 0,
+                last_host_seq: 0,
+                ended: false,
+                closing: false,
+                invalidated: false,
+                released: false,
+                failed_open: false,
+                self_released: false,
+            },
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (reply, answer) = oneshot::channel::<()>();
+        let response = async { answer.await.map_err(|_| ClientError::Disconnected) };
+        let log = api.service.log.clone();
+        let (result, ()) = tokio::join!(api.service.wait_host(response, deadline), async {
+            // The output handler waits for the log while the deadline passes and the reply arrives.
+            let held = log.lock().await;
+            let id = "session".to_owned().try_into().unwrap();
+            far.write_all(&ads_ptyhost::wire::encode_output(&id, 1, b"terminal-sentinel").unwrap())
+                .await
+                .unwrap();
+            // The clock only moves once every task waits: the handler is blocked on the log.
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            tokio::time::advance(Duration::from_secs(5)).await;
+            reply.send(()).unwrap();
+            drop(held);
+        });
+        assert_eq!(result, Ok(()));
+        assert_eq!(
+            log.lock().await.after("session/session", 0).unwrap().len(),
+            1
+        );
     }
 
     #[tokio::test]
