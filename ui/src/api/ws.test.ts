@@ -268,6 +268,34 @@ describe('local WebSocket client', () => {
     expect(ended).toEqual([])
     expect(client.getState()).toBe('connected')
   })
+  it('ignores a late refusal of a subscription cancelled before its answer', async () => {
+    const { client, socket } = await connected()
+    const seen: string[] = []
+    const stop = client.subscribe('session/session-a', 0, (event) => seen.push(event.stream))
+    client.subscribe('session/session-b', 0, (event) => seen.push(event.stream))
+    stop()
+    socket.receive({
+      jsonrpc: '2.0',
+      id: socket.sent[1]?.id,
+      error: { code: -32602, message: 'invalid command' },
+    })
+    await Promise.resolve()
+    socket.answer(2)
+    socket.receive(event(1, 'session/session-b'))
+    expect(client.getState()).toBe('connected')
+    expect(seen).toEqual(['session/session-b'])
+  })
+  it('disconnects on an unexpected error after a subscription was accepted', async () => {
+    const { client, socket } = await connected()
+    client.subscribe('session/session-a', 0, () => undefined)
+    socket.answer(1)
+    socket.receive({
+      jsonrpc: '2.0',
+      id: socket.sent[1]?.id,
+      error: { code: -32603, message: 'service unavailable' },
+    })
+    expect(client.getState()).toBe('disconnected')
+  })
   it('still disconnects when a subscription is refused for another reason', async () => {
     const { client, socket } = await connected()
     client.subscribe('session/session-a', 0, () => undefined)

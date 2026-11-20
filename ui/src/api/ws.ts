@@ -161,14 +161,14 @@ export function createWsCoreClient({
               response.error = { code: response.error.code, message: 'command rejected' }
             const request = pending.get(response.id)
             pending.delete(response.id)
+            // Resposta de assinatura ativa, inicial ou tardia: -32004 e -32013 encerram só ela;
+            // outro erro não tem explicação e derruba a conexão. Assinatura cancelada não chega aqui.
             if (subscriptionRequests.has(response.id) && response.error) {
-              // Só esta assinatura termina; outro erro tardio dela não tem como ser explicado.
-              if (isSubscriptionEndCode(response.error.code))
-                endSubscription(response.id, response.error.code)
-              else if (!request) {
+              if (!isSubscriptionEndCode(response.error.code)) {
                 fail()
                 return
               }
+              endSubscription(response.id, response.error.code)
             }
             request?.resolve(response)
           } else {
@@ -212,15 +212,11 @@ export function createWsCoreClient({
       const command = newCommand('events.subscribe', { stream, after_seq: afterSeq })
       subscriptions.add(subscription)
       subscriptionRequests.set(command.id, subscription)
-      void transmit(command).then(
-        (response) => {
-          if (response.error && !isSubscriptionEndCode(response.error.code)) disconnect()
-        },
-        () => undefined,
-      )
+      void transmit(command).catch(() => undefined)
       return () => {
         subscriptions.delete(subscription)
         subscriptionRequests.delete(command.id)
+        pending.delete(command.id)
       }
     },
   }
