@@ -44,7 +44,7 @@ describe('session input', () => {
     const send = vi
       .spyOn(client, 'send')
       .mockResolvedValueOnce({ jsonrpc: '2.0', id: 'id', error: { code: -1, message: 'rejected' } })
-      .mockResolvedValue({ jsonrpc: '2.0', id: 'id', result: {} })
+      .mockResolvedValue({ jsonrpc: '2.0', id: 'id', result: { accepted: true, replayed: false } })
     const error = vi.fn()
     const input = sessionInput(client, 's-a', error)
     input(new Uint8Array([1]))
@@ -70,7 +70,7 @@ describe('session input', () => {
           fail = reject
         }),
       )
-      .mockResolvedValue({ jsonrpc: '2.0', id: 'id', result: {} })
+      .mockResolvedValue({ jsonrpc: '2.0', id: 'id', result: { accepted: true, replayed: false } })
     const error = vi.fn()
     const input = sessionInput(client, 's-a', error)
     input(new Uint8Array([1]))
