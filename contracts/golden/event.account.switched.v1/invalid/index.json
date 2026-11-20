@@ -1,0 +1,17 @@
+{
+  "account-alias.json": {
+    "rule": "O apelido da conta recusa arroba.",
+    "keyword": "pattern",
+    "instancePath": "/data/account_alias"
+  },
+  "02-unknown-mode.json": {
+    "rule": "O modo deve ser manual, propose ou auto.",
+    "keyword": "enum",
+    "instancePath": "/data/mode"
+  },
+  "03-wrong-type.json": {
+    "rule": "O tipo precisa ser a URN deste evento.",
+    "keyword": "const",
+    "instancePath": "/type"
+  }
+}

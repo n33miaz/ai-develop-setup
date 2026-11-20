@@ -35,6 +35,8 @@ pub mod contract_pty_host_frame_v1;
 pub mod contract_pty_host_notification_v1;
 pub mod contract_pty_host_request_v1;
 pub mod contract_pty_host_response_v1;
+pub mod event_account_status_observed_v1;
+pub mod event_account_switched_v1;
 pub mod event_action_denied_v1;
 pub mod event_action_executed_v1;
 pub mod event_action_failed_v1;
@@ -61,8 +63,11 @@ pub mod event_review_completed_v1;
 pub mod event_review_failed_v1;
 pub mod event_review_requested_v1;
 pub mod event_routing_decided_v1;
+pub mod event_routing_decided_v2;
 pub mod event_routing_fallback_v1;
+pub mod event_routing_fallback_v2;
 pub mod event_routing_proposed_v1;
+pub mod event_routing_proposed_v2;
 pub mod event_session_activity_changed_v1;
 pub mod event_session_created_v1;
 pub mod event_session_ended_v1;
@@ -122,6 +127,8 @@ pub use contract_pty_host_frame_v1::*;
 pub use contract_pty_host_notification_v1::*;
 pub use contract_pty_host_request_v1::*;
 pub use contract_pty_host_response_v1::*;
+pub use event_account_status_observed_v1::*;
+pub use event_account_switched_v1::*;
 pub use event_action_denied_v1::*;
 pub use event_action_executed_v1::*;
 pub use event_action_failed_v1::*;
@@ -148,8 +155,11 @@ pub use event_review_completed_v1::*;
 pub use event_review_failed_v1::*;
 pub use event_review_requested_v1::*;
 pub use event_routing_decided_v1::*;
+pub use event_routing_decided_v2::*;
 pub use event_routing_fallback_v1::*;
+pub use event_routing_fallback_v2::*;
 pub use event_routing_proposed_v1::*;
+pub use event_routing_proposed_v2::*;
 pub use event_session_activity_changed_v1::*;
 pub use event_session_created_v1::*;
 pub use event_session_ended_v1::*;
@@ -250,6 +260,14 @@ pub const SCHEMAS: &[(&str, &str)] = &[
         "contract.pty-host.response.v1",
         "urn:ads:contract:pty-host.response:1",
     ),
+    (
+        "event.account.status_observed.v1",
+        "urn:ads:event:account.status_observed:1",
+    ),
+    (
+        "event.account.switched.v1",
+        "urn:ads:event:account.switched:1",
+    ),
     ("event.action.denied.v1", "urn:ads:event:action.denied:1"),
     (
         "event.action.executed.v1",
@@ -328,12 +346,24 @@ pub const SCHEMAS: &[(&str, &str)] = &[
         "urn:ads:event:routing.decided:1",
     ),
     (
+        "event.routing.decided.v2",
+        "urn:ads:event:routing.decided:2",
+    ),
+    (
         "event.routing.fallback.v1",
         "urn:ads:event:routing.fallback:1",
     ),
     (
+        "event.routing.fallback.v2",
+        "urn:ads:event:routing.fallback:2",
+    ),
+    (
         "event.routing.proposed.v1",
         "urn:ads:event:routing.proposed:1",
+    ),
+    (
+        "event.routing.proposed.v2",
+        "urn:ads:event:routing.proposed:2",
     ),
     (
         "event.session.activity_changed.v1",
@@ -416,6 +446,7 @@ pub const PATTERNS: &[&str] = &[
     r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$",
     r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)?$",
     r"^[a-z][a-z0-9_]{0,31}$",
+    r"^account/",
     r"^action/",
     r"^approval/",
     r"^dev-[0-9]{8}-[0-9a-f]{7,12}$",
@@ -482,6 +513,10 @@ pub fn reencode(id: &str, value: Value) -> Option<Result<Value, serde_json::Erro
         "urn:ads:contract:pty-host.response:1" => {
             support::reencode::<ContractPtyHostResponseV1>(value)
         }
+        "urn:ads:event:account.status_observed:1" => {
+            support::reencode::<EventAccountStatusObservedV1>(value)
+        }
+        "urn:ads:event:account.switched:1" => support::reencode::<EventAccountSwitchedV1>(value),
         "urn:ads:event:action.denied:1" => support::reencode::<EventActionDeniedV1>(value),
         "urn:ads:event:action.executed:1" => support::reencode::<EventActionExecutedV1>(value),
         "urn:ads:event:action.failed:1" => support::reencode::<EventActionFailedV1>(value),
@@ -516,8 +551,11 @@ pub fn reencode(id: &str, value: Value) -> Option<Result<Value, serde_json::Erro
         "urn:ads:event:review.failed:1" => support::reencode::<EventReviewFailedV1>(value),
         "urn:ads:event:review.requested:1" => support::reencode::<EventReviewRequestedV1>(value),
         "urn:ads:event:routing.decided:1" => support::reencode::<EventRoutingDecidedV1>(value),
+        "urn:ads:event:routing.decided:2" => support::reencode::<EventRoutingDecidedV2>(value),
         "urn:ads:event:routing.fallback:1" => support::reencode::<EventRoutingFallbackV1>(value),
+        "urn:ads:event:routing.fallback:2" => support::reencode::<EventRoutingFallbackV2>(value),
         "urn:ads:event:routing.proposed:1" => support::reencode::<EventRoutingProposedV1>(value),
+        "urn:ads:event:routing.proposed:2" => support::reencode::<EventRoutingProposedV2>(value),
         "urn:ads:event:session.activity_changed:1" => {
             support::reencode::<EventSessionActivityChangedV1>(value)
         }

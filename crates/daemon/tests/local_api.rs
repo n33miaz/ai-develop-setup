@@ -2189,7 +2189,13 @@ impl ads_core::tool_launch::Probe for FakeProbe {
 
 #[tokio::test]
 async fn configured_adapters_supply_the_host_with_filtered_parameters() {
-    let overrides = r#"
+    let drive = if cfg!(windows) { "C:" } else { "" };
+    let overrides = format!(
+        r#"
+[accounts.claude.primary]
+profile_dir = '{drive}/profiles/claude'
+[accounts.codex.primary]
+profile_dir = '{drive}/profiles/codex'
 [workdirs]
 workspace = 'C:/workspace'
 [tools.claude]
@@ -2198,7 +2204,8 @@ args = ['claude-arg']
 [tools.codex]
 program = 'C:/tools/codex.exe'
 args = ['codex-arg']
-"#;
+"#
+    );
     let parent_env = [
         ("PATH", "C:/tools"),
         ("ANTHROPIC_API_KEY", "sentinel"),
@@ -2211,7 +2218,7 @@ args = ['codex-arg']
     .map(|(name, value)| (name.to_owned(), value.to_owned()))
     .to_vec();
     let launcher =
-        ToolLauncher::from_toml_str(overrides, parent_env, FakeProbe, FakeProbe).unwrap();
+        ToolLauncher::from_toml_str(&overrides, parent_env, FakeProbe, FakeProbe).unwrap();
     let f = fixture("", Arc::new(launcher)).await;
     let mut ws = authenticated(&f).await;
     for (index, harness) in ["claude", "codex"].into_iter().enumerate() {

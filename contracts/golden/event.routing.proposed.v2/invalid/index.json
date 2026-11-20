@@ -1,0 +1,20 @@
+{
+  "01-email.json": {
+    "rule": "O apelido da conta recusa arroba.",
+    "keyword": "pattern",
+    "instancePath": "/data/account_alias"
+  },
+  "02-missing-alias.json": {
+    "rule": "A rota declara o apelido, inclusive sem perfil.",
+    "keyword": "required",
+    "instancePath": "/data",
+    "params": {
+      "missingProperty": "account_alias"
+    }
+  },
+  "03-wrong-type.json": {
+    "rule": "O tipo precisa ser a URN deste evento.",
+    "keyword": "const",
+    "instancePath": "/type"
+  }
+}

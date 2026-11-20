@@ -13,7 +13,7 @@ use ads_contracts::{
 };
 use serde::Deserialize;
 
-use super::Harness;
+use super::{Harness, ProfileBinding, SwitchPolicy};
 
 pub(super) const DEFAULTS_TOML: &str = include_str!("../../../../defaults/harnesses.toml");
 
@@ -21,6 +21,7 @@ pub(super) const DEFAULTS_TOML: &str = include_str!("../../../../defaults/harnes
 #[serde(deny_unknown_fields)]
 struct FileLayer {
     env: Option<EnvLayer>,
+    accounts: Option<BTreeMap<String, BTreeMap<String, ProfileLayer>>>,
     workdirs: Option<BTreeMap<String, String>>,
     /// Other tools' tables belong to other adapters and are not read here.
     tools: Option<BTreeMap<String, toml::Table>>,
@@ -32,6 +33,14 @@ struct ToolLayer {
     program: Option<String>,
     args: Option<Vec<String>>,
     mode: Option<Mode>,
+    switch: Option<super::SwitchMode>,
+    switch_at_pct: Option<u8>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProfileLayer {
+    profile_dir: String,
 }
 
 /// How the tool is used. Headless use is not offered.
@@ -65,6 +74,18 @@ pub enum ConfigError {
     WorkdirTooLong(usize),
     /// A drive root or `/`: the tool would work on the whole disk.
     WorkdirIsRoot(usize),
+    ProfileAlias(usize),
+    ProfileDir {
+        index: usize,
+        error: PathError,
+    },
+    ProfileDirTooLong(usize),
+    ProfileDirIsRoot(usize),
+    ProfileDirForeignStyle(usize),
+    ProfileDirOverlapsWorkdir(usize),
+    ProfileDirsOverlap,
+    ProfileUnsupported,
+    SwitchPolicy,
 }
 
 impl fmt::Display for ConfigError {
@@ -85,6 +106,31 @@ impl fmt::Display for ConfigError {
             }
             Self::WorkdirTooLong(index) => write!(f, "folder at entry {index} too long"),
             Self::WorkdirIsRoot(index) => write!(f, "folder at entry {index} is a drive root"),
+            Self::ProfileAlias(index) => write!(f, "invalid profile alias at entry {index}"),
+            Self::ProfileDir { index, error } => {
+                write!(f, "profile folder at entry {index} refused: {error}")
+            }
+            Self::ProfileDirTooLong(index) => write!(f, "profile folder at entry {index} too long"),
+            Self::ProfileDirIsRoot(index) => {
+                write!(f, "profile folder at entry {index} is a drive root")
+            }
+            Self::ProfileDirForeignStyle(index) => {
+                write!(
+                    f,
+                    "profile folder at entry {index} is not absolute on this system"
+                )
+            }
+            Self::ProfileDirOverlapsWorkdir(index) => {
+                write!(
+                    f,
+                    "profile folder at entry {index} overlaps a working folder"
+                )
+            }
+            Self::ProfileDirsOverlap => f.write_str("configured account profile folders overlap"),
+            Self::ProfileUnsupported => {
+                f.write_str("account profiles are unavailable for this tool")
+            }
+            Self::SwitchPolicy => f.write_str("invalid account switch policy"),
         }
     }
 }
@@ -101,6 +147,8 @@ pub struct ToolConfig<H: Harness> {
     mode: Mode,
     workdirs: BTreeMap<String, Cwd>,
     env: EnvPolicy,
+    profiles: BTreeMap<String, ProfileBinding>,
+    switch_policy: SwitchPolicy,
 }
 
 impl<H: Harness> ToolConfig<H> {
@@ -172,7 +220,44 @@ impl<H: Harness> ToolConfig<H> {
                 return Err(ConfigError::WorkdirIsRoot(index));
             }
             let cwd = Cwd::new(path.to_string()).map_err(|_| ConfigError::WorkdirTooLong(index))?;
-            workdirs.insert(String::from(id), cwd);
+            workdirs.insert(String::from(id), (path, cwd));
+        }
+
+        let switch = over_tool.and_then(|tool| tool.switch).or(base_tool.switch);
+        let switch_at_pct = over_tool
+            .and_then(|tool| tool.switch_at_pct)
+            .or(base_tool.switch_at_pct);
+        let switch_policy = SwitchPolicy::from_config(H::PROFILE_ENV, switch, switch_at_pct)?;
+
+        let mut profiles = BTreeMap::new();
+        for (index, (alias, profile)) in [base.accounts, over.accounts]
+            .into_iter()
+            .flatten()
+            .filter_map(|mut accounts| accounts.remove(H::ID))
+            .flatten()
+            .enumerate()
+        {
+            let variable = H::PROFILE_ENV.ok_or(ConfigError::ProfileUnsupported)?;
+            let binding =
+                ProfileBinding::from_config(alias, &profile.profile_dir, variable, index)?;
+            profiles.insert(binding.alias().as_str().to_owned(), (index, binding));
+        }
+        let mut validated_profiles = BTreeMap::<String, ProfileBinding>::new();
+        for (alias, (index, binding)) in profiles {
+            if workdirs
+                .values()
+                .any(|(path, _)| binding.overlaps_path(path))
+            {
+                return Err(ConfigError::ProfileDirOverlapsWorkdir(index));
+            }
+            let path = binding.path();
+            if validated_profiles
+                .values()
+                .any(|other| other.overlaps_path(&path))
+            {
+                return Err(ConfigError::ProfileDirsOverlap);
+            }
+            validated_profiles.insert(alias, binding);
         }
 
         Ok(Self {
@@ -180,8 +265,13 @@ impl<H: Harness> ToolConfig<H> {
             program,
             args,
             mode,
-            workdirs,
+            workdirs: workdirs
+                .into_iter()
+                .map(|(alias, (_, cwd))| (alias, cwd))
+                .collect(),
             env,
+            profiles: validated_profiles,
+            switch_policy,
         })
     }
 
@@ -210,6 +300,25 @@ impl<H: Harness> ToolConfig<H> {
     /// The configured folder aliases in name order; never the folders themselves.
     pub fn workdir_aliases(&self) -> impl Iterator<Item = &str> {
         self.workdirs.keys().map(String::as_str)
+    }
+
+    pub fn profile(&self, alias: &CommonIdV1) -> Option<&ProfileBinding> {
+        self.profiles.get(alias.as_str())
+    }
+
+    /// Checks both directions without consulting the filesystem.
+    pub fn has_overlapping_profiles(&self, other: &ToolConfig<impl Harness>) -> bool {
+        self.profiles.values().any(|profile| {
+            let path = profile.path();
+            other
+                .profiles
+                .values()
+                .any(|other| other.overlaps_path(&path))
+        })
+    }
+
+    pub fn switch_policy(&self) -> SwitchPolicy {
+        self.switch_policy
     }
 
     pub fn env(&self) -> &EnvPolicy {

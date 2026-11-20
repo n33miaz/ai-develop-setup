@@ -10,7 +10,7 @@ use std::io::Read;
 pub const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 
 /// The API settings, the host settings and the tools' part of the user file (`[env]`,
-/// `[workdirs]`, `[tools]`), still as TOML for the adapters.
+/// `[workdirs]`, `[tools]`, `[accounts]`), still as TOML for the adapters.
 pub type StartupConfig = (ApiConfig, HostConfig, String);
 
 /// Reads `--config` and `--host-config`. Errors name the flag or the line, never the content.
@@ -28,8 +28,13 @@ pub fn load_config(mut args: impl Iterator<Item = String>) -> Result<StartupConf
             _ => return Err("invalid daemon arguments".into()),
         }
     }
+    let (api, tools) = split_config(&overrides)?;
+    Ok((api, host, tools))
+}
+
+fn split_config(overrides: &str) -> Result<(ApiConfig, String), String> {
     let mut api: toml::Table =
-        toml::from_str(&overrides).map_err(|error: toml::de::Error| match error.span() {
+        toml::from_str(overrides).map_err(|error: toml::de::Error| match error.span() {
             // Only the position: the parser message could quote the file.
             Some(span) => format!(
                 "invalid user configuration TOML at line {}",
@@ -38,7 +43,7 @@ pub fn load_config(mut args: impl Iterator<Item = String>) -> Result<StartupConf
             None => "invalid user configuration TOML".to_owned(),
         })?;
     let mut tools = toml::Table::new();
-    for name in ["env", "workdirs", "tools"] {
+    for name in ["env", "workdirs", "tools", "accounts"] {
         if let Some(value) = api.remove(name) {
             tools.insert(name.to_owned(), value);
         }
@@ -53,9 +58,19 @@ pub fn load_config(mut args: impl Iterator<Item = String>) -> Result<StartupConf
     {
         return Err("unknown tool in user configuration".into());
     }
+    if let Some(toml::Value::Table(entries)) = tools.get("accounts")
+        && entries.keys().any(|name| {
+            !matches!(
+                name.as_str(),
+                ads_adapter_claude::HARNESS_ID | ads_adapter_codex::HARNESS_ID
+            )
+        })
+    {
+        return Err("unsupported account profile tool in user configuration".into());
+    }
     let api =
         ApiConfig::from_toml_str(&api.to_string()).map_err(|_| "invalid daemon configuration")?;
-    Ok((api, host, tools.to_string()))
+    Ok((api, tools.to_string()))
 }
 
 /// A literal absolute path (no network share, device prefix, variable, `..` or short name) to
@@ -79,4 +94,39 @@ fn read_config_file(flag: &str, path: &str) -> Result<String, String> {
         return Err(format!("{flag} file exceeds {MAX_CONFIG_BYTES} bytes"));
     }
     String::from_utf8(bytes).map_err(|_| format!("{flag} file is not UTF-8"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ads_core::child_env::NameCase;
+
+    #[test]
+    fn account_tables_reach_the_corresponding_adapter() {
+        let directory = if cfg!(windows) {
+            r"C:\profiles\primary"
+        } else {
+            "/profiles/primary"
+        };
+        let (_, tools) = split_config(&format!(
+            "[accounts.claude.primary]\nprofile_dir = '{directory}'"
+        ))
+        .unwrap();
+        let config =
+            ads_adapter_claude::ClaudeConfig::from_toml_str(&tools, NameCase::host()).unwrap();
+        let alias = ads_contracts::CommonIdV1::new("primary").unwrap();
+        assert_eq!(
+            config.profile(&alias).unwrap().directory().as_str(),
+            directory
+        );
+    }
+
+    #[test]
+    fn an_unknown_tool_is_refused_in_account_and_tool_tables() {
+        assert!(
+            split_config("[accounts.antigravity.primary]\nprofile_dir = '/profiles/primary'")
+                .is_err()
+        );
+        assert!(split_config("[tools.antigravity]\nswitch = 'manual'").is_err());
+    }
 }

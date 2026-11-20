@@ -1,0 +1,23 @@
+{
+  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+  "type": "urn:ads:event:account.status_observed:1",
+  "ts": "2030-01-02T03:04:05Z",
+  "stream": "account/harness-a",
+  "seq": 1,
+  "actor": {
+    "kind": "daemon",
+    "id": "core-01"
+  },
+  "cause": null,
+  "data_class": "private",
+  "data": {
+    "harness": "harness-a",
+    "account_alias": "primary",
+    "logged_in": true,
+    "auth_method": "subscription",
+    "provider": "provider-a",
+    "plan_type": "standard",
+    "config_directory": "/profiles/primary",
+    "account_id": "account-01"
+  }
+}

@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:event:routing.fallback:2",
+  "title": "Rota trocada por falha",
+  "description": "A rota caiu para o plano B após uma falha. Registra também os apelidos de conta das rotas, quando aplicáveis.",
+  "allOf": [
+    {
+      "$ref": "urn:ads:event:envelope:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "type",
+        "stream",
+        "data"
+      ],
+      "properties": {
+        "type": {
+          "const": "urn:ads:event:routing.fallback:2"
+        },
+        "stream": {
+          "type": "string",
+          "pattern": "^routing/"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "task_id",
+            "from",
+            "to",
+            "error_code"
+          ],
+          "properties": {
+            "task_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "from": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "harness",
+                "provider",
+                "model",
+                "account_alias"
+              ],
+              "properties": {
+                "harness": {
+                  "$ref": "urn:ads:common:id:1"
+                },
+                "provider": {
+                  "$ref": "urn:ads:common:id:1"
+                },
+                "model": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "account_alias": {
+                  "anyOf": [
+                    {
+                      "$ref": "urn:ads:common:id:1"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              }
+            },
+            "to": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "harness",
+                "provider",
+                "model",
+                "account_alias"
+              ],
+              "properties": {
+                "harness": {
+                  "$ref": "urn:ads:common:id:1"
+                },
+                "provider": {
+                  "$ref": "urn:ads:common:id:1"
+                },
+                "model": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "account_alias": {
+                  "anyOf": [
+                    {
+                      "$ref": "urn:ads:common:id:1"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              }
+            },
+            "error_code": {
+              "type": "string",
+              "pattern": "^E_[A-Z0-9_]{1,60}$"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+      "type": "urn:ads:event:routing.fallback:2",
+      "ts": "2030-01-02T03:04:05Z",
+      "stream": "routing/task-01",
+      "seq": 1,
+      "actor": {
+        "kind": "daemon",
+        "id": "core-01"
+      },
+      "cause": null,
+      "data_class": "internal",
+      "data": {
+        "task_id": "task-01",
+        "from": {
+          "harness": "harness-a",
+          "provider": "provider-a",
+          "model": "model-x",
+          "account_alias": "primary"
+        },
+        "to": {
+          "harness": "harness-b",
+          "provider": "provider-b",
+          "model": "model-y",
+          "account_alias": null
+        },
+        "error_code": "E_RATE_LIMITED"
+      }
+    }
+  ]
+}

@@ -34,7 +34,7 @@ impl Probe for DiskProbe {
     }
 }
 
-const fn host_style() -> PathStyle {
+pub(super) const fn host_style() -> PathStyle {
     if cfg!(windows) {
         PathStyle::Windows
     } else {

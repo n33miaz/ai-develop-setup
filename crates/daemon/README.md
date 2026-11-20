@@ -86,9 +86,11 @@ inválidos recebem o mesmo HTTP 403 antes do upgrade; cabeçalhos repetidos,
 origem ausente e query string também são recusados.
 
 O arquivo de `--config` é opcional. As tabelas `[tools.claude]`,
-`[tools.codex]`, `[workdirs]` e `[env]` sobrepõem os
-[padrões das ferramentas](../../defaults/harnesses.toml); `[env]` e
-`[workdirs]` valem para as duas. Sem arquivo, ambas ficam desligadas. As chaves
+`[tools.codex]`, `[workdirs]`, `[accounts]` e `[env]` sobrepõem os
+[padrões das ferramentas](../../defaults/harnesses.toml). `[env]` e
+`[workdirs]` valem para as duas. As tabelas de perfil em `[accounts]`
+são aceitas para as duas ferramentas citadas. Entradas para outras ferramentas
+são recusadas. Sem arquivo, ambas ficam desligadas. As chaves
 da API na raiz do mesmo TOML sobrepõem os padrões do daemon listados abaixo.
 Reinicie o daemon para reler a configuração. A configuração inválida impede a
 partida e a mensagem omite o conteúdo do arquivo.
