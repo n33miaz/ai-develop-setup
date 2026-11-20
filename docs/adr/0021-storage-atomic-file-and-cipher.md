@@ -2,6 +2,8 @@
 
 Status: escolha de um arquivo só é proposta, aguardando ratificação do mantenedor
 
+Em vigor no código, pendente de ratificação pelo mantenedor.
+
 ## Contexto
 
 O ADR 0004 descreve três bancos com donos separados. Entretanto, a documentação
