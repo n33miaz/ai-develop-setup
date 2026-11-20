@@ -16,6 +16,7 @@ validação e a preparação da sessão seguem a
 ## Testes
 
 `cargo test -p ads-adapter-claude -j 2` executa a suíte compartilhada de abertura
-com o identificador desta ferramenta. Ela cobre o ambiente do pai envenenado,
+([`suite.rs` do núcleo](../../core/src/tool_launch/tests/suite.rs)) com o
+identificador desta ferramenta. Ela cobre o ambiente do pai envenenado,
 nomes sensíveis em `allow` e `set`, erros sem o conteúdo da entrada e a validação
 de caminhos, apelidos, modo e ferramenta.

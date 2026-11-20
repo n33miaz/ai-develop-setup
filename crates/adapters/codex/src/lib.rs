@@ -4,11 +4,11 @@
 pub mod config;
 pub mod launch;
 
-pub use config::{CodexConfig, ConfigError, Mode};
+pub use config::{Codex, CodexConfig, ConfigError, Mode};
 pub use launch::{DiskProbe, LaunchError, Probe, open_params, process_env};
 
 /// The tool identifier a session request uses to pick this adapter.
-pub const HARNESS_ID: &str = "codex";
+pub const HARNESS_ID: &str = <Codex as ads_core::tool_launch::Harness>::ID;
 
 /// Package name as declared in the manifest.
 pub const fn crate_name() -> &'static str {
@@ -22,5 +22,12 @@ mod tests {
     #[test]
     fn crate_name_matches_manifest() {
         assert_eq!(crate_name(), "ads-adapter-codex");
+    }
+
+    #[test]
+    fn the_table_key_is_derived_from_the_tool_id() {
+        use ads_core::tool_launch::Harness;
+        assert_eq!(HARNESS_ID, "codex");
+        assert_eq!(<Codex as Harness>::TABLE_KEY, "tools.codex");
     }
 }

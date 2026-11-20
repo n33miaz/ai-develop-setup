@@ -15,7 +15,7 @@ use serde::Deserialize;
 
 use super::Harness;
 
-const DEFAULTS_TOML: &str = include_str!("../../../../defaults/harnesses.toml");
+pub(super) const DEFAULTS_TOML: &str = include_str!("../../../../defaults/harnesses.toml");
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -111,7 +111,11 @@ impl<H: Harness> ToolConfig<H> {
 
     /// The shipped defaults with the user's file `overrides` over them.
     pub fn from_toml_str(overrides: &str, case: NameCase) -> Result<Self, ConfigError> {
-        let base = parse(DEFAULTS_TOML)?;
+        #[cfg(test)]
+        let defaults = H::DEFAULTS;
+        #[cfg(not(test))]
+        let defaults = DEFAULTS_TOML;
+        let base = parse(defaults)?;
         let over = parse(overrides)?;
         let env = EnvPolicy::from_layers(
             base.env.as_ref().ok_or(ConfigError::MissingKey("env"))?,

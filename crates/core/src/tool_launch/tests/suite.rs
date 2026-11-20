@@ -1,14 +1,13 @@
-//! Terminal launch contract exercised through each adapter.
+//! Terminal launch contract, run by the core with its test tool and by each adapter.
 
 use super::{
-    ConfigError, DENIED_EXTRA, DiskProbe, HARNESS_ID, LaunchError, OTHER_HARNESS, POISON_EXTRA,
-    PROGRAM, Probe, ToolConfig, WRONG_HARNESSES, open_params,
+    ConfigError, DENIED_EXTRA, DiskProbe, EnvList, EnvPolicyError, HARNESS_ID, LaunchError,
+    NameCase, OTHER_HARNESS, POISON_EXTRA, PROGRAM, PathError, Probe, ToolConfig, WRONG_HARNESSES,
+    open_params,
 };
 use std::collections::BTreeSet;
 
 use ads_contracts::CommandSessionOpenV1Params;
-use ads_core::child_env::{EnvList, EnvPolicyError, NameCase};
-use ads_core::gate::PathError;
 
 const FOLDER: &str = r"C:\work\scratch";
 
@@ -65,10 +64,8 @@ fn request(harness: &str, alias: &str) -> CommandSessionOpenV1Params {
 }
 
 const POISON: &[&str] = &[
-    "ANTHROPIC_API_KEY",
-    "anthropic_api_key",
-    "OPENAI_API_KEY",
-    "Openai_Api_Key",
+    "XYZ_API_KEY",
+    "xyz_api_key",
     "GH_TOKEN",
     "gh_token",
     "GITHUB_TOKEN",
@@ -327,7 +324,7 @@ fn the_request_cannot_carry_a_program_args_env_or_folder() {
         ("env", serde_json::json!({"GH_TOKEN": "x"})),
         ("cwd", serde_json::json!("C:\\")),
     ] {
-        let mut json = serde_json::to_value(request("claude", "scratch")).unwrap();
+        let mut json = serde_json::to_value(request(HARNESS_ID, "scratch")).unwrap();
         json[field] = value;
         assert!(
             serde_json::from_value::<CommandSessionOpenV1Params>(json).is_err(),
@@ -360,16 +357,17 @@ fn another_tool_table_is_left_to_its_adapter() {
 
 #[test]
 fn a_real_program_and_folder_on_disk_open() {
-    let root =
-        std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{HARNESS_ID}-launch"));
-    let folder = root.join("work");
-    std::fs::create_dir_all(&folder).unwrap();
-    let program = root.join("tool.exe");
-    std::fs::write(&program, b"").unwrap();
+    // The test binary and its folder exist on every system and need nothing written.
+    let program = std::env::current_exe().unwrap();
+    let folder = program.parent().unwrap();
     let text = format!(
-        "[workdirs]\nscratch = '{}'\n[tools.{HARNESS_ID}]\nprogram = '{}'\n",
-        folder.display(),
-        program.display()
+        "[workdirs]
+scratch = {}
+[tools.{HARNESS_ID}]
+program = {}
+",
+        toml_string(&folder.display().to_string()),
+        toml_string(&program.display().to_string())
     );
     let config = ToolConfig::from_toml_str(&text, NameCase::host()).unwrap();
     let params = open_params(
@@ -381,7 +379,17 @@ fn a_real_program_and_folder_on_disk_open() {
     .unwrap();
     assert!(std::path::Path::new(params.program.as_str()).is_file());
 
-    let gone = text.replace("tool.exe", "missing.exe");
+    let missing = folder.join("missing-tool.exe");
+    assert!(!missing.exists());
+    let gone = format!(
+        "[workdirs]
+scratch = {}
+[tools.{HARNESS_ID}]
+program = {}
+",
+        toml_string(&folder.display().to_string()),
+        toml_string(&missing.display().to_string())
+    );
     let config = ToolConfig::from_toml_str(&gone, NameCase::host()).unwrap();
     let result = open_params(
         &config,

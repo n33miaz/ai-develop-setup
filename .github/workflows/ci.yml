@@ -187,7 +187,7 @@ jobs:
           # Contratos: os Schemas e as ferramentas, os tipos Rust gerados deles e o que muda a forma como o rustfmt os escreve.
           CONTRACTS_PATHS: '^(contracts/|crates/contracts/|rust-toolchain\.toml$|rustfmt\.toml$)'
           # PTY: host, daemon, adaptadores ligados a ele, núcleo, contratos, parâmetros, workflow e entradas da compilação.
-          PTY_PATHS: '^(crates/ptyhost/|crates/daemon/|crates/contracts/|crates/adapters/(claude|codex)/|crates/adapters/tool_launch_tests\.rs$|crates/core/|defaults/(ptyhost|daemon|harnesses)\.toml$|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
+          PTY_PATHS: '^(crates/ptyhost/|crates/daemon/|crates/contracts/|crates/adapters/(claude|codex)/|crates/core/|defaults/(ptyhost|daemon|harnesses)\.toml$|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
           # Executor de arquivos: o crate, o portão que ele julga de novo, os parâmetros dos dois, este workflow e
           # tudo que muda o resultado da compilação.
           FS_PATHS: '^(crates/adapters/fs/|crates/core/|defaults/action-gate\.toml$|defaults/fs-executor\.toml$|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
