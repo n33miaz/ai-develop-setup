@@ -16,11 +16,11 @@ A [política da fila](src/queue.rs) restaura a fila parada e calcula transiçõe
 
 `change_queue_state` devolve o novo estado junto com os dados do evento (`queue.enabled` ou `queue.stopped` com `reason: owner`), montados do aparelho conferido. Uma mudança para o estado atual é recusada com `Unchanged`, então nunca sai parada para uma fila já parada. O produtor monta o envelope com `actor.id` igual ao `device_id` do aparelho devolvido.
 
-Na partida, `restore_running_task` decide o destino da tarefa cujo último estado é `running`. O chamador passa o estado e a contagem reconstituídos pelo replay, para uma queda entre o log e o retrato não escapar da regra, e diz o que o host de terminal informou sobre a sessão da tarefa (`HostProcess`). Parear a tarefa com a sessão cabe ao chamador: o registro da tarefa ainda não guarda a sessão. Os casos:
+Na partida, `restore_running_task` decide o destino da tarefa cujo último estado é `running`. O chamador passa o estado e a contagem reconstituídos pelo replay, para uma queda entre o log e o retrato não escapar da regra, e diz o que o host de terminal informou sobre a sessão da tarefa (`HostProcess`). A restauração e o cálculo de transições aceitam retratos `record.queue-task:1` e `:2`. O daemon ainda precisa associar a tarefa à sessão, consultar o host, aplicar o prazo e solicitar o encerramento quando a sessão reaparecer. Os casos:
 - `Keep`: o host lista a sessão com o processo rodando (`Kept`), e a tarefa continua em `running`. O núcleo volta a acompanhar a sessão, e a tentativa termina normalmente, mesmo com a fila parada.
 - `AwaitHost`: o host ainda não respondeu (`Unconfirmed`) e não passaram `host_confirm_seconds` (60) desde que o núcleo começou a perguntar. A tarefa fica em `running` no log, sem evento novo, e nada a move até o host responder ou o prazo vencer. Esse estado é só do núcleo: a cada partida ele é calculado de novo.
 - `Fail`: o host respondeu que a sessão terminou ou não existe (`Lost`), e a tarefa passa para `failed` com a mesma contagem, porque a tentativa interrompida já foi contada. Uma sessão que terminou enquanto o núcleo estava fora também cai aqui: o resultado dela não é julgado.
-- `Abandon`: o prazo venceu sem resposta do host. A tarefa passa para `failed` com a mesma contagem, mas o processo pode continuar vivo: o chamador encerra a sessão assim que o host a listar, antes de a tarefa voltar a rodar, para duas tentativas nunca rodarem juntas na mesma pasta.
+- `Abandon`: o prazo venceu sem resposta do host. A tarefa passa para `cancelled` com a mesma contagem e o motivo `host_unconfirmed`. O cancelamento é terminal, inclusive após replay e nova ativação da fila. A sessão anterior pode continuar viva.
 - `Cancel`: a contagem é inconsistente (zero ou acima do teto). A tarefa passa para `cancelled` com a contagem gravada, e o chamador encerra o processo se o host o manteve ou o listar depois.
 
 Hoje o daemon não adota sessões antigas ao reiniciar, então `Kept` ainda não acontece na prática.
@@ -32,7 +32,7 @@ O replay (`replay_task`) recebe o stream inteiro da fila, a partir de `queue.cre
 - todo pedido manual, de qualquer tarefa da fila, foi criado por um aparelho do dono;
 - a tarefa só entra em `running` com a fila ligada naquele ponto do log;
 - `review → done` foi aceito por um aparelho do dono.
-- a mudança de estado da tarefa leva o canal (`via`) quando o ator é um aparelho, e só nesse caso (`ActorChannel`).
+- os eventos novos de mudança de estado usam `queue.task_state_changed:2`. O construtor e a leitura do evento exigem `via` para aparelhos e recusam o campo para os demais atores. O replay aceita eventos da `:1` conforme as regras dessa versão.
 
 O agente e o daemon continuam podendo reprovar e cancelar tarefas. O replay confere a coerência dos atores que o log declara, não a autenticidade deles: o log não é assinado por aparelho, e uma linha forjada é recusada pela cadeia HMAC do armazenamento ([ADR 0021](../../docs/adr/0021-storage-atomic-file-and-cipher.md)). O replay protege contra erro do produtor e contra log montado de forma errada.
 

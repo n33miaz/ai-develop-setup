@@ -10,9 +10,11 @@ use ads_contracts::{
     EventQueueStoppedV1Data, EventQueueStoppedV1DataReason, EventQueueStoppedV1DataVia,
     EventQueueTaskCreatedV1, EventQueueTaskCreatedV1DataOrigin, EventQueueTaskCreatedV2,
     EventQueueTaskCreatedV2DataOrigin, EventQueueTaskCreatedV3, EventQueueTaskStateChangedV1,
-    EventQueueTaskStateChangedV1Data, EventQueueTaskStateChangedV1DataAttempts,
-    EventQueueTaskStateChangedV1DataFields, EventQueueTaskStateChangedV1DataVia, RecordQueueTaskV2,
-    RecordQueueTaskV2Attempts, RecordTaskQueueV1, RecordTaskQueueV1State, RecordTaskQueueV1Version,
+    EventQueueTaskStateChangedV2, EventQueueTaskStateChangedV2Data,
+    EventQueueTaskStateChangedV2DataAttempts, EventQueueTaskStateChangedV2DataFields,
+    EventQueueTaskStateChangedV2DataReason, EventQueueTaskStateChangedV2DataVia, RecordQueueTaskV1,
+    RecordQueueTaskV2, RecordQueueTaskV2Attempts, RecordTaskQueueV1, RecordTaskQueueV1State,
+    RecordTaskQueueV1Version,
 };
 
 use CommonQueueTaskStateV1::{Cancelled, Done, Failed, Queued, Review, Running};
@@ -114,11 +116,11 @@ impl Channel {
         }
     }
 
-    pub fn task_via(self) -> EventQueueTaskStateChangedV1DataVia {
+    pub fn task_via(self) -> EventQueueTaskStateChangedV2DataVia {
         match self {
-            Self::LocalUi => EventQueueTaskStateChangedV1DataVia::LocalUi,
-            Self::Tray => EventQueueTaskStateChangedV1DataVia::Tray,
-            Self::RemoteDevice => EventQueueTaskStateChangedV1DataVia::RemoteDevice,
+            Self::LocalUi => EventQueueTaskStateChangedV2DataVia::LocalUi,
+            Self::Tray => EventQueueTaskStateChangedV2DataVia::Tray,
+            Self::RemoteDevice => EventQueueTaskStateChangedV2DataVia::RemoteDevice,
         }
     }
 }
@@ -239,29 +241,58 @@ pub enum RunningAfterRestart {
     /// `host_confirm_seconds` pass: the caller asks again and appends nothing.
     AwaitHost,
     /// `running → failed` with the same count, because the interrupted attempt was already counted.
-    Fail(EventQueueTaskStateChangedV1Data),
-    /// `running → failed` with the same count after the host stayed silent for
-    /// `host_confirm_seconds`. The process may still run: the caller ends the session as soon as
-    /// the host lists it, before the task starts again.
-    Abandon(EventQueueTaskStateChangedV1Data),
+    Fail(EventQueueTaskStateChangedV2Data),
+    /// Terminal cancellation after the host stayed silent for `host_confirm_seconds`.
+    /// The recorded reason preserves that the previous session may still be alive.
+    Abandon(EventQueueTaskStateChangedV2Data),
     /// `running → cancelled` with the recorded count, for a running task whose count is
     /// inconsistent; a process the host kept, or lists later, is ended by the caller.
-    Cancel(EventQueueTaskStateChangedV1Data),
+    Cancel(EventQueueTaskStateChangedV2Data),
 }
+
+/// Fields shared by both persisted versions of a task.
+#[derive(Clone, Copy)]
+pub struct TaskSnapshot<'a> {
+    id: &'a CommonIdV1,
+    queue_id: &'a CommonIdV1,
+    state: CommonQueueTaskStateV1,
+    attempts: u64,
+    limit: u64,
+}
+
+macro_rules! task_snapshot {
+    ($record:ty) => {
+        impl<'a> From<&'a $record> for TaskSnapshot<'a> {
+            fn from(task: &'a $record) -> Self {
+                Self {
+                    id: &task.id,
+                    queue_id: &task.queue_id,
+                    state: task.state,
+                    attempts: task.attempts.get(),
+                    limit: task.attempt_limit.get().into(),
+                }
+            }
+        }
+    };
+}
+
+task_snapshot!(RecordQueueTaskV1);
+task_snapshot!(RecordQueueTaskV2);
 
 /// Decides, on start, the fate of a task whose last recorded state is `running`. The caller passes
 /// the state and count rebuilt by `replay_task`, so a crash between the log and the record is
 /// covered.
-pub fn restore_running_task(
-    task: &RecordQueueTaskV2,
+pub fn restore_running_task<'a>(
+    task: impl Into<TaskSnapshot<'a>>,
     host: HostProcess,
     policy: &QueuePolicy,
 ) -> RunningAfterRestart {
+    let task = task.into();
     if task.state != Running {
         return RunningAfterRestart::Keep;
     }
-    let attempts = task.attempts.get();
-    let consistent = attempts >= 1 && attempts <= task.attempt_limit.get().into();
+    let attempts = task.attempts;
+    let consistent = attempts >= 1 && attempts <= task.limit;
     let abandoned = match (consistent, host) {
         (false, _) => None,
         (true, HostProcess::Kept) => return RunningAfterRestart::Keep,
@@ -273,19 +304,21 @@ pub fn restore_running_task(
         }
         (true, HostProcess::Unconfirmed { .. }) => Some(true),
     };
-    let to = if abandoned.is_some() {
+    let to = if abandoned == Some(false) {
         Failed
     } else {
         Cancelled
     };
-    let data = EventQueueTaskStateChangedV1Data::new(EventQueueTaskStateChangedV1DataFields {
+    let data = EventQueueTaskStateChangedV2Data::new(EventQueueTaskStateChangedV2DataFields {
         queue_id: task.queue_id.clone(),
         task_id: task.id.clone(),
         from: Running,
         to,
-        attempts: EventQueueTaskStateChangedV1DataAttempts::new(attempts)
+        attempts: EventQueueTaskStateChangedV2DataAttempts::new(attempts)
             .expect("a record count fits the event count"),
         via: None,
+        reason: (abandoned == Some(true))
+            .then_some(EventQueueTaskStateChangedV2DataReason::HostUnconfirmed),
     })
     .expect("running to failed or cancelled is an allowed change");
     match abandoned {
@@ -349,6 +382,7 @@ pub enum QueueLogEvent<'a> {
     TaskCreatedV2(&'a EventQueueTaskCreatedV2),
     TaskCreatedV3(&'a EventQueueTaskCreatedV3),
     TaskStateChanged(&'a EventQueueTaskStateChangedV1),
+    TaskStateChangedV2(&'a EventQueueTaskStateChangedV2),
 }
 
 macro_rules! each_event {
@@ -362,6 +396,7 @@ macro_rules! each_event {
             QueueLogEvent::TaskCreatedV2($name) => $body,
             QueueLogEvent::TaskCreatedV3($name) => $body,
             QueueLogEvent::TaskStateChanged($name) => $body,
+            QueueLogEvent::TaskStateChangedV2($name) => $body,
         }
     };
 }
@@ -411,8 +446,6 @@ pub enum ReplayRefusal {
     NotOwnerDevice,
     /// The task entered `running` while the queue was stopped.
     QueueStopped,
-    /// A task change names a channel (`via`) without a device actor, or a device acted without one.
-    ActorChannel,
     /// The change does not follow the current state or the attempt count.
     InvalidChange,
     /// The task was created twice or never.
@@ -537,33 +570,41 @@ pub fn replay_task<'a, 'context>(
                 }
                 task = Some((Queued, 0, admitted.attempt_limit.into()));
             }
-            QueueLogEvent::TaskStateChanged(change) => {
-                if change.data.task_id != *task_id {
+            QueueLogEvent::TaskStateChanged(_) | QueueLogEvent::TaskStateChangedV2(_) => {
+                let (changed_task, from, to, recorded_attempts) = match event {
+                    QueueLogEvent::TaskStateChanged(change) => {
+                        let data = &change.data;
+                        (&data.task_id, data.from, data.to, data.attempts.get())
+                    }
+                    QueueLogEvent::TaskStateChangedV2(change) => {
+                        let data = &change.data;
+                        (&data.task_id, data.from, data.to, data.attempts.get())
+                    }
+                    _ => unreachable!("task state change"),
+                };
+                if changed_task != task_id {
                     continue;
                 }
                 let (state, attempts, limit) = task.as_mut().ok_or(ReplayRefusal::TaskCreation)?;
-                if change.data.from != *state {
+                if from != *state {
                     return Err(ReplayRefusal::InvalidChange);
                 }
-                if change.data.via.is_some() != (change.actor.kind == CommonActorV1Kind::Device) {
-                    return Err(ReplayRefusal::ActorChannel);
-                }
-                if change.data.to == Running {
+                if to == Running {
                     if queue_state != Enabled {
                         return Err(ReplayRefusal::QueueStopped);
                     }
                     *attempts += 1;
                 }
-                if (*state, change.data.to) == (Review, Done) && !owner_device(event) {
+                if (*state, to) == (Review, Done) && !owner_device(event) {
                     return Err(ReplayRefusal::NotOwnerDevice);
                 }
                 if *attempts > *limit
-                    || change.data.attempts.get() != *attempts
-                    || (*state == Failed && change.data.to == Queued && *attempts == *limit)
+                    || recorded_attempts != *attempts
+                    || (*state == Failed && to == Queued && *attempts == *limit)
                 {
                     return Err(ReplayRefusal::InvalidChange);
                 }
-                *state = change.data.to;
+                *state = to;
             }
         }
     }
@@ -953,21 +994,22 @@ fn check_admission<'a>(
 }
 
 /// Returns the attempt count after an allowed transition in the current queue.
-pub fn next_attempt_count(
+pub fn next_attempt_count<'a>(
     queue: &RecordTaskQueueV1,
-    task: &RecordQueueTaskV2,
+    task: impl Into<TaskSnapshot<'a>>,
     next: CommonQueueTaskStateV1,
     device: Option<&AuthenticatedDevice>,
 ) -> Option<RecordQueueTaskV2Attempts> {
-    if task.queue_id != queue.id {
+    let task = task.into();
+    if task.queue_id != &queue.id {
         return None;
     }
     if next == Cancelled && matches!(task.state, Queued | Running | Review | Failed) {
-        return Some(task.attempts);
+        return RecordQueueTaskV2Attempts::new(task.attempts).ok();
     }
 
-    let attempts = task.attempts.get();
-    let limit = task.attempt_limit.get().into();
+    let attempts = task.attempts;
+    let limit = task.limit;
     if attempts > limit || (attempts == 0 && task.state != Queued) {
         return None;
     }
@@ -976,11 +1018,13 @@ pub fn next_attempt_count(
         (Queued, Running) if queue.state == Enabled && attempts < limit => {
             RecordQueueTaskV2Attempts::new(attempts + 1).ok()
         }
-        (Failed, Queued) if attempts < limit => Some(task.attempts),
+        (Failed, Queued) if attempts < limit => RecordQueueTaskV2Attempts::new(task.attempts).ok(),
         (Review, Done) if device.is_some_and(|device| device.owner_id == queue.owner_id) => {
-            Some(task.attempts)
+            RecordQueueTaskV2Attempts::new(task.attempts).ok()
         }
-        (Running, Review | Failed) | (Review, Failed) => Some(task.attempts),
+        (Running, Review | Failed) | (Review, Failed) => {
+            RecordQueueTaskV2Attempts::new(task.attempts).ok()
+        }
         _ => None,
     }
 }

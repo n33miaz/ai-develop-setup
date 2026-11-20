@@ -1,5 +1,6 @@
 use super::*;
 use Channel::{LocalUi, RemoteDevice, Tray};
+use ads_contracts::EventQueueTaskStateChangedV2Type;
 
 fn id(text: &str) -> CommonIdV1 {
     CommonIdV1::new(text).unwrap()
@@ -102,7 +103,7 @@ fn the_core_channel_maps_to_each_event_via() {
     assert_eq!(Tray.stopped_via(), EventQueueStoppedV1DataVia::Tray);
     assert_eq!(
         RemoteDevice.task_via(),
-        EventQueueTaskStateChangedV1DataVia::RemoteDevice
+        EventQueueTaskStateChangedV2DataVia::RemoteDevice
     );
 }
 
@@ -333,6 +334,7 @@ enum Owned {
     TaskCreatedV2(EventQueueTaskCreatedV2),
     TaskCreatedV3(EventQueueTaskCreatedV3),
     Changed(EventQueueTaskStateChangedV1),
+    ChangedV2(EventQueueTaskStateChangedV2),
 }
 
 impl Owned {
@@ -346,6 +348,7 @@ impl Owned {
             Self::TaskCreatedV2(event) => QueueLogEvent::TaskCreatedV2(event),
             Self::TaskCreatedV3(event) => QueueLogEvent::TaskCreatedV3(event),
             Self::Changed(event) => QueueLogEvent::TaskStateChanged(event),
+            Self::ChangedV2(event) => QueueLogEvent::TaskStateChangedV2(event),
         }
     }
 }
@@ -495,6 +498,9 @@ fn typed(values: Vec<serde_json::Value>) -> Vec<Owned> {
                 }
                 "urn:ads:event:queue.task_created:3" => {
                     Owned::TaskCreatedV3(serde_json::from_value(parse()).unwrap())
+                }
+                "urn:ads:event:queue.task_state_changed:2" => {
+                    Owned::ChangedV2(serde_json::from_value(parse()).unwrap())
                 }
                 _ => Owned::Changed(serde_json::from_value(parse()).unwrap()),
             }
@@ -1038,26 +1044,17 @@ fn a_running_task_waits_for_the_host_and_is_abandoned_after_the_deadline() {
     let mut task = task();
     task.state = Running;
     task.attempts = RecordQueueTaskV2Attempts::new(1).unwrap();
-    let policy = policy();
-    let deadline = policy.host_confirm_seconds.get();
+    let deadline = 17;
+    let policy = QueuePolicy {
+        host_confirm_seconds: NonZeroU64::new(deadline).unwrap(),
+        ..policy()
+    };
     for waited_seconds in [0, deadline - 1] {
         assert_eq!(
             restore_running_task(&task, HostProcess::Unconfirmed { waited_seconds }, &policy),
             RunningAfterRestart::AwaitHost,
-            "{waited_seconds}"
         );
     }
-    for waited_seconds in [deadline, deadline + 1] {
-        let RunningAfterRestart::Abandon(data) =
-            restore_running_task(&task, HostProcess::Unconfirmed { waited_seconds }, &policy)
-        else {
-            panic!("the deadline abandons the task: {waited_seconds}");
-        };
-        assert_eq!((data.from, data.to), (Running, Failed));
-        assert_eq!(data.attempts.get(), 1, "no new attempt");
-        assert_eq!(data.via, None);
-    }
-    let mut values = Stream::new().started().restart().numbered();
     let RunningAfterRestart::Abandon(data) = restore_running_task(
         &task,
         HostProcess::Unconfirmed {
@@ -1065,13 +1062,66 @@ fn a_running_task_waits_for_the_host_and_is_abandoned_after_the_deadline() {
         },
         &policy,
     ) else {
-        unreachable!();
+        panic!("the configured deadline abandons the task");
     };
-    let mut failed = values[3].clone();
-    failed["seq"] = 6.into();
-    failed["data"] = serde_json::to_value(&data).unwrap();
-    values.push(failed);
-    assert_eq!(replay_values(values), Ok((Failed, 1)));
+    assert_eq!(
+        (data.from, data.to, data.attempts.get()),
+        (Running, Cancelled, 1)
+    );
+    assert_eq!(
+        data.reason,
+        Some(EventQueueTaskStateChangedV2DataReason::HostUnconfirmed)
+    );
+    let stream = Stream::new().started().restart().push(
+        "task_state_changed",
+        DAEMON,
+        serde_json::to_value(&data).unwrap(),
+    );
+    let mut stream = stream;
+    stream.0[5]["type"] = EventQueueTaskStateChangedV2Type::VALUE.into();
+    let mut values = stream.restart().enabled(OWNER_DEVICE).numbered();
+    let (state, attempts) = replay_values(values.clone()).unwrap();
+    assert_eq!((state, attempts), (Cancelled, 1));
+    task.state = state;
+    let mut queue = new_stopped(id("queue-01"), &device("device-01", "owner-01", LocalUi));
+    queue.state = Enabled;
+    assert_eq!(next_attempt_count(&queue, &task, Queued, None), None);
+    assert_eq!(next_attempt_count(&queue, &task, Running, None), None);
+    assert_eq!(
+        restore_running_task(&task, HostProcess::Kept, &policy),
+        RunningAfterRestart::Keep
+    );
+
+    let mut retry = values[3].clone();
+    retry["seq"] = 9.into();
+    retry["data"]["from"] = "failed".into();
+    retry["data"]["to"] = "queued".into();
+    values.push(retry);
+    assert_eq!(replay_values(values), Err(ReplayRefusal::InvalidChange));
+}
+
+#[test]
+fn restart_uses_a_persisted_v1_snapshot_and_its_log() {
+    let mut saved: RecordQueueTaskV1 = serde_json::from_str(include_str!(
+        "../../../contracts/golden/record.queue-task.v1/valid/01-base.json"
+    ))
+    .unwrap();
+    let mut queue = new_stopped(id("queue-01"), &device("device-01", "owner-01", LocalUi));
+    queue.state = Enabled;
+    assert_eq!(
+        next_attempt_count(&queue, &saved, Running, None)
+            .unwrap()
+            .get(),
+        1
+    );
+
+    let (state, attempts) = Stream::new().started().restart().replay().unwrap();
+    saved.state = state;
+    saved.attempts = ads_contracts::RecordQueueTaskV1Attempts::new(attempts).unwrap();
+    assert!(matches!(
+        restore_running_task(&saved, HostProcess::Lost, &policy()),
+        RunningAfterRestart::Fail(data) if data.from == Running && data.attempts.get() == 1
+    ));
 }
 
 #[test]
@@ -1135,6 +1185,7 @@ fn a_restart_keeps_fails_or_cancels_the_running_task() {
     let mut values = Stream::new().started().restart().numbered();
     let mut failed = values[3].clone();
     failed["seq"] = 6.into();
+    failed["type"] = EventQueueTaskStateChangedV2Type::VALUE.into();
     failed["data"] = serde_json::to_value(&data).unwrap();
     values.push(failed);
     assert_eq!(replay_values(values), Ok((Failed, 1)));
@@ -1690,27 +1741,25 @@ fn an_older_policy_file_loads_with_the_bundled_window_limits() {
 }
 
 #[test]
-fn replay_requires_a_channel_exactly_for_device_changes() {
-    let mut daemon_with_channel = Stream::new().started().numbered();
-    daemon_with_channel[3]["data"]["via"] = "tray".into();
-    assert_eq!(
-        replay_values(daemon_with_channel),
-        Err(ReplayRefusal::ActorChannel)
-    );
-    let mut device_without_channel = Stream::new()
+fn task_change_channel_rules_are_versioned() {
+    let mut legacy = Stream::new()
         .started()
         .change(OWNER_DEVICE, "running", "cancelled", 1)
         .numbered();
-    device_without_channel[4]["data"]
-        .as_object_mut()
-        .unwrap()
-        .remove("via");
-    assert_eq!(
-        replay_values(device_without_channel),
-        Err(ReplayRefusal::ActorChannel)
-    );
-    let cancelled = Stream::new()
-        .started()
-        .change(OWNER_DEVICE, "running", "cancelled", 1);
-    assert_eq!(cancelled.replay(), Ok((Cancelled, 1)));
+    let mut cancelled = legacy[4].clone();
+    legacy[4]["data"].as_object_mut().unwrap().remove("via");
+    assert_eq!(replay_values(legacy.clone()), Ok((Cancelled, 1)));
+
+    let parse = serde_json::from_value::<EventQueueTaskStateChangedV2>;
+    let mut missing_channel = legacy[4].clone();
+    missing_channel["type"] = EventQueueTaskStateChangedV2Type::VALUE.into();
+    assert!(parse(missing_channel).is_err());
+
+    cancelled["type"] = EventQueueTaskStateChangedV2Type::VALUE.into();
+    let mut fields = parse(cancelled.clone()).unwrap().into_fields();
+    fields.actor.kind = CommonActorV1Kind::Daemon;
+    assert!(EventQueueTaskStateChangedV2::new(fields).is_err());
+
+    legacy[4] = cancelled;
+    assert_eq!(replay_values(legacy), Ok((Cancelled, 1)));
 }

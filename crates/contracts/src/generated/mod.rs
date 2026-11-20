@@ -65,6 +65,7 @@ pub mod event_queue_task_created_v1;
 pub mod event_queue_task_created_v2;
 pub mod event_queue_task_created_v3;
 pub mod event_queue_task_state_changed_v1;
+pub mod event_queue_task_state_changed_v2;
 pub mod event_review_completed_v1;
 pub mod event_review_failed_v1;
 pub mod event_review_requested_v1;
@@ -164,6 +165,7 @@ pub use event_queue_task_created_v1::*;
 pub use event_queue_task_created_v2::*;
 pub use event_queue_task_created_v3::*;
 pub use event_queue_task_state_changed_v1::*;
+pub use event_queue_task_state_changed_v2::*;
 pub use event_review_completed_v1::*;
 pub use event_review_failed_v1::*;
 pub use event_review_requested_v1::*;
@@ -366,6 +368,10 @@ pub const SCHEMAS: &[(&str, &str)] = &[
     (
         "event.queue.task_state_changed.v1",
         "urn:ads:event:queue.task_state_changed:1",
+    ),
+    (
+        "event.queue.task_state_changed.v2",
+        "urn:ads:event:queue.task_state_changed:2",
     ),
     (
         "event.review.completed.v1",
@@ -592,6 +598,9 @@ pub fn reencode(id: &str, value: Value) -> Option<Result<Value, serde_json::Erro
         "urn:ads:event:queue.task_created:3" => support::reencode::<EventQueueTaskCreatedV3>(value),
         "urn:ads:event:queue.task_state_changed:1" => {
             support::reencode::<EventQueueTaskStateChangedV1>(value)
+        }
+        "urn:ads:event:queue.task_state_changed:2" => {
+            support::reencode::<EventQueueTaskStateChangedV2>(value)
         }
         "urn:ads:event:review.completed:1" => support::reencode::<EventReviewCompletedV1>(value),
         "urn:ads:event:review.failed:1" => support::reencode::<EventReviewFailedV1>(value),
