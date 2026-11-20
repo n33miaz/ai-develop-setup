@@ -1780,7 +1780,7 @@ close_retry_ms = 20",
     })
     .await;
     // Both automatic attempts were refused: the stream stays whole and the slot stays taken.
-    // The existing subscription stays open: the next frame answers this request, not -32004 or -32013.
+    // The next frame answers this request while the existing subscription stays open.
     assert_eq!(
         call(
             &mut ws,
@@ -2077,6 +2077,13 @@ async fn failed_host_resubscribe_invalidates_only_the_affected_stream() {
     );
     assert_invalidated_session_closed(&f, &mut ws).await;
     assert!(!f.api.is_finished());
+}
+
+#[test]
+fn unavailable_service_and_host_timeout_share_the_internal_error_code() {
+    for error in [ApiError::Unavailable, ApiError::HostTimeout] {
+        assert_eq!(error.code(), -32603);
+    }
 }
 
 #[tokio::test]

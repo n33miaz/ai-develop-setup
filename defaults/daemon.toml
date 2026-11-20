@@ -21,6 +21,6 @@ host_timeout_ms = 10000
 retired_sessions = 1024
 # Ids de assinatura por conexão: este valor vezes max_sessions. Reassinar um stream na mesma conexão soma um id.
 subscription_ids_per_stream = 2
-# Fechamento automático de sessão invalidada: tentativas e espera entre elas; esgotadas, a assinatura recebe -32013.
+# Fechamento automático de sessão invalidada: tentativas e espera entre elas; esgotadas, a assinatura recebe SESSION_CLOSE_PENDING.
 close_retries = 3
 close_retry_ms = 1000

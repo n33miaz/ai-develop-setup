@@ -25,7 +25,7 @@ Conectada, a interface mostra um botão de abertura para cada ferramenta que o
 daemon informa em `harness.list`. Enquanto a consulta não volta, um aviso diz que
 ela está em andamento. Sem botões, cada caso tem o seu aviso: lista vazia;
 falta de resposta em 10 segundos (reabra a URL da execução); daemon anterior ao
-comando, que responde `-32601` (atualize o daemon; reabrir a URL não resolve);
+comando, que responde `METHOD_NOT_FOUND` (atualize o daemon; reabrir a URL não resolve);
 e outra recusa do daemon, com aviso neutro. Sem apelido de pasta anunciado
 pelo daemon, os botões ficam desativados e um aviso explica o motivo. Cada
 conexão autenticada tem uma geração própria: a lista, o apelido e os botões
@@ -49,7 +49,7 @@ daemon por stream e conexão e reparte os eventos entre os ouvintes locais, como
 montado. Sair só desliga o ouvinte; a assinatura continua, guardando os eventos recentes para quem
 assinar depois, por exemplo ao voltar a uma sessão. Os eventos guardados chegam a esse ouvinte já
 dentro de `subscribe`. Um ouvinte que pede eventos que já não estão guardados recebe só o próprio
-fim (`-32004`), sem afetar os outros ouvintes nem a conexão, mesmo que o daemon ainda tenha esses
+fim (`SUBSCRIPTION_REPLAY_UNAVAILABLE`), sem afetar os outros ouvintes nem a conexão, mesmo que o daemon ainda tenha esses
 eventos. O cliente não pede de novo ao daemon de propósito: sem cancelamento, uma segunda assinatura
 no mesmo stream e conexão ficaria viva para sempre e exigiria ligar vários ids de pedido ao mesmo
 stream. `VITE_CORE_REPLAY_EVENTS` (padrão 256) limita os eventos guardados por stream e deve

@@ -23,8 +23,8 @@ export interface TaskView {
 
 /**
  * Estado local da tela que não vem de evento: o núcleo o informa como resultado de comando ou de
- * assinatura. `closing`: as tentativas automáticas de fechar se esgotaram (`-32013`); `ended`: a
- * assinatura do fluxo terminou (`-32004`); `setupFailed`: a preparação falhou após a abertura do terminal.
+ * assinatura. `closing`: as tentativas automáticas de fechar se esgotaram (`SESSION_CLOSE_PENDING`); `ended`: a
+ * assinatura do fluxo terminou (`SUBSCRIPTION_REPLAY_UNAVAILABLE`); `setupFailed`: a preparação falhou após a abertura do terminal.
  */
 export type SessionStatus = 'closing' | 'ended' | 'setupFailed'
 
