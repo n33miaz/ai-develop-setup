@@ -5,6 +5,7 @@ pub mod child_env;
 pub mod gate;
 pub mod handoff;
 pub mod queue;
+pub mod refusal;
 pub mod routing;
 pub mod tool_launch;
 pub mod vault;

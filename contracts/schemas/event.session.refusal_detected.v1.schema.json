@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:event:session.refusal_detected:1",
+  "title": "Recusa ou filtro detectado",
+  "description": "A ferramenta recusou um pedido ou um filtro de segurança interrompeu a sessão. Só metadados: ferramenta, provedor, identificador do modelo no catálogo e tipo. O texto do pedido e da resposta não cabe no evento.",
+  "allOf": [
+    {
+      "$ref": "urn:ads:event:envelope:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "type",
+        "stream",
+        "data"
+      ],
+      "properties": {
+        "type": {
+          "const": "urn:ads:event:session.refusal_detected:1"
+        },
+        "stream": {
+          "type": "string",
+          "pattern": "^session/"
+        },
+        "data_class": {
+          "const": "private"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "session_id",
+            "harness",
+            "provider",
+            "model",
+            "kind"
+          ],
+          "properties": {
+            "session_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "harness": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "provider": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "model": {
+              "type": "string",
+              "description": "Identificador de um modelo do catálogo configurado: 1 a 48 caracteres de minúsculas, dígitos e . _ -, começando por minúscula ou dígito. Não é texto livre.",
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,47}$"
+            },
+            "kind": {
+              "enum": [
+                "refusal",
+                "safety_filter"
+              ]
+            }
+          }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+      "type": "urn:ads:event:session.refusal_detected:1",
+      "ts": "2030-01-02T03:04:05Z",
+      "stream": "session/session-1",
+      "seq": 7,
+      "actor": {
+        "kind": "daemon",
+        "id": "core-01"
+      },
+      "cause": null,
+      "data_class": "private",
+      "data": {
+        "session_id": "session-1",
+        "harness": "harness-a",
+        "provider": "provider-a",
+        "model": "model-x",
+        "kind": "refusal"
+      }
+    }
+  ]
+}

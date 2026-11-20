@@ -73,14 +73,10 @@ impl HandoffPolicy {
             return Decision::None;
         }
 
-        match (self.mode, trigger, consent) {
-            (Mode::Propose, _, Consent::Granted) => Decision::Proceed,
-            (
-                Mode::AutoWithConsent,
-                Trigger::ContextLimit | Trigger::AccountSwitch,
-                Consent::Granted,
-            ) => Decision::Proceed,
-            _ => Decision::Propose,
+        // A refusal never starts on its own; consent for the specific handoff lets any trigger proceed.
+        match consent {
+            Consent::Granted => Decision::Proceed,
+            Consent::Pending | Consent::Declined => Decision::Propose,
         }
     }
 }

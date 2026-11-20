@@ -1,0 +1,20 @@
+{
+  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAC",
+  "type": "urn:ads:event:session.refusal_detected:1",
+  "ts": "2030-01-02T03:04:05Z",
+  "stream": "session/session-2",
+  "seq": 8,
+  "actor": {
+    "kind": "agent",
+    "id": "adapter-b"
+  },
+  "cause": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+  "data_class": "private",
+  "data": {
+    "session_id": "session-2",
+    "harness": "harness-b",
+    "provider": "provider-b",
+    "model": "model-y",
+    "kind": "safety_filter"
+  }
+}

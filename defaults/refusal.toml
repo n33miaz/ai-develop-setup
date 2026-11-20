@@ -1,0 +1,19 @@
+# Oferta de outro modelo quando a ferramenta recusa um pedido ou um filtro de
+# segurança interrompe a sessão. A oferta é sempre uma proposta: só segue com o
+# aceite de um aparelho do dono, pela passagem entre sessões (ADR 0027).
+
+# false desliga a oferta. A passagem por contexto e por conta não muda.
+enabled = true
+
+# any-tool oferece modelos de qualquer ferramenta configurada.
+# same-tool oferece só outros modelos da ferramenta que recusou.
+scope = "any-tool"
+
+# routing mantém a ordem do roteador (regra, faixa, rank).
+# other-tool-first põe antes as outras ferramentas, na ordem do roteador.
+# same-tool-first põe antes os outros modelos da mesma ferramenta.
+# O padrão começa por outra ferramenta, que tem outro filtro de segurança.
+order = "other-tool-first"
+
+# Quantas alternativas a proposta mostra, de 1 a 10.
+max_alternatives = 3
