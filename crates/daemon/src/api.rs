@@ -250,6 +250,12 @@ struct Retry {
 struct Service {
     #[cfg(test)]
     before_setup: Arc<Gate>,
+    /// Roda com a tentativa automática em curso; `Some` substitui a resposta do host.
+    #[cfg(test)]
+    during_attempt: Option<fn(&mut Service) -> Option<ApiError>>,
+    hooks: Arc<TestHooks>,
+    /// Sessão e geração da tentativa automática que está fora da fila, em execução.
+    in_flight: Option<(SessionId, u64)>,
     host: PtyClient,
     launcher: Arc<dyn Launcher>,
     config: ApiConfig,
@@ -484,14 +490,26 @@ impl Service {
             return Ok(());
         }
         let deadline = Instant::now() + Duration::from_millis(self.config.host_timeout_ms);
-        let outcome = self
-            .close(
-                SessionParams {
-                    session_id: retry.id.clone(),
-                },
-                deadline,
-            )
-            .await;
+        // Enquanto a tentativa está fora da fila, um novo agendamento da mesma geração a reconhece.
+        self.in_flight = Some((retry.id.clone(), retry.generation));
+        #[cfg(test)]
+        let injected = self.during_attempt.and_then(|during| during(self));
+        #[cfg(not(test))]
+        let injected: Option<ApiError> = None;
+        let outcome = match injected {
+            Some(error) => Err(error),
+            None => {
+                self.hooks.automatic_closes.fetch_add(1, Ordering::AcqRel);
+                self.close(
+                    SessionParams {
+                        session_id: retry.id.clone(),
+                    },
+                    deadline,
+                )
+                .await
+            }
+        };
+        self.in_flight = None;
         match outcome {
             // Liberada, já fechada pelo cliente ou podada: nada mais a fazer.
             Ok(()) | Err(ApiError::Invalid | ApiError::Host(ErrorCode::UnknownSession)) => {
@@ -546,12 +564,17 @@ impl Service {
             self.schedule_close(id, generation);
         }
     }
-    /// Uma entrada por geração: uma tentativa já na fila mantém o orçamento que tem.
+    /// Uma entrada por geração, na fila ou em execução: a tentativa existente mantém saldo e prazo.
     fn schedule_close(&mut self, id: &SessionId, generation: u64) {
-        if !self
-            .retries
-            .iter()
-            .any(|r| r.id == *id && r.generation == generation)
+        let running = self
+            .in_flight
+            .as_ref()
+            .is_some_and(|(r, g)| r == id && *g == generation);
+        if !running
+            && !self
+                .retries
+                .iter()
+                .any(|r| r.id == *id && r.generation == generation)
         {
             self.retries.push_back(Retry {
                 id: id.clone(),
@@ -740,10 +763,15 @@ pub struct TestHooks {
     pending_live: AtomicUsize,
     pending_peak: AtomicUsize,
     waiting_peak: AtomicUsize,
+    automatic_closes: AtomicUsize,
 }
 impl TestHooks {
     pub fn fail_accepts(&self, count: usize) {
         self.accept_faults.store(count, Ordering::Release);
+    }
+    /// Closes the daemon sent to the host on its own, without a client command.
+    pub fn automatic_closes(&self) -> usize {
+        self.automatic_closes.load(Ordering::Acquire)
     }
     pub fn accept_faults_left(&self) -> usize {
         self.accept_faults.load(Ordering::Acquire)
@@ -866,6 +894,7 @@ impl LocalApi {
             .map_err(|_| ApiError::Unavailable)?;
         host.enable_backpressure();
         let token = Token::generate()?;
+        let hooks = Arc::new(TestHooks::default());
         let catalog = launcher.catalog();
         let catalog =
             json!({"harnesses": catalog.harnesses, "workdir_aliases": catalog.workdir_aliases});
@@ -876,6 +905,10 @@ impl LocalApi {
         let service = Service {
             #[cfg(test)]
             before_setup: Arc::default(),
+            #[cfg(test)]
+            during_attempt: None,
+            hooks: hooks.clone(),
+            in_flight: None,
             host,
             launcher,
             config: config.clone(),
@@ -893,7 +926,7 @@ impl LocalApi {
             config,
             catalog,
             service,
-            hooks: Arc::new(TestHooks::default()),
+            hooks,
         })
     }
     #[doc(hidden)]
@@ -1411,6 +1444,67 @@ mod tests {
         );
         assert_eq!(host.sessions().len(), 1);
         assert!(api.service.retries.is_empty());
+        peer.abort();
+    }
+
+    async fn open_fake(api: &mut LocalApi) -> SessionId {
+        let params = json!({"session_id": "session", "harness": "test", "workdir_alias": "workspace", "cols": 80, "rows": 24, "_meta": {"origin": "local", "idempotency_key": "01ARZ3NDEKTSV4RRFFQ69G5FAB"}});
+        api.service
+            .execute(
+                "session.open",
+                &params,
+                None,
+                Instant::now() + Duration::from_secs(5),
+            )
+            .await
+            .unwrap();
+        "session".to_owned().try_into().unwrap()
+    }
+    fn reschedule(service: &mut Service) {
+        service.release_ended(&"session".to_owned().try_into().unwrap());
+    }
+
+    #[tokio::test]
+    async fn rescheduling_during_a_refused_attempt_keeps_one_entry_and_its_budget() {
+        let (mut api, _, _, peer) = fake_service().await;
+        let id = open_fake(&mut api).await;
+        api.service.release_ended(&id);
+        api.service.during_attempt = Some(|service| {
+            reschedule(service);
+            Some(ApiError::Host(ErrorCode::InternalError))
+        });
+        let before = Instant::now();
+        api.service.retry_close().await.unwrap();
+        assert_eq!(api.service.retries.len(), 1);
+        assert_eq!(api.service.retries[0].attempts, 1);
+        assert!(
+            api.service.retries[0].due
+                >= before + Duration::from_millis(api.service.config.close_retry_ms)
+        );
+        // The remaining budget runs out with no other entry left behind.
+        for _ in 1..api.service.config.close_retries {
+            api.service.retry_close().await.unwrap();
+        }
+        assert!(api.service.retries.is_empty());
+        assert!(api.service.in_flight.is_none());
+        peer.abort();
+    }
+
+    #[tokio::test]
+    async fn rescheduling_during_a_confirmed_attempt_returns_one_slot() {
+        let (mut api, backend, host, peer) = fake_service().await;
+        let id = open_fake(&mut api).await;
+        api.service.release_ended(&id);
+        api.service.during_attempt = Some(|service| {
+            reschedule(service);
+            None
+        });
+        api.service.retry_close().await.unwrap();
+        assert!(backend.terminals()[0].was_killed());
+        assert!(host.sessions().is_empty());
+        assert!(api.service.retries.is_empty());
+        assert_eq!(api.service.released.len(), 1);
+        assert!(api.service.sessions["session"].released);
         peer.abort();
     }
 

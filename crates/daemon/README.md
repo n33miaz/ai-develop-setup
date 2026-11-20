@@ -172,11 +172,12 @@ retido. Cada tentativa vale só para a instância da sessão que a gerou e é
 descartada quando a vaga é devolvida. Se um `open` falhar depois de o host abrir o
 terminal, o fechamento vai para a mesma fila, com prazo próprio por tentativa;
 o registro e a vaga ficam até o host confirmar, e então o id volta a ser aceito.
-`UnknownSession` no fechamento libera a vaga; se o stream ainda não tinha evento terminal, grava
-`ended` com `reason: "error"`, e um `ended` já gravado fica como está. Quando o processo de uma
+`UnknownSession` no fechamento libera a vaga; num stream válido (não invalidado) que ainda não
+tinha evento terminal, grava `ended` com `reason: "error"`. Um `ended` já gravado fica como está, e
+um stream invalidado não recebe `ended`. Quando o processo de uma
 sessão termina sozinho, o daemon grava `ended` e pede o fechamento ao host pela mesma fila, sem
 esperar a interface, inclusive se um `session.close` do cliente estiver em andamento e o host o
-recusar. Cada encarnação tem no máximo uma tentativa na fila. O fechamento encerra a árvore de
+recusar. Cada encarnação tem no máximo uma tentativa pendente, contando a que está em execução; reagendar mantém o saldo e o prazo dela. O fechamento encerra a árvore de
 processos que restar e devolve a vaga: um servidor de desenvolvimento ou outro processo que a
 ferramenta tenha iniciado e que ainda esteja vivo é encerrado nessa hora, mesmo sem pedido da
 interface. O stream liberado mantém os eventos ainda retidos, dentro de `events_per_stream` e até a
