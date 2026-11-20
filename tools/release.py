@@ -1,11 +1,13 @@
 """Numera e poda os pré-lançamentos de desenvolvimento (ADR 0025).
 
-Só calcula: quem cria e apaga releases é o workflow `prerelease.yml`, a partir do que este script imprime.
+Só calcula, a partir de inventários em arquivo; quem cria e apaga releases e tags é o workflow `prerelease.yml`.
 
-  python3 tools/release.py config              # valida defaults/release.toml e imprime chave=valor
-  python3 tools/release.py next --sha S [--date AAAAMMDD] < tags.txt
-  python3 tools/release.py prune --keep-tag T < releases.json
+  python3 tools/release.py config
+  python3 tools/release.py next --sha S [--date AAAAMMDD] --tags T --merged M --points-at P
+  python3 tools/release.py prune --releases R --tags T [--require TAG]
 
+`--tags`, `--merged` e `--points-at` têm um nome de tag por linha (todas as tags; as alcançáveis a partir do commit;
+as que apontam para ele). `--releases` tem um objeto JSON por linha: {"tagName", "isPrerelease", "isDraft"}.
 Configuração inválida termina com código 2; entrada inválida, com 1.
 """
 
@@ -69,9 +71,16 @@ def tag_pattern(config):
     )
 
 
-def order_key(match):
-    major, minor, patch, date, number = match.groups()
-    return (int(major), int(minor), int(patch), date, int(number))
+def channel_tags(config, tags):
+    """(chave de ordem SemVer, tag) das tags do canal; a ordem é a de precedência do SemVer."""
+    pattern = tag_pattern(config)
+    found = []
+    for tag in tags:
+        match = pattern.match(tag)
+        if match:
+            major, minor, patch, date, number = match.groups()
+            found.append(((int(major), int(minor), int(patch), date, int(number)), tag))
+    return found
 
 
 def parse_date(text):
@@ -81,40 +90,70 @@ def parse_date(text):
     return text
 
 
-def next_release(config, tags, sha, date):
-    """Próxima tag, versão completa e a tag anterior do canal (ponto de partida das notas)."""
+def next_release(config, sha, date, tags, merged, points_at):
+    """O que publicar para `sha`: nada se ele já tem tag do canal; senão a próxima tag do dia na versão base.
+
+    A tag anterior (ponto de partida das notas) é a mais nova do canal alcançável a partir do commit."""
     if not SHA.match(sha):
         raise ValueError("commit deve ser hexadecimal minúsculo de 7 a 40 caracteres")
     date = parse_date(date)
-    pattern = tag_pattern(config)
-    ours = [(order_key(m), m.group(0)) for m in map(pattern.match, tags) if m]
+    existing = channel_tags(config, points_at)
+    if existing:
+        return {"publish": "no", "existing": max(existing)[1]}
     base = tuple(int(part) for part in config["base_version"].split("."))
-    same_day = [key[4] for key, _ in ours if key[:3] == base and key[3] == date]
+    same_day = [key[4] for key, _ in channel_tags(config, tags) if key[:3] == base and key[3] == date]
     number = max(same_day, default=0) + 1
     prerelease = "%s-%s.%s.%d" % (config["base_version"], config["channel"], date, number)
-    previous = max(ours)[1] if ours else ""
+    reachable = channel_tags(config, merged)
     return {
+        "publish": "yes",
         "tag": config["tag_prefix"] + prerelease,
         "version": "%s+%s" % (prerelease, sha[:7]),
-        "previous": previous,
+        "previous": max(reachable)[1] if reachable else "",
     }
 
 
-def prune_plan(config, releases, keep_tag):
-    """Tags a apagar: só pré-lançamentos deste canal além dos `keep` mais novos, nunca `keep_tag`."""
+def prune_plan(config, releases, tags, require=""):
+    """Releases e tags a apagar para sobrarem só os `keep` pré-lançamentos publicados mais novos do canal.
+
+    Nunca toca rascunho, release estável, release ou tag de outro canal, nem os mantidos. Tags do canal sem
+    release (sobras de uma poda interrompida) também saem, desde que fora dos mantidos."""
     pattern = tag_pattern(config)
-    ours = []
+    published, protected = [], set()
     for release in releases:
-        tag = release.get("tagName", "")
-        match = pattern.match(tag)
-        if match and release.get("isPrerelease") is True:
-            ours.append((order_key(match), tag))
-    ours.sort(reverse=True)
-    keep = config["keep"]
-    survivors = [tag for _, tag in ours[:keep]]
-    if keep_tag and keep_tag in [tag for _, tag in ours] and keep_tag not in survivors:
-        raise ValueError("a tag recém-publicada %s não está entre as mais novas" % keep_tag)
-    return [tag for _, tag in ours[keep:]]
+        tag = release.get("tagName")
+        if not isinstance(tag, str) or not pattern.match(tag):
+            continue
+        if release.get("isPrerelease") is True and release.get("isDraft") is False:
+            published.append(tag)
+        else:
+            protected.add(tag)
+    ordered = [tag for _, tag in sorted(channel_tags(config, published), reverse=True)]
+    kept = set(ordered[: config["keep"]])
+    if require and require not in kept:
+        raise ValueError("a release %s não está publicada entre as mais novas do canal" % require)
+    delete_releases = ordered[config["keep"] :]
+    delete_tags = sorted(
+        (tag for _, tag in channel_tags(config, tags) if tag not in kept and tag not in protected),
+        key=lambda tag: channel_tags(config, [tag])[0][0],
+        reverse=True,
+    )
+    return delete_releases, delete_tags
+
+
+def read_lines(path):
+    with open(path, encoding="utf-8") as handle:
+        return [line.strip() for line in handle if line.strip()]
+
+
+def read_releases(path):
+    releases = []
+    for line in read_lines(path):
+        item = json.loads(line)
+        if not isinstance(item, dict):
+            raise ValueError("cada linha de releases deve ser um objeto JSON")
+        releases.append(item)
+    return releases
 
 
 def main(argv=None):
@@ -124,8 +163,13 @@ def main(argv=None):
     nxt = sub.add_parser("next")
     nxt.add_argument("--sha", required=True)
     nxt.add_argument("--date", default=datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d"))
+    nxt.add_argument("--tags", required=True)
+    nxt.add_argument("--merged", required=True)
+    nxt.add_argument("--points-at", required=True)
     prune = sub.add_parser("prune")
-    prune.add_argument("--keep-tag", default="")
+    prune.add_argument("--releases", required=True)
+    prune.add_argument("--tags", required=True)
+    prune.add_argument("--require", default="")
     args = parser.parse_args(argv)
 
     try:
@@ -139,16 +183,23 @@ def main(argv=None):
             for key in ("enabled", "keep", "prune"):
                 print("%s=%s" % (key, config[key]))
         elif args.command == "next":
-            tags = [line.strip() for line in sys.stdin if line.strip()]
-            for key, value in next_release(config, tags, args.sha, args.date).items():
+            result = next_release(
+                config,
+                args.sha,
+                args.date,
+                read_lines(args.tags),
+                read_lines(args.merged),
+                read_lines(args.points_at),
+            )
+            for key, value in result.items():
                 print("%s=%s" % (key, value))
         else:
-            releases = json.load(sys.stdin)
-            if not isinstance(releases, list):
-                raise ValueError("a entrada deve ser uma lista JSON de releases")
-            for tag in prune_plan(config, releases, args.keep_tag):
-                print(tag)
-    except (ValueError, json.JSONDecodeError) as error:
+            releases, tags = prune_plan(config, read_releases(args.releases), read_lines(args.tags), args.require)
+            for tag in releases:
+                print("release %s" % tag)
+            for tag in tags:
+                print("tag %s" % tag)
+    except (OSError, ValueError) as error:
         print("entrada inválida: %s" % error, file=sys.stderr)
         return 1
     return 0
