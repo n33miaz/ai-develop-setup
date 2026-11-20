@@ -16,11 +16,29 @@ class WindowsPathFiltersTest(unittest.TestCase):
         names = {re.search(r"^    name: ([\w-]+)$", job, re.M)[1] for job in windows_jobs}
         self.assertEqual(
             names,
-            {"shell-check", "pty-windows", "fs-windows", "storage-windows", "vault-windows"},
+            {
+                "shell-check",
+                "pty-windows",
+                "fs-windows",
+                "storage-windows",
+                "vault-windows",
+                "launcher-windows",
+            },
         )
         required = re.search(r"^  ci-ok:\n(?:    .*\n)*?    needs: \[([^\]]+)\]", workflow, re.M)
         self.assertIsNotNone(required)
         self.assertLessEqual(names, {name.strip() for name in required[1].split(",")})
+
+        # O lançador precisa de um job Windows que passe o lint e os testes no crate.
+        windows_cargo = [
+            line for job in windows_jobs for line in job.splitlines() if re.search(r"\bcargo (clippy|test) ", line)
+        ]
+        for command in ("clippy", "test"):
+            with self.subTest(launcher=command):
+                self.assertTrue(
+                    any(f"cargo {command} " in line and " -p ads-launcher " in f"{line} " for line in windows_cargo),
+                    f"ads-launcher has no Windows cargo {command}",
+                )
 
         for job in windows_jobs:
             output = re.search(r"needs\.changes\.outputs\.(\w+) == 'true'", job)
@@ -48,5 +66,7 @@ class WindowsPathFiltersTest(unittest.TestCase):
                         for dep in package["dependencies"]
                         if dep.get("path") and dep["name"] in packages and dep["name"] not in visited
                     )
+                if output[1] == "launcher":
+                    self.assertRegex("defaults/launcher.toml", path_filter)
                 if "ads-contracts" in visited:
                     self.assertRegex("contracts/schemas/example.json", path_filter)
