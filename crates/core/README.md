@@ -10,6 +10,12 @@ O [roteador](src/routing.rs) interpreta [routing.toml](../../defaults/routing.to
 
 `shadow` é o padrão e a escolha manual configurada continua em vigor. `manual` só registra essa escolha, `propose` acrescenta a proposta e `auto` explícito retorna os dados da decisão calculada. O fallback em `shadow` e `propose` descreve a alternativa simulada. Quem integra o núcleo fornece o instante e os metadados do envelope e é responsável por publicar os eventos e aplicar decisões.
 
+## Passagem entre sessões
+
+`handoff` avalia os gatilhos da [ADR 0027](../../docs/adr/0027-session-handoff.md), calcula o próximo nome com o instante UTC recebido e valida a cadeia completa, da primeira passagem em diante. Valida vínculos consecutivos, continuidade da sessão de origem, linhagem, sequência sem saltos e unicidade dos identificadores de passagem e de sessão.
+
+As opções em [`defaults/handoff.toml`](../../defaults/handoff.toml) podem ser trocadas ao carregar outra política. Quem chama fornece a medição, quando disponível, e verifica o consentimento para a passagem específica. A decisão do núcleo não abre sessões.
+
 ## Fila contínua
 
 A [política da fila](src/queue.rs) restaura a fila parada e calcula transições usando o registro atual e, quando exigido, o aparelho autenticado. O aparelho autenticado leva o dono a que pertence e o canal (`Channel`, do próprio núcleo, convertido no `via` de cada evento). A política confere esse dono contra o da fila. A partida, o teto de custo e a falta de recursos param a fila com os dados de `queue.stopped` do daemon. Na partida, a restauração considera o retrato e o último estado registrado no log, e registra a parada se qualquer um dos dois indicar a fila ligada.

@@ -11,6 +11,7 @@ export const STREAM_ID_FIELD = {
   review: "review_id",
   routing: "task_id",
   queue: "queue_id",
+  handoff: "handoff_id",
 };
 
 // Devolve o texto do problema, ou null quando o stream nomeia a mesma entidade que `data`.

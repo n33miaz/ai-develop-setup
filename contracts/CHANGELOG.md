@@ -4,6 +4,8 @@ Formato: uma seção por data. Contrato novo, campo opcional acrescentado, vers�
 
 ## 2026-11-20
 
+- `record.session-handoff:1` registra a passagem autorizada e `session.handoff:1` registra proposta, aceite ou recusa.
+
 - `queue.task_created:2` exige ator do tipo aparelho em pedidos manuais e convive com a `:1`.
 - `queue.clock_reanchored:1` registra a reancoragem do relógio de admissão pelo dono da fila.
 - `local-api.error-code:1` define os códigos de erro emitidos pela API local.

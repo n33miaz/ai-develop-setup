@@ -1,0 +1,17 @@
+{
+  "status.json": {
+    "rule": "O estado deve indicar proposta, aceite ou recusa.",
+    "keyword": "enum",
+    "instancePath": "/data/status"
+  },
+  "stream.json": {
+    "rule": "O evento pertence à família handoff.",
+    "keyword": "pattern",
+    "instancePath": "/stream"
+  },
+  "class.json": {
+    "rule": "O evento tem classificação privada.",
+    "keyword": "const",
+    "instancePath": "/data_class"
+  }
+}

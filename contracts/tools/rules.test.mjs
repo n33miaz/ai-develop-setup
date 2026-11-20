@@ -49,10 +49,16 @@ test("stream: aceita o stream da entidade de data e recusa o de outra", () => {
   assert.match(streamBindingError({ ...queued, stream: "queue/task-01" }), /data\.queue_id/);
 });
 
+test("stream: a passagem identifica a mesma entidade no stream e em data", () => {
+  const [, event] = goldenValid("event.session.handoff.v1")[0];
+  assert.equal(streamBindingError(event), null);
+  assert.match(streamBindingError({ ...event, stream: "handoff/other" }), /data\.handoff_id/);
+});
+
 test("stream: família fora da tabela não tem regra", () => {
   assert.equal(streamBindingError({ stream: "host/host-01", data: { event_id: "x" } }), null);
   assert.equal(streamBindingError({ stream: "usage/task-01", data: {} }), null);
-  assert.deepEqual(Object.keys(STREAM_ID_FIELD).sort(), ["action", "approval", "queue", "review", "routing", "session", "task"]);
+  assert.deepEqual(Object.keys(STREAM_ID_FIELD).sort(), ["action", "approval", "handoff", "queue", "review", "routing", "session", "task"]);
 });
 
 test("stream: a regra vale para os dourados de evento e só para eles", () => {
