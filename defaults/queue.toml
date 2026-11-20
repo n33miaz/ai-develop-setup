@@ -5,12 +5,19 @@ attempt_limit = 2
 # volta a admitir se este valor subir.
 admission_limit = 1000
 
-# Janela móvel, em segundos, dos dois limites abaixo. Eles se liberam sozinhos com o tempo.
+# Janela móvel, em segundos, dos três limites abaixo. Eles se liberam sozinhos com o tempo.
 window_seconds = 3600
 
-# Admissões por fila dentro da janela.
+# Admissões vindas de issue ou de regra de bug, por fila, dentro da janela.
 window_admissions = 10
+
+# Pedidos manuais do dono, por fila, dentro da janela. Contados à parte, para que as origens
+# automáticas não ocupem o espaço do dono.
+manual_window_admissions = 10
 
 # Admissões da mesma regra de bug dentro da janela, para uma regra que gera um alvo novo a cada
 # falha não ocupar a fila.
 bug_rule_window_admissions = 3
+
+# Quanto o instante da criação pode estar adiante do relógio do núcleo, em segundos.
+clock_skew_seconds = 5
