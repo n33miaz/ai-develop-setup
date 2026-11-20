@@ -7,23 +7,31 @@ use super::{ConfigError, DiskProbe, LaunchError, Probe, open_params};
 use crate::child_env::{EnvList, EnvPolicyError, NameCase};
 use crate::gate::PathError;
 
-crate::tool_harness!(
-    /// A tool with its own table, appended to the shipped defaults.
-    TestTool = "harness-test",
-    defaults = concat!(
+/// A tool with its own table, appended to the shipped defaults. Written by hand: only this
+/// test tool replaces the defaults, so the public macro does not offer it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TestTool;
+
+impl Harness for TestTool {
+    const ID: &'static str = "harness-test";
+    const TABLE_KEY: &'static str = "tools.harness-test";
+    const PROGRAM_KEY: &'static str = "tools.harness-test.program";
+    const ARGS_KEY: &'static str = "tools.harness-test.args";
+    const MODE_KEY: &'static str = "tools.harness-test.mode";
+    const DEFAULTS: &'static str = concat!(
         include_str!("../../../../defaults/harnesses.toml"),
         "\n[tools.harness-test]\nprogram = ''\nargs = []\nmode = 'interactive'\n"
-    )
-);
+    );
+}
 
 type ToolConfig = super::ToolConfig<TestTool>;
 
 const HARNESS_ID: &str = TestTool::ID;
-const OTHER_HARNESS: &str = "claude";
+const OTHER_HARNESS: &str = "harness-other";
 const PROGRAM: &str = r"C:\Tools\harness-test\tool.exe";
 const POISON_EXTRA: &[&str] = &[];
 const DENIED_EXTRA: &[&str] = &[];
-const WRONG_HARNESSES: &[&str] = &["claude", "codex", "Harness-Test", "harness-a"];
+const WRONG_HARNESSES: &[&str] = &["harness-other", "Harness-Test", "harness-a"];
 
 mod suite;
 
@@ -70,6 +78,20 @@ fn every_diagnostic_key_is_derived_from_the_tool_id() {
 fn a_tool_without_a_shipped_table_is_refused() {
     assert_eq!(
         super::ToolConfig::<Absent>::from_toml_str("", NameCase::Insensitive),
+        Err(ConfigError::MissingKey("tools.harness-absent"))
+    );
+    // The user's file cannot add a tool: the table has to come from the shipped defaults.
+    let complete = r"
+[workdirs]
+scratch = 'C:\work\scratch'
+
+[tools.harness-absent]
+program = 'C:\Tools\absent\tool.exe'
+args = []
+mode = 'interactive'
+";
+    assert_eq!(
+        super::ToolConfig::<Absent>::from_toml_str(complete, NameCase::Insensitive),
         Err(ConfigError::MissingKey("tools.harness-absent"))
     );
     assert!(!super::config::DEFAULTS_TOML.contains("[tools.harness-test]"));

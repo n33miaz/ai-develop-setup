@@ -10,9 +10,12 @@ pub use launch::{DiskProbe, LaunchError, Probe, open_params, process_env};
 /// diagnostics. Declare one with [`tool_harness!`](crate::tool_harness), which takes every key
 /// from the identifier.
 ///
-/// Not sealed, since sealing would list the tools in the core. A tool without a `[tools.<id>]`
-/// table in the shipped defaults is refused with [`ConfigError::MissingKey`], and
-/// [`open_params`] refuses a request for another tool.
+/// Not sealed, since sealing would list the tools in the core. An implementation from another
+/// crate loads only when its identifier has a `[tools.<id>]` table in the shipped defaults, and
+/// then reads the same table, under the same policy, as that tool's adapter. Without a shipped
+/// table it is refused with [`ConfigError::MissingKey`], even when the user's file brings one.
+/// [`open_params`] takes any implementation and refuses a request for another tool at run time;
+/// each adapter exposes a version restricted to its own configuration.
 pub trait Harness {
     const ID: &'static str;
     const TABLE_KEY: &'static str;
@@ -36,7 +39,7 @@ pub trait Harness {
 /// ```
 #[macro_export]
 macro_rules! tool_harness {
-    ($(#[$attr:meta])* $name:ident = $id:literal $(, defaults = $defaults:expr)?) => {
+    ($(#[$attr:meta])* $name:ident = $id:literal) => {
         $(#[$attr])*
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         pub struct $name;
@@ -47,7 +50,6 @@ macro_rules! tool_harness {
             const PROGRAM_KEY: &'static str = concat!("tools.", $id, ".program");
             const ARGS_KEY: &'static str = concat!("tools.", $id, ".args");
             const MODE_KEY: &'static str = concat!("tools.", $id, ".mode");
-            $(const DEFAULTS: &'static str = $defaults;)?
         }
     };
 }

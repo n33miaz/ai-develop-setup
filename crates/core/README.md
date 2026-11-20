@@ -71,14 +71,18 @@ Cada adaptador declara a ferramenta com `ads_core::tool_harness!`, que tira do
 identificador as chaves dos diagnósticos (`tools.<id>`, `tools.<id>.program`,
 `tools.<id>.args`, `tools.<id>.mode`). O trait `Harness` fica aberto: selá-lo
 poria a lista de ferramentas, com nomes de fornecedores, no núcleo. Uma
-implementação de fora não abre nada: sem a tabela `[tools.<id>]` nos padrões, a
-carga recusa com `MissingKey`.
+implementação de fora só carrega se o identificador tiver tabela em
+`defaults/harnesses.toml`, e aí lê a mesma tabela, com a mesma política, que o
+adaptador daquela ferramenta. Identificador sem tabela embutida é recusado com
+`MissingKey`, mesmo que o arquivo do usuário traga a tabela completa.
 
 O pedido `session.open` fornece a ferramenta, o apelido da pasta e o tamanho.
-`open_params` monta o pedido do contrato `pty-host/1`. A função do núcleo é
-genérica e recusa com `UnknownHarness` o pedido de outra ferramenta; o
-`open_params` de cada adaptador só aceita a configuração da própria ferramenta,
-e passar a de outra não compila.
+`open_params` monta o pedido do contrato `pty-host/1`. A função do núcleo aceita
+qualquer `Harness` e recusa em tempo de execução, com `UnknownHarness`, o pedido
+de outra ferramenta. Os adaptadores expõem uma versão restrita à configuração da
+própria ferramenta: passar a de outra não compila, o que um exemplo de documentação
+com `compile_fail` mostra ao lado de um exemplo idêntico que compila (um teste
+confere que os dois só diferem na ferramenta).
 
 `Probe` permite conferir a existência do programa e da pasta na hora da
 abertura. `DiskProbe` faz essa consulta no disco.
