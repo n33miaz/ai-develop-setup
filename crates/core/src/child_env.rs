@@ -327,6 +327,18 @@ impl EnvPolicy {
             .any(|upper| self.deny.iter().any(|rule| rule.matches(name, &upper)))
     }
 
+    /// Reads only permitted parent values, using the host's name lookup rules.
+    pub(crate) fn read_parent_env(
+        &self,
+        mut read: impl FnMut(&str) -> Option<String>,
+    ) -> Vec<(String, String)> {
+        self.allow
+            .iter()
+            .filter(|name| !self.is_denied(name))
+            .filter_map(|name| read(name).map(|value| (name.clone(), value)))
+            .collect()
+    }
+
     /// The child's whole environment: each allowed name the parent has, written as the allow
     /// list spells it, then the values the product sets. Nothing else. A parent value with NUL
     /// is skipped: no process environment can hold it.
@@ -462,6 +474,26 @@ mod tests {
             child,
             BTreeMap::from([("äx".into(), "parent".into()), ("ÄX".into(), "set".into())])
         );
+    }
+
+    #[test]
+    fn reading_parent_values_only_queries_allowed_names() {
+        let policy = EnvPolicy::from_layers(
+            &layer(&["PATH", "MISSING"], &["*_TOKEN"], &[("TERM", "fixed")]),
+            None,
+            NameCase::host(),
+        )
+        .unwrap();
+        let parent = BTreeMap::from([("PATH", "parent"), ("SERVICE_TOKEN", "fixture")]);
+        let mut queried = Vec::new();
+
+        let values = policy.read_parent_env(|name| {
+            queried.push(name.to_owned());
+            parent.get(name).map(|value| (*value).to_owned())
+        });
+
+        assert_eq!(queried, ["PATH", "MISSING"]);
+        assert_eq!(values, [("PATH".into(), "parent".into())]);
     }
 
     #[test]

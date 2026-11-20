@@ -53,10 +53,9 @@ async fn main() -> ExitCode {
         let args = args.map(|arg| arg.into_string().map_err(|_| "invalid daemon argument"));
         let (config, host_config, tools) =
             load_config(args.collect::<Result<Vec<_>, _>>()?.into_iter())?;
-        let launcher = ToolLauncher::from_toml_str(
+        let launcher = ToolLauncher::from_process_env(
             &tools,
             ads_core::tool_launch::HostRules::host(),
-            ads_adapter_claude::process_env(),
             ads_adapter_claude::DiskProbe,
             ads_adapter_codex::DiskProbe,
         )?;

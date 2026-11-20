@@ -4,7 +4,8 @@ use crate::api::{ApiError, HarnessCatalog, Launcher};
 use ads_adapter_claude as claude;
 use ads_adapter_codex as codex;
 use ads_contracts::CommandSessionOpenV1Params;
-use ads_core::tool_launch::HostRules;
+use ads_core::child_env::EnvPolicy;
+use ads_core::tool_launch::{HostRules, process_env};
 use ads_ptyhost::wire::OpenParams;
 use std::collections::BTreeMap;
 
@@ -27,6 +28,17 @@ fn describe(tool: &str, shared: bool, error: impl std::fmt::Display) -> String {
 }
 
 impl<C, X> ToolLauncher<C, X> {
+    pub fn from_process_env(
+        overrides: &str,
+        host: HostRules,
+        claude_probe: C,
+        codex_probe: X,
+    ) -> Result<Self, String> {
+        Self::with_env(overrides, host, claude_probe, codex_probe, |policy| {
+            policy.child_env(process_env(policy))
+        })
+    }
+
     /// Filters `parent_env` once; only the result is kept. Paths and names are judged by the
     /// rules of `host`, [`HostRules::host`] outside tests.
     pub fn from_toml_str<I, K, V>(
@@ -41,6 +53,18 @@ impl<C, X> ToolLauncher<C, X> {
         K: Into<String>,
         V: Into<String>,
     {
+        Self::with_env(overrides, host, claude_probe, codex_probe, |policy| {
+            policy.child_env(parent_env)
+        })
+    }
+
+    fn with_env(
+        overrides: &str,
+        host: HostRules,
+        claude_probe: C,
+        codex_probe: X,
+        child_env: impl FnOnce(&EnvPolicy) -> BTreeMap<String, String>,
+    ) -> Result<Self, String> {
         use claude::ConfigError as A;
         use codex::ConfigError as B;
         // The daemon passes a rebuilt subset of the user's file: line numbers would point to
@@ -85,7 +109,7 @@ impl<C, X> ToolLauncher<C, X> {
                 "invalid user configuration: account profile folders overlap across tools".into(),
             );
         }
-        let child_env = claude.env().child_env(parent_env);
+        let child_env = child_env(claude.env());
         Ok(Self {
             claude,
             codex,
