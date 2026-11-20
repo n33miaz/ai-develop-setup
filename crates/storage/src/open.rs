@@ -199,12 +199,15 @@ fn inspect(path: &Path, config: &StorageConfig) -> Result<bool, StorageError> {
 }
 
 /// Waits up to the busy timeout for a concurrent creator's journal to clear.
-/// Leftovers that stay unchanged refuse as `Corrupt`; ones still changing, or
-/// any seen with a zero timeout, refuse as `Busy`. SQLite is never reached.
+/// Leftovers that stay unchanged through the second half of the wait refuse as
+/// `Corrupt`; ones that changed in it, or any seen with a zero timeout, refuse
+/// as `Busy`. SQLite is never reached.
 fn settle(path: &Path, config: &StorageConfig) -> Result<bool, StorageError> {
-    let deadline = Instant::now() + Duration::from_millis(config.busy_timeout_ms.into());
+    let wait = Duration::from_millis(config.busy_timeout_ms.into());
+    let start = Instant::now();
+    let deadline = start + wait;
     let mut seen = stamp(path);
-    let mut moving = false;
+    let mut changed = None;
     loop {
         let mut outcome = Err(StorageError::Corrupt);
         let mut stable = false;
@@ -220,9 +223,12 @@ fn settle(path: &Path, config: &StorageConfig) -> Result<bool, StorageError> {
             }
         }
         let now = stamp(path);
-        moving |= blocked && now != seen;
+        if blocked && now != seen {
+            changed = Some(Instant::now());
+        }
         seen = now;
         if stable || Instant::now() >= deadline {
+            let moving = changed.is_some_and(|at| at >= start + wait / 2);
             if blocked && (moving || config.busy_timeout_ms == 0) {
                 return Err(StorageError::Busy);
             }
@@ -290,10 +296,10 @@ impl AuditStore {
         } else {
             existing_flags() | OpenFlags::SQLITE_OPEN_CREATE
         };
-        let pending = file_stamp(&sibling(path, "-wal")).is_some_and(|(len, _)| len > 32);
         let mut connection = Connection::open_with_flags(path, flags)?;
-        // A refusal must not checkpoint the frames it just refused into the main file.
-        connection.set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, pending)?;
+        // A refusal must neither checkpoint the frames it refused nor delete the WAL,
+        // whatever the WAL held when it was looked at.
+        connection.set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true)?;
         let inspection =
             connection.transaction_with_behavior(rusqlite::TransactionBehavior::Deferred)?;
         preflight(&inspection, config)?;
