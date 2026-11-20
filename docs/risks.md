@@ -91,9 +91,9 @@ Estado da mitigação, em cada risco:
 - **Impacto.** Quebra do isolamento entre usuários (P3).
 - **Dono.** Host de terminais e daemon.
 - **Teto.** Não se aplica.
-- **Mitigação existente (implementada e testada).** Named pipe com lista de acesso de uma entrada só, a do usuário, e recusa de subir se o nome já existe; socket Unix `0600` ([como roda](../crates/ptyhost/README.md#como-roda)). No Windows o cliente só entrega a conexão depois de confirmar que o pipe é servido pelo usuário atual, antes de enviar qualquer byte ([daemon](../crates/daemon/README.md)). Testes `pipe_grants_access_to_the_current_user_only` em `crates/ptyhost/src/channel.rs` e `crates/daemon/tests/channel_owner.rs`.
+- **Mitigação existente (implementada e testada).** Named pipe com lista de acesso de uma entrada só, a do usuário, e recusa de subir se o nome já existe; socket Unix `0600` ([como roda](../crates/ptyhost/README.md#como-roda)). No Windows o cliente só entrega a conexão depois de confirmar que o pipe é servido pelo usuário atual, antes de enviar qualquer byte ([daemon](../crates/daemon/README.md)). Testes `pipe_grants_access_to_the_current_user_only` em `crates/ptyhost/src/channel.rs`, `crates/ptyhost/tests/pipe_owner.rs` (recusa e liberação dos handles com falhas repetidas das consultas reais) e `crates/daemon/tests/channel_owner.rs` (pipe real recusado sem receber o `host.hello`).
 - **Plano B.** Não há.
-- **O que falta.** O teste com duas contas que o P3 pede não existe: a recusa de um pipe de outro usuário é testada com identificadores sintéticos e sondas ([limites conhecidos](../crates/ptyhost/README.md#limites-conhecidos)). Fora do Windows o cliente não confere quem serve o socket. Host e cliente em níveis de elevação diferentes não se conectam.
+- **O que falta.** O teste com duas contas que o P3 pede não roda sozinho: a recusa de um pipe de outro usuário é testada com identificadores sintéticos e com as consultas reais comparadas a outra identidade; os casos com outra conta e com níveis de elevação diferentes são testes manuais, ignorados por padrão ([limites conhecidos](../crates/ptyhost/README.md#limites-conhecidos)). Fora do Windows o cliente não confere quem serve o socket. Host e cliente em níveis de elevação diferentes não se conectam.
 
 ### Credencial de CLI de IA vaza para o processo filho
 

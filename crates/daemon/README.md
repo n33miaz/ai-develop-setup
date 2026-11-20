@@ -283,7 +283,7 @@ reexportados pelo host; o cliente não constrói JSON nem quadros próprios.
 `connect` recebe `HostConfig` para resolver o canal com `channel::endpoint`, abre-o
 com `channel::connect` e completa `host.hello`. No Windows o canal só entrega a
 conexão depois de confirmar que o pipe é servido pelo usuário atual; senão o erro é
-`NotOwnedByUser` e nenhum byte foi enviado (`tests/channel_owner.rs`). O host precisa
+`NotOwnedByUser` e nenhum byte foi enviado (`tests/channel_owner.rs`, também contra um pipe real recusado pelas consultas reais). O host precisa
 estar disponível; iniciar o processo e decidir quando tentar conectar novamente cabe ao chamador. `over` permite fornecer outro
 transporte assíncrono, inclusive `tokio::io::duplex` nos testes.
 
