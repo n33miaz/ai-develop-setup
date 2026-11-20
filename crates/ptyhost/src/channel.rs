@@ -471,6 +471,42 @@ mod tests {
             "the helper never got ready"
         );
 
+        if part == "process" && crate::win::ProcessProbe::open(helper.id()).is_ok() {
+            // This process opens the closed process anyway: it holds `SeDebugPrivilege` enabled,
+            // as an elevated administrator may (the Windows CI runner does). The stand-in for
+            // another account does not hold here; what holds is that the check reads the real
+            // server, of this same user, and accepts it. The refusal at `OpenProcess` is still
+            // covered by the injected failure in `win::tests`.
+            eprintln!(
+                "not applicable here: this process opens any process (SeDebugPrivilege); \
+                 checking that the real server is read and accepted instead"
+            );
+            let client = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&endpoint)
+                .unwrap();
+            {
+                use std::os::windows::io::AsRawHandle;
+                crate::win::check_pipe_server(client.as_raw_handle()).unwrap();
+            }
+            drop(client);
+            let (helper, received) = tokio::task::spawn_blocking(move || {
+                let received = helper.wait_for("@@received=", HELPER_TIMEOUT);
+                (helper, received)
+            })
+            .await
+            .unwrap();
+            assert_eq!(received.as_deref(), Some("0"));
+            assert!(
+                helper
+                    .finish(HELPER_TIMEOUT)
+                    .expect("the helper did not end")
+                    .success()
+            );
+            return;
+        }
+
         let mut failed = None;
         let result = connect_checked(&endpoint, |pipe| {
             let checked = crate::win::check_pipe_server(pipe);

@@ -53,6 +53,11 @@ impl HelperProcess {
         })
     }
 
+    /// The id of the child process.
+    pub fn id(&self) -> u32 {
+        self.child.id()
+    }
+
     /// Waits up to `timeout` for a line holding `marker` and returns what follows it on that
     /// line, up to the next `@@`. `None` when the time runs out or the output ends first.
     pub fn wait_for(&mut self, marker: &str, timeout: Duration) -> Option<String> {
