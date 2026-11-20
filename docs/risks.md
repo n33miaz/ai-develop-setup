@@ -357,9 +357,10 @@ Riscos da troca de conta por pasta de perfil ([ADR 0022](adr/0022-account-profil
 
 ## Perda do contexto de admissão da fila
 
-- **Descrição.** A política ou o relógio usados numa admissão podem se perder, ou o contexto pode ser associado à criação errada.
-- **Impacto.** Uma fila sem contexto íntegro pode ficar sem replay e deixar uma tarefa em execução sem destino na partida.
+- **Descrição.** A política inicial de uma fila antiga ou a leitura histórica do relógio podem se perder. Uma leitura pode ser associada à criação errada.
+- **Impacto.** Sem os dados históricos íntegros, o núcleo pode recusar o replay e a retomada de uma tarefa em execução.
 - **Dono.** Núcleo e produtor da fila.
 - **Teto.** A fila afetada. Cada nova admissão fica sujeita aos limites vigentes em [queue.toml](../defaults/queue.toml).
-- **Mitigação existente.** O núcleo exige o contexto histórico e valida cada criação contra ele. Baixar um limite preserva a leitura do histórico íntegro. O produtor ainda precisa persistir o contexto conforme o [README do núcleo](../crates/core/README.md#fila-contínua).
-- **Plano B.** Manter a fila parada e recuperar o contexto do backup íntegro antes de repetir o replay.
+- **Mitigação existente.** O replay deriva as mudanças de política dos eventos do dono, exige o ID da criação na leitura histórica do relógio e valida cada admissão com a política da época.
+- **Plano B.** Manter a fila parada e a tarefa em `running` sem nova tentativa. Recuperar o stream, a política inicial quando necessária e o relógio do backup íntegro antes de repetir o replay e conferir a sessão no host.
+- **O que falta.** Integrar a gravação condicional das mudanças do dono e a persistência atômica do relógio ao produtor conforme o [README do núcleo](../crates/core/README.md#fila-contínua).

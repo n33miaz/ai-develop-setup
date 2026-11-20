@@ -1,0 +1,17 @@
+{
+  "01-agent-policy.json": {
+    "rule": "a mudança exige um aparelho",
+    "keyword": "const",
+    "instancePath": "/actor/kind"
+  },
+  "02-incomplete-policy.json": {
+    "rule": "a política exige o teto de tentativas",
+    "keyword": "required",
+    "instancePath": "/data/policy"
+  },
+  "03-attempt-limit.json": {
+    "rule": "o teto de tentativas é de até dez",
+    "keyword": "maximum",
+    "instancePath": "/data/policy/attempt_limit"
+  }
+}
