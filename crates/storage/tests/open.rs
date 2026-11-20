@@ -79,7 +79,16 @@ fn reopen_preserves_meta_and_reads_every_pragma() {
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap();
-    assert_eq!(tables, ["cipher_key", "event", "meta", "sqlite_sequence"]);
+    assert_eq!(
+        tables,
+        [
+            "cipher_key",
+            "event",
+            "log_genesis",
+            "meta",
+            "sqlite_sequence"
+        ]
+    );
 }
 
 #[test]

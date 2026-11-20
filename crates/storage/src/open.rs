@@ -11,7 +11,7 @@ use std::{
 };
 
 pub const APPLICATION_ID: i64 = 0x41445331;
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 /// Owns the connection; raw SQL remains private to storage.
 pub struct AuditStore {
@@ -176,8 +176,11 @@ fn inspect(path: &Path, config: &StorageConfig) -> Result<bool, StorageError> {
                 return Err(StorageError::CantOpen);
             }
             let kind = header(path)?;
-            if let Header::Product { page } = kind {
-                crate::snapshot::check_product_wal(path, page)?;
+            if let Header::Product { page } = kind
+                && let Some(version) = crate::snapshot::check_product_wal(path, page)?
+                && migrate::RETIRED.contains(&i64::from(version))
+            {
+                return Err(StorageError::RetiredSchema);
             }
             if kind == Header::Unmarked {
                 let image = crate::snapshot::image(path, config.inspection_max_bytes)?;
@@ -259,10 +262,12 @@ const PRAGMAS: [&str; 8] = [
 fn allowed(context: AuthContext<'_>) -> Authorization {
     let listed = |list: &[&str], name: &str| list.iter().any(|n| n.eq_ignore_ascii_case(name));
     match context.action {
-        AuthAction::Select
-        | AuthAction::Read { .. }
-        | AuthAction::Insert { .. }
-        | AuthAction::Transaction { .. } => Authorization::Allow,
+        AuthAction::Select | AuthAction::Read { .. } | AuthAction::Transaction { .. } => {
+            Authorization::Allow
+        }
+        AuthAction::Insert { table_name } if !table_name.eq_ignore_ascii_case("log_genesis") => {
+            Authorization::Allow
+        }
         AuthAction::Function { function_name } if listed(&FUNCTIONS, function_name) => {
             Authorization::Allow
         }
@@ -352,10 +357,10 @@ impl AuditStore {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    fn test_directory() -> std::path::PathBuf {
+    pub(crate) fn test_directory() -> std::path::PathBuf {
         let executable = std::env::current_exe().unwrap();
         let root = executable
             .parent()
@@ -440,6 +445,7 @@ mod tests {
             "PRAGMA journal_mode = DELETE",
             "UPDATE meta SET value = value",
             "DELETE FROM meta",
+            "INSERT OR REPLACE INTO log_genesis VALUES (1, zeroblob(32))",
             "REINDEX",
             "ANALYZE",
             "VACUUM",

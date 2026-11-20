@@ -68,10 +68,33 @@ BEGIN
 END;
 "#;
 
+const GENESIS_SQL: &str = r#"
+CREATE TABLE log_genesis (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  link BLOB NOT NULL CHECK (length(link) = 32)
+) STRICT, WITHOUT ROWID;
+INSERT INTO log_genesis VALUES (
+  1, CASE WHEN EXISTS (SELECT 1 FROM event) THEN zeroblob(32) ELSE randomblob(32) END
+);
+DROP TRIGGER event_append_order;
+CREATE TRIGGER event_append_order BEFORE INSERT ON event
+BEGIN
+  SELECT RAISE(ABORT, 'append-only')
+  WHERE EXISTS (SELECT 1 FROM event WHERE id = NEW.id OR position = NEW.position);
+  SELECT RAISE(ABORT, 'seq')
+  WHERE NEW.seq IS NOT coalesce((SELECT max(seq) FROM event WHERE stream = NEW.stream), 0) + 1;
+  SELECT RAISE(ABORT, 'chain')
+  WHERE NEW.position IS NOT coalesce((SELECT max(position) FROM event), 0) + 1
+     OR NEW.prev_chain IS NOT coalesce(
+          (SELECT chain FROM event ORDER BY position DESC LIMIT 1),
+          (SELECT link FROM log_genesis WHERE singleton = 1));
+END;
+"#;
+
 /// `(version, script)`: each script takes the file from the previous listed
 /// version to `version`. Version 2 (a pre-release event log) is retired: its rows
 /// cannot be re-sealed without the key, which opening never receives.
-const STEPS: [(i64, &str); 2] = [(1, META_SQL), (3, EVENT_LOG_SQL)];
+const STEPS: [(i64, &str); 3] = [(1, META_SQL), (3, EVENT_LOG_SQL), (4, GENESIS_SQL)];
 pub(crate) const RETIRED: [i64; 1] = [2];
 
 /// Refuses versions this build never reads: negative, newer or retired.
@@ -171,18 +194,66 @@ mod tests {
 
     #[test]
     fn failure_in_the_middle_leaves_version_one_intact() {
-        let mut c = Connection::open_in_memory().unwrap();
+        let path = crate::open::tests::test_directory().join("audit.db");
+        let mut c = Connection::open(&path).unwrap();
+        c.pragma_update(None, "journal_mode", "WAL").unwrap();
         c.execute_batch(META_SQL).unwrap();
+        c.execute("INSERT INTO meta VALUES ('kept', x'01')", [])
+            .unwrap();
         c.pragma_update(None, "user_version", 1).unwrap();
         let before = schema(&c).unwrap();
-        // The second script creates a table, then fails.
-        let broken: [(i64, &str); 2] = [(1, META_SQL), (3, "CREATE TABLE half (x); CREATE TABLE")];
+        let broken = [
+            (1, META_SQL),
+            (3, EVENT_LOG_SQL),
+            (4, "CREATE TABLE half (x); CREATE TABLE"),
+        ];
         assert!(migrate_with(&mut c, &broken).is_err());
+        drop(c);
+        let mut c = Connection::open(&path).unwrap();
         assert_eq!(version(&c), 1);
         assert_eq!(schema(&c).unwrap(), before);
+        assert_eq!(
+            c.query_row("SELECT value FROM meta WHERE key = 'kept'", [], |r| r
+                .get::<_, Vec<u8>>(0))
+                .unwrap(),
+            [1]
+        );
         // The real steps still migrate the same file afterwards.
         migrate(&mut c).unwrap();
         assert_eq!(version(&c), SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn version_three_keeps_existing_links_and_seeds_empty_logs() {
+        for populated in [false, true] {
+            let path = crate::open::tests::test_directory().join("audit.db");
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch(META_SQL).unwrap();
+            c.execute_batch(EVENT_LOG_SQL).unwrap();
+            c.pragma_update(None, "application_id", APPLICATION_ID)
+                .unwrap();
+            c.pragma_update(None, "user_version", 3).unwrap();
+            if populated {
+                c.execute_batch(
+                    "INSERT INTO cipher_key VALUES ('key-a', 'xchacha20poly1305', zeroblob(24), zeroblob(16));
+                     INSERT INTO event VALUES (
+                       1, 1, '01J00000000000000000000001', 'urn:ads:event:task.noted:1',
+                       '2026-11-19T12:00:00Z', 'task/t1', 1, 'device', 'phone',
+                       NULL, 'private', NULL, NULL, 'key-a', zeroblob(24), zeroblob(16),
+                       zeroblob(32), randomblob(32)
+                     );",
+                )
+                .unwrap();
+            }
+            drop(c);
+            let store = crate::AuditStore::open(&path, &crate::StorageConfig::defaults()).unwrap();
+            let c = &store.connection;
+            assert_eq!(version(c), SCHEMA_VERSION);
+            let link: Vec<u8> = c
+                .query_row("SELECT link FROM log_genesis", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(link == [0; 32], populated);
+        }
     }
 
     #[test]

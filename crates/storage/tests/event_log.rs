@@ -334,7 +334,11 @@ fn altered_clear_column_or_ciphertext_is_refused_on_read() {
         let log = EventLog::open(&path, &StorageConfig::defaults(), rotated).unwrap();
         assert_eq!(
             log.read_stream(&stream(read), 1, 10).unwrap_err(),
-            StorageError::Tampered,
+            if *column == "key_id" {
+                StorageError::ChainBroken { position: 2 }
+            } else {
+                StorageError::Tampered
+            },
             "{column}"
         );
         assert!(
@@ -1114,6 +1118,50 @@ fn page_stops_at_the_byte_budget_and_always_makes_progress() {
     assert_eq!(seqs(&log, 2), [2]);
 }
 
+#[test]
+fn reading_numeric_arrays_measures_retained_event_memory() {
+    use serde_json::Value;
+
+    let path = fixture();
+    let config =
+        StorageConfig::from_toml_str("max_event_bytes = 20000\nread_page_max_bytes = 40000")
+            .unwrap();
+    let mut log = EventLog::open(&path, &config, keys("key-a", 1)).unwrap();
+    for n in 1..=3 {
+        log.append(&event(
+            "task/t1",
+            n,
+            n,
+            serde_json::json!({ "numbers": vec![0; 8192] }),
+        ))
+        .unwrap();
+    }
+    let page = log.read_stream(&stream("task/t1"), 1, 10).unwrap();
+    assert_eq!(page.len(), 2);
+    let row_bytes: u32 = Connection::open(&path)
+        .unwrap()
+        .query_row(
+            "SELECT length(data_ct) FROM event WHERE position = 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let page_slots = page.capacity() * std::mem::size_of::<ads_storage::StoredEvent>();
+    let mut array_bytes = 0;
+    for event in &page {
+        let Value::Array(numbers) = &event.event.data["numbers"] else {
+            panic!("expected numeric array");
+        };
+        array_bytes += numbers.capacity() * std::mem::size_of::<Value>();
+    }
+    eprintln!(
+        "ciphertext per event: {row_bytes} B; retained per event: {} B of array slots; page: {} B of array and event slots",
+        array_bytes / page.len(),
+        array_bytes + page_slots,
+    );
+    assert!(array_bytes > row_bytes as usize * page.len());
+}
+
 /// Version 1 file: `meta` only, marked by the product.
 fn version_one(path: &Path) {
     let c = Connection::open(path).unwrap();
@@ -1184,7 +1232,131 @@ fn retired_version_two_and_meta_only_current_files_are_refused_unchanged() {
             extra.len()
         );
         assert_eq!(std::fs::read(&path).unwrap(), before);
+        if version == 2 {
+            assert_eq!(
+                std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
+                1
+            );
+        }
     }
+}
+
+#[test]
+fn retired_version_in_pending_wal_never_reaches_main_file() {
+    let source = fixture();
+    version_one(&source);
+    let writer = Connection::open(&source).unwrap();
+    writer.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
+    writer.pragma_update(None, "user_version", 2).unwrap();
+    let path = fixture();
+    let wal_path = path.with_file_name("audit.db-wal");
+    let main = std::fs::read(&source).unwrap();
+    let wal = std::fs::read(source.with_file_name("audit.db-wal")).unwrap();
+    assert_eq!(i32::from_be_bytes(main[60..64].try_into().unwrap()), 1);
+    std::fs::write(&path, &main).unwrap();
+    std::fs::write(&wal_path, &wal).unwrap();
+    assert_eq!(
+        AuditStore::open(&path, &StorageConfig::defaults()).unwrap_err(),
+        StorageError::RetiredSchema
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), main);
+    assert_eq!(std::fs::read(&wal_path).unwrap(), wal);
+    assert!(!path.with_file_name("audit.db-shm").exists());
+}
+
+#[test]
+fn genesis_is_distinct_per_database_and_binds_the_first_row() {
+    let first_link = |path: &Path| {
+        Connection::open(path)
+            .unwrap()
+            .query_row("SELECT prev_chain FROM event WHERE position = 1", [], |r| {
+                r.get::<_, Vec<u8>>(0)
+            })
+            .unwrap()
+    };
+    let first = fixture();
+    let second = fixture();
+    for path in [&first, &second] {
+        let mut log = open(path);
+        three(&mut log);
+        assert_eq!(log.verify_chain(), Ok(3));
+    }
+    assert_ne!(first_link(&first), [0; 32]);
+    assert_ne!(first_link(&first), first_link(&second));
+    let other = first_link(&second);
+    tamper(
+        &first,
+        "UPDATE event SET prev_chain = ?1 WHERE position = 1",
+        Some(other),
+    );
+    assert_eq!(
+        open(&first).verify_chain(),
+        Err(StorageError::ChainBroken { position: 1 })
+    );
+}
+
+#[test]
+fn an_authenticated_chain_cannot_return_to_an_older_key() {
+    let path = fixture();
+    let mut log = open(&path);
+    three(&mut log);
+    drop(log);
+    let config = StorageConfig::defaults();
+    let mut log = EventLog::open(&path, &config, keys("key-b", 2)).unwrap();
+    log.append(&event("task/t1", 4, 4, serde_json::json!({})))
+        .unwrap();
+    drop(log);
+    let mut log = open(&path);
+    log.append(&event("task/t1", 5, 5, serde_json::json!({})))
+        .unwrap();
+    let log = EventLog::open(
+        &path,
+        &config,
+        Box::new(Keys {
+            current: ("key-b", 2),
+            older: vec![("key-a", 1)],
+        }),
+    )
+    .unwrap();
+    assert_eq!(
+        log.verify_chain(),
+        Err(StorageError::ChainBroken { position: 5 })
+    );
+}
+
+#[test]
+fn read_stream_reports_the_position_of_a_forged_key_id() {
+    let path = fixture();
+    let mut log = open(&path);
+    three(&mut log);
+    drop(log);
+    tamper_with(&path, |c| {
+        c.pragma_update(None, "foreign_keys", 0).unwrap();
+        c.execute("UPDATE event SET key_id = 'forged' WHERE position = 2", [])
+            .unwrap();
+    });
+    assert_eq!(
+        open(&path)
+            .read_stream(&stream("task/t1"), 1, 10)
+            .unwrap_err(),
+        StorageError::ChainBroken { position: 2 }
+    );
+    Connection::open(&path)
+        .unwrap()
+        .execute(
+            "INSERT INTO cipher_key VALUES ('forged', 'xchacha20poly1305', zeroblob(24), zeroblob(16))",
+            [],
+        )
+        .unwrap();
+    let log = open(&path);
+    assert_eq!(
+        log.read_stream(&stream("task/t1"), 1, 10).unwrap_err(),
+        StorageError::ChainBroken { position: 2 }
+    );
+    assert_eq!(
+        log.verify_chain(),
+        Err(StorageError::ChainBroken { position: 2 })
+    );
 }
 
 /// `action/a1`, `approval/ap1` and `task/t1`, one event each.

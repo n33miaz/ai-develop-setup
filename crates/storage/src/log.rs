@@ -9,11 +9,7 @@ use ads_contracts::{
 };
 use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::{Map, Value};
-use std::{
-    collections::{HashMap, HashSet},
-    num::NonZeroU64,
-    path::Path,
-};
+use std::{collections::HashSet, num::NonZeroU64, path::Path};
 use zeroize::Zeroizing;
 
 /// Label leading the associated data of every event row; the row format follows it.
@@ -23,7 +19,6 @@ const CHAIN_LABEL: &[u8] = b"urn:ads:storage:chain-row";
 /// Format written by this build. A later format adds a value, never edits this one.
 const ROW_FORMAT: i64 = 1;
 const CIPHER: &str = "xchacha20poly1305";
-const GENESIS: [u8; 32] = [0; 32];
 /// Bound of the clear `type`, in bytes; the schema checks the same.
 pub const MAX_TYPE_BYTES: usize = 128;
 /// Bound of the stream family (before `/`); the contract already bounds the id to 64.
@@ -331,6 +326,17 @@ fn head_in(tx: &rusqlite::Connection, stream: &str) -> Result<i64, StorageError>
     )?)
 }
 
+fn genesis(tx: &rusqlite::Connection) -> Result<Vec<u8>, StorageError> {
+    tx.query_row(
+        "SELECT link FROM log_genesis WHERE singleton = 1",
+        [],
+        |r| r.get(0),
+    )
+    .optional()?
+    .filter(|link: &Vec<u8>| link.len() == 32)
+    .ok_or(StorageError::Corrupt)
+}
+
 impl EventLog {
     /// Opens the store and refuses a current key that differs from the registered
     /// one, or a provider whose `current()` and `by_id` disagree.
@@ -408,7 +414,7 @@ impl EventLog {
             .optional()?;
         let (position, prev_chain) = match last {
             Some((position, chain)) => (position + 1, chain),
-            None => (1, GENESIS.to_vec()),
+            None => (1, genesis(&tx)?),
         };
         let mut row = Row {
             position,
@@ -502,15 +508,34 @@ impl EventLog {
                 used = used.saturating_add(size);
                 let mut row = Row::from_sql(r)?;
                 row.known_format()?;
-                let ciphertext = row.take_ciphertext()?;
-                if checked.insert(row.key_id.clone())
-                    && !check_registered(&tx, &*self.keys, &ciphertext.key_id)?
-                {
-                    return Err(StorageError::Corrupt);
+                let broken = StorageError::ChainBroken {
+                    position: row.position,
+                };
+                let id = KeyId::new(&row.key_id).map_err(|_| broken)?;
+                let registration = if checked.insert(row.key_id.clone()) {
+                    check_registered(&tx, &*self.keys, &id)
+                } else {
+                    Ok(true)
+                };
+                if matches!(registration, Ok(false)) {
+                    return Err(broken);
                 }
-                let data = row.associated(|fields| {
-                    cipher::decrypt(&*self.keys, &AssociatedData(fields), &ciphertext)
-                })?;
+                let mut ciphertext = row.take_ciphertext()?;
+                let data = match registration.and_then(|_| {
+                    row.associated(|fields| {
+                        cipher::decrypt(&*self.keys, &AssociatedData(fields), &ciphertext)
+                            .map_err(StorageError::from)
+                    })
+                }) {
+                    Err(
+                        StorageError::Tampered
+                        | StorageError::KeyUnavailable
+                        | StorageError::WrongKey,
+                    ) if self.authenticates_with_another_id(&tx, &row, &mut ciphertext)? => {
+                        return Err(broken);
+                    }
+                    result => result?,
+                };
                 drop(ciphertext);
                 if row.seq != expected {
                     return Err(StorageError::ChainBroken {
@@ -540,8 +565,9 @@ impl EventLog {
             "SELECT {ROW_COLUMNS} FROM event ORDER BY position"
         ))?;
         let mut rows = statement.query([])?;
-        let mut chain_keys: HashMap<String, ChainKey> = HashMap::new();
-        let mut previous = GENESIS.to_vec();
+        let mut seen = HashSet::new();
+        let mut active: Option<(String, ChainKey)> = None;
+        let mut previous = genesis(&tx)?;
         let mut count: i64 = 0;
         while let Some(r) = rows.next()? {
             let row = Row::from_sql(r)?;
@@ -553,11 +579,14 @@ impl EventLog {
             if row.position != count || row.prev_chain != previous || row.format != ROW_FORMAT {
                 return Err(broken);
             }
-            if !chain_keys.contains_key(&row.key_id) {
+            if active.as_ref().is_none_or(|(id, _)| id != &row.key_id) {
+                if !seen.insert(row.key_id.clone()) {
+                    return Err(broken);
+                }
                 let key = self.chain_key_of(&tx, &row.key_id)?.ok_or(broken)?;
-                chain_keys.insert(row.key_id.clone(), key);
+                active = Some((row.key_id.clone(), key));
             }
-            let key = &chain_keys[&row.key_id];
+            let (_, key) = active.as_ref().expect("active key for this row");
             if !row.chained(|fields| key.verify(fields, &row.chain)) {
                 return Err(broken);
             }
@@ -568,6 +597,34 @@ impl EventLog {
 }
 
 impl EventLog {
+    fn authenticates_with_another_id(
+        &self,
+        tx: &rusqlite::Connection,
+        row: &Row,
+        ciphertext: &mut Ciphertext,
+    ) -> Result<bool, StorageError> {
+        // Only run after key lookup or authentication fails. A successful alternate AAD proves
+        // an id change while preserving Tampered for other damaged columns.
+        let mut statement = tx.prepare("SELECT key_id FROM cipher_key WHERE key_id != ?1")?;
+        let mut ids = statement.query([&row.key_id])?;
+        while let Some(candidate) = ids.next()? {
+            let candidate: String = candidate.get(0)?;
+            let Ok(id) = KeyId::new(&candidate) else {
+                continue;
+            };
+            ciphertext.key_id = id;
+            if row
+                .associated(|fields| {
+                    cipher::decrypt(&*self.keys, &AssociatedData(fields), ciphertext)
+                })
+                .is_ok()
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// Chain key for `key_id`, or `None` when the id is malformed, unregistered,
     /// unknown to the provider or registered with other key material.
     fn chain_key_of(

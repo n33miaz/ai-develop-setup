@@ -96,22 +96,24 @@ fn fill(reader: &mut impl Read, buffer: &mut [u8]) -> Result<bool, StorageError>
 /// Product files skip the image, but SQLite silently discards a WAL with a
 /// damaged header, and every frame after the first invalid one. Refuse when
 /// a later commit marker has the current salt.
-pub(crate) fn check_product_wal(path: &Path, page: usize) -> Result<(), StorageError> {
+pub(crate) fn check_product_wal(path: &Path, page: usize) -> Result<Option<i32>, StorageError> {
     let file = match File::open(wal_path(path)) {
         Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
     let mut reader = std::io::BufReader::new(file);
     let mut header = [0; 32];
     if !fill(&mut reader, &mut header)? {
-        return Ok(());
+        return Ok(None);
     }
     let (big, mut sum) = wal_header(&header, page)?;
     let mut frame = vec![0; 24 + page];
+    let mut pending_version = None;
+    let mut committed_version = None;
     loop {
         if !fill(&mut reader, &mut frame)? {
-            return Ok(());
+            return Ok(committed_version);
         }
         let next = checksum(&frame[24..], checksum(&frame[..8], sum, big), big);
         if next != [word(&frame[16..]), word(&frame[20..])]
@@ -121,6 +123,12 @@ pub(crate) fn check_product_wal(path: &Path, page: usize) -> Result<(), StorageE
             break;
         }
         sum = next;
+        if word(&frame) == 1 {
+            pending_version = Some(i32::from_be_bytes(frame[84..88].try_into().unwrap()));
+        }
+        if word(&frame[4..]) != 0 {
+            committed_version = pending_version;
+        }
     }
     while fill(&mut reader, &mut frame)? {
         // After a break, a current-salt commit marker is evidence of possible loss.
@@ -128,7 +136,7 @@ pub(crate) fn check_product_wal(path: &Path, page: usize) -> Result<(), StorageE
             return Err(StorageError::Corrupt);
         }
     }
-    Ok(())
+    Ok(committed_version)
 }
 
 fn overlay(image: &mut Vec<u8>, wal: &[u8], page: usize, limit: usize) -> Result<(), StorageError> {

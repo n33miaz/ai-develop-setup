@@ -3,9 +3,8 @@ use chacha20poly1305::{
     XChaCha20Poly1305,
     aead::{Aead, KeyInit, Payload},
 };
-use hmac::{Hmac, Mac};
-use sha2::Sha256;
 use std::fmt;
+use storage_sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
 
@@ -16,7 +15,28 @@ const AEAD_SUBKEY: &[u8] = b"urn:ads:cipher:subkey:aead:1";
 const CHAIN_SUBKEY: &[u8] = b"urn:ads:cipher:subkey:chain:1";
 const CHECK_SUBKEY: &[u8] = b"urn:ads:cipher:subkey:key-check:1";
 
-type HmacSha256 = Hmac<Sha256>;
+/// RFC 2104 for the fixed 32-byte keys used by storage.
+fn hmac_sha256(key: &[u8; 32], feed: impl FnOnce(&mut Sha256)) -> Zeroizing<[u8; 32]> {
+    let mut pad = Zeroizing::new([0x36; 64]);
+    for (byte, key_byte) in pad.iter_mut().zip(key) {
+        *byte ^= key_byte;
+    }
+    let mut inner = Sha256::new();
+    inner.update(pad.as_slice());
+    feed(&mut inner);
+    let mut digest = Zeroizing::new([0; 32]);
+    inner.finalize_into((&mut *digest).into());
+
+    for byte in pad.iter_mut() {
+        *byte ^= 0x36 ^ 0x5c;
+    }
+    let mut outer = Sha256::new();
+    outer.update(pad.as_slice());
+    outer.update(digest.as_slice());
+    let mut output = Zeroizing::new([0; 32]);
+    outer.finalize_into((&mut *output).into());
+    output
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CipherError {
@@ -69,15 +89,12 @@ impl fmt::Debug for KeyId {
 
 /// HKDF-Expand (RFC 5869) of one 32-byte block. `KeyProvider` keys must be
 /// uniformly random, so the provider key serves as the pseudorandom key without
-/// Extract. The HMAC state holding the key is not zeroed by the dependency.
+/// Extract.
 fn subkey(master: &SecretKey, info: &[u8]) -> Zeroizing<[u8; 32]> {
-    let mut mac =
-        <HmacSha256 as Mac>::new_from_slice(&**master.0).expect("HMAC accepts a key of any length");
-    mac.update(info);
-    mac.update(&[1]);
-    let mut out = Zeroizing::new([0; 32]);
-    out.copy_from_slice(&mac.finalize().into_bytes());
-    out
+    hmac_sha256(&master.0, |hash| {
+        hash.update(info);
+        hash.update([1]);
+    })
 }
 
 /// Key of the row chain, derived from one provider key; never the AEAD key.
@@ -85,16 +102,17 @@ pub struct ChainKey(Zeroizing<[u8; 32]>);
 impl ChainKey {
     /// HMAC-SHA256 of the length-prefixed `fields`.
     pub fn mac(&self, fields: &[Option<&[u8]>]) -> [u8; 32] {
-        let mut input = Vec::new();
-        encode_fields(&mut input, fields);
-        let mut mac = <HmacSha256 as Mac>::new_from_slice(&*self.0)
-            .expect("HMAC accepts a key of any length");
-        mac.update(&input);
-        mac.finalize().into_bytes().into()
+        *self.tag(fields)
     }
     /// Constant-time comparison of `expected` with the MAC of `fields`.
     pub fn verify(&self, fields: &[Option<&[u8]>], expected: &[u8]) -> bool {
-        bool::from(self.mac(fields)[..].ct_eq(expected))
+        bool::from(self.tag(fields)[..].ct_eq(expected))
+    }
+
+    fn tag(&self, fields: &[Option<&[u8]>]) -> Zeroizing<[u8; 32]> {
+        hmac_sha256(&self.0, |hash| {
+            encode_fields(fields, |bytes| hash.update(bytes))
+        })
     }
 }
 impl fmt::Debug for ChainKey {
@@ -162,12 +180,13 @@ fn field(out: &mut Vec<u8>, bytes: &[u8]) {
     out.extend_from_slice(bytes);
 }
 /// Length-prefixed list where None and an empty field differ; shared with the chain hash.
-pub(crate) fn encode_fields(out: &mut Vec<u8>, items: &[Option<&[u8]>]) {
-    out.extend_from_slice(&(items.len() as u64).to_be_bytes());
+fn encode_fields(items: &[Option<&[u8]>], mut write: impl FnMut(&[u8])) {
+    write(&(items.len() as u64).to_be_bytes());
     for item in items {
-        out.push(u8::from(item.is_some()));
+        write(&[u8::from(item.is_some())]);
         if let Some(bytes) = item {
-            field(out, bytes);
+            write(&(bytes.len() as u64).to_be_bytes());
+            write(bytes);
         }
     }
 }
@@ -175,7 +194,7 @@ fn encode(domain: &[u8], id: &KeyId, aad: &AssociatedData<'_>) -> Vec<u8> {
     let mut out = Vec::new();
     field(&mut out, domain);
     field(&mut out, id.as_str().as_bytes());
-    encode_fields(&mut out, aad.0);
+    encode_fields(aad.0, |bytes| out.extend_from_slice(bytes));
     out
 }
 fn nonce() -> Result<[u8; 24], CipherError> {
@@ -282,6 +301,21 @@ pub fn verify_key_check_with(key: &SecretKey, check: &Ciphertext) -> Result<(), 
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn hmac_state_wipes_on_drop_and_matches_rfc_4231() {
+        let _: &dyn zeroize::ZeroizeOnDrop = &Sha256::new();
+        let mut key = [0; 32];
+        key[..20].fill(0x0b);
+        assert_eq!(
+            *hmac_sha256(&key, |hash| hash.update(b"Hi There")),
+            [
+                0xb0, 0x34, 0x4c, 0x61, 0xd8, 0xdb, 0x38, 0x53, 0x5c, 0xa8, 0xaf, 0xce, 0xaf, 0x0b,
+                0xf1, 0x2b, 0x88, 0x1d, 0xc2, 0x00, 0xc9, 0x83, 0x3d, 0xa7, 0x26, 0xe9, 0x37, 0x6c,
+                0x2e, 0x32, 0xcf, 0xf7,
+            ]
+        );
+    }
 
     struct MemoryKeys {
         id: KeyId,
