@@ -62,52 +62,83 @@ Política pura do ambiente que um processo de ferramenta recebe: só passam os n
 
 ## Abertura de ferramentas
 
-Em `src/tool_launch/`, cada adaptador informa o identificador da ferramenta ao
-núcleo, que carrega
+Em `src/tool_launch/`, o núcleo carrega
 [`defaults/harnesses.toml`](../../defaults/harnesses.toml) com as substituições do
 usuário em `[tools.<id>]`, `[workdirs]` e `[env]`. Outras tabelas de ferramenta
 são tratadas pelos adaptadores correspondentes.
 
+As ferramentas são as do próprio módulo (`Claude`, `Codex`), cada uma com sua
+tabela nos padrões. O trait `Harness` é selado: outro crate não declara
+ferramenta nova, e as chaves dos diagnósticos (`tools.<id>`, `tools.<id>.program`,
+`tools.<id>.args`, `tools.<id>.mode`) saem do identificador. Ferramenta nova
+entra aqui, com a tabela em `defaults/harnesses.toml`, e ganha um adaptador.
+
 O pedido `session.open` fornece a ferramenta, o apelido da pasta e o tamanho.
-`open_params` monta o pedido do contrato `pty-host/1` com o programa absoluto e
-literal, os argumentos fixos na ordem configurada, a pasta absoluta identificada
-pelo apelido exato e o ambiente filtrado por `child_env`. Caminho de programa vazio
-desliga a ferramenta. O modo aceito é `interactive`. Argumentos com caracteres de
-controle são recusados. Erros de configuração e de abertura identificam a chave,
-a posição, a linha ou o motivo sem reproduzir o valor recusado.
+`open_params` monta o pedido do contrato `pty-host/1`. A função do núcleo é
+genérica e recusa com `UnknownHarness` o pedido de outra ferramenta; o
+`open_params` de cada adaptador só aceita a configuração da própria ferramenta,
+e passar a de outra não compila.
 
 `Probe` permite conferir a existência do programa e da pasta na hora da
-abertura. `DiskProbe` faz essa consulta no disco. A abertura no host ainda pode
-falhar se o arquivo sumir depois da consulta. No Windows, arquivos `.cmd` e
-`.bat` executam pelo `cmd.exe` com as regras de aspas dele.
-
-A ferramenta opera com as permissões do processo, inclusive fora da pasta
-escolhida. O login fica a cargo da própria ferramenta, em seu local padrão. As
-variáveis de ambiente que redirecionam esse login são filtradas.
+abertura. `DiskProbe` faz essa consulta no disco.
 
 ### O que a abertura garante
 
 - Quem pede a sessão escolhe só a ferramenta (pelo nome), o apelido da pasta e o
   tamanho. Programa, argumentos, ambiente e pasta vêm da configuração; o contrato
-  do pedido recusa esses campos.
-- Programa: caminho absoluto e literal, sem caminho relativo, variável, `~`, `..`,
-  caminho de rede nem nome curto do Windows, e precisa existir quando a sessão abre.
+  do pedido recusa esses campos e a função não tem por onde recebê-los.
+- Programa: caminho absoluto e literal, que precisa ser um arquivo existente
+  quando a sessão abre. Caminho vazio (o padrão) desliga a ferramenta.
+- Formas de caminho recusadas no programa e na pasta: relativo (inclusive `C:pasta`
+  e `\pasta`), variável (`%VAR%`, `$VAR`), `~`, `..`, caminho de rede, prefixos
+  `\?\` e `\.\`, fluxo alternativo (`arquivo:fluxo`), nome curto do Windows
+  (`NOME~1`), nome de dispositivo (`NUL`, `COM1`), componente terminado em ponto
+  ou espaço, caracteres reservados, curinga e caractere de controle.
+- Argumentos: só os fixos da configuração, na ordem dela; com caractere de
+  controle, a configuração é recusada.
 - Pasta: o apelido precisa estar em `[workdirs]` (comparação exata) e a pasta
-  precisa existir. A pasta vai sempre preenchida, para o processo dos terminais
-  nunca cair na pasta atual dele.
+  precisa existir. A raiz de uma unidade ou `/` é recusada, para a ferramenta não
+  trabalhar no disco inteiro. A pasta vai sempre preenchida, para o processo dos
+  terminais nunca cair na pasta atual dele.
 - Ambiente: exatamente os nomes de `env.allow` que o processo pai tem, mais os
-  valores de `env.set`. Nome em `allow` ou em `set` que casa com `env.deny` recusa
-  a configuração; a camada do usuário só acrescenta padrões a `deny`.
+  valores de `env.set` (`TERM`, `COLORTERM`). Nome em `allow` ou em `set` que
+  casa com `env.deny` recusa a configuração, e o filtro ainda o descarta se
+  chegar até ele. Os padrões negados cobrem o nome de credenciais (`*TOKEN*`,
+  `*SECRET*`, `*PASSWORD*`, `*API_KEY*`, `*_KEY` e outros), o de variáveis que
+  apontam para elas (`*_KEY_FILE`, `GOOGLE_APPLICATION_CREDENTIALS`) e a
+  configuração de login de ferramentas e provedores (`CLAUDE_*`, `ANTHROPIC_*`,
+  `OPENAI_*`, `CODEX_*`, `GH_*`, `AWS_*` e outros; lista completa no arquivo). A
+  camada do usuário só acrescenta padrões a `deny`. Valor de `set` com NUL ou
+  outro caractere de controle é recusado; valor do pai com NUL é ignorado.
+- Erros de configuração e de abertura não carregam caminho, valor, nome de
+  variável nem o texto do analisador de TOML: só a chave, a posição na lista, a
+  linha ou um código.
 
 ### O que a abertura não garante
 
 - Um padrão de nome não reconhece um segredo guardado sob um nome comum
-  (`MEU_VALOR=<token>`): tudo o que passa está em `env.allow`, revisável num
-  lugar só.
+  (`MEU_VALOR=<token>`): o que se garante é que nenhuma variável de nome
+  reconhecidamente sensível passa e que tudo o que passa está em `env.allow`,
+  revisável num lugar só.
 - O que a ferramenta faz depois de aberta: o agente lê e edita arquivos conforme
-  as permissões dele, na pasta escolhida e fora dela.
+  as permissões do processo, na pasta escolhida e fora dela; o portão de ações do
+  produto não cobre o que se faz dentro do terminal.
+- O login da ferramenta: fica com ela, no lugar padrão dela, achado pela pasta do
+  usuário. As variáveis da pasta de configuração (`CLAUDE_CONFIG_DIR`,
+  `CODEX_HOME`) e as demais que redirecionam o login não passam.
 - Que o programa seja o certo: confere-se que o arquivo existe, não quem o
-  assinou. O arquivo pode sumir entre a conferência e a abertura.
+  assinou. O arquivo pode sumir entre a conferência e a abertura; aí quem falha é
+  a abertura no processo dos terminais.
+- No Windows, programas `.cmd` e `.bat` (instalações por npm) rodam pelo
+  `cmd.exe`, com as regras de aspas dele. Como os argumentos vêm só da
+  configuração, isso fica documentado, não tratado.
+
+### Testes
+
+`cargo test -p ads-core -j 2` roda a suíte de abertura
+(`src/tool_launch/tests/suite.rs`) com uma ferramenta que só existe nos testes,
+com tabela própria acrescentada aos padrões. Cada adaptador roda a mesma suíte
+com o seu identificador.
 
 ## Portão de ações destrutivas (`src/gate/`)
 
