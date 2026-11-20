@@ -9,15 +9,30 @@ pub(crate) const GENESIS: std::ops::Range<usize> = 1..33;
 pub(crate) const POSITION: std::ops::Range<usize> = 33..41;
 pub(crate) const REGISTERED_KEYS: std::ops::RangeFrom<usize> = 73..;
 
+pub type DatabaseId = [u8; 32];
+
 /// Persistent storage for one audit log, independent of its database file.
 pub trait AnchorStore: Send {
-    fn read(&self) -> Result<Option<Commitment>, StorageError>;
-    fn store(&self, commitment: &Commitment) -> Result<(), StorageError>;
+    /// Whether a missing file or an empty unanchored log may be initialized.
+    fn can_create(&self) -> Result<bool, StorageError>;
+    fn read(&self, id: DatabaseId) -> Result<Option<Commitment>, StorageError>;
+    fn store(&self, id: DatabaseId, commitment: &Commitment) -> Result<(), StorageError>;
+
+    /// Commitment from the old reserved slot, if still eligible for adoption.
+    fn legacy(&self) -> Result<Option<Commitment>, StorageError> {
+        Ok(None)
+    }
+
+    /// Record the canonical identity after the scoped commitment is available.
+    fn bind(&self, _id: DatabaseId) -> Result<(), StorageError> {
+        Ok(())
+    }
 }
 
 /// The exact old and proposed commitments reviewed by the owner.
 #[derive(Debug, PartialEq, Eq)]
 pub struct ReanchorPlan {
+    pub(crate) id: DatabaseId,
     pub(crate) previous: Option<Commitment>,
     pub(crate) proposed: Commitment,
 }
