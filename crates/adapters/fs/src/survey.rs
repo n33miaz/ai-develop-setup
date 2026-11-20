@@ -72,7 +72,9 @@ pub(crate) fn open_listed(
 ) -> Result<Entry, Stop> {
     let node = match parent.listed(name) {
         Ok(node) => node,
-        Err(sys::Error::Missing) => return Err(changed(fence, rel, "is gone")),
+        Err(error @ sys::Error::Missing(_)) => {
+            return Err(changed(fence, rel, "is gone").with_cause(error));
+        }
         Err(error) => return Err(Stop::io("opening", fence.text_of(rel), error)),
     };
     let meta = node
@@ -87,7 +89,8 @@ pub(crate) fn list(fence: &Fence, node: &Node, rel: &[String]) -> Result<Vec<Str
         std::io::ErrorKind::InvalidData => Stop::new(
             Reason::NotPhysical,
             format!("{} holds a name that is not text", fence.text_of(rel)),
-        ),
+        )
+        .with_cause(error),
         _ => Stop::io("listing", fence.text_of(rel), error),
     })
 }

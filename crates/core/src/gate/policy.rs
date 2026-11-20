@@ -55,7 +55,7 @@ impl Protection {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PolicyError {
-    Toml(String),
+    Toml(Box<toml::de::Error>),
     MissingKey(&'static str),
     Path {
         key: &'static str,
@@ -73,10 +73,20 @@ pub enum PolicyError {
     ProtectedAllowedRoot(String),
 }
 
+impl std::error::Error for PolicyError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Toml(error) => Some(error.as_ref()),
+            Self::Path { error, .. } => Some(error),
+            _ => None,
+        }
+    }
+}
+
 impl fmt::Display for PolicyError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Toml(message) => f.write_str(message),
+            Self::Toml(error) => error.fmt(f),
             Self::MissingKey(key) => write!(f, "missing key `{key}`"),
             Self::Path { key, value, error } => write!(f, "`{key}`: {value:?}: {error}"),
             Self::Invalid { key, value } => write!(f, "`{key}`: {value:?} is not accepted"),
@@ -364,7 +374,7 @@ impl GatePolicy {
 }
 
 fn parse(text: &str) -> Result<Layer, PolicyError> {
-    toml::from_str(text).map_err(|err| PolicyError::Toml(err.to_string()))
+    toml::from_str(text).map_err(|err| PolicyError::Toml(Box::new(err)))
 }
 
 #[cfg(test)]

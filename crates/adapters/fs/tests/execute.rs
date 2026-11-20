@@ -863,6 +863,11 @@ fn nothing_happens_before_the_journal_confirms_the_start() {
         .execute(flow.permit, &flow.started, &mut Refusing)
         .unwrap_err();
     assert_eq!(failure.reason, Reason::JournalRefused);
+    let cause = std::error::Error::source(&*failure).unwrap();
+    assert_eq!(
+        cause.downcast_ref::<JournalError>().unwrap().0,
+        "the log is not writable"
+    );
     assert_eq!(tree(&sandbox.root), before);
 
     // The start of another action: the journal is not even asked.

@@ -276,7 +276,7 @@ pub(crate) fn prepare(
         };
         let text = fence.text_of(to);
         let landing =
-            AbsPath::parse(&text).map_err(|error| Stop::new(Reason::NotPhysical, error))?;
+            AbsPath::parse(&text).map_err(|error| Stop::caused_by(Reason::NotPhysical, error))?;
         if !landing.is_strictly_within(work_root) {
             return Err(Stop::new(
                 Reason::OutsideWorkRoot,
@@ -395,7 +395,7 @@ fn check_facts(
         estimate: Some(real),
     };
     let real_plan = ActionPlan::normalize(&request)
-        .map_err(|error| Stop::new(Reason::FactsContradictPlan, error))?;
+        .map_err(|error| Stop::caused_by(Reason::FactsContradictPlan, error))?;
     let judged = classify(&real_plan, policy);
     if judged.decision() > declared {
         let codes: Vec<String> = judged
@@ -568,8 +568,9 @@ fn judge_restore_place(
         work_root: work_root.to_string(),
         estimate: Some(Estimate { items: 1, bytes: 0 }),
     };
-    let plan = ActionPlan::normalize(&request)
-        .map_err(|error| Stop::new(Reason::PolicyDenies, format!("{place}: {error}")))?;
+    let plan = ActionPlan::normalize(&request).map_err(|error| {
+        Stop::new(Reason::PolicyDenies, format!("{place}: {error}")).with_cause(error)
+    })?;
     let verdict = classify(&plan, policy);
     if verdict.decision() == Decision::Denied {
         let codes: Vec<String> = verdict
@@ -719,7 +720,7 @@ fn restore_job(
     let folder = fence.open_dir(&batch.rel)?;
     let bytes = match folder.read_file(MANIFEST_NAME, limits.max_manifest_bytes) {
         Ok(bytes) => bytes,
-        Err(sys::Error::Missing) => return Err(invalid("no manifest")),
+        Err(error @ sys::Error::Missing(_)) => return Err(invalid("no manifest").with_cause(error)),
         Err(sys::Error::Io(error)) if error.kind() == std::io::ErrorKind::FileTooLarge => {
             return Err(invalid("the manifest is too large"));
         }
