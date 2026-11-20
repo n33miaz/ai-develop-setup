@@ -1,0 +1,22 @@
+# Caminhos relativos partem da pasta do binário (ou do TOML com --config).
+# No Windows, o lançador acrescenta .exe aos dois padrões embutidos.
+daemon_program = "ads-daemon"
+ptyhost_program = "ads-ptyhost"
+# daemon_config e ptyhost_config são opcionais. Sem eles, cada filho usa seus padrões.
+# Use uma pasta exclusiva da instalação e gravável apenas pelo usuário.
+control_dir = "launcher-control"
+# Nomes dentro da pasta de controle. Mantenha os padrões para clientes do supervisor.
+lock_file = "supervisor.lock"
+state_file = "state.json"
+restart_file = "restart"
+stop_file = "stop"
+
+# Intervalo de consulta dos processos e sinais, em milissegundos.
+poll_ms = 100
+# Espera inicial entre tentativas e teto para a progressão por duplicação.
+restart_initial_ms = 250
+restart_max_ms = 10000
+# Saída antes deste tempo conta como falha rápida. Falha ao iniciar também conta.
+rapid_exit_ms = 30000
+# Interrompe as tentativas de cada filho após esta quantidade de falhas rápidas.
+rapid_exit_limit = 5
