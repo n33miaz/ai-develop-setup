@@ -1,3 +1,8 @@
+import {
+  METHOD_NOT_FOUND,
+  SESSION_CLOSE_PENDING,
+  SUBSCRIPTION_REPLAY_UNAVAILABLE,
+} from '../../../contracts/generated/ts/contract.local-api.error-code.v1.constants'
 import Ajv2020, { type AnySchema } from 'ajv/dist/2020.js'
 import addFormats from 'ajv-formats'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -229,11 +234,11 @@ describe('local WebSocket client', () => {
     socket.receive({
       jsonrpc: '2.0',
       id: socket.sent[1]?.id,
-      error: { code: -32004, message: 'replay unavailable' },
+      error: { code: SUBSCRIPTION_REPLAY_UNAVAILABLE, message: 'replay unavailable' },
     })
     socket.receive(event(1))
     socket.receive(event(1, 'session/session-b'))
-    expect(ended).toEqual([-32004])
+    expect(ended).toEqual([SUBSCRIPTION_REPLAY_UNAVAILABLE])
     expect(seen).toEqual(['session/session-b'])
     expect(client.getState()).toBe('connected')
   })
@@ -249,10 +254,10 @@ describe('local WebSocket client', () => {
     socket.receive({
       jsonrpc: '2.0',
       id: socket.sent[1]?.id,
-      error: { code: -32013, message: 'session close pending' },
+      error: { code: SESSION_CLOSE_PENDING, message: 'session close pending' },
     })
     await Promise.resolve()
-    expect(ended).toEqual([-32013])
+    expect(ended).toEqual([SESSION_CLOSE_PENDING])
     expect(client.getState()).toBe('connected')
   })
   it('ignores the end of a subscription already cancelled', async () => {
@@ -269,7 +274,7 @@ describe('local WebSocket client', () => {
     socket.receive({
       jsonrpc: '2.0',
       id: socket.sent[1]?.id,
-      error: { code: -32004, message: 'replay unavailable' },
+      error: { code: SUBSCRIPTION_REPLAY_UNAVAILABLE, message: 'replay unavailable' },
     })
     expect(ended).toEqual([])
     expect(client.getState()).toBe('connected')
@@ -392,7 +397,7 @@ describe('local WebSocket client', () => {
     socket.receive({
       jsonrpc: '2.0',
       id: socket.sent[1]?.id,
-      error: { code: -32601, message: 'unknown method' },
+      error: { code: METHOD_NOT_FOUND, message: 'unknown method' },
     })
     await expect(listed).rejects.toThrow('command rejected')
     expect(client.getState()).toBe('connected')
@@ -450,7 +455,7 @@ describe('tool list deadline', () => {
     socket.receive({
       jsonrpc: '2.0',
       id: socket.sent[2]?.id,
-      error: { code: -32601, message: 'unknown method' },
+      error: { code: METHOD_NOT_FOUND, message: 'unknown method' },
     })
     await expect(old).rejects.toMatchObject({ reason: 'unsupported' })
     const refused = client.listHarnesses()
@@ -634,7 +639,7 @@ describe('one core subscription per stream', () => {
     )
     expect(ended).toEqual([])
     await Promise.resolve()
-    expect(ended).toEqual([-32004])
+    expect(ended).toEqual([SUBSCRIPTION_REPLAY_UNAVAILABLE])
     socket.receive(event(5))
     expect(late).toEqual([])
     expect(first).toEqual([1, 2, 3, 4, 5])
@@ -728,7 +733,7 @@ describe('one core subscription per stream', () => {
     socket.receive({
       jsonrpc: '2.0',
       id: socket.sent[1]?.id,
-      error: { code: -32004, message: 'replay unavailable' },
+      error: { code: SUBSCRIPTION_REPLAY_UNAVAILABLE, message: 'replay unavailable' },
     })
     expect(ended).toEqual(['second -32004', 'third -32004'])
     // A new listener after the end asks the core for the new incarnation.

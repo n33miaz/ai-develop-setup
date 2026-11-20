@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:contract:local-api.error-code:1",
+  "title": "Código de erro da API local",
+  "description": "Códigos que a API local atribui às próprias respostas JSON-RPC.",
+  "anyOf": [
+    {
+      "$ref": "#/$defs/method_not_found"
+    },
+    {
+      "$ref": "#/$defs/invalid_params"
+    },
+    {
+      "$ref": "#/$defs/internal_error"
+    },
+    {
+      "$ref": "#/$defs/capacity_exceeded"
+    },
+    {
+      "$ref": "#/$defs/subscription_replay_unavailable"
+    },
+    {
+      "$ref": "#/$defs/remote_origin_refused"
+    },
+    {
+      "$ref": "#/$defs/harness_not_configured"
+    },
+    {
+      "$ref": "#/$defs/conflict"
+    },
+    {
+      "$ref": "#/$defs/session_close_pending"
+    },
+    {
+      "$ref": "#/$defs/session_setup_failed"
+    }
+  ],
+  "examples": [
+    -32601
+  ],
+  "$defs": {
+    "method_not_found": {
+      "type": "integer",
+      "const": -32601,
+      "description": "O método solicitado é desconhecido."
+    },
+    "invalid_params": {
+      "type": "integer",
+      "const": -32602,
+      "description": "O comando ou seus parâmetros são inválidos para a API local."
+    },
+    "internal_error": {
+      "type": "integer",
+      "const": -32603,
+      "description": "O serviço está indisponível, inclusive quando o prazo do host se esgota."
+    },
+    "capacity_exceeded": {
+      "type": "integer",
+      "const": -32003,
+      "description": "Um limite de capacidade foi atingido."
+    },
+    "subscription_replay_unavailable": {
+      "type": "integer",
+      "const": -32004,
+      "description": "O replay solicitado está indisponível ou o stream foi invalidado ou descartado."
+    },
+    "remote_origin_refused": {
+      "type": "integer",
+      "const": -32010,
+      "description": "A API local recusou um comando de origem remota."
+    },
+    "harness_not_configured": {
+      "type": "integer",
+      "const": -32011,
+      "description": "A ferramenta solicitada não tem programa configurado."
+    },
+    "conflict": {
+      "type": "integer",
+      "const": -32012,
+      "description": "A chave de idempotência conflita com outro pedido ou o id da sessão está reservado."
+    },
+    "session_close_pending": {
+      "type": "integer",
+      "const": -32013,
+      "description": "O fechamento automático esgotou as tentativas e ainda depende de um session.close."
+    },
+    "session_setup_failed": {
+      "type": "integer",
+      "const": -32014,
+      "description": "A preparação falhou após a abertura do terminal e o fechamento foi agendado."
+    }
+  }
+}

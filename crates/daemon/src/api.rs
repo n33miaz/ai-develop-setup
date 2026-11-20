@@ -3,7 +3,18 @@
 use crate::auth::{Token, permits_upgrade};
 use crate::events::{Closing, EventLog, Poll, Stream};
 use crate::pty_client::{ClientError, ErrorCode, Event, PtyClient};
-use ads_contracts::CommandSessionOpenV1Params;
+use ads_contracts::{
+    CommandSessionOpenV1Params, ContractLocalApiErrorCodeV1CapacityExceeded as CapacityExceeded,
+    ContractLocalApiErrorCodeV1Conflict as Conflict,
+    ContractLocalApiErrorCodeV1HarnessNotConfigured as HarnessNotConfigured,
+    ContractLocalApiErrorCodeV1InternalError as InternalError,
+    ContractLocalApiErrorCodeV1InvalidParams as InvalidParams,
+    ContractLocalApiErrorCodeV1MethodNotFound as MethodNotFound,
+    ContractLocalApiErrorCodeV1RemoteOriginRefused as RemoteOriginRefused,
+    ContractLocalApiErrorCodeV1SessionClosePending as SessionClosePending,
+    ContractLocalApiErrorCodeV1SessionSetupFailed as SessionSetupFailed,
+    ContractLocalApiErrorCodeV1SubscriptionReplayUnavailable as SubscriptionReplayUnavailable,
+};
 use ads_ptyhost::wire::{
     Notification, OpenParams, ResizeParams, SessionId, SessionParams, WriteParams,
 };
@@ -43,17 +54,16 @@ pub enum ApiError {
 impl ApiError {
     pub fn code(self) -> i64 {
         match self {
-            Self::Invalid => -32602,
-            Self::Method => -32601,
-            Self::Remote => -32010,
-            Self::HarnessNotConfigured => -32011,
-            Self::Capacity => -32003,
-            Self::Conflict => -32012,
-            Self::Replay => -32004,
-            Self::Unavailable => -32603,
-            Self::ClosePending => -32013,
-            Self::SetupFailed => -32014,
-            Self::HostTimeout => -32603,
+            Self::Invalid => InvalidParams::VALUE,
+            Self::Method => MethodNotFound::VALUE,
+            Self::Remote => RemoteOriginRefused::VALUE,
+            Self::HarnessNotConfigured => HarnessNotConfigured::VALUE,
+            Self::Capacity => CapacityExceeded::VALUE,
+            Self::Conflict => Conflict::VALUE,
+            Self::Replay => SubscriptionReplayUnavailable::VALUE,
+            Self::ClosePending => SessionClosePending::VALUE,
+            Self::SetupFailed => SessionSetupFailed::VALUE,
+            Self::Unavailable | Self::HostTimeout => InternalError::VALUE,
             Self::Host(code) => code.number(),
         }
     }

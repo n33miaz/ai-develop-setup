@@ -1,4 +1,7 @@
-use ads_contracts::CommandSessionOpenV1Params;
+use ads_contracts::{
+    CommandSessionOpenV1Params, ContractLocalApiErrorCodeV1InternalError,
+    ContractLocalApiErrorCodeV1SessionSetupFailed,
+};
 use ads_daemon::api::{ApiConfig, ApiError, DisabledLauncher, Launcher, LocalApi, TestHooks};
 use ads_daemon::auth::Token;
 use ads_daemon::events::{EventLog, Poll, new_id};
@@ -2078,6 +2081,16 @@ async fn failed_host_resubscribe_invalidates_only_the_affected_stream() {
     assert!(!f.api.is_finished());
 }
 
+#[test]
+fn unavailable_service_and_host_timeout_share_the_internal_error_code() {
+    for error in [ApiError::Unavailable, ApiError::HostTimeout] {
+        assert_eq!(
+            error.code(),
+            ContractLocalApiErrorCodeV1InternalError::VALUE
+        );
+    }
+}
+
 #[tokio::test]
 async fn host_timeout_ends_the_service_after_an_uncertain_command() {
     let (mut f, _) = refusing_fixture(
@@ -2535,7 +2548,7 @@ async fn failed_open_cleanup_timeout_keeps_the_record_until_the_host_closes() {
     let mut ws = authenticated(&f).await;
     assert_eq!(
         call(&mut ws, "session.open", open_params("session")).await["error"]["code"],
-        -32014
+        ContractLocalApiErrorCodeV1SessionSetupFailed::VALUE
     );
     // The host opened a real terminal; the first close never gets a reply.
     assert_eq!(f.host.sessions().len(), 1);

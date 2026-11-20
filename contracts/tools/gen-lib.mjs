@@ -37,14 +37,23 @@ export async function generateAll(root) {
 
   const out = new Map();
   for (const [id, { file, schema }] of byId) {
+    const banner = `/* Gerado por tools/gen-ts.mjs a partir de schemas/${file}. Não edite à mão. */`;
     const text = await compile(schema, tsName(id), {
       cwd: root,
       $refOptions: { resolve: { ads: resolver } },
-      bannerComment: `/* Gerado por tools/gen-ts.mjs a partir de schemas/${file}. Não edite à mão. */`,
+      bannerComment: banner,
       additionalProperties: false,
       format: true,
     });
     out.set(`${idToKey(id)}.d.ts`, text.replace(/\r\n/g, "\n"));
+    if (id === "urn:ads:contract:local-api.error-code:1") {
+      const constants = schema.anyOf.map(({ $ref: ref }) => {
+        const name = ref.slice("#/$defs/".length);
+        const { const: value, description } = schema.$defs[name];
+        return `/** ${description} */\nexport const ${name.toUpperCase()} = ${value}`;
+      });
+      out.set(`${idToKey(id)}.constants.ts`, `${banner}\n\n${constants.join("\n\n")}\n`);
+    }
   }
   return out;
 }
@@ -66,7 +75,9 @@ export function writeAll(root, files) {
 export function diffAll(root, files) {
   const dir = outDir(root);
   const problems = [];
-  const present = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.endsWith(".d.ts")) : [];
+  const present = fs.existsSync(dir)
+    ? fs.readdirSync(dir).filter((f) => f.endsWith(".d.ts") || f.endsWith(".constants.ts"))
+    : [];
   for (const [name, text] of files) {
     const file = path.join(dir, name);
     if (!fs.existsSync(file)) problems.push(`faltando: generated/ts/${name}`);

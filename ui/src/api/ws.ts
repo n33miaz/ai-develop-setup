@@ -1,3 +1,4 @@
+import { METHOD_NOT_FOUND } from '../../../contracts/generated/ts/contract.local-api.error-code.v1.constants'
 import {
   CoreClientError,
   HarnessListError,
@@ -341,8 +342,7 @@ export function createWsCoreClient({
       return Promise.race([transmit(command), deadline])
         .then((response) => {
           if (isHarnessList(response)) return response.result
-          // -32601: núcleo anterior ao método.
-          throw new HarnessListError(response.error?.code === -32601 ? 'unsupported' : 'refused')
+          throw new HarnessListError(response.error?.code === METHOD_NOT_FOUND ? 'unsupported' : 'refused')
         })
         .finally(() => {
           clearTimeout(timer)
