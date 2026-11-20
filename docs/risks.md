@@ -337,7 +337,7 @@ Riscos da troca de conta por pasta de perfil ([ADR 0022](adr/0022-account-profil
 - **Teto.** Não se aplica.
 - **Mitigação existente.** Actions fixadas por SHA de commit em `.github/workflows/`; `Cargo.lock` e `package-lock.json` versionados e usados com `--locked` e `npm ci --ignore-scripts`; avisos de segurança pelo `cargo deny`; CodeQL e Scorecard semanais, só avisando ([ADR 0013](adr/0013-only-fast-checks-block.md), `.github/workflows/weekly.yml`).
 - **Plano B.** Condição de reversão da ADR 0013 (a análise passa a bloquear).
-- **O que falta.** O job de revisão de dependências por PR está só descrito em comentário no `ci.yml`.
+- **O que falta.** Revisão de dependências por PR. O CI não tem esse job, e o `ci.yml` não traz mais o comentário que o previa; o gatilho que ele citava (existir `Cargo.lock` ou `package-lock.json`) já está cumprido. O limite para o job entrar no `ci-ok` está em [ci-timings.md](ci-timings.md).
 
 ### Código `unsafe`
 

@@ -11,9 +11,11 @@ O modelo de tarefa obrigava o título da issue a seguir o padrão dos commits (`
 - O prefixo de tipo é usado nos commits e, em muitos times, no título do PR, principalmente quando o PR vira o commit (junção por squash) ou alimenta automação de release.
 - A classificação da issue se faz por rótulo e por tipo de issue, não pelo título.
 
-Aqui a junção é por rebase (ADR 0014): os commits do PR entram um a um, o título do PR não vira commit e não há automação de release que leia títulos (ADR 0017).
+Aqui a junção é por rebase (ADR 0014): os commits do PR entram um a um e o título do PR não vira commit.
 
-Com a [ADR 0024](0024-agent-authored-commits.md), o título do PR aparece no corpo do commit de merge no fluxo de autoria de agente. A convenção continua valendo, pois os commits originais preservam seus assuntos e a publicação de pré-lançamentos usa o SHA, conforme a [ADR 0025](0025-semver-dev-prereleases-until-first-installer.md).
+Com a [ADR 0024](0024-agent-authored-commits.md), o título do PR aparece no corpo do commit de merge no fluxo de autoria de agente. A convenção continua valendo, pois os commits originais preservam seus assuntos.
+
+Os títulos de PR também alimentam as notas públicas dos pré-lançamentos: o `.github/workflows/prerelease.yml` cria cada release com `--generate-notes`, e o GitHub lista nelas, como estão, os títulos dos PRs juntados desde o pré-lançamento anterior, conforme a [ADR 0025](0025-semver-dev-prereleases-until-first-installer.md). Isso reforça a regra de título descritivo: o que vai no título do PR é texto público.
 
 ## Decisão
 Cada coisa com a sua convenção:
