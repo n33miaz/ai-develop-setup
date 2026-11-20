@@ -19,8 +19,8 @@ Estado da mitigação, em cada risco:
 | [Licença de execução usada duas vezes](#licença-de-execução-usada-duas-vezes) | portão, executor e armazenamento | parcial: só dentro de um processo |
 | [Perda de sessões de terminal](#perda-de-sessões-de-terminal) | host de terminais | implementada e testada; lançador ausente |
 | [Outro usuário da máquina alcança as sessões](#outro-usuário-da-máquina-alcança-as-sessões) | host de terminais e daemon | implementada e testada no Windows; teste com duas contas ausente |
-| [Credencial de CLI de IA vaza para o processo filho](#credencial-de-cli-de-ia-vaza-para-o-processo-filho) | adaptadores de ferramenta e host | parcial |
-| [Página ou programa local comanda os terminais](#página-ou-programa-local-comanda-os-terminais) | daemon (API local) | decidida (proposta); só o lado da interface implementado |
+| [Credencial de CLI de IA vaza para o processo filho](#credencial-de-cli-de-ia-vaza-para-o-processo-filho) | adaptadores de ferramenta e host | parcial: filtro do ambiente implementado |
+| [Página ou programa local comanda os terminais](#página-ou-programa-local-comanda-os-terminais) | daemon (API local) | implementada e testada; ADR proposta; conferência manual da porta da interface |
 | [Dado sensível em claro no disco](#dado-sensível-em-claro-no-disco) | armazenamento | parcial: `data` dos eventos cifrado no banco e testado; chave ainda fora do cofre |
 | [Perda do estado local](#perda-do-estado-local) | armazenamento | parcial: abertura recusa arquivo corrompido sem alterá-lo; backup ausente |
 | [Atualização ruim instalada](#atualização-ruim-instalada) | lançador | decidida, não implementada |
@@ -101,9 +101,9 @@ Estado da mitigação, em cada risco:
 - **Impacto.** Credencial exposta ou login do CLI alterado.
 - **Dono.** Adaptadores de ferramenta e host de terminais.
 - **Teto.** Não se aplica.
-- **Mitigação existente.** O processo filho vê só o `env` do pedido, nada herdado do host (testes `the_child_environment_is_exactly_what_the_spec_carries` e `child_sees_only_the_environment_of_the_spec`). O comando `session.open` da API local recusa `program`, `args`, `env` e `cwd` no Schema ([API local](../contracts/README.md#api-local)). Os erros do cliente do daemon não carregam ambiente (`errors_never_include_the_host_message_or_environment`).
+- **Mitigação existente.** [`child_env`](../crates/core/src/child_env.rs) filtra o ambiente herdado com a lista comum `allow` e os padrões `deny` de [`[env]`](../defaults/harnesses.toml), para as duas ferramentas integradas. O processo filho vê só o `env` do pedido, nada herdado do host (testes `the_child_environment_is_exactly_what_the_spec_carries` e `child_sees_only_the_environment_of_the_spec`). O comando `session.open` da API local recusa `program`, `args`, `env` e `cwd` no Schema ([API local](../contracts/README.md#api-local)). Os erros do cliente do daemon não carregam ambiente (`errors_never_include_the_host_message_or_environment`).
 - **Plano B.** Não há.
-- **O que falta.** Os adaptadores de ferramenta são esqueletos: ainda não há lista permitida de ambiente por ferramenta. O teste que compara o status do CLI antes e depois, pedido pela regra C1 do [AGENTS.md](../AGENTS.md), não existe.
+- **O que falta.** Ainda falta uma lista permitida específica por ferramenta. O teste que compara o status do CLI antes e depois, pedido pela regra C1 do [AGENTS.md](../AGENTS.md), não existe.
 
 ### Página ou programa local comanda os terminais
 
@@ -111,9 +111,9 @@ Estado da mitigação, em cada risco:
 - **Impacto.** Comando arbitrário num terminal do usuário com uma ferramenta de IA dentro.
 - **Dono.** Daemon (API local).
 - **Teto.** Prazo do `auth.hello` (padrão proposto 5 s).
-- **Mitigação existente (implementada, ADR ainda proposta).** [ADR 0020](adr/0020-local-api-authentication.md): porta efêmera em `127.0.0.1`, conferência de `Host` e `Origin`, token por execução entregue pelo fragmento e conferido em tempo constante, recusa de origem remota. O Schema `urn:ads:command:auth.hello:1` existe.
+- **Mitigação existente (implementada, ADR ainda proposta).** [ADR 0020](adr/0020-local-api-authentication.md): porta efêmera em `127.0.0.1`, conferência de `Host` e `Origin`, token por execução entregue pelo fragmento e conferido em tempo constante, recusa de origem remota. Os testes em [`local_api.rs`](../crates/daemon/tests/local_api.rs) exercitam a autenticação, inclusive o prazo único. O Schema `urn:ads:command:auth.hello:1` existe.
 - **Plano B.** Condição de reversão da ADR 0020.
-- **O que falta.** A ADR aguarda ratificação. A API local implementa porta efêmera, `Host`, `Origin`, token e prazo único, com testes em `crates/daemon/tests/local_api.rs`. A propriedade da porta da interface ainda exige conferência manual (risco abaixo). O lado da interface já lê o token do fragmento, guarda só na aba e manda `auth.hello` primeiro ([README da raiz](../README.md#interface-e-conexão-local)).
+- **O que falta.** A ADR aguarda ratificação. A propriedade da porta da interface ainda exige [conferência manual](#outro-usuário-ocupa-a-porta-da-interface). O [README da interface](../ui/README.md) descreve o cliente.
 
 ### Outro usuário ocupa a porta da interface
 
@@ -219,7 +219,7 @@ Estado da mitigação, em cada risco:
 - **Teto.** `adapters.agy.headless = false` por padrão, decidido na ADR 0010. Troca de conta: `switch = "propose"` por padrão (o mantenedor confirma cada troca) até o isolamento por perfil estar validado; Antigravity fixo em manual ([ADR 0022](adr/0022-account-profile-folders-and-automatic-switching.md)).
 - **Mitigação existente (decidida, não implementada).** [ADR 0010](adr/0010-api-key-for-automation-agy-headless-on-demand.md): automação pela chave de API, modo sem interface só depois de aceite registrado. [ADR 0022](adr/0022-account-profile-folders-and-automatic-switching.md): troca só entre pastas de perfil em que o mantenedor fez o login, nunca no meio da sessão. O FAQ do Antigravity declara a rotação automática fora dos termos; Claude Code e Codex documentam várias contas por pasta, sem dizer se a troca automática entre elas é aceita.
 - **Plano B.** Voltar a troca para manual em todas as ferramentas (condição de reversão da ADR 0022); retirar a CLI do produto (condição de reversão da ADR 0010).
-- **O que falta.** Adaptadores são esqueletos; os parâmetros `adapters.agy.headless`, `switch` e `switch_at_pct` ainda não existem em `defaults/`. Os termos atuais de Claude e Codex sobre troca automática entre contas não foram conferidos.
+- **O que falta.** Os adaptadores de Antigravity e API são esqueletos; os parâmetros `adapters.agy.headless`, `switch` e `switch_at_pct` ainda não existem em `defaults/`. Os termos atuais de Claude e Codex sobre troca automática entre contas não foram conferidos.
 
 ### Gasto de IA sem teto
 
@@ -324,6 +324,7 @@ Riscos da troca de conta por pasta de perfil ([ADR 0022](adr/0022-account-profil
 - **Dono.** Mantenedor e CI.
 - **Teto.** Não se aplica.
 - **Mitigação existente.** Actions fixadas por SHA de commit em `.github/workflows/`; `Cargo.lock` e `package-lock.json` versionados e usados com `--locked` e `npm ci --ignore-scripts`; avisos de segurança pelo `cargo deny`; CodeQL e Scorecard semanais, só avisando ([ADR 0013](adr/0013-only-fast-checks-block.md), `.github/workflows/weekly.yml`).
+- **Atualizações.** [Dependabot](../.github/dependabot.yml) tem configuração semanal para Cargo, npm na interface e nos contratos, e GitHub Actions.
 - **Plano B.** Condição de reversão da ADR 0013 (a análise passa a bloquear).
 - **O que falta.** O job de revisão de dependências por PR está só descrito em comentário no `ci.yml`.
 
