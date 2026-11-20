@@ -33,3 +33,37 @@ it('uses a collapsible navigation at a phone width and gives focus back to the t
     media.mockRestore()
   }
 })
+
+it.each([
+  ['pt-BR', 'Núcleo: desconectado', 'Abrir claude', 'Abrir codex'],
+  ['en', 'Core: disconnected', 'Open claude', 'Open codex'],
+] as const)(
+  'names the compact connection and session controls in %s',
+  async (locale, status, claude, codex) => {
+    const matchMedia = window.matchMedia.bind(window)
+    const media = vi
+      .spyOn(window, 'matchMedia')
+      .mockImplementation((query) =>
+        Object.assign(matchMedia(query), { matches: query === '(width < 48rem)' }),
+      )
+    try {
+      const client = createFakeCoreClient()
+      const { rerender } = render(
+        <I18nContext value={createTranslator(locale)}>
+          <App client={client} />
+        </I18nContext>,
+      )
+      expect(screen.getByRole('status', { name: status })).toBeInTheDocument()
+
+      rerender(
+        <I18nContext value={createTranslator(locale)}>
+          <App client={client} live harnesses={['claude', 'codex']} />
+        </I18nContext>,
+      )
+      expect(await screen.findByRole('button', { name: claude })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: codex })).toBeInTheDocument()
+    } finally {
+      media.mockRestore()
+    }
+  },
+)
