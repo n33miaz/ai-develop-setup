@@ -107,3 +107,24 @@ test("todo caminho dos dourados válidos de record.action-plan cabe na abspath:2
   }
   assert.ok(checked >= 10);
 });
+
+// O alfabeto do título (corpus/title-chars.json) contra o Schema; crates/contracts/tests/title_corpus.rs confere o
+// tipo Rust contra o mesmo arquivo, e assim os dois aceitam o mesmo conjunto em qualquer versão de Unicode.
+test("título aceita exatamente o alfabeto do corpus", () => {
+  const alphabet = JSON.parse(fs.readFileSync(path.join(root, "corpus", "title-chars.json"), "utf8"));
+  const errors = [];
+  const ajv = createAjv();
+  for (const { schema } of loadSchemas(root, errors)) ajv.addSchema(schema);
+  assert.deepEqual(errors, []);
+  const validate = ajv.getSchema(`${alphabet.schema}#/properties/title`);
+  const ranges = [];
+  for (let code = 0; code <= 0x10ffff; code += 1) {
+    if (code >= 0xd800 && code <= 0xdfff) continue;
+    if (!validate(alphabet.probe + String.fromCodePoint(code))) continue;
+    const last = ranges.at(-1);
+    if (last && last[1] + 1 === code) last[1] = code;
+    else ranges.push([code, code]);
+  }
+  const hex = (n) => n.toString(16).toUpperCase().padStart(4, "0");
+  assert.deepEqual(ranges.map(([a, b]) => [hex(a), hex(b)]), alphabet.accepted);
+});

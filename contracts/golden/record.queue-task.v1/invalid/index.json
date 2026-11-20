@@ -132,7 +132,7 @@
     "instancePath": "/title"
   },
   "title-variation.json": {
-    "rule": "O título recusa seletores de variação.",
+    "rule": "O título recusa seletores de variação além do de emoji.",
     "keyword": "not",
     "instancePath": "/title"
   },
@@ -185,5 +185,65 @@
     "rule": "A branch usa só minúsculas.",
     "keyword": "pattern",
     "instancePath": "/branch"
+  },
+  "title-vs16-letter.json": {
+    "rule": "O seletor de emoji só acompanha símbolo ou tecla.",
+    "keyword": "not",
+    "instancePath": "/title"
+  },
+  "title-zwj-letters.json": {
+    "rule": "O ZWJ só une símbolos.",
+    "keyword": "not",
+    "instancePath": "/title"
+  },
+  "title-zwj-edge.json": {
+    "rule": "O ZWJ não fica antes de espaço nem no fim.",
+    "keyword": "not",
+    "instancePath": "/title"
+  },
+  "title-khmer-vowel.json": {
+    "rule": "O título recusa vogais inerentes invisíveis.",
+    "keyword": "not",
+    "instancePath": "/title"
+  },
+  "title-braille-blank.json": {
+    "rule": "O título recusa o braille em branco.",
+    "keyword": "not",
+    "instancePath": "/title"
+  },
+  "title-khitan-filler.json": {
+    "rule": "O título recusa preenchedores invisíveis.",
+    "keyword": "not",
+    "instancePath": "/title"
+  },
+  "title-null-notehead.json": {
+    "rule": "O título recusa símbolos que não aparecem.",
+    "keyword": "not",
+    "instancePath": "/title"
+  },
+  "title-object-replacement.json": {
+    "rule": "O título recusa o caractere de substituição de objeto.",
+    "keyword": "not",
+    "instancePath": "/title"
+  },
+  "title-spaces.json": {
+    "rule": "O título tem ao menos uma letra ou um número.",
+    "keyword": "not",
+    "instancePath": "/title"
+  },
+  "title-marks.json": {
+    "rule": "O título tem ao menos uma letra ou um número.",
+    "keyword": "not",
+    "instancePath": "/title"
+  },
+  "title-stacked-marks.json": {
+    "rule": "O título aceita no máximo três marcas combinantes seguidas.",
+    "keyword": "not",
+    "instancePath": "/title"
+  },
+  "title-new-unicode.json": {
+    "rule": "O título aceita só pontos de código atribuídos no Unicode 16.",
+    "keyword": "not",
+    "instancePath": "/title"
   }
 }

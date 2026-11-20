@@ -49,5 +49,25 @@
     "rule": "O motivo da parada pertence à lista conhecida.",
     "keyword": "enum",
     "instancePath": "/data/reason"
+  },
+  "daemon-owner.json": {
+    "rule": "A parada pelo dono é registrada por um aparelho.",
+    "keyword": "const",
+    "instancePath": "/actor/kind"
+  },
+  "daemon-owner-bare.json": {
+    "rule": "A parada pelo dono é registrada por um aparelho.",
+    "keyword": "const",
+    "instancePath": "/actor/kind"
+  },
+  "owner-no-owner.json": {
+    "rule": "A parada pelo dono registra o dono.",
+    "keyword": "required",
+    "instancePath": "/data"
+  },
+  "restart-via.json": {
+    "rule": "A parada automática não declara dono nem canal.",
+    "keyword": "not",
+    "instancePath": "/data"
   }
 }
