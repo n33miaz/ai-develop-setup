@@ -26,3 +26,8 @@ clock_skew_seconds = 5
 # um relógio do núcleo corrigido para trás não travar a fila. Um salto maior pede que o dono
 # reancore o relógio da fila.
 clock_rewind_seconds = 300
+
+# Depois de o núcleo reiniciar, quanto tempo, em segundos, uma tarefa em `running` espera o host de
+# terminal confirmar a sessão dela. Enquanto espera, a tarefa fica parada em `running`; vencido o
+# prazo, passa para `failed` sem gastar tentativa, e a sessão é encerrada se o host a listar depois.
+host_confirm_seconds = 60

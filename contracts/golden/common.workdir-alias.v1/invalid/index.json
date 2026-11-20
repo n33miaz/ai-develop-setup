@@ -1,0 +1,27 @@
+{
+  "01-upper.json": {
+    "rule": "Só minúsculas, dígitos e . _ -.",
+    "keyword": "pattern",
+    "instancePath": ""
+  },
+  "02-empty.json": {
+    "rule": "O apelido tem pelo menos um caractere.",
+    "keyword": "pattern",
+    "instancePath": ""
+  },
+  "03-device.json": {
+    "rule": "Nome de dispositivo do Windows não é apelido.",
+    "keyword": "not",
+    "instancePath": ""
+  },
+  "04-dots.json": {
+    "rule": "Dois pontos seguidos recusam.",
+    "keyword": "not",
+    "instancePath": ""
+  },
+  "05-path.json": {
+    "rule": "Apelido não é caminho.",
+    "keyword": "pattern",
+    "instancePath": ""
+  }
+}

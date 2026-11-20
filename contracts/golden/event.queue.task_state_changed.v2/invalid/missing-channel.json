@@ -1,0 +1,20 @@
+{
+  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+  "type": "urn:ads:event:queue.task_state_changed:2",
+  "ts": "2030-01-02T03:04:05Z",
+  "stream": "queue/queue-01",
+  "seq": 1,
+  "actor": {
+    "kind": "device",
+    "id": "device-01"
+  },
+  "cause": null,
+  "data_class": "internal",
+  "data": {
+    "queue_id": "queue-01",
+    "task_id": "task-01",
+    "from": "running",
+    "to": "cancelled",
+    "attempts": 1
+  }
+}
