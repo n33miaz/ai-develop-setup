@@ -1361,7 +1361,13 @@ async fn every_host_refusal_returns_its_code_and_service_survives() {
                 "close" => call(&mut ws, "session.close", json!({"session_id": "session"})).await,
                 _ => result,
             };
-            assert_eq!(result["error"]["code"], code.number(), "{target}: {code:?}");
+            // The terminal is already open when the subscription is refused: setup failed, close scheduled.
+            let expected = if target == "subscribe" {
+                -32014
+            } else {
+                code.number()
+            };
+            assert_eq!(result["error"]["code"], expected, "{target}: {code:?}");
             if target == "close" && code != UnknownSession {
                 assert_eq!(
                     call(&mut ws, "session.close", json!({"session_id": "session"})).await["result"]
@@ -1393,7 +1399,7 @@ async fn failed_open_subscription_closes_host_and_allows_retry() {
     let mut ws = authenticated(&f).await;
     assert_eq!(
         call(&mut ws, "session.open", open_params("session")).await["error"]["code"],
-        -32006
+        -32014
     );
     bounded(async {
         while calls.lock().unwrap().len() < 4 {
@@ -2452,7 +2458,7 @@ async fn failed_open_cleanup_timeout_keeps_the_record_until_the_host_closes() {
     let mut ws = authenticated(&f).await;
     assert_eq!(
         call(&mut ws, "session.open", open_params("session")).await["error"]["code"],
-        ads_ptyhost::wire::ErrorCode::InternalError.number()
+        -32014
     );
     // The host opened a real terminal; the first close never gets a reply.
     assert_eq!(f.host.sessions().len(), 1);
@@ -2734,7 +2740,7 @@ async fn waiting_stream_survives_cleanup_and_resubscription_to_the_same_id() {
     assert_eq!(receive(&mut watcher).await["result"]["accepted"], true);
     assert_eq!(
         call(&mut control, "session.open", open_params("a")).await["error"]["code"],
-        ads_ptyhost::wire::ErrorCode::InternalError.number()
+        -32014
     );
     loop {
         let event = receive(&mut watcher).await;
