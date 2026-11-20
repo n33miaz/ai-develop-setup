@@ -215,6 +215,8 @@ impl EventSessionPermissionAskedV1DataKind {
 pub struct EventSessionPermissionAskedV1DataSummary(String);
 
 impl EventSessionPermissionAskedV1DataSummary {
+    pub const MAX_CHARS: usize = 500;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -229,7 +231,7 @@ impl EventSessionPermissionAskedV1DataSummary {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        (1..=500).contains(&length)
+        (1..=Self::MAX_CHARS).contains(&length)
     }
 
     pub fn as_str(&self) -> &str {

@@ -201,7 +201,7 @@ target:<repo_root>:<n>:<texto do alvo>
 Normalização, feita antes de gravar o registro (o Schema a exige nos caminhos):
 
 - Caminhos na forma de `urn:ads:common:abspath:1`: unidade em maiúscula, um separador só, sem separador no fim, sem `.`; nada é reparado além disso (`..`, variável e til recusam o plano inteiro).
-- Alvos repetidos viram um só; se um dos repetidos é raiz de repositório, fica `repo_root` verdadeiro.
+- Alvos repetidos viram um só; se um dos repetidos é raiz de repositório, fica `repo_root` verdadeiro. No estilo Windows, o portão também trata como repetidos os alvos que só diferem na caixa de letras ASCII (no caminho e no curinga) e grava a primeira grafia na ordem abaixo ([identidade de caminho no núcleo](../crates/core/README.md#identidade-de-um-alvo-no-windows)). Isso não muda o que este contrato aceita.
 - Ordem dos alvos: primeiro os de estilo Windows, depois os POSIX; depois pela letra da unidade; depois componente a componente, comparando os bytes UTF-8 de cada nome (o caminho mais curto vem antes do que o estende; maiúscula e minúscula são diferentes); por fim, alvo sem curinga antes do mesmo `path` com curinga, e curingas pelos bytes. É comparação por componente, não do texto inteiro: `/a/b` vem antes de `/a-b`.
 
 Exemplo (o primeiro dourado válido do registro; o mesmo vetor do teste do núcleo):

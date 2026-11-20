@@ -144,6 +144,8 @@ pub struct ContractPtyHostRequestV1SessionOpenParams {
 pub struct ContractPtyHostRequestV1SessionOpenParamsProgram(String);
 
 impl ContractPtyHostRequestV1SessionOpenParamsProgram {
+    pub const MAX_CHARS: usize = 1024;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -158,7 +160,7 @@ impl ContractPtyHostRequestV1SessionOpenParamsProgram {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        (1..=1024).contains(&length)
+        (1..=Self::MAX_CHARS).contains(&length)
     }
 
     pub fn as_str(&self) -> &str {
@@ -198,6 +200,8 @@ impl Serialize for ContractPtyHostRequestV1SessionOpenParamsProgram {
 pub struct ContractPtyHostRequestV1SessionOpenParamsArgsItem(String);
 
 impl ContractPtyHostRequestV1SessionOpenParamsArgsItem {
+    pub const MAX_CHARS: usize = 8192;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -212,7 +216,7 @@ impl ContractPtyHostRequestV1SessionOpenParamsArgsItem {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        length <= 8192
+        length <= Self::MAX_CHARS
     }
 
     pub fn as_str(&self) -> &str {
@@ -252,6 +256,8 @@ impl Serialize for ContractPtyHostRequestV1SessionOpenParamsArgsItem {
 pub struct ContractPtyHostRequestV1SessionOpenParamsCwd(String);
 
 impl ContractPtyHostRequestV1SessionOpenParamsCwd {
+    pub const MAX_CHARS: usize = 1024;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -266,7 +272,7 @@ impl ContractPtyHostRequestV1SessionOpenParamsCwd {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        (1..=1024).contains(&length)
+        (1..=Self::MAX_CHARS).contains(&length)
     }
 
     pub fn as_str(&self) -> &str {

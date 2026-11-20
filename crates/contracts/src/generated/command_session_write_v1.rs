@@ -192,6 +192,8 @@ static COMMAND_SESSION_WRITE_V1_PARAMS_META_REMOTE_SIGNATURE_PATTERN: Pattern =
 pub struct CommandSessionWriteV1ParamsMetaRemoteSignature(String);
 
 impl CommandSessionWriteV1ParamsMetaRemoteSignature {
+    pub const MAX_CHARS: usize = 88;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -206,7 +208,8 @@ impl CommandSessionWriteV1ParamsMetaRemoteSignature {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        length == 88 && COMMAND_SESSION_WRITE_V1_PARAMS_META_REMOTE_SIGNATURE_PATTERN.matches(text)
+        length == Self::MAX_CHARS
+            && COMMAND_SESSION_WRITE_V1_PARAMS_META_REMOTE_SIGNATURE_PATTERN.matches(text)
     }
 
     pub fn as_str(&self) -> &str {
@@ -308,6 +311,8 @@ static COMMAND_SESSION_WRITE_V1_PARAMS_DATA_PATTERN: Pattern =
 pub struct CommandSessionWriteV1ParamsData(String);
 
 impl CommandSessionWriteV1ParamsData {
+    pub const MAX_CHARS: usize = 87384;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -319,7 +324,8 @@ impl CommandSessionWriteV1ParamsData {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        (4..=87384).contains(&length) && COMMAND_SESSION_WRITE_V1_PARAMS_DATA_PATTERN.matches(text)
+        (4..=Self::MAX_CHARS).contains(&length)
+            && COMMAND_SESSION_WRITE_V1_PARAMS_DATA_PATTERN.matches(text)
     }
 
     pub fn as_str(&self) -> &str {

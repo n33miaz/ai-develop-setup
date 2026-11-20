@@ -186,6 +186,8 @@ impl RecordUsageEventV1Role {
 pub struct RecordUsageEventV1ModelRequested(String);
 
 impl RecordUsageEventV1ModelRequested {
+    pub const MAX_CHARS: usize = 128;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -197,7 +199,7 @@ impl RecordUsageEventV1ModelRequested {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        (1..=128).contains(&length)
+        (1..=Self::MAX_CHARS).contains(&length)
     }
 
     pub fn as_str(&self) -> &str {
@@ -237,6 +239,8 @@ impl Serialize for RecordUsageEventV1ModelRequested {
 pub struct RecordUsageEventV1ModelEffective(String);
 
 impl RecordUsageEventV1ModelEffective {
+    pub const MAX_CHARS: usize = 128;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -248,7 +252,7 @@ impl RecordUsageEventV1ModelEffective {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        (1..=128).contains(&length)
+        (1..=Self::MAX_CHARS).contains(&length)
     }
 
     pub fn as_str(&self) -> &str {
@@ -288,6 +292,8 @@ impl Serialize for RecordUsageEventV1ModelEffective {
 pub struct RecordUsageEventV1EffortRequested(String);
 
 impl RecordUsageEventV1EffortRequested {
+    pub const MAX_CHARS: usize = 32;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -302,7 +308,7 @@ impl RecordUsageEventV1EffortRequested {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        (1..=32).contains(&length)
+        (1..=Self::MAX_CHARS).contains(&length)
     }
 
     pub fn as_str(&self) -> &str {
@@ -342,6 +348,8 @@ impl Serialize for RecordUsageEventV1EffortRequested {
 pub struct RecordUsageEventV1EffortEffective(String);
 
 impl RecordUsageEventV1EffortEffective {
+    pub const MAX_CHARS: usize = 32;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -356,7 +364,7 @@ impl RecordUsageEventV1EffortEffective {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        (1..=32).contains(&length)
+        (1..=Self::MAX_CHARS).contains(&length)
     }
 
     pub fn as_str(&self) -> &str {
@@ -499,6 +507,8 @@ impl Serialize for RecordUsageEventV1ErrorCode {
 pub struct RecordUsageEventV1PriceVersion(String);
 
 impl RecordUsageEventV1PriceVersion {
+    pub const MAX_CHARS: usize = 96;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -510,7 +520,7 @@ impl RecordUsageEventV1PriceVersion {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        (1..=96).contains(&length)
+        (1..=Self::MAX_CHARS).contains(&length)
     }
 
     pub fn as_str(&self) -> &str {
@@ -867,6 +877,8 @@ impl RecordUsageEventV1Source {
 pub struct RecordUsageEventV1SourceRef(String);
 
 impl RecordUsageEventV1SourceRef {
+    pub const MAX_CHARS: usize = 256;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -878,7 +890,7 @@ impl RecordUsageEventV1SourceRef {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        (1..=256).contains(&length)
+        (1..=Self::MAX_CHARS).contains(&length)
     }
 
     pub fn as_str(&self) -> &str {
@@ -918,6 +930,8 @@ impl Serialize for RecordUsageEventV1SourceRef {
 pub struct RecordUsageEventV1DedupeKey(String);
 
 impl RecordUsageEventV1DedupeKey {
+    pub const MAX_CHARS: usize = 256;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -929,7 +943,7 @@ impl RecordUsageEventV1DedupeKey {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        (1..=256).contains(&length)
+        (1..=Self::MAX_CHARS).contains(&length)
     }
 
     pub fn as_str(&self) -> &str {

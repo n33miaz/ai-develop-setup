@@ -135,6 +135,8 @@ static RECORD_HOST_SAMPLE_V1_SIGNAL_ID_PATTERN: Pattern =
 pub struct RecordHostSampleV1SignalId(String);
 
 impl RecordHostSampleV1SignalId {
+    pub const MAX_CHARS: usize = 96;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -146,7 +148,7 @@ impl RecordHostSampleV1SignalId {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        length <= 96 && RECORD_HOST_SAMPLE_V1_SIGNAL_ID_PATTERN.matches(text)
+        length <= Self::MAX_CHARS && RECORD_HOST_SAMPLE_V1_SIGNAL_ID_PATTERN.matches(text)
     }
 
     pub fn as_str(&self) -> &str {
@@ -195,6 +197,8 @@ pub enum RecordHostSampleV1Value {
 pub struct RecordHostSampleV1Unit(String);
 
 impl RecordHostSampleV1Unit {
+    pub const MAX_CHARS: usize = 16;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -206,7 +210,7 @@ impl RecordHostSampleV1Unit {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        (1..=16).contains(&length)
+        (1..=Self::MAX_CHARS).contains(&length)
     }
 
     pub fn as_str(&self) -> &str {

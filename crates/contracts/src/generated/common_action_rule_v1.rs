@@ -17,6 +17,8 @@ static COMMON_ACTION_RULE_V1_PATTERN: Pattern =
 pub struct CommonActionRuleV1(String);
 
 impl CommonActionRuleV1 {
+    pub const MAX_CHARS: usize = 64;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -28,7 +30,7 @@ impl CommonActionRuleV1 {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        length <= 64 && COMMON_ACTION_RULE_V1_PATTERN.matches(text)
+        length <= Self::MAX_CHARS && COMMON_ACTION_RULE_V1_PATTERN.matches(text)
     }
 
     pub fn as_str(&self) -> &str {

@@ -264,6 +264,8 @@ impl Serialize for RecordTaskPacketV1TierRequested {
 pub struct RecordTaskPacketV1ModelEffective(String);
 
 impl RecordTaskPacketV1ModelEffective {
+    pub const MAX_CHARS: usize = 128;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -275,7 +277,7 @@ impl RecordTaskPacketV1ModelEffective {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        (1..=128).contains(&length)
+        (1..=Self::MAX_CHARS).contains(&length)
     }
 
     pub fn as_str(&self) -> &str {
@@ -315,6 +317,8 @@ impl Serialize for RecordTaskPacketV1ModelEffective {
 pub struct RecordTaskPacketV1ProviderEffective(String);
 
 impl RecordTaskPacketV1ProviderEffective {
+    pub const MAX_CHARS: usize = 128;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -329,7 +333,7 @@ impl RecordTaskPacketV1ProviderEffective {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        (1..=128).contains(&length)
+        (1..=Self::MAX_CHARS).contains(&length)
     }
 
     pub fn as_str(&self) -> &str {
@@ -369,6 +373,8 @@ impl Serialize for RecordTaskPacketV1ProviderEffective {
 pub struct RecordTaskPacketV1Objective(String);
 
 impl RecordTaskPacketV1Objective {
+    pub const MAX_CHARS: usize = 4000;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -380,7 +386,7 @@ impl RecordTaskPacketV1Objective {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        (1..=4000).contains(&length)
+        (1..=Self::MAX_CHARS).contains(&length)
     }
 
     pub fn as_str(&self) -> &str {
@@ -466,6 +472,8 @@ impl Serialize for RecordTaskPacketV1Acceptance {
 pub struct RecordTaskPacketV1AcceptanceItem(String);
 
 impl RecordTaskPacketV1AcceptanceItem {
+    pub const MAX_CHARS: usize = 500;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -477,7 +485,7 @@ impl RecordTaskPacketV1AcceptanceItem {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        (1..=500).contains(&length)
+        (1..=Self::MAX_CHARS).contains(&length)
     }
 
     pub fn as_str(&self) -> &str {
@@ -528,6 +536,8 @@ pub struct RecordTaskPacketV1Constraints {
 pub struct RecordTaskPacketV1ConstraintsAllowRef(String);
 
 impl RecordTaskPacketV1ConstraintsAllowRef {
+    pub const MAX_CHARS: usize = 128;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -542,7 +552,7 @@ impl RecordTaskPacketV1ConstraintsAllowRef {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        (1..=128).contains(&length)
+        (1..=Self::MAX_CHARS).contains(&length)
     }
 
     pub fn as_str(&self) -> &str {
@@ -582,6 +592,8 @@ impl Serialize for RecordTaskPacketV1ConstraintsAllowRef {
 pub struct RecordTaskPacketV1ConstraintsDenyRef(String);
 
 impl RecordTaskPacketV1ConstraintsDenyRef {
+    pub const MAX_CHARS: usize = 128;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -596,7 +608,7 @@ impl RecordTaskPacketV1ConstraintsDenyRef {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        (1..=128).contains(&length)
+        (1..=Self::MAX_CHARS).contains(&length)
     }
 
     pub fn as_str(&self) -> &str {
@@ -768,6 +780,8 @@ pub struct RecordTaskPacketV1ExpectedOutput {
 pub struct RecordTaskPacketV1ExpectedOutputReport(String);
 
 impl RecordTaskPacketV1ExpectedOutputReport {
+    pub const MAX_CHARS: usize = 200;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -782,7 +796,7 @@ impl RecordTaskPacketV1ExpectedOutputReport {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        length <= 200
+        length <= Self::MAX_CHARS
     }
 
     pub fn as_str(&self) -> &str {
