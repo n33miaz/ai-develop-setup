@@ -1053,6 +1053,7 @@ async fn scripted_fixture(
         let mut released = false;
         let mut dropped = false;
         let mut held = false;
+        let mut other_exited = false;
         let mut subscriptions = 0;
         while let Ok(Some(wire::Frame::Json(payload))) = wire::read_frame(&mut far, 131072).await {
             let request = wire::Request::parse(&payload).unwrap();
@@ -1105,6 +1106,20 @@ async fn scripted_fixture(
             if method == "subscribe" && target == "busy-on-open" {
                 // Resubscriptions stay unanswered and take every pending call of the client.
                 continue;
+            }
+            if method == "close" && target.starts_with("exit-other-") && !other_exited {
+                // Another session ends while the daemon waits for this close.
+                other_exited = true;
+                far.write_all(
+                    &wire::encode_json(&wire::Notification::SessionExited(wire::SessionExited {
+                        session_id: wire::SessionId::new("b").unwrap(),
+                        last_seq: 0,
+                        exit_code: Some(0),
+                    }))
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
             }
             if method == "close" && target.ends_with("drop-close") && !dropped {
                 // The first close never gets a reply, as if the host stalled on it.
@@ -1244,6 +1259,22 @@ async fn scripted_fixture(
                     .unwrap();
                 }
                 match target {
+                    "exit-other-then-hold-close" | "exit-other-then-drop-close"
+                        if params.session_id.as_str() == "a" =>
+                    {
+                        far.write_all(
+                            &wire::encode_json(&wire::Notification::SessionExited(
+                                wire::SessionExited {
+                                    session_id: params.session_id.clone(),
+                                    last_seq: 0,
+                                    exit_code: Some(0),
+                                },
+                            ))
+                            .unwrap(),
+                        )
+                        .await
+                        .unwrap()
+                    }
                     "gap-output" | "gap-output-drop-close" => far
                         .write_all(
                             &wire::encode_output(&params.session_id, 2, b"terminal-sentinel")
@@ -3318,4 +3349,64 @@ async fn repeated_subscription_on_one_connection_gets_every_final_result() {
     assert!(!seqs.is_empty());
     assert!(seqs.windows(2).all(|w| w[1] == w[0] + 1), "{seqs:?}");
     assert!(ended.contains(&first["id"]) && ended.contains(&second["id"]));
+}
+
+async fn host_event_during_an_automatic_close(target: &'static str) {
+    let (f, calls) = scripted_fixture(
+        "max_sessions = 2\nhost_timeout_ms = 300\nclose_retry_ms = 20",
+        target,
+        ads_ptyhost::wire::ErrorCode::InternalError,
+        0,
+        &[],
+    )
+    .await;
+    let mut watcher = authenticated(&f).await;
+    let mut control = authenticated(&f).await;
+    call(&mut control, "session.open", open_params("a")).await;
+    call(&mut control, "session.open", open_params("b")).await;
+    call(
+        &mut watcher,
+        "events.subscribe",
+        json!({"stream": "session/b", "after_seq": 0}),
+    )
+    .await;
+    assert_eq!(receive(&mut watcher).await["seq"], 1);
+    // "a" ends; the host holds the automatic close of "a" and reports the end of "b" meanwhile.
+    call(
+        &mut control,
+        "session.write",
+        json!({"session_id": "a", "data": "YQ=="}),
+    )
+    .await;
+    let ended = receive(&mut watcher).await;
+    assert_eq!(ended["type"], "urn:ads:event:session.ended:1");
+    assert_eq!(ended["data"]["reason"], "exit");
+    if target.ends_with("hold-close") {
+        // The event came while the close of "a" still had no reply.
+        assert_eq!(close_calls(&calls), 1);
+        f.release.notify_one();
+    }
+    // After the reply, or after the deadline and one more attempt, both slots come back.
+    let expected = if target.ends_with("hold-close") { 2 } else { 3 };
+    wait_closes(&calls, expected).await;
+    for id in ["c", "d"] {
+        assert_eq!(
+            call(&mut control, "session.open", open_params(id)).await["result"]["accepted"],
+            true,
+            "{target}"
+        );
+    }
+    assert_eq!(close_calls(&calls), expected);
+    assert_eq!(f.hooks.automatic_closes(), expected);
+    assert!(!f.api.is_finished());
+}
+
+#[tokio::test]
+async fn host_event_during_an_automatic_close_is_handled() {
+    host_event_during_an_automatic_close("exit-other-then-hold-close").await;
+}
+
+#[tokio::test]
+async fn host_event_during_a_timed_out_automatic_close_is_handled() {
+    host_event_during_an_automatic_close("exit-other-then-drop-close").await;
 }
