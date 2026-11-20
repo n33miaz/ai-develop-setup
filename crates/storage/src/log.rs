@@ -297,6 +297,9 @@ pub struct EventLog {
     config: StorageConfig,
     anchor: Option<Box<dyn AnchorStore>>,
     verified_data_version: i64,
+    /// Full chain authentications run by this handle, for the tests of their cost.
+    #[cfg(test)]
+    pub(crate) verifications: usize,
 }
 
 impl std::fmt::Debug for EventLog {
@@ -646,6 +649,8 @@ impl EventLog {
             config: config.clone(),
             anchor: None,
             verified_data_version: 0,
+            #[cfg(test)]
+            verifications: 0,
         })
     }
 
@@ -692,37 +697,7 @@ impl EventLog {
         event: &EventEnvelopeV1,
         gate: Option<GateAppend<'_>>,
     ) -> Result<Position, StorageError> {
-        let kind = event.r#type.as_str();
-        let stream = event.stream.as_str();
-        let family = stream.split_once('/').map_or(stream, |(family, _)| family);
-        if kind.len() > MAX_TYPE_BYTES || family.len() > MAX_STREAM_FAMILY_BYTES {
-            return Err(StorageError::InvalidEvent);
-        }
-        let (action_id, approval_id) = gate_ids(kind, stream, &event.data)?;
-        let data = Zeroizing::new(
-            match &gate {
-                Some(gate) => serde_json::to_vec(&GateData {
-                    event: event.data.clone(),
-                    plan: gate.plan.cloned(),
-                }),
-                None => serde_json::to_vec(&event.data),
-            }
-            .map_err(|_| StorageError::InvalidEvent)?,
-        );
-        if data.len() > self.config.max_event_bytes {
-            return Err(StorageError::TooLarge);
-        }
-        let seq = i64::try_from(event.seq.get()).map_err(|_| StorageError::InvalidEvent)?;
-        // One fetch of the key material, used for the key check, the cipher and
-        // the chain alike, so a provider that changes mid-append cannot split them.
-        let (key_id, key) = {
-            let (id, current) = self.keys.current()?;
-            let key = self.keys.by_id(&id)?;
-            if !cipher::same_key(&current, &key) {
-                return Err(StorageError::WrongKey);
-            }
-            (id, key)
-        };
+        let sealing = sealing(&*self.keys, &self.config, event, gate.as_ref())?;
         let tx = self
             .store
             .connection
@@ -748,6 +723,10 @@ impl EventLog {
             let version = data_version(&tx)?;
             if always || version != self.verified_data_version {
                 check_log_schema(&tx)?;
+                #[cfg(test)]
+                {
+                    self.verifications += 1;
+                }
                 verify_in(&tx, &*self.keys).map_err(|error| match error {
                     StorageError::ChainBroken { position } => {
                         changed_history(&tx, &*self.keys, position)
@@ -760,100 +739,10 @@ impl EventLog {
         } else {
             None
         };
-        if let Some(gate) = &gate {
-            if self.anchor.is_none() {
-                return Err(StorageError::AnchorUnavailable);
-            }
-            check_gate_append(
-                &tx,
-                event,
-                gate,
-                action_id.as_deref(),
-                approval_id.as_deref(),
-            )?;
-        } else if (action_id.is_some() || approval_id.is_some())
-            && tx.query_row(
-                "SELECT EXISTS (SELECT 1 FROM event
-                 WHERE format = ?1 AND (action_id = ?2 OR approval_id = ?3))",
-                params![GATE_ROW_FORMAT, action_id, approval_id],
-                |r| r.get(0),
-            )?
-        {
-            return Err(StorageError::InvalidEvent);
+        if gate.is_some() && self.anchor.is_none() {
+            return Err(StorageError::AnchorUnavailable);
         }
-        if seq != head_in(&tx, stream)? + 1 {
-            return Err(StorageError::Conflict);
-        }
-        let last: Option<(i64, Vec<u8>, String)> = tx
-            .query_row(
-                "SELECT position, chain, key_id FROM event ORDER BY position DESC LIMIT 1",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .optional()?;
-        let last_id = last.as_ref().map(|(_, _, id)| id.as_str());
-        register(&tx, &key_id, &key, last_id)?;
-        let (position, prev_chain) = match last {
-            Some((position, chain, _)) => (position + 1, chain),
-            None => (1, genesis(&tx)?),
-        };
-        let mut row = Row {
-            position,
-            format: if gate.is_some() {
-                GATE_ROW_FORMAT
-            } else {
-                ROW_FORMAT
-            },
-            id: event.id.as_str().to_owned(),
-            kind: kind.to_owned(),
-            ts: event.ts.as_str().to_owned(),
-            stream: stream.to_owned(),
-            seq,
-            actor_kind: event.actor.kind.as_str().to_owned(),
-            actor_id: event.actor.id.as_str().to_owned(),
-            cause: event.cause.as_ref().map(|c| c.as_str().to_owned()),
-            data_class: event.data_class.as_str().to_owned(),
-            action_id,
-            approval_id,
-            key_id: key_id.as_str().to_owned(),
-            nonce: Vec::new(),
-            data_ct: Vec::new(),
-            prev_chain,
-            chain: Vec::new(),
-        };
-        let sealed = row.associated(|fields| {
-            cipher::encrypt_with(&key_id, &key, &AssociatedData(fields), &data)
-        })?;
-        row.nonce = sealed.nonce.to_vec();
-        row.data_ct = sealed.bytes;
-        let chain_key = ChainKey::derive(&key);
-        row.chain = row.chained(|fields| chain_key.mac(fields)).to_vec();
-        tx.execute(
-            &format!(
-                "INSERT INTO event ({ROW_COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, \
-                 ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)"
-            ),
-            params![
-                row.position,
-                row.format,
-                row.id,
-                row.kind,
-                row.ts,
-                row.stream,
-                row.seq,
-                row.actor_kind,
-                row.actor_id,
-                row.cause,
-                row.data_class,
-                row.action_id,
-                row.approval_id,
-                row.key_id,
-                row.nonce,
-                row.data_ct,
-                row.prev_chain,
-                row.chain,
-            ],
-        )?;
+        let position = insert_in(&tx, event, sealing, gate.as_ref())?;
         if let Some((anchor, database)) = database {
             // Publish under the SQLite writer lock. A failed SQLite commit leaves a
             // mismatch that requires owner recovery instead of accepting an older head.
@@ -960,6 +849,175 @@ impl EventLog {
     }
 }
 
+/// What an append fixes before it writes: the ids of the gate families, the data
+/// as it is sealed, and one fetch of the key material.
+struct Sealing {
+    action_id: Option<String>,
+    approval_id: Option<String>,
+    data: Zeroizing<Vec<u8>>,
+    seq: i64,
+    key_id: KeyId,
+    key: SecretKey,
+}
+
+fn sealing(
+    keys: &dyn KeyProvider,
+    config: &StorageConfig,
+    event: &EventEnvelopeV1,
+    gate: Option<&GateAppend<'_>>,
+) -> Result<Sealing, StorageError> {
+    let kind = event.r#type.as_str();
+    let stream = event.stream.as_str();
+    let family = stream.split_once('/').map_or(stream, |(family, _)| family);
+    if kind.len() > MAX_TYPE_BYTES || family.len() > MAX_STREAM_FAMILY_BYTES {
+        return Err(StorageError::InvalidEvent);
+    }
+    let (action_id, approval_id) = gate_ids(kind, stream, &event.data)?;
+    let data = Zeroizing::new(
+        match gate {
+            Some(gate) => serde_json::to_vec(&GateData {
+                event: event.data.clone(),
+                plan: gate.plan.cloned(),
+            }),
+            None => serde_json::to_vec(&event.data),
+        }
+        .map_err(|_| StorageError::InvalidEvent)?,
+    );
+    if data.len() > config.max_event_bytes {
+        return Err(StorageError::TooLarge);
+    }
+    let seq = i64::try_from(event.seq.get()).map_err(|_| StorageError::InvalidEvent)?;
+    // One fetch of the key material, used for the key check, the cipher and
+    // the chain alike, so a provider that changes mid-append cannot split them.
+    let (key_id, key) = {
+        let (id, current) = keys.current()?;
+        let key = keys.by_id(&id)?;
+        if !cipher::same_key(&current, &key) {
+            return Err(StorageError::WrongKey);
+        }
+        (id, key)
+    };
+    Ok(Sealing {
+        action_id,
+        approval_id,
+        data,
+        seq,
+        key_id,
+        key,
+    })
+}
+
+/// Checks the gate invariants and the stream sequence, then inserts the sealed row
+/// after the current head. The caller holds the write lock and publishes the anchor.
+fn insert_in(
+    tx: &Transaction<'_>,
+    event: &EventEnvelopeV1,
+    sealing: Sealing,
+    gate: Option<&GateAppend<'_>>,
+) -> Result<i64, StorageError> {
+    let Sealing {
+        action_id,
+        approval_id,
+        data,
+        seq,
+        key_id,
+        key,
+    } = sealing;
+    let kind = event.r#type.as_str();
+    let stream = event.stream.as_str();
+    if let Some(gate) = gate {
+        check_gate_append(
+            tx,
+            event,
+            gate,
+            action_id.as_deref(),
+            approval_id.as_deref(),
+        )?;
+    } else if (action_id.is_some() || approval_id.is_some())
+        && tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM event
+             WHERE format = ?1 AND (action_id = ?2 OR approval_id = ?3))",
+            params![GATE_ROW_FORMAT, action_id, approval_id],
+            |r| r.get(0),
+        )?
+    {
+        return Err(StorageError::InvalidEvent);
+    }
+    if seq != head_in(tx, stream)? + 1 {
+        return Err(StorageError::Conflict);
+    }
+    let last: Option<(i64, Vec<u8>, String)> = tx
+        .query_row(
+            "SELECT position, chain, key_id FROM event ORDER BY position DESC LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    let last_id = last.as_ref().map(|(_, _, id)| id.as_str());
+    register(tx, &key_id, &key, last_id)?;
+    let (position, prev_chain) = match last {
+        Some((position, chain, _)) => (position + 1, chain),
+        None => (1, genesis(tx)?),
+    };
+    let mut row = Row {
+        position,
+        format: if gate.is_some() {
+            GATE_ROW_FORMAT
+        } else {
+            ROW_FORMAT
+        },
+        id: event.id.as_str().to_owned(),
+        kind: kind.to_owned(),
+        ts: event.ts.as_str().to_owned(),
+        stream: stream.to_owned(),
+        seq,
+        actor_kind: event.actor.kind.as_str().to_owned(),
+        actor_id: event.actor.id.as_str().to_owned(),
+        cause: event.cause.as_ref().map(|c| c.as_str().to_owned()),
+        data_class: event.data_class.as_str().to_owned(),
+        action_id,
+        approval_id,
+        key_id: key_id.as_str().to_owned(),
+        nonce: Vec::new(),
+        data_ct: Vec::new(),
+        prev_chain,
+        chain: Vec::new(),
+    };
+    let sealed = row
+        .associated(|fields| cipher::encrypt_with(&key_id, &key, &AssociatedData(fields), &data))?;
+    row.nonce = sealed.nonce.to_vec();
+    row.data_ct = sealed.bytes;
+    let chain_key = ChainKey::derive(&key);
+    row.chain = row.chained(|fields| chain_key.mac(fields)).to_vec();
+    tx.execute(
+        &format!(
+            "INSERT INTO event ({ROW_COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, \
+             ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)"
+        ),
+        params![
+            row.position,
+            row.format,
+            row.id,
+            row.kind,
+            row.ts,
+            row.stream,
+            row.seq,
+            row.actor_kind,
+            row.actor_id,
+            row.cause,
+            row.data_class,
+            row.action_id,
+            row.approval_id,
+            row.key_id,
+            row.nonce,
+            row.data_ct,
+            row.prev_chain,
+            row.chain,
+        ],
+    )?;
+    Ok(position)
+}
+
 fn check_gate_append(
     tx: &Transaction<'_>,
     event: &EventEnvelopeV1,
@@ -994,10 +1052,11 @@ fn check_gate_append(
     {
         return Err(StorageError::InvalidEvent);
     }
+    let start = "urn:ads:event:action.started:1";
     let occupied: bool = tx.query_row(
         "SELECT EXISTS (SELECT 1 FROM event WHERE id = ?1
-                        OR (action_id = ?2 AND type = ?3 AND type = 'urn:ads:event:action.started:1'))",
-        params![event.id.as_str(), id, kind],
+                        OR (?3 AND action_id = ?2 AND type = ?4))",
+        params![event.id.as_str(), id, kind == start, start],
         |r| r.get(0),
     )?;
     if occupied {
@@ -1042,42 +1101,51 @@ impl EventLog {
             .store
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        tx.pragma_query_value(None, "shrink_memory", |_| Ok(()))
-            .optional()?;
-        let actual = commitment(&tx)?;
-        let database = database_id(&tx, &actual)?;
-        let expected = anchor.read(database)?.ok_or(StorageError::AnchorMissing)?;
-        if expected != actual {
-            return Err(StorageError::AnchorMismatch);
+        #[cfg(test)]
+        {
+            self.verifications += 1;
         }
-        check_log_schema(&tx)?;
-        verify_in(&tx, &*self.keys)?;
+        anchored_in(&tx, &**anchor, &*self.keys)?;
+        read_gate(&tx, &*self.keys, action_id)
+    }
 
-        let mut statement = tx.prepare(&format!(
-            "SELECT {ROW_COLUMNS} FROM event WHERE action_id = ?1 ORDER BY position LIMIT 6"
-        ))?;
-        let mut records = statement.query([action_id.as_str()])?;
-        let mut events = Vec::new();
-        let mut plan = None;
-        while let Some(record) = records.next()? {
-            let mut row = Row::from_sql(record)?;
-            if row.format != GATE_ROW_FORMAT || events.len() == 5 {
-                return Err(StorageError::Corrupt);
-            }
-            let ciphertext = row.take_ciphertext()?;
-            let data = row.associated(|fields| {
-                cipher::decrypt(&*self.keys, &AssociatedData(fields), &ciphertext)
-            })?;
-            let (event, recorded_plan) = row.envelope_with_plan(&data)?;
-            if events.is_empty() {
-                plan = Some(recorded_plan.ok_or(StorageError::Corrupt)?);
-            } else if recorded_plan.is_some() {
-                return Err(StorageError::Corrupt);
-            }
-            let json = serde_json::to_value(event).map_err(|_| StorageError::Corrupt)?;
-            events.push(Event::from_json(json).map_err(|_| StorageError::Corrupt)?);
+    /// Load, decision and append of one gate transition under one write lock, with one
+    /// authentication of the whole chain before anything is read.
+    fn transition_gate(
+        &mut self,
+        action_id: &Id,
+        decide: &mut dyn FnMut(&GateHistory) -> Result<Event, JournalError>,
+    ) -> Result<(), JournalError> {
+        let anchor = self.anchor.as_ref().ok_or(JournalError::Unavailable)?;
+        let tx = self
+            .store
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| journal_error(error.into()))?;
+        #[cfg(test)]
+        {
+            self.verifications += 1;
         }
-        Ok(plan.map(|plan| GateHistory { plan, events }))
+        let (database, version) =
+            anchored_in(&tx, &**anchor, &*self.keys).map_err(journal_error)?;
+        self.verified_data_version = version;
+        let history = read_gate(&tx, &*self.keys, action_id)
+            .map_err(journal_error)?
+            .ok_or(JournalError::Missing)?;
+        let event = decide(&history)?;
+        let envelope: EventEnvelopeV1 =
+            serde_json::from_value(event.to_json()).map_err(|_| JournalError::Integrity)?;
+        let gate = GateAppend {
+            action_id,
+            expected_events: history.events.len(),
+            plan: None,
+        };
+        let sealed =
+            sealing(&*self.keys, &self.config, &envelope, Some(&gate)).map_err(journal_error)?;
+        insert_in(&tx, &envelope, sealed, Some(&gate)).map_err(journal_error)?;
+        let head = commitment(&tx).map_err(journal_error)?;
+        anchor.store(database, &head).map_err(journal_error)?;
+        tx.commit().map_err(|error| journal_error(error.into()))
     }
 
     fn append_gate(&mut self, event: &Event, gate: GateAppend<'_>) -> Result<(), JournalError> {
@@ -1122,6 +1190,67 @@ impl GateJournal for EventLog {
             },
         )
     }
+
+    fn transition(
+        &mut self,
+        action_id: &Id,
+        decide: &mut dyn FnMut(&GateHistory) -> Result<Event, JournalError>,
+    ) -> Result<(), JournalError> {
+        self.transition_gate(action_id, decide)
+    }
+}
+
+/// Drops cached pages, then checks the anchor, the schema and the whole chain under
+/// the lock `tx` holds. Returns the database id and the data version it saw.
+fn anchored_in(
+    tx: &Transaction<'_>,
+    anchor: &dyn AnchorStore,
+    keys: &dyn KeyProvider,
+) -> Result<(DatabaseId, i64), StorageError> {
+    tx.pragma_query_value(None, "shrink_memory", |_| Ok(()))
+        .optional()?;
+    let actual = commitment(tx)?;
+    let database = database_id(tx, &actual)?;
+    let expected = anchor.read(database)?.ok_or(StorageError::AnchorMissing)?;
+    if expected != actual {
+        return Err(StorageError::AnchorMismatch);
+    }
+    let version = data_version(tx)?;
+    check_log_schema(tx)?;
+    verify_in(tx, keys)?;
+    Ok((database, version))
+}
+
+/// The gate history of `action_id`, decrypted; `None` when the action has no rows.
+fn read_gate(
+    tx: &Transaction<'_>,
+    keys: &dyn KeyProvider,
+    action_id: &Id,
+) -> Result<Option<GateHistory>, StorageError> {
+    let mut statement = tx.prepare(&format!(
+        "SELECT {ROW_COLUMNS} FROM event WHERE action_id = ?1 ORDER BY position LIMIT 6"
+    ))?;
+    let mut records = statement.query([action_id.as_str()])?;
+    let mut events = Vec::new();
+    let mut plan = None;
+    while let Some(record) = records.next()? {
+        let mut row = Row::from_sql(record)?;
+        if row.format != GATE_ROW_FORMAT || events.len() == 5 {
+            return Err(StorageError::Corrupt);
+        }
+        let ciphertext = row.take_ciphertext()?;
+        let data =
+            row.associated(|fields| cipher::decrypt(keys, &AssociatedData(fields), &ciphertext))?;
+        let (event, recorded_plan) = row.envelope_with_plan(&data)?;
+        if events.is_empty() {
+            plan = Some(recorded_plan.ok_or(StorageError::Corrupt)?);
+        } else if recorded_plan.is_some() {
+            return Err(StorageError::Corrupt);
+        }
+        let json = serde_json::to_value(event).map_err(|_| StorageError::Corrupt)?;
+        events.push(Event::from_json(json).map_err(|_| StorageError::Corrupt)?);
+    }
+    Ok(plan.map(|plan| GateHistory { plan, events }))
 }
 
 fn verify_in(tx: &rusqlite::Connection, keys: &dyn KeyProvider) -> Result<u64, StorageError> {

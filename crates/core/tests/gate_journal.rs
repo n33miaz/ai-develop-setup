@@ -64,6 +64,8 @@ fn planned_journal() -> MemoryJournal {
     journal
 }
 
+/// The same in-memory journal stands in for a restart here; a real restart over the durable
+/// log is `recovery_after_start_does_not_issue_a_second_permit` in `ads-storage`.
 #[test]
 fn a_permit_requires_confirmed_append_and_is_never_restored() {
     let mut journal = planned_journal();

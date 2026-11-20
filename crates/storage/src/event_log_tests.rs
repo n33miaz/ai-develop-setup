@@ -2434,7 +2434,7 @@ mod gate_journal {
         let path = fixture();
         let anchor = MemoryAnchor::default();
         let mut log = anchored(&path, &anchor).unwrap();
-        let first = event("task/t1", 1, 1, serde_json::json!({}));
+        let first = event("task/t1", 1, 9, serde_json::json!({}));
         log.append(&first).unwrap();
         drop(log);
         let old_anchor = anchor.0.lock().unwrap().commitment;
@@ -2445,12 +2445,21 @@ mod gate_journal {
         connection.pragma_update(None, "user_version", 4).unwrap();
         drop(connection);
 
-        let log = anchored(&path, &anchor).unwrap();
+        let mut log = anchored(&path, &anchor).unwrap();
         assert_eq!(anchor.0.lock().unwrap().commitment, old_anchor);
         assert_eq!(
             log.read_stream(&first.stream, 1, 1).unwrap()[0].event,
             first
         );
+        let version: i64 = Connection::open(&path)
+            .unwrap()
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 5);
+        let (action_id, _) = approved(&mut log);
+        JournalGate::new(&policy(), &mut log)
+            .authorize(&action_id, meta(2, 4))
+            .unwrap();
     }
 
     #[test]
@@ -2578,5 +2587,75 @@ mod gate_journal {
             gate.authorize(&action_id, meta(2, 6)),
             Err(JournalError::Integrity)
         );
+    }
+
+    #[test]
+    fn each_transition_authenticates_the_chain_once() {
+        let path = fixture();
+        let anchor = MemoryAnchor::default();
+        let mut log = anchored(&path, &anchor).unwrap();
+        let (action_id, _) = approved(&mut log);
+        log.verifications = 0;
+        let policy = policy();
+        let mut gate = JournalGate::new(&policy, &mut log);
+        let (permit, _) = gate.authorize(&action_id, meta(2, 4)).unwrap().into_parts();
+        gate.apply(&action_id, Command::Executed { permit }, meta(3, 5))
+            .unwrap();
+        assert!(matches!(
+            gate.inspect(&action_id).unwrap().state,
+            State::Executed
+        ));
+        assert_eq!(log.verifications, 3);
+        assert_eq!(log.verify_chain(), Ok(5));
+    }
+
+    #[test]
+    fn a_transition_still_checks_rows_of_other_streams() {
+        let path = fixture();
+        let anchor = MemoryAnchor::default();
+        let mut log = anchored(&path, &anchor).unwrap();
+        log.append(&event("task/t1", 1, 9, serde_json::json!({})))
+            .unwrap();
+        let (action_id, _) = approved(&mut log);
+        tamper(
+            &path,
+            "UPDATE event SET ts = '2031-01-01T00:00:00Z' WHERE position = 1",
+            None,
+        );
+        assert_eq!(
+            JournalGate::new(&policy(), &mut log)
+                .authorize(&action_id, meta(2, 4))
+                .map(drop),
+            Err(JournalError::Integrity)
+        );
+    }
+
+    #[test]
+    fn concurrent_starts_through_the_log_issue_one_permit() {
+        let path = fixture();
+        let anchor = MemoryAnchor::default();
+        let mut first = anchored(&path, &anchor).unwrap();
+        let (action_id, _) = approved(&mut first);
+        let second = anchored(&path, &anchor).unwrap();
+        let barrier = Barrier::new(2);
+        let results = std::thread::scope(|scope| {
+            let [left, right] = [(first, 4), (second, 5)].map(|(mut log, serial)| {
+                let action_id = &action_id;
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    barrier.wait();
+                    JournalGate::new(&policy(), &mut log)
+                        .authorize(action_id, meta(2, serial))
+                        .map(drop)
+                })
+            });
+            [left.join().unwrap(), right.join().unwrap()]
+        });
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert!(
+            results.contains(&Err(JournalError::Transition)),
+            "{results:?}"
+        );
+        assert_eq!(anchored(&path, &anchor).unwrap().verify_chain(), Ok(4));
     }
 }

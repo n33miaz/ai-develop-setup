@@ -48,6 +48,20 @@ pub trait GateJournal {
         expected_events: usize,
         event: &Event,
     ) -> Result<(), JournalError>;
+
+    /// Loads the authenticated history, lets `decide` build the next event from it and
+    /// appends that event with the extension `decide` saw. An implementation that can should
+    /// do the three under one lock, with one authentication of the log; the default is
+    /// `load` followed by `append`, whose extension check still refuses a concurrent write.
+    fn transition(
+        &mut self,
+        action_id: &Id,
+        decide: &mut dyn FnMut(&GateHistory) -> Result<Event, JournalError>,
+    ) -> Result<(), JournalError> {
+        let history = self.load(action_id)?;
+        let event = decide(&history)?;
+        self.append(action_id, history.events.len(), &event)
+    }
 }
 
 /// One permit whose start was accepted by the journal. Consuming it keeps the
@@ -104,13 +118,20 @@ impl<'a> JournalGate<'a> {
         command: Command,
         meta: EventMeta,
     ) -> Result<ActionSnapshot, JournalError> {
-        let mut history = self.journal.load(action_id)?;
-        let (action, _) = load_action(self.policy, action_id, &history)?;
-        let (next, event) = action
-            .apply(command, meta)
-            .map_err(|_| JournalError::Transition)?;
-        self.append(action_id, &mut history, event)?;
-        Ok(next.snapshot())
+        let policy = self.policy;
+        let mut input = Some((command, meta));
+        let mut next = None;
+        self.journal.transition(action_id, &mut |history| {
+            let (command, meta) = input.take().ok_or(JournalError::Transition)?;
+            let (action, _) = load_action(policy, action_id, history)?;
+            let (action, event) = action
+                .apply(command, meta)
+                .map_err(|_| JournalError::Transition)?;
+            validate_next(history, &event)?;
+            next = Some(action.snapshot());
+            Ok(event)
+        })?;
+        next.ok_or(JournalError::Transition)
     }
 
     pub fn authorize(
@@ -118,27 +139,31 @@ impl<'a> JournalGate<'a> {
         action_id: &Id,
         meta: EventMeta,
     ) -> Result<StartedExecution, JournalError> {
-        let mut history = self.journal.load(action_id)?;
-        let (action, verdict) = load_action(self.policy, action_id, &history)?;
-        let (_, permit, event) = action
-            .authorize(verdict.plan(), meta)
-            .map_err(|_| JournalError::Transition)?;
-        self.append(action_id, &mut history, event.clone())?;
-        Ok(StartedExecution { permit, event })
+        let policy = self.policy;
+        let mut input = Some(meta);
+        let mut started = None;
+        self.journal.transition(action_id, &mut |history| {
+            let meta = input.take().ok_or(JournalError::Transition)?;
+            let (action, verdict) = load_action(policy, action_id, history)?;
+            let (_, permit, event) = action
+                .authorize(verdict.plan(), meta)
+                .map_err(|_| JournalError::Transition)?;
+            validate_next(history, &event)?;
+            started = Some(StartedExecution {
+                permit,
+                event: event.clone(),
+            });
+            Ok(event)
+        })?;
+        // Only reached after the journal accepted the start.
+        started.ok_or(JournalError::Transition)
     }
+}
 
-    fn append(
-        &mut self,
-        action_id: &Id,
-        history: &mut GateHistory,
-        event: Event,
-    ) -> Result<(), JournalError> {
-        let expected_events = history.events.len();
-        history.events.push(event);
-        validate_envelopes(&history.events)?;
-        self.journal
-            .append(action_id, expected_events, &history.events[expected_events])
-    }
+fn validate_next(history: &GateHistory, event: &Event) -> Result<(), JournalError> {
+    let mut events = history.events.clone();
+    events.push(event.clone());
+    validate_envelopes(&events)
 }
 
 fn validate_envelopes(events: &[Event]) -> Result<(), JournalError> {
