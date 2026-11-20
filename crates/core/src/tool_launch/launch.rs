@@ -13,6 +13,7 @@ use ads_contracts::{
 };
 
 use super::{Harness, Mode, ToolConfig};
+use crate::child_env::EnvPolicy;
 use crate::gate::{AbsPath, PathStyle};
 
 /// Checks whether the configured program and working folder exist.
@@ -173,11 +174,9 @@ where
     })
 }
 
-/// The current process environment, skipping names or values that are not Unicode.
-pub fn process_env() -> Vec<(String, String)> {
-    std::env::vars_os()
-        .filter_map(|(name, value)| Some((name.into_string().ok()?, value.into_string().ok()?)))
-        .collect()
+/// Reads only the allowed values from the current environment, using native name lookup.
+pub fn process_env(policy: &EnvPolicy) -> Vec<(String, String)> {
+    policy.read_parent_env(|name| std::env::var(name).ok())
 }
 
 #[cfg(test)]

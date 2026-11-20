@@ -12,11 +12,12 @@ use serde::Deserialize;
 /// with the widest comparison (see [`EnvPolicy::is_denied`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NameCase {
-    /// Windows: `Path` and `PATH` are the same variable. Copying from the parent folds only
-    /// ASCII letters, while Windows also folds other letters (`Ä` and `ä`): an allowed name
-    /// copies only a parent name equal to it apart from ASCII case, so it can only let less
-    /// through. Repeated names and the names `set` replaces use the wider fold, so two entries
-    /// Windows takes as one variable are refused, and a `set` value always wins.
+    /// Windows: `Path` and `PATH` are the same variable. [`EnvPolicy::child_env`] over data
+    /// folds only ASCII letters, so it can only let less through. The real environment is read
+    /// by `process_env` with the native lookup, which also folds other letters (`Ä` and `ä`);
+    /// still safe, since a parent name Windows folds onto an allowed one has its upper-case
+    /// form, which the deny check already tests. Repeated names and the names `set` replaces
+    /// use the wider fold, so two entries Windows takes as one are refused and `set` wins.
     Insensitive,
     Sensitive,
 }
@@ -327,6 +328,18 @@ impl EnvPolicy {
             .any(|upper| self.deny.iter().any(|rule| rule.matches(name, &upper)))
     }
 
+    /// Reads only permitted parent values, using the host's name lookup rules.
+    pub(crate) fn read_parent_env(
+        &self,
+        mut read: impl FnMut(&str) -> Option<String>,
+    ) -> Vec<(String, String)> {
+        self.allow
+            .iter()
+            .filter(|name| !self.is_denied(name))
+            .filter_map(|name| read(name).map(|value| (name.clone(), value)))
+            .collect()
+    }
+
     /// The child's whole environment: each allowed name the parent has, written as the allow
     /// list spells it, then the values the product sets. Nothing else. A parent value with NUL
     /// is skipped: no process environment can hold it.
@@ -462,6 +475,26 @@ mod tests {
             child,
             BTreeMap::from([("äx".into(), "parent".into()), ("ÄX".into(), "set".into())])
         );
+    }
+
+    #[test]
+    fn reading_parent_values_only_queries_allowed_names() {
+        let policy = EnvPolicy::from_layers(
+            &layer(&["PATH", "MISSING"], &["*_TOKEN"], &[("TERM", "fixed")]),
+            None,
+            NameCase::host(),
+        )
+        .unwrap();
+        let parent = BTreeMap::from([("PATH", "parent"), ("SERVICE_TOKEN", "fixture")]);
+        let mut queried = Vec::new();
+
+        let values = policy.read_parent_env(|name| {
+            queried.push(name.to_owned());
+            parent.get(name).map(|value| (*value).to_owned())
+        });
+
+        assert_eq!(queried, ["PATH", "MISSING"]);
+        assert_eq!(values, [("PATH".into(), "parent".into())]);
     }
 
     #[test]
