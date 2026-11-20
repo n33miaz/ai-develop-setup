@@ -49,4 +49,4 @@ A abertura recusa com `Corrupt` um `audit.db-wal` em que o SQLite descartaria um
 1. Pare o produto e confira que nenhum processo usa o banco.
 2. Copie `audit.db`, `audit.db-wal` e, se existir, `audit.db-shm` para uma pasta de quarentena. Não apague nada.
 3. Mova `audit.db-wal` e `audit.db-shm` para a quarentena e abra de novo. O banco volta ao último checkpoint: todas as transações que estavam só no WAL somem, não só as posteriores à quebra, e o log de eventos perde o fim sem que `verify_chain` perceba.
-4. Para ver o que estava no WAL, abra a cópia da quarentena (banco e `-wal` juntos) com outra ferramenta SQLite, que aplica os quadros até o primeiro inválido. Se a recusa vier de adulteração e não de queda, restaure o backup.
+4. Para ver o que estava no WAL, faça uma segunda cópia do par da quarentena (banco e `-wal`) e abra essa segunda cópia com outra ferramenta SQLite, que aplica os quadros até o primeiro inválido e pode apagar o `-wal` ao fechar; a primeira cópia fica intacta. Se a recusa vier de adulteração e não de queda, restaure o backup.
