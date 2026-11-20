@@ -166,6 +166,7 @@ jobs:
       fs: ${{ steps.filter.outputs.fs }}
       storage: ${{ steps.filter.outputs.storage }}
       vault: ${{ steps.filter.outputs.vault }}
+      launcher: ${{ steps.filter.outputs.launcher }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -193,6 +194,8 @@ jobs:
           STORAGE_PATHS: '^(crates/storage/|crates/contracts/|contracts/|defaults/storage\.toml$|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
           # Cofre: o crate, as dependências dele no workspace, este workflow e as entradas da compilação.
           VAULT_PATHS: '^(crates/adapters/vault/|crates/core/|crates/contracts/|contracts/|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
+          # Lançador: o crate, as dependências dele no workspace, os parâmetros dele, este workflow e as entradas da compilação.
+          LAUNCHER_PATHS: '^(crates/launcher/|crates/core/|crates/contracts/|contracts/|defaults/launcher\.toml$|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
         run: |
           set -euo pipefail
           # Na dúvida (disparo manual, push sem base conhecida, diff impossível), roda.
@@ -203,6 +206,7 @@ jobs:
           fs=true
           storage=true
           vault=true
+          launcher=true
           range=""
           case "$EVENT" in
             pull_request) range="$PR_BASE_SHA...$PR_HEAD_SHA" ;;
@@ -222,6 +226,7 @@ jobs:
             if echo "$files" | grep -Eq "$FS_PATHS"; then fs=true; else fs=false; fi
             if echo "$files" | grep -Eq "$STORAGE_PATHS"; then storage=true; else storage=false; fi
             if echo "$files" | grep -Eq "$VAULT_PATHS"; then vault=true; else vault=false; fi
+            if echo "$files" | grep -Eq "$LAUNCHER_PATHS"; then launcher=true; else launcher=false; fi
           fi
           echo "shell=$shell" >> "$GITHUB_OUTPUT"
           echo "ui=$ui" >> "$GITHUB_OUTPUT"
@@ -230,7 +235,8 @@ jobs:
           echo "fs=$fs" >> "$GITHUB_OUTPUT"
           echo "storage=$storage" >> "$GITHUB_OUTPUT"
           echo "vault=$vault" >> "$GITHUB_OUTPUT"
-          echo "shell-check roda: $shell; ui roda: $ui; contracts roda: $contracts; pty-windows roda: $pty; fs-windows roda: $fs; storage-windows roda: $storage; vault-windows roda: $vault"
+          echo "launcher=$launcher" >> "$GITHUB_OUTPUT"
+          echo "shell-check roda: $shell; ui roda: $ui; contracts roda: $contracts; pty-windows roda: $pty; fs-windows roda: $fs; storage-windows roda: $storage; vault-windows roda: $vault; launcher-windows roda: $launcher"
 
   contracts:
     name: contracts
@@ -500,10 +506,41 @@ jobs:
       - name: Testes do cofre (sem o teste ignorado)
         run: cargo test --locked -p ads-adapter-vault -j 2
 
+  # O lançador supervisiona processos e aplica atualizações no Windows: o lint e os testes rodam aqui também
+  # (no Linux eles já rodam no job `rust`), e só quando uma entrada do job muda.
+  launcher-windows:
+    name: launcher-windows
+    needs: changes
+    if: needs.changes.outputs.launcher == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Instalar a versão fixada em rust-toolchain.toml
+        run: |
+          rustup toolchain install
+          rustc --version
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: launcher-windows
+          save-if: ${{ github.ref == 'refs/heads/develop' && github.event_name != 'pull_request' }}
+      - name: Lint do lançador no Windows (avisos como erro)
+        run: cargo clippy --locked -p ads-launcher --all-targets -j 2 -- -D warnings
+      - name: Testes do lançador
+        run: cargo test --locked -p ads-launcher -j 2
+
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [commits, secrets, terms, changes, contracts, rust, shell-check, ui, pty-windows, fs-windows, storage-windows, vault-windows]
+    needs: [commits, secrets, terms, changes, contracts, rust, shell-check, ui, pty-windows, fs-windows, storage-windows, vault-windows, launcher-windows]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
