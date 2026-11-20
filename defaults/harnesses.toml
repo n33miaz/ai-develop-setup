@@ -103,6 +103,7 @@ COLORTERM = "truecolor"
 # Pastas de trabalho por apelido: `apelido = "caminho absoluto"`. Quem pede a sessao manda so o
 # apelido; apelido que nao esta aqui e recusado. A camada do usuario ACRESCENTA ou troca apelidos.
 # Apelido: letras, digitos e . _ : -, ate 64 caracteres. Padrao vazio: nenhuma pasta.
+# A raiz de uma unidade (`C:\`) ou `/` e recusada: a ferramenta trabalharia no disco inteiro.
 [workdirs]
 
 # Uma tabela por ferramenta. Cada adaptador le so a sua.

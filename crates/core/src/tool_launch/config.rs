@@ -63,6 +63,8 @@ pub enum ConfigError {
         error: PathError,
     },
     WorkdirTooLong(usize),
+    /// A drive root or `/`: the tool would work on the whole disk.
+    WorkdirIsRoot(usize),
 }
 
 impl fmt::Display for ConfigError {
@@ -82,6 +84,7 @@ impl fmt::Display for ConfigError {
                 write!(f, "folder at entry {index} refused: {error}")
             }
             Self::WorkdirTooLong(index) => write!(f, "folder at entry {index} too long"),
+            Self::WorkdirIsRoot(index) => write!(f, "folder at entry {index} is a drive root"),
         }
     }
 }
@@ -161,6 +164,9 @@ impl<H: Harness> ToolConfig<H> {
             let id = CommonIdV1::new(alias).map_err(|_| ConfigError::Alias(index))?;
             let path =
                 AbsPath::parse(&path).map_err(|error| ConfigError::Workdir { index, error })?;
+            if path.is_root() {
+                return Err(ConfigError::WorkdirIsRoot(index));
+            }
             let cwd = Cwd::new(path.to_string()).map_err(|_| ConfigError::WorkdirTooLong(index))?;
             workdirs.insert(String::from(id), cwd);
         }

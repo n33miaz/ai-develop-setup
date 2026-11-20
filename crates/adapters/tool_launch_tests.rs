@@ -460,6 +460,13 @@ const DANGEROUS_PATHS: &[(&str, PathError)] = &[
     ("/home/~someone/tool", PathError::UnexpandedTilde),
     ("/home/$USER/tool", PathError::UnexpandedVariable),
     ("usr/local/bin/tool", PathError::Relative),
+    // Relative forms, also as a folder.
+    (r"C:\work\..\tool", PathError::ParentComponent),
+    ("C:/work/tool/..", PathError::ParentComponent),
+    ("C:work", PathError::DriveRelative),
+    (r"\work", PathError::Relative),
+    (r".\work", PathError::Relative),
+    ("tool.exe", PathError::Relative),
 ];
 
 /// Path forms that stay accepted, with the text the configuration keeps.
@@ -504,6 +511,32 @@ fn the_path_corpus_is_refused_as_program_and_as_folder() {
             error: PathError::Empty
         })
     );
+}
+
+#[test]
+fn a_drive_root_is_refused_as_folder() {
+    for root in [r"C:\", "c:/", r"D:\.\", "C://", "/", "//", "/./"] {
+        let text = format!(
+            "[workdirs]\nother = 'C:\\work'\nscratch = {}\n",
+            toml_string(root)
+        );
+        let result = ToolConfig::from_toml_str(&text, NameCase::Insensitive);
+        // `//` is a network prefix before it is a root.
+        if root == "//" {
+            assert_eq!(
+                result,
+                Err(ConfigError::Workdir {
+                    index: 1,
+                    error: PathError::Network
+                })
+            );
+        } else {
+            assert_eq!(result, Err(ConfigError::WorkdirIsRoot(1)), "{root:?}");
+        }
+    }
+    // One level down is a folder like any other.
+    let text = "[workdirs]\nscratch = 'C:\\work'\nposix = '/work'\n";
+    assert!(ToolConfig::from_toml_str(text, NameCase::Insensitive).is_ok());
 }
 
 #[test]
