@@ -193,7 +193,13 @@ impl TargetPath {
         {
             return Err(PathError::PatternTooLong);
         }
-        Ok(Self { base, pattern })
+        let target = Self { base, pattern };
+        // A rule that fires cites the whole text of the target in the record.
+        let limit = ads_contracts::RecordActionPlanV2VerdictReasonsItemSubject::MAX_CHARS;
+        if target.to_string().chars().count() > limit {
+            return Err(PathError::TooLong);
+        }
+        Ok(target)
     }
 
     /// The path the rules judge: the target itself, or the folder a wildcard ranges over

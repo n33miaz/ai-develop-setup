@@ -403,6 +403,20 @@ mod tests {
             Err(PlanError::Destination(PathError::TooLong))
         );
 
+        // A rule that fires cites the whole target, wildcard included, so that text has to fit
+        // the subject of the record too.
+        let max = ads_contracts::RecordActionPlanV2VerdictReasonsItemSubject::MAX_CHARS;
+        let fits = format!("/{}/*", "a".repeat(max - 3));
+        let over = format!("/{}/*", "a".repeat(max - 2));
+        assert!(ActionPlan::normalize(&request(&[&fits])).is_ok());
+        assert_eq!(
+            ActionPlan::normalize(&request(&[&over])),
+            Err(PlanError::Target {
+                index: 0,
+                error: PathError::TooLong
+            })
+        );
+
         let max = ads_contracts::RecordActionPlanV2TargetsItemPattern::MAX_CHARS;
         let fits = format!("/work/proj/{}", "*".repeat(max));
         let over = format!("/work/proj/{}", "*".repeat(max + 1));
