@@ -13,7 +13,14 @@ class WindowsPathFiltersTest(unittest.TestCase):
         packages = {pkg["name"]: pkg for pkg in metadata["packages"]}
         jobs = re.split(r"^  [\w-]+:\n", workflow.split("\njobs:\n", 1)[1], flags=re.M)
         windows_jobs = [job for job in jobs if "    runs-on: windows-latest\n" in job]
-        self.assertTrue(windows_jobs)
+        names = {re.search(r"^    name: ([\w-]+)$", job, re.M)[1] for job in windows_jobs}
+        self.assertEqual(
+            names,
+            {"shell-check", "pty-windows", "fs-windows", "storage-windows", "vault-windows"},
+        )
+        required = re.search(r"^  ci-ok:\n(?:    .*\n)*?    needs: \[([^\]]+)\]", workflow, re.M)
+        self.assertIsNotNone(required)
+        self.assertLessEqual(names, {name.strip() for name in required[1].split(",")})
 
         for job in windows_jobs:
             output = re.search(r"needs\.changes\.outputs\.(\w+) == 'true'", job)
