@@ -272,36 +272,24 @@ mod tests {
         assert!(!child.contains_key("CODEX_HOME"));
         assert!(!child.contains_key("ANTHROPIC_API_KEY"));
 
-        let output = if cfg!(windows) {
-            let system = std::env::var_os("SystemRoot").unwrap();
-            Command::new(Path::new(&system).join("System32/cmd.exe"))
-                .args(["/D", "/C", "set"])
-                .env_clear()
-                .envs(&child)
-                .output()
-        } else {
-            Command::new("/bin/sh")
-                .args(["-c", "printf '%s\\n' \"$CLAUDE_CONFIG_DIR\" \"${CODEX_HOME-unset}\" \"${ANTHROPIC_API_KEY-unset}\""])
-                .env_clear()
-                .envs(&child)
-                .output()
-        }.unwrap();
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tool_launch::profile::tests::report_profile_environment",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env_clear()
+            .envs(&child)
+            .output()
+            .unwrap();
         assert!(output.status.success());
-        let output = String::from_utf8_lossy(&output.stdout);
-        if cfg!(windows) {
-            assert!(
-                output
-                    .lines()
-                    .any(|line| line == format!("CLAUDE_CONFIG_DIR={}", bindings[1].0.directory()))
-            );
-            assert!(!output.contains("CODEX_HOME="));
-            assert!(!output.contains("ANTHROPIC_API_KEY="));
-        } else {
-            assert_eq!(
-                output.lines().collect::<Vec<_>>(),
-                [bindings[1].0.directory().as_str(), "unset", "unset"]
-            );
-        }
+        let output = String::from_utf8(output.stdout).unwrap();
+        assert!(
+            output
+                .lines()
+                .any(|line| { line == format!("profile={}", bindings[1].0.directory()) })
+        );
         assert!(!output.contains(bindings[0].0.directory().as_str()));
 
         for (_, sentinel, before) in bindings {
@@ -310,5 +298,12 @@ mod tests {
             assert_eq!(after.accessed().ok(), before.accessed().ok());
             assert_eq!(fs::read_to_string(sentinel).unwrap(), "profile data");
         }
+    }
+    #[test]
+    #[ignore = "run as an isolated child process by the profile binding test"]
+    fn report_profile_environment() {
+        assert!(std::env::var_os("ANTHROPIC_API_KEY").is_none());
+        assert!(std::env::var_os("CODEX_HOME").is_none());
+        println!("profile={}", std::env::var("CLAUDE_CONFIG_DIR").unwrap());
     }
 }
