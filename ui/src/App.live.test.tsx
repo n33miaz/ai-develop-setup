@@ -470,6 +470,35 @@ describe('sessions the core cannot keep', () => {
     expect(screen.getByRole('button', { name: 'Close session' })).toBeInTheDocument()
   })
 
+  it('clears the command warning when a later close succeeds', async () => {
+    const client = createFakeCoreClient(CATALOG)
+    const t = createTranslator('en')
+    render(
+      <I18nContext value={t}>
+        <App client={client} live sessionStreams={['session/session-a']} />
+      </I18nContext>,
+    )
+    await waitFor(() => {
+      expect(client.getState()).toBe('connected')
+    })
+    act(() => {
+      created(client, 'session-a', 'Session A')
+      client.end('session/session-a', -32013)
+    })
+    vi.spyOn(client, 'send').mockImplementation((command) =>
+      Promise.resolve<CommandResponseV2>(
+        command.method === 'session.open'
+          ? { jsonrpc: '2.0', id: command.id, error: { code: -1, message: 'refused' } }
+          : { jsonrpc: '2.0', id: command.id, result: { accepted: true, replayed: false } },
+      ),
+    )
+    fireEvent.click(await screen.findByRole('button', { name: 'Open claude' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(t('session.commandFailed'))
+    fireEvent.click(screen.getByRole('button', { name: 'Close session' }))
+    expect(await screen.findByText('No sessions.')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
   it('names a session without a name in the close alert', async () => {
     const client = createFakeCoreClient(CATALOG)
     render(
@@ -1010,7 +1039,7 @@ describe('sessions the core cannot keep', () => {
       Promise.resolve({
         jsonrpc: '2.0',
         id: command.id,
-        error: { code: -32014, message: 'session setup timed out' },
+        error: { code: -32014, message: 'session setup failed' },
       }),
     )
     const t = createTranslator('pt-BR')
