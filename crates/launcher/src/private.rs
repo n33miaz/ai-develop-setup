@@ -188,8 +188,11 @@ impl ControlDir {
         };
         #[cfg(unix)]
         let dir = {
+            // With `O_DIRECTORY`, Linux reports a link as `ENOTDIR`, not `ELOOP`.
             let dir = unix::open_dir(path).map_err(|error| {
-                if is_loop(&error) {
+                if is_loop(&error)
+                    || error.raw_os_error() == Some(rustix::io::Errno::NOTDIR.raw_os_error())
+                {
                     refuse("is not a plain folder")
                 } else {
                     error
