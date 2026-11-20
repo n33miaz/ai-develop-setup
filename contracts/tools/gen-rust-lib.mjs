@@ -48,7 +48,10 @@ function rawString(text) {
   return `r${hashes}"${text}"${hashes}`;
 }
 
-// Traduz a expressão regular do Schema (ECMA-262) para a sintaxe do regex-lite, aceitando só o subconjunto em que
+// Categorias gerais que o Ajv (flag `u`) e o regex do Rust leem da mesma forma.
+const UNICODE_CATEGORIES = new Set(["L", "M", "N", "P", "S", "Zs", "Cc", "Cf", "Co", "Cn"]);
+
+// Traduz a expressão regular do Schema (ECMA-262) para a sintaxe do regex do Rust, aceitando só o subconjunto em que
 // as duas têm o mesmo significado. Qualquer construção fora da lista derruba a geração.
 export function rustPattern(source, at) {
   const bad = (why) => {
@@ -61,7 +64,17 @@ export function rustPattern(source, at) {
     const c = source[i];
     if (c === "\\") {
       const next = source[i + 1];
-      if (next === "u") {
+      if (next === "u" && source[i + 2] === "{") {
+        const m = /^\\u\{([0-9a-fA-F]{1,6})\}/.exec(source.slice(i));
+        if (!m || Number.parseInt(m[1], 16) > 0x10ffff) bad("escape \\u{} inválido");
+        out += `\\x{${m[1]}}`;
+        i += m[0].length;
+      } else if (next === "p") {
+        const m = /^\\p\{([A-Za-z]+)\}/.exec(source.slice(i));
+        if (!m || !UNICODE_CATEGORIES.has(m[1])) bad("categoria Unicode fora da lista");
+        out += m[0];
+        i += m[0].length;
+      } else if (next === "u") {
         const hex = source.slice(i + 2, i + 6);
         if (!/^[0-9a-fA-F]{4}$/.test(hex)) bad("escape \\u incompleto");
         out += `\\x{${hex}}`;

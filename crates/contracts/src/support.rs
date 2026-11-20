@@ -6,7 +6,7 @@ use std::fmt;
 use std::hash::Hash;
 use std::sync::OnceLock;
 
-use regex_lite::Regex;
+use regex::Regex;
 use serde::de::{DeserializeOwned, Error as _};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
@@ -67,7 +67,7 @@ impl Pattern {
     }
 }
 
-pub(crate) fn compile(source: &str) -> Result<Regex, regex_lite::Error> {
+pub(crate) fn compile(source: &str) -> Result<Regex, regex::Error> {
     Regex::new(source)
 }
 
