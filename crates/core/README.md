@@ -22,22 +22,31 @@ A [política da fila](src/queue.rs) restaura a fila parada e calcula transiçõe
 
 `change_queue_state` devolve o novo estado junto com os dados do evento (`queue.enabled` ou `queue.stopped` com `reason: owner`), montados do aparelho conferido. Uma mudança para o estado atual é recusada com `Unchanged`, então nunca sai parada para uma fila já parada. O produtor monta o envelope com `actor.id` igual ao `device_id` do aparelho devolvido.
 
-Na partida, `restore_running_task` decide o destino da tarefa cujo último estado é `running`, em três casos:
-- `Keep`: o host manteve o processo, e a tarefa continua em `running`. O núcleo volta a acompanhar a sessão, e a tentativa termina normalmente, mesmo com a fila parada.
-- `Fail`: o host não manteve o processo, e a tarefa passa para `failed` com a mesma contagem, porque a tentativa interrompida já foi contada.
-- `Cancel`: a contagem é inconsistente (zero ou acima do teto). A tarefa passa para `cancelled` com a contagem gravada, e o chamador encerra o processo se o host o manteve.
+Na partida, `restore_running_task` decide o destino da tarefa cujo último estado é `running`. O chamador passa o estado e a contagem reconstituídos pelo replay, para uma queda entre o log e o retrato não escapar da regra, e diz o que o host de terminal informou sobre a sessão da tarefa (`HostProcess`). A restauração e o cálculo de transições aceitam retratos `record.queue-task:1` e `:2`. O daemon ainda precisa associar a tarefa à sessão, consultar o host, aplicar o prazo e solicitar o encerramento quando a sessão reaparecer. Os casos:
+- `Keep`: o host lista a sessão com o processo rodando (`Kept`), e a tarefa continua em `running`. O núcleo volta a acompanhar a sessão, e a tentativa termina normalmente, mesmo com a fila parada.
+- `AwaitHost`: o host ainda não respondeu (`Unconfirmed`) e não passaram `host_confirm_seconds` (60) desde que o núcleo começou a perguntar. A tarefa fica em `running` no log, sem evento novo, e nada a move até o host responder ou o prazo vencer. Esse estado é só do núcleo: a cada partida ele é calculado de novo.
+- `Fail`: o host respondeu que a sessão terminou ou não existe (`Lost`), e a tarefa passa para `failed` com a mesma contagem, porque a tentativa interrompida já foi contada. Uma sessão que terminou enquanto o núcleo estava fora também cai aqui: o resultado dela não é julgado.
+- `Abandon`: o prazo venceu sem resposta do host. A tarefa passa para `cancelled` com a mesma contagem e o motivo `host_unconfirmed`. O cancelamento é terminal, inclusive após replay e nova ativação da fila. A sessão anterior pode continuar viva.
+- `Cancel`: a contagem é inconsistente (zero ou acima do teto). A tarefa passa para `cancelled` com a contagem gravada, e o chamador encerra o processo se o host o manteve ou o listar depois.
 
-O replay (`replay_task`) recebe o stream inteiro da fila, a partir de `queue.created` com `seq` 1 e sem buraco, e uma consulta ao cadastro de aparelhos no instante de cada evento. Ele devolve o estado e o saldo, ou o motivo da recusa (`ReplayRefusal`). Além da ordem e do saldo, ele confere:
+Hoje o daemon não adota sessões antigas ao reiniciar, então `Kept` ainda não acontece na prática.
+
+O replay (`replay_task`) recebe o stream inteiro da fila, a partir de `queue.created` com `seq` 1 e sem buraco, uma consulta ao cadastro de aparelhos no instante de cada evento, a política inicial, quando disponível, e uma consulta ao relógio histórico por ID da criação. Ele devolve o estado, o saldo, a última âncora e a política vigente, ou o motivo da recusa (`ReplayRefusal`). Além da ordem e do saldo, ele confere:
 - todo evento é da fila e do stream `queue/<id>`;
 - todo ator que é aparelho pertencia ao dono da fila naquele instante;
-- a criação, a ativação e a parada pelo dono vêm de um aparelho do dono e repetem o dono da fila;
+- a criação, a ativação, a parada pelo dono e a mudança de política vêm de um aparelho do dono e repetem o dono da fila;
 - todo pedido manual, de qualquer tarefa da fila, foi criado por um aparelho do dono;
 - a tarefa só entra em `running` com a fila ligada naquele ponto do log;
 - `review → done` foi aceito por um aparelho do dono.
+- os eventos novos de mudança de estado usam `queue.task_state_changed:2`. O construtor e a leitura do evento exigem `via` para aparelhos e recusam o campo para os demais atores. O replay aceita eventos da `:1` conforme as regras dessa versão.
 
 O agente e o daemon continuam podendo reprovar e cancelar tarefas. O replay confere a coerência dos atores que o log declara, não a autenticidade deles: o log não é assinado por aparelho, e uma linha forjada é recusada pela cadeia HMAC do armazenamento ([ADR 0021](../../docs/adr/0021-storage-atomic-file-and-cipher.md)). O replay protege contra erro do produtor e contra log montado de forma errada.
 
-O replay aplica a política carregada no núcleo a todas as criações do stream, inclusive as de outras tarefas. Se a configuração passar a impor limites mais estritos, uma criação antes aceita pode falhar com `Admission`. O produtor precisa preservar o `now` usado na admissão e fornecê-lo por `seq`. O replay confia nesse valor e devolve `MissingAdmissionContext` se ele faltar. As âncoras vêm dos eventos do stream. A reserva de IDs entre filas cabe ao produtor.
+O replay confere cada criação, inclusive as de outras tarefas, com a política vigente naquele ponto do stream. Para filas sem um evento de política antes da primeira admissão, passe a configuração carregada na criação da fila. Um evento inicial com a política completa antes da primeira admissão torna essa configuração dispensável para validar as criações. Se a primeira criação vier antes da primeira política disponível, o replay devolve `MissingInitialPolicy`. Para uma fila antiga, recupere a configuração original do backup.
+
+O dono altera a política por um aparelho autenticado. `change_queue_policy` confere o dono e o último `seq` observado. O produtor anexa `queue.policy_changed:1` com o aparelho autenticado como ator e condiciona o append ao mesmo `seq`. O evento fica coberto pela cadeia HMAC. A política entra em vigor após o append e vale para admissões posteriores. O replay confere o dono do aparelho no cadastro e aplica a política na ordem do stream. Cada tarefa conserva o teto de tentativas gravado na sua criação.
+
+O produtor captura o `now` do relógio do núcleo na decisão e grava essa leitura com integridade e de forma atômica com a criação. A consulta recebe o ID do evento da criação e devolve o ID gravado junto à leitura de uma fonte independente de `ts`. O replay consulta o relógio somente para criações. Se a leitura faltar, devolve `MissingAdmissionClock`. Para uma leitura de outro evento, devolve `AdmissionClockMismatch`. Uma criação fora da política ou da tolerância do relógio resulta em `Admission`. A reserva de IDs entre filas cabe ao produtor.
 
 O cadastro responde pelo dono do aparelho em cada instante. Um aparelho mantém o dono que tinha quando agiu, e a revogação é uma marca com data: ela recusa os atos posteriores sem apagar os anteriores. O produtor usa o estado e o saldo reconstituídos antes de autorizar novas transições e reserva a origem na mesma operação que anexa a criação.
 
@@ -52,7 +61,7 @@ O cadastro responde pelo dono do aparelho em cada instante. Um aparelho mantém 
   - mais de `window_admissions` (10) tarefas vindas de issue ou de regra de bug;
   - mais de `bug_rule_window_admissions` (3) da mesma regra de bug.
 
-O produtor grava `queue.task_created:2`, que exige um ator aparelho para pedidos manuais. `can_admit_creation` e o replay leem as duas versões, inclusive num mesmo histórico. O Schema da `:1` aceita pedidos manuais de agente ou daemon, mas o núcleo recusa esses pedidos nas duas versões e exige o vínculo do aparelho com o dono. Os pedidos manuais contam à parte, para que as origens automáticas não ocupem o espaço do dono.
+O produtor grava `queue.task_created:3`, que exige um ator aparelho para pedidos manuais e usa os tipos comuns de apelido e de origem, e o retrato da tarefa em `record.queue-task:2`. `can_admit_creation` e o replay leem as três versões da criação, inclusive num mesmo histórico, e a origem repetida é recusada entre versões. O Schema da `:1` aceita pedidos manuais de agente ou daemon, mas o núcleo recusa esses pedidos em todas as versões e exige o vínculo do aparelho com o dono. Os pedidos manuais contam à parte, para que as origens automáticas não ocupem o espaço do dono.
 
 O `ts` da criação vem do relógio do núcleo, nunca do pedido, e o produtor informa esse relógio em `now`. A admissão recusa a criação com `ts` mais de `clock_skew_seconds` (5) adiante de `now` (`AheadOfClock`) ou mais de `clock_rewind_seconds` (300) antes de uma admissão anterior da fila (`BehindLastAdmission`). Assim, um carimbo adiantado em relação ao relógio do núcleo não esvazia a janela, e um ajuste pequeno do relógio para trás não trava a fila. Uma admissão anterior com `ts` depois do da candidata, dentro da tolerância, continua contando na janela.
 

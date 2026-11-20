@@ -10,7 +10,7 @@ A [ADR 0005](0005-column-level-encryption.md) reserva ao cofre do sistema os seg
 
 Usar credenciais genéricas do Gerenciador de Credenciais no Windows, com persistência local para a conta do usuário atual. O adaptador usa o crate `windows` do workspace e operações por alvo exato. A proteção do Windows é por conta e máquina. Processos da mesma conta também podem acessar o cofre. [Documentação da estrutura CREDENTIALW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/ns-wincred-credentialw).
 
-O contrato tem nomes fixos, buffers que são zerados ao sair e erros sem conteúdo do segredo. Plataformas sem adaptador retornam erro explícito. A ligação ao armazenamento e a recuperação da âncora ficam para a integração com o log.
+O contrato tem nomes fixos, buffers que são zerados ao sair e erros sem conteúdo do segredo. Plataformas sem adaptador retornam erro explícito. O daemon injeta a entrada `audit-anchor` no log persistente pelo contrato de armazenamento. A [API e a recuperação da âncora](../../crates/storage/README.md#âncora-no-cofre) descrevem como SQLite e cofre são conferidos.
 
 ## Alternativas
 

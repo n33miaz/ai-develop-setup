@@ -33,3 +33,11 @@ read_page_max_bytes = 8388608
 # Candidatos a chave alternativa por linha após falha de leitura.
 # Recomendado 8. Aceita 0 a 128; 0 preserva o erro original sem procurar.
 read_key_candidates = 8
+
+# Quando um append ancorado autentica de novo a cadeia guardada, sem decifrar.
+# Recomendado "changed": custo constante, revalida só quando outra conexão
+# SQLite confirmou mudanças (PRAGMA data_version). Escrita direta nos bytes do
+# arquivo não muda esse valor e só é detectada na próxima abertura ou em
+# verify_chain. "always" revalida em todo append, com custo proporcional aos
+# bytes guardados e dentro do lock de escrita. Outro valor recusa.
+verify_on_append = "changed"

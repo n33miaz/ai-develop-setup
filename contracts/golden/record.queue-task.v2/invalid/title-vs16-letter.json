@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "id": "task-01",
+  "queue_id": "queue-01",
+  "origin": {
+    "kind": "manual",
+    "request_id": "request-01"
+  },
+  "title": "Conferir docs️",
+  "workspace_alias": "docs",
+  "tool": "tool-a",
+  "state": "queued",
+  "attempts": 0,
+  "attempt_limit": 2,
+  "created_at": "2030-01-02T03:04:05Z",
+  "updated_at": "2030-01-02T03:04:05Z"
+}

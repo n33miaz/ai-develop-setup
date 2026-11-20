@@ -1,0 +1,17 @@
+{
+  "missing-channel.json": {
+    "rule": "Aparelho informa o canal",
+    "keyword": "required",
+    "instancePath": "/data"
+  },
+  "daemon-channel.json": {
+    "rule": "Daemon age sem canal",
+    "keyword": "not",
+    "instancePath": "/data"
+  },
+  "retryable-abandon.json": {
+    "rule": "Abandono termina em cancelamento",
+    "keyword": "const",
+    "instancePath": "/data/to"
+  }
+}

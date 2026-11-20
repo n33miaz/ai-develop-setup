@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:event:queue.task_created:3",
+  "title": "Tarefa incluída na fila",
+  "description": "Registra a inclusão de uma tarefa em queued, com zero tentativas. Uma criação de origem manual exige um aparelho como autor. O apelido e a origem são os tipos comuns.",
+  "allOf": [
+    {
+      "$ref": "urn:ads:event:envelope:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "type",
+        "stream",
+        "data"
+      ],
+      "properties": {
+        "type": {
+          "const": "urn:ads:event:queue.task_created:3"
+        },
+        "stream": {
+          "type": "string",
+          "pattern": "^queue/"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "queue_id",
+            "task_id",
+            "attempt_limit",
+            "origin",
+            "workspace_alias",
+            "state",
+            "attempts"
+          ],
+          "properties": {
+            "queue_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "task_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "attempt_limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10
+            },
+            "origin": {
+              "$ref": "urn:ads:common:queue-task-origin:1"
+            },
+            "workspace_alias": {
+              "$ref": "urn:ads:common:workdir-alias:1"
+            },
+            "state": {
+              "const": "queued"
+            },
+            "attempts": {
+              "const": 0
+            }
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "properties": {
+              "origin": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "const": "manual"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "actor": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "device"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+      "type": "urn:ads:event:queue.task_created:3",
+      "ts": "2030-01-02T03:04:05Z",
+      "stream": "queue/queue-01",
+      "seq": 1,
+      "actor": {
+        "kind": "device",
+        "id": "device-01"
+      },
+      "cause": null,
+      "data_class": "internal",
+      "data": {
+        "queue_id": "queue-01",
+        "task_id": "task-01",
+        "attempt_limit": 2,
+        "origin": {
+          "kind": "manual",
+          "request_id": "request-01"
+        },
+        "workspace_alias": "docs",
+        "state": "queued",
+        "attempts": 0
+      }
+    }
+  ]
+}

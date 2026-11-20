@@ -1,7 +1,14 @@
 //! Append-only event log: encrypted `data`, authenticated clear columns, keyed chain.
 use crate::{
     AuditStore, StorageConfig, StorageError,
+    anchor::{
+        AnchorStore, COMMITMENT_VERSION, Commitment, GENESIS, POSITION, REGISTERED_KEYS,
+        ReanchorPlan,
+    },
     cipher::{self, AssociatedData, ChainKey, Ciphertext, KeyId, KeyProvider, SecretKey},
+    config::VerifyOnAppend,
+    migrate::{expected_schema, schema},
+    open::SCHEMA_VERSION,
 };
 use ads_contracts::{
     CommonActorV1, CommonActorV1Kind, CommonDataClassV1, CommonIdV1, CommonTimestampV1,
@@ -10,6 +17,7 @@ use ads_contracts::{
 use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::{Map, Value};
 use std::{collections::HashSet, num::NonZeroU64, path::Path};
+use storage_sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 /// Label leading the associated data of every event row; the row format follows it.
@@ -257,6 +265,8 @@ pub struct EventLog {
     store: AuditStore,
     keys: Box<dyn KeyProvider + Send>,
     config: StorageConfig,
+    anchor: Option<Box<dyn AnchorStore>>,
+    verified_data_version: i64,
 }
 
 impl std::fmt::Debug for EventLog {
@@ -318,6 +328,74 @@ fn consistent(keys: &dyn KeyProvider) -> Result<(), StorageError> {
     }
 }
 
+fn empty_log(tx: &rusqlite::Connection) -> Result<bool, StorageError> {
+    Ok(tx.query_row(
+        "SELECT NOT EXISTS (SELECT 1 FROM event) AND NOT EXISTS (SELECT 1 FROM cipher_key)",
+        [],
+        |row| row.get(0),
+    )?)
+}
+
+fn commitment(tx: &rusqlite::Connection) -> Result<Commitment, StorageError> {
+    let genesis = genesis(tx)?;
+    let head: Option<(i64, Vec<u8>)> = tx
+        .query_row(
+            "SELECT position, chain FROM event ORDER BY position DESC LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let (position, chain) = head.unwrap_or_else(|| (0, genesis.clone()));
+    let mut result = [0; 105];
+    result[0] = COMMITMENT_VERSION;
+    result[GENESIS].copy_from_slice(&genesis);
+    result[POSITION].copy_from_slice(&position.to_be_bytes());
+    result[41..73].copy_from_slice(
+        <&[u8; 32]>::try_from(chain.as_slice()).map_err(|_| StorageError::Corrupt)?,
+    );
+
+    let mut hash = Sha256::new();
+    let mut statement = tx
+        .prepare("SELECT key_id, cipher, check_nonce, key_check FROM cipher_key ORDER BY key_id")?;
+    let mut rows = statement.query([])?;
+    while let Some(row) = rows.next()? {
+        for column in 0..4 {
+            let value = match row.get_ref(column)? {
+                rusqlite::types::ValueRef::Text(value) | rusqlite::types::ValueRef::Blob(value) => {
+                    value
+                }
+                _ => return Err(StorageError::Corrupt),
+            };
+            hash.update((value.len() as u64).to_be_bytes());
+            hash.update(value);
+        }
+    }
+    result[REGISTERED_KEYS].copy_from_slice(&hash.finalize());
+    Ok(result)
+}
+
+fn recovery_plan(
+    tx: &rusqlite::Connection,
+    keys: &dyn KeyProvider,
+    anchor: &dyn AnchorStore,
+) -> Result<ReanchorPlan, StorageError> {
+    let previous = anchor.read()?;
+    verify_in(tx, keys)?;
+    let unused: bool = tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM cipher_key AS k
+         WHERE NOT EXISTS (SELECT 1 FROM event AS e WHERE e.key_id = k.key_id))",
+        [],
+        |row| row.get(0),
+    )?;
+    if unused {
+        return Err(StorageError::AnchorMismatch);
+    }
+    Ok(ReanchorPlan {
+        previous,
+        proposed: commitment(tx)?,
+    })
+}
+
 fn head_in(tx: &rusqlite::Connection, stream: &str) -> Result<i64, StorageError> {
     Ok(tx.query_row(
         "SELECT coalesce(max(seq), 0) FROM event WHERE stream = ?1",
@@ -343,23 +421,161 @@ fn genesis(tx: &rusqlite::Connection) -> Result<Vec<u8>, StorageError> {
     })
 }
 
+fn data_version(tx: &Transaction<'_>) -> Result<i64, StorageError> {
+    Ok(tx.pragma_query_value(None, "data_version", |row| row.get(0))?)
+}
+
+/// A row whose registered key this provider cannot supply is a key problem
+/// (another process rotated to a key this one does not hold), not tampering.
+fn changed_history(
+    tx: &rusqlite::Connection,
+    keys: &dyn KeyProvider,
+    position: i64,
+) -> StorageError {
+    let key_id: Option<String> = match tx
+        .query_row(
+            "SELECT key_id FROM event WHERE position = ?1",
+            [position],
+            |r| r.get(0),
+        )
+        .optional()
+    {
+        Ok(key_id) => key_id,
+        Err(error) => return error.into(),
+    };
+    let unknown = key_id
+        .and_then(|id| KeyId::new(&id).ok())
+        .map(|id| match registered(tx, &id) {
+            Ok(Some(_)) => matches!(keys.by_id(&id), Err(cipher::CipherError::KeyUnavailable)),
+            _ => false,
+        })
+        .unwrap_or(false);
+    if unknown {
+        StorageError::KeyUnavailable
+    } else {
+        StorageError::HistoryChanged { position }
+    }
+}
+
+fn check_log_schema(tx: &Transaction<'_>) -> Result<(), StorageError> {
+    if schema(tx)? != expected_schema(SCHEMA_VERSION)? {
+        return Err(StorageError::UnsupportedSchema);
+    }
+    Ok(())
+}
+
 impl EventLog {
-    /// Opens the store and refuses a current key that differs from the registered
-    /// one, or a provider whose `current()` and `by_id` disagree.
+    /// Checks the independent vault commitment and authenticates the full chain
+    /// under one write lock. Verification processes all stored ciphertext.
     pub fn open(
         path: &Path,
         config: &StorageConfig,
         keys: Box<dyn KeyProvider + Send>,
+        anchor: Box<dyn AnchorStore>,
     ) -> Result<Self, StorageError> {
-        let store = AuditStore::open(path, config)?;
+        let create = anchor.read()?.is_none();
+        let mut log = Self::open_store(path, config, keys, create)?;
+        let tx = log
+            .store
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let version = data_version(&tx)?;
+        // `migrate` checked the schema in another transaction; this one covers
+        // the window between them, under the lock the chain is verified in.
+        check_log_schema(&tx)?;
+        let stored = anchor.read()?;
+        let actual = commitment(&tx)?;
+        match stored {
+            Some(expected) if expected == actual => {}
+            Some(_) => return Err(StorageError::AnchorMismatch),
+            None if empty_log(&tx)? => anchor.store(&actual)?,
+            None => return Err(StorageError::AnchorMissing),
+        }
+        let (id, _) = log.keys.current()?;
+        check_registered(&tx, &*log.keys, &id)?;
+        verify_in(&tx, &*log.keys)?;
+        tx.commit()?;
+        log.anchor = Some(anchor);
+        log.verified_data_version = version;
+        Ok(log)
+    }
+
+    /// Prepares a recovery plan after verifying all links and registrations.
+    pub fn plan_reanchor(
+        path: &Path,
+        config: &StorageConfig,
+        keys: Box<dyn KeyProvider + Send>,
+        anchor: &dyn AnchorStore,
+    ) -> Result<ReanchorPlan, StorageError> {
+        anchor.read()?;
+        let mut log = Self::open_store(path, config, keys, false)?;
+        let tx = log
+            .store
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        recovery_plan(&tx, &*log.keys, anchor)
+    }
+
+    /// Applies the plan explicitly confirmed by the owner after making a backup.
+    pub fn reanchor(
+        path: &Path,
+        config: &StorageConfig,
+        keys: Box<dyn KeyProvider + Send>,
+        anchor: &dyn AnchorStore,
+        confirmed: ReanchorPlan,
+    ) -> Result<(), StorageError> {
+        anchor.read()?;
+        let mut log = Self::open_store(path, config, keys, false)?;
+        let tx = log
+            .store
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if recovery_plan(&tx, &*log.keys, anchor)? != confirmed {
+            return Err(StorageError::AnchorMismatch);
+        }
+        anchor.store(&confirmed.proposed)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Opens the store and refuses a current key that differs from the registered
+    /// one, or a provider whose `current()` and `by_id` disagree.
+    #[cfg(test)]
+    pub(crate) fn open_unanchored(
+        path: &Path,
+        config: &StorageConfig,
+        keys: Box<dyn KeyProvider + Send>,
+    ) -> Result<Self, StorageError> {
+        let log = Self::open_store(path, config, keys, true)?;
+        let (id, _) = log.keys.current()?;
+        check_registered(&log.store.connection, &*log.keys, &id)?;
+        Ok(log)
+    }
+
+    fn open_store(
+        path: &Path,
+        config: &StorageConfig,
+        keys: Box<dyn KeyProvider + Send>,
+        create: bool,
+    ) -> Result<Self, StorageError> {
+        let store = if create {
+            AuditStore::open(path, config)?
+        } else {
+            AuditStore::open_existing(path, config)?
+        };
         consistent(&*keys)?;
-        let (id, _) = keys.current()?;
-        check_registered(&store.connection, &*keys, &id)?;
         Ok(Self {
             store,
             keys,
             config: config.clone(),
+            anchor: None,
+            verified_data_version: 0,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_commit_hook(&mut self, hook: Option<fn() -> bool>) {
+        self.store.connection.commit_hook(hook).unwrap();
     }
 
     /// Last `seq` of the stream, 0 when it has no events.
@@ -370,9 +586,21 @@ impl EventLog {
 
     /// Appends only if `event.seq` is still the next of its stream (compare and set).
     ///
-    /// Nothing is written unless it returns `Ok`. `Conflict`: the `seq` is no longer
-    /// the next one; read `head` again and rebuild the event. `Busy`: another
-    /// writer held the lock past `busy_timeout_ms`; retrying the same event is safe.
+    /// The database row is committed after the vault update. If SQLite fails
+    /// after that update, the next open or append refuses the mismatch.
+    /// `Conflict`: the `seq` is no longer
+    /// the next one; read `head` again and rebuild the event. `Busy`: SQLite
+    /// could not obtain a lock in time. Check the log against the vault before
+    /// attempting another write.
+    /// `AnchorUnavailable`: restore access to the vault before trying again.
+    /// `AnchorMissing`: the vault entry is absent. Stop and follow recovery.
+    /// `AnchorMismatch`: the vault and database differ. Stop and follow recovery.
+    /// `HistoryChanged`: the chain failed the check this append ran (after an
+    /// external commit, or on every append with `verify_on_append = "always"`).
+    /// Stop and follow recovery. `UnsupportedSchema`: the schema changed under
+    /// that same check; stop and check the database. `KeyUnavailable`: that check
+    /// met a registered key this provider cannot supply (another process
+    /// rotated); give this provider the key and reopen.
     /// `Constraint`: the database refused the row (repeated `id`, or a trigger);
     /// do not retry unchanged. `InvalidEvent`: `type` or stream family over its
     /// bound, or a gate event whose `action_id`/`approval_id` disagree with its
@@ -408,6 +636,34 @@ impl EventLog {
             .store
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(anchor) = &self.anchor {
+            let always = self.config.verify_on_append == VerifyOnAppend::Always;
+            if always {
+                // Drop cached pages so every check below reads what the file
+                // holds now, not what this connection last saw.
+                tx.pragma_query_value(None, "shrink_memory", |_| Ok(()))
+                    .optional()?;
+            }
+            match anchor.read()? {
+                Some(expected) if expected == commitment(&tx)? => {}
+                Some(_) => return Err(StorageError::AnchorMismatch),
+                None => return Err(StorageError::AnchorMissing),
+            }
+            // This connection's own commits do not change its data_version, and
+            // neither does a write made straight to the file's bytes: only
+            // `Always` catches the latter before the anchor moves.
+            let version = data_version(&tx)?;
+            if always || version != self.verified_data_version {
+                check_log_schema(&tx)?;
+                verify_in(&tx, &*self.keys).map_err(|error| match error {
+                    StorageError::ChainBroken { position } => {
+                        changed_history(&tx, &*self.keys, position)
+                    }
+                    other => other,
+                })?;
+                self.verified_data_version = version;
+            }
+        }
         if seq != head_in(&tx, stream)? + 1 {
             return Err(StorageError::Conflict);
         }
@@ -477,6 +733,11 @@ impl EventLog {
                 row.chain,
             ],
         )?;
+        if let Some(anchor) = &self.anchor {
+            // Publish under the SQLite writer lock. A failed SQLite commit leaves a
+            // mismatch that requires owner recovery instead of accepting an older head.
+            anchor.store(&commitment(&tx)?)?;
+        }
         tx.commit()?;
         Ok(Position(position))
     }
@@ -529,6 +790,9 @@ impl EventLog {
                 if matches!(registration, Ok(false)) {
                     return Err(broken);
                 }
+                if matches!(registration, Err(StorageError::KeyUnavailable)) {
+                    return Err(broken);
+                }
                 let mut ciphertext = row.take_ciphertext()?;
                 let data = match registration.and_then(|_| {
                     row.associated(|fields| {
@@ -543,6 +807,7 @@ impl EventLog {
                     ) if self.authenticates_with_another_id(&tx, &row, &mut ciphertext)? => {
                         return Err(broken);
                     }
+                    Err(StorageError::KeyUnavailable) => return Err(broken),
                     result => result?,
                 };
                 drop(ciphertext);
@@ -570,39 +835,43 @@ impl EventLog {
     /// decrypt `data`, and it cannot see a cut tail or an older copy of the file.
     pub fn verify_chain(&self) -> Result<u64, StorageError> {
         let tx = self.store.connection.unchecked_transaction()?;
-        let mut statement = tx.prepare(&format!(
-            "SELECT {ROW_COLUMNS} FROM event ORDER BY position"
-        ))?;
-        let mut rows = statement.query([])?;
-        let mut seen = HashSet::new();
-        let mut active: Option<(String, ChainKey)> = None;
-        let mut previous = genesis(&tx)?;
-        let mut count: i64 = 0;
-        while let Some(r) = rows.next()? {
-            let row = Row::from_sql(r)?;
-            count += 1;
-            let broken = StorageError::ChainBroken {
-                position: row.position,
-            };
-            // Sequence and format first: neither needs a key.
-            if row.position != count || row.prev_chain != previous || row.format != ROW_FORMAT {
-                return Err(broken);
-            }
-            if active.as_ref().is_none_or(|(id, _)| id != &row.key_id) {
-                if !seen.insert(row.key_id.clone()) {
-                    return Err(broken);
-                }
-                let key = self.chain_key_of(&tx, &row.key_id)?.ok_or(broken)?;
-                active = Some((row.key_id.clone(), key));
-            }
-            let (_, key) = active.as_ref().expect("active key for this row");
-            if !row.chained(|fields| key.verify(fields, &row.chain)) {
-                return Err(broken);
-            }
-            previous = row.chain;
-        }
-        u64::try_from(count).map_err(|_| StorageError::Corrupt)
+        verify_in(&tx, &*self.keys)
     }
+}
+
+fn verify_in(tx: &rusqlite::Connection, keys: &dyn KeyProvider) -> Result<u64, StorageError> {
+    let mut statement = tx.prepare(&format!(
+        "SELECT {ROW_COLUMNS} FROM event ORDER BY position"
+    ))?;
+    let mut rows = statement.query([])?;
+    let mut seen = HashSet::new();
+    let mut active: Option<(String, ChainKey)> = None;
+    let mut previous = genesis(tx)?;
+    let mut count: i64 = 0;
+    while let Some(r) = rows.next()? {
+        let row = Row::from_sql(r)?;
+        count += 1;
+        let broken = StorageError::ChainBroken {
+            position: row.position,
+        };
+        // Sequence and format first: neither needs a key.
+        if row.position != count || row.prev_chain != previous || row.format != ROW_FORMAT {
+            return Err(broken);
+        }
+        if active.as_ref().is_none_or(|(id, _)| id != &row.key_id) {
+            if !seen.insert(row.key_id.clone()) {
+                return Err(broken);
+            }
+            let key = chain_key_of(tx, keys, &row.key_id)?.ok_or(broken)?;
+            active = Some((row.key_id.clone(), key));
+        }
+        let (_, key) = active.as_ref().expect("active key for this row");
+        if !row.chained(|fields| key.verify(fields, &row.chain)) {
+            return Err(broken);
+        }
+        previous = row.chain;
+    }
+    u64::try_from(count).map_err(|_| StorageError::Corrupt)
 }
 
 impl EventLog {
@@ -643,30 +912,30 @@ impl EventLog {
         }
         Ok(false)
     }
+}
 
-    /// Chain key for `key_id`, or `None` when the id is malformed, unregistered,
-    /// unknown to the provider or registered with other key material.
-    fn chain_key_of(
-        &self,
-        tx: &rusqlite::Connection,
-        key_id: &str,
-    ) -> Result<Option<ChainKey>, StorageError> {
-        let Ok(id) = KeyId::new(key_id) else {
-            return Ok(None);
-        };
-        let Some(check) = registered(tx, &id)? else {
-            return Ok(None);
-        };
-        let key = match self.keys.by_id(&id) {
-            Ok(key) => key,
-            Err(cipher::CipherError::KeyUnavailable) => return Ok(None),
-            Err(error) => return Err(error.into()),
-        };
-        match matches_check(&key, &check) {
-            Ok(()) => Ok(Some(ChainKey::derive(&key))),
-            Err(StorageError::WrongKey) => Ok(None),
-            Err(error) => Err(error),
-        }
+/// Chain key for `key_id`, or `None` when the id is malformed, unregistered,
+/// unknown to the provider or registered with other key material.
+fn chain_key_of(
+    tx: &rusqlite::Connection,
+    keys: &dyn KeyProvider,
+    key_id: &str,
+) -> Result<Option<ChainKey>, StorageError> {
+    let Ok(id) = KeyId::new(key_id) else {
+        return Ok(None);
+    };
+    let Some(check) = registered(tx, &id)? else {
+        return Ok(None);
+    };
+    let key = match keys.by_id(&id) {
+        Ok(key) => key,
+        Err(cipher::CipherError::KeyUnavailable) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    match matches_check(&key, &check) {
+        Ok(()) => Ok(Some(ChainKey::derive(&key))),
+        Err(StorageError::WrongKey) => Ok(None),
+        Err(error) => Err(error),
     }
 }
 
@@ -811,7 +1080,7 @@ mod tests {
         insert_authenticated_rows(&mut connection, &["key-a", "key-a", "key-b", "key-a"], link);
         drop(connection);
 
-        let log = EventLog::open(&path, &config, Box::new(TwoKeys(1))).unwrap();
+        let log = EventLog::open_unanchored(&path, &config, Box::new(TwoKeys(1))).unwrap();
         assert_eq!(
             log.verify_chain(),
             Err(StorageError::ChainBroken { position: 4 })

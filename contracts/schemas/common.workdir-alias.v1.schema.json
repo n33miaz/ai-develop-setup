@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:common:workdir-alias:1",
+  "title": "Apelido de pasta de trabalho",
+  "description": "Nome cadastrado de uma pasta de trabalho, em vez do caminho: minúsculas, dígitos e . _ -, de 1 a 64 caracteres, sem '..', sem terminar em ponto e sem nome de dispositivo do Windows.",
+  "type": "string",
+  "pattern": "^[a-z0-9]([a-z0-9._-]{0,62}[a-z0-9_-])?$",
+  "not": {
+    "pattern": "(^((con|prn|aux|nul|com[0-9]|lpt[0-9])(\\.|$)))|\\.\\."
+  },
+  "examples": [
+    "docs"
+  ]
+}

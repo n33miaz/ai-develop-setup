@@ -1,5 +1,6 @@
 //! Local SQLite storage, column encryption and chained audit.
 
+pub mod anchor;
 pub mod cipher;
 
 pub mod config;
@@ -8,10 +9,13 @@ pub mod log;
 mod migrate;
 pub mod open;
 mod snapshot;
-pub use config::StorageConfig;
+pub use config::{StorageConfig, VerifyOnAppend};
 pub use error::StorageError;
 pub use log::{EventLog, Position, StoredEvent};
 pub use open::AuditStore;
+
+#[cfg(test)]
+mod event_log_tests;
 
 /// Package name as declared in the manifest.
 pub const fn crate_name() -> &'static str {

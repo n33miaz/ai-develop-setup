@@ -243,8 +243,11 @@ fn settle(path: &Path, config: &StorageConfig) -> Result<bool, StorageError> {
 
 /// Functions the product's statements, `CHECK`s and triggers call.
 const FUNCTIONS: [&str; 5] = ["coalesce", "length", "max", "substr", "zeroblob"];
-/// Pragmas the product reads back after migration (`verify_pragmas`).
-const PRAGMAS: [&str; 8] = [
+/// Pragmas the product reads back after migration (`verify_pragmas`), plus
+/// `data_version` and `shrink_memory` for the check before an anchored append.
+const PRAGMAS: [&str; 10] = [
+    "data_version",
+    "shrink_memory",
     "user_version",
     "journal_mode",
     "synchronous",
@@ -286,20 +289,27 @@ fn existing_flags() -> OpenFlags {
 impl AuditStore {
     /// Validates the header before SQLite can access the file.
     pub fn open(path: &Path, config: &StorageConfig) -> Result<Self, StorageError> {
-        Self::open_after_inspection(path, config, || {})
+        Self::open_after_inspection(path, config, true, || {})
+    }
+
+    pub(crate) fn open_existing(path: &Path, config: &StorageConfig) -> Result<Self, StorageError> {
+        Self::open_after_inspection(path, config, false, || {})
     }
 
     fn open_after_inspection(
         path: &Path,
         config: &StorageConfig,
+        create: bool,
         after: impl FnOnce(),
     ) -> Result<Self, StorageError> {
         let exists = settle(path, config)?;
         after();
         let flags = if exists {
             existing_flags()
-        } else {
+        } else if create {
             existing_flags() | OpenFlags::SQLITE_OPEN_CREATE
+        } else {
+            return Err(StorageError::AnchorMismatch);
         };
         let mut connection = Connection::open_with_flags(path, flags)?;
         // A refusal must neither checkpoint the frames it refused nor delete the WAL,
@@ -386,7 +396,7 @@ pub(crate) mod tests {
         let moved = root.join(format!("disappeared-{}.saved", std::process::id()));
         let config = StorageConfig::defaults();
         drop(AuditStore::open(&path, &config).unwrap());
-        let result = AuditStore::open_after_inspection(&path, &config, || {
+        let result = AuditStore::open_after_inspection(&path, &config, true, || {
             std::fs::rename(&path, &moved).unwrap()
         });
         assert_eq!(result.unwrap_err(), StorageError::CantOpen);

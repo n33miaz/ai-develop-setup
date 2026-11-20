@@ -556,7 +556,7 @@ impl ActionPlanFields {
         let mut previous: Option<TargetPath> = None;
         for target in &self.targets {
             let text = target.text();
-            let Ok(key) = TargetPath::parse(&text) else {
+            let Ok(key) = TargetPath::parse_record_target(&text) else {
                 return broken("target", text);
             };
             if previous.is_some_and(|previous| previous >= key) {

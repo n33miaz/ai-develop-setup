@@ -3,16 +3,20 @@
 use std::num::{NonZeroU64, NonZeroUsize};
 
 use ads_contracts::{
-    CommonActorV1, CommonActorV1Kind, CommonIdV1, CommonQueueTaskStateV1, CommonTimestampV1,
-    EventQueueClockReanchoredV1, EventQueueClockReanchoredV1Data,
+    CommonActorV1, CommonActorV1Kind, CommonIdV1, CommonQueueTaskOriginV1, CommonQueueTaskStateV1,
+    CommonTimestampV1, CommonUlidV1, EventQueueClockReanchoredV1, EventQueueClockReanchoredV1Data,
     EventQueueClockReanchoredV1DataVia, EventQueueCreatedV1, EventQueueCreatedV1DataVia,
-    EventQueueEnabledV1, EventQueueEnabledV1Data, EventQueueEnabledV1DataVia, EventQueueStoppedV1,
-    EventQueueStoppedV1Data, EventQueueStoppedV1DataReason, EventQueueStoppedV1DataVia,
-    EventQueueTaskCreatedV1, EventQueueTaskCreatedV1DataOrigin, EventQueueTaskCreatedV2,
-    EventQueueTaskCreatedV2DataOrigin, EventQueueTaskStateChangedV1,
-    EventQueueTaskStateChangedV1Data, EventQueueTaskStateChangedV1DataAttempts,
-    EventQueueTaskStateChangedV1DataFields, EventQueueTaskStateChangedV1DataVia, RecordQueueTaskV1,
-    RecordQueueTaskV1Attempts, RecordTaskQueueV1, RecordTaskQueueV1State, RecordTaskQueueV1Version,
+    EventQueueEnabledV1, EventQueueEnabledV1Data, EventQueueEnabledV1DataVia,
+    EventQueuePolicyChangedV1, EventQueuePolicyChangedV1Data, EventQueuePolicyChangedV1DataPolicy,
+    EventQueuePolicyChangedV1DataPolicyAttemptLimit, EventQueuePolicyChangedV1DataVia,
+    EventQueueStoppedV1, EventQueueStoppedV1Data, EventQueueStoppedV1DataReason,
+    EventQueueStoppedV1DataVia, EventQueueTaskCreatedV1, EventQueueTaskCreatedV1DataOrigin,
+    EventQueueTaskCreatedV2, EventQueueTaskCreatedV2DataOrigin, EventQueueTaskCreatedV3,
+    EventQueueTaskStateChangedV1, EventQueueTaskStateChangedV2, EventQueueTaskStateChangedV2Data,
+    EventQueueTaskStateChangedV2DataAttempts, EventQueueTaskStateChangedV2DataFields,
+    EventQueueTaskStateChangedV2DataReason, EventQueueTaskStateChangedV2DataVia, RecordQueueTaskV1,
+    RecordQueueTaskV2, RecordQueueTaskV2Attempts, RecordTaskQueueV1, RecordTaskQueueV1State,
+    RecordTaskQueueV1Version,
 };
 
 use CommonQueueTaskStateV1::{Cancelled, Done, Failed, Queued, Review, Running};
@@ -21,10 +25,10 @@ use RecordTaskQueueV1State::{Enabled, Stopped};
 pub const DEFAULT_POLICY: &str = include_str!("../../../defaults/queue.toml");
 
 /// Limits of the queue. Keys missing from an older file take the values of `defaults/queue.toml`.
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct QueuePolicy {
-    pub attempt_limit: ads_contracts::RecordQueueTaskV1AttemptLimit,
+    pub attempt_limit: ads_contracts::RecordQueueTaskV2AttemptLimit,
     pub admission_limit: NonZeroUsize,
     #[serde(default = "default_window_seconds")]
     pub window_seconds: NonZeroU64,
@@ -38,6 +42,31 @@ pub struct QueuePolicy {
     pub clock_skew_seconds: u64,
     #[serde(default = "default_clock_rewind_seconds")]
     pub clock_rewind_seconds: u64,
+    #[serde(default = "default_host_confirm_seconds")]
+    pub host_confirm_seconds: NonZeroU64,
+}
+
+impl QueuePolicy {
+    fn from_event(policy: &EventQueuePolicyChangedV1DataPolicy) -> Option<Self> {
+        Some(Self {
+            attempt_limit: ads_contracts::RecordQueueTaskV2AttemptLimit::new(
+                policy.attempt_limit.get(),
+            )
+            .ok()?,
+            admission_limit: NonZeroUsize::new(policy.admission_limit.get().try_into().ok()?)?,
+            window_seconds: policy.window_seconds,
+            window_admissions: NonZeroUsize::new(policy.window_admissions.get().try_into().ok()?)?,
+            manual_window_admissions: NonZeroUsize::new(
+                policy.manual_window_admissions.get().try_into().ok()?,
+            )?,
+            bug_rule_window_admissions: NonZeroUsize::new(
+                policy.bug_rule_window_admissions.get().try_into().ok()?,
+            )?,
+            clock_skew_seconds: policy.clock_skew_seconds,
+            clock_rewind_seconds: policy.clock_rewind_seconds,
+            host_confirm_seconds: policy.host_confirm_seconds,
+        })
+    }
 }
 
 /// Reads one key of the bundled defaults, which a test loads in full.
@@ -74,6 +103,10 @@ fn default_clock_rewind_seconds() -> u64 {
     bundled_default("clock_rewind_seconds")
 }
 
+fn default_host_confirm_seconds() -> NonZeroU64 {
+    bundled_default("host_confirm_seconds")
+}
+
 /// Channel through which a device acted, independent of the event that records it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Channel {
@@ -108,11 +141,11 @@ impl Channel {
         }
     }
 
-    pub fn task_via(self) -> EventQueueTaskStateChangedV1DataVia {
+    pub fn task_via(self) -> EventQueueTaskStateChangedV2DataVia {
         match self {
-            Self::LocalUi => EventQueueTaskStateChangedV1DataVia::LocalUi,
-            Self::Tray => EventQueueTaskStateChangedV1DataVia::Tray,
-            Self::RemoteDevice => EventQueueTaskStateChangedV1DataVia::RemoteDevice,
+            Self::LocalUi => EventQueueTaskStateChangedV2DataVia::LocalUi,
+            Self::Tray => EventQueueTaskStateChangedV2DataVia::Tray,
+            Self::RemoteDevice => EventQueueTaskStateChangedV2DataVia::RemoteDevice,
         }
     }
 }
@@ -212,11 +245,16 @@ pub fn restore_stopped(
     automatic_stop(&persisted, AutomaticStop::Restart, was_enabled)
 }
 
-/// Whether the terminal host still runs the process of a task when the core starts.
+/// What the terminal host says, when the core starts, about the session of a running task. The
+/// caller pairs the task with its session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostProcess {
+    /// The host lists the session and its process still runs.
     Kept,
+    /// The host answered: the session ended or is not listed.
     Lost,
+    /// The host has not answered yet, for `waited_seconds` since the core started asking.
+    Unconfirmed { waited_seconds: u64 },
 }
 
 /// What the start does with a task, with the data of the change to append, if any.
@@ -224,39 +262,94 @@ pub enum HostProcess {
 pub enum RunningAfterRestart {
     /// No change: the task is not running, or the host kept its process and the attempt goes on.
     Keep,
+    /// The task stays `running` in the log, but nothing moves it until the host answers or
+    /// `host_confirm_seconds` pass: the caller asks again and appends nothing.
+    AwaitHost,
     /// `running → failed` with the same count, because the interrupted attempt was already counted.
-    Fail(EventQueueTaskStateChangedV1Data),
+    Fail(EventQueueTaskStateChangedV2Data),
+    /// Terminal cancellation after the host stayed silent for `host_confirm_seconds`.
+    /// The recorded reason preserves that the previous session may still be alive.
+    Abandon(EventQueueTaskStateChangedV2Data),
     /// `running → cancelled` with the recorded count, for a running task whose count is
-    /// inconsistent; a process the host kept is ended by the caller.
-    Cancel(EventQueueTaskStateChangedV1Data),
+    /// inconsistent; a process the host kept, or lists later, is ended by the caller.
+    Cancel(EventQueueTaskStateChangedV2Data),
 }
 
-/// Decides, on start, the fate of a task whose last recorded state is `running`.
-pub fn restore_running_task(task: &RecordQueueTaskV1, host: HostProcess) -> RunningAfterRestart {
+/// Fields shared by both persisted versions of a task.
+#[derive(Clone, Copy)]
+pub struct TaskSnapshot<'a> {
+    id: &'a CommonIdV1,
+    queue_id: &'a CommonIdV1,
+    state: CommonQueueTaskStateV1,
+    attempts: u64,
+    limit: u64,
+}
+
+macro_rules! task_snapshot {
+    ($record:ty) => {
+        impl<'a> From<&'a $record> for TaskSnapshot<'a> {
+            fn from(task: &'a $record) -> Self {
+                Self {
+                    id: &task.id,
+                    queue_id: &task.queue_id,
+                    state: task.state,
+                    attempts: task.attempts.get(),
+                    limit: task.attempt_limit.get().into(),
+                }
+            }
+        }
+    };
+}
+
+task_snapshot!(RecordQueueTaskV1);
+task_snapshot!(RecordQueueTaskV2);
+
+/// Decides, on start, the fate of a task whose last recorded state is `running`. The caller passes
+/// the state and count rebuilt by `replay_task`, so a crash between the log and the record is
+/// covered.
+pub fn restore_running_task<'a>(
+    task: impl Into<TaskSnapshot<'a>>,
+    host: HostProcess,
+    policy: &QueuePolicy,
+) -> RunningAfterRestart {
+    let task = task.into();
     if task.state != Running {
         return RunningAfterRestart::Keep;
     }
-    let attempts = task.attempts.get();
-    let consistent = attempts >= 1 && attempts <= task.attempt_limit.get().into();
-    let to = match (consistent, host) {
+    let attempts = task.attempts;
+    let consistent = attempts >= 1 && attempts <= task.limit;
+    let abandoned = match (consistent, host) {
+        (false, _) => None,
         (true, HostProcess::Kept) => return RunningAfterRestart::Keep,
-        (true, HostProcess::Lost) => Failed,
-        (false, _) => Cancelled,
+        (true, HostProcess::Lost) => Some(false),
+        (true, HostProcess::Unconfirmed { waited_seconds })
+            if waited_seconds < policy.host_confirm_seconds.get() =>
+        {
+            return RunningAfterRestart::AwaitHost;
+        }
+        (true, HostProcess::Unconfirmed { .. }) => Some(true),
     };
-    let data = EventQueueTaskStateChangedV1Data::new(EventQueueTaskStateChangedV1DataFields {
+    let to = if abandoned == Some(false) {
+        Failed
+    } else {
+        Cancelled
+    };
+    let data = EventQueueTaskStateChangedV2Data::new(EventQueueTaskStateChangedV2DataFields {
         queue_id: task.queue_id.clone(),
         task_id: task.id.clone(),
         from: Running,
         to,
-        attempts: EventQueueTaskStateChangedV1DataAttempts::new(attempts)
+        attempts: EventQueueTaskStateChangedV2DataAttempts::new(attempts)
             .expect("a record count fits the event count"),
         via: None,
+        reason: (abandoned == Some(true))
+            .then_some(EventQueueTaskStateChangedV2DataReason::HostUnconfirmed),
     })
     .expect("running to failed or cancelled is an allowed change");
-    if to == Failed {
-        RunningAfterRestart::Fail(data)
-    } else {
-        RunningAfterRestart::Cancel(data)
+    match abandoned {
+        Some(false) => RunningAfterRestart::Fail(data),
+        Some(true) => RunningAfterRestart::Abandon(data),
+        None => RunningAfterRestart::Cancel(data),
     }
 }
 
@@ -310,9 +403,12 @@ pub enum QueueLogEvent<'a> {
     Enabled(&'a EventQueueEnabledV1),
     Stopped(&'a EventQueueStoppedV1),
     ClockReanchored(&'a EventQueueClockReanchoredV1),
+    PolicyChanged(&'a EventQueuePolicyChangedV1),
     TaskCreated(&'a EventQueueTaskCreatedV1),
     TaskCreatedV2(&'a EventQueueTaskCreatedV2),
+    TaskCreatedV3(&'a EventQueueTaskCreatedV3),
     TaskStateChanged(&'a EventQueueTaskStateChangedV1),
+    TaskStateChangedV2(&'a EventQueueTaskStateChangedV2),
 }
 
 macro_rules! each_event {
@@ -322,9 +418,12 @@ macro_rules! each_event {
             QueueLogEvent::Enabled($name) => $body,
             QueueLogEvent::Stopped($name) => $body,
             QueueLogEvent::ClockReanchored($name) => $body,
+            QueueLogEvent::PolicyChanged($name) => $body,
             QueueLogEvent::TaskCreated($name) => $body,
             QueueLogEvent::TaskCreatedV2($name) => $body,
+            QueueLogEvent::TaskCreatedV3($name) => $body,
             QueueLogEvent::TaskStateChanged($name) => $body,
+            QueueLogEvent::TaskStateChangedV2($name) => $body,
         }
     };
 }
@@ -332,6 +431,10 @@ macro_rules! each_event {
 impl<'a> QueueLogEvent<'a> {
     fn seq(self) -> u64 {
         each_event!(self, event => event.seq.get())
+    }
+
+    fn id(self) -> &'a CommonUlidV1 {
+        each_event!(self, event => &event.id)
     }
 
     fn stream(self) -> &'a str {
@@ -354,6 +457,7 @@ impl<'a> QueueLogEvent<'a> {
         match self {
             Self::TaskCreated(event) => Some(event.into()),
             Self::TaskCreatedV2(event) => Some(event.into()),
+            Self::TaskCreatedV3(event) => Some(event.into()),
             _ => None,
         }
     }
@@ -377,9 +481,15 @@ pub enum ReplayRefusal {
     InvalidChange,
     /// The task was created twice or never.
     TaskCreation,
+    /// A creation precedes the first owner policy event and the initial policy is unavailable.
+    MissingInitialPolicy,
+    /// The policy cannot be represented by the current core.
+    InvalidPolicy,
     /// The core clock reading used at creation was unavailable.
-    MissingAdmissionContext,
-    /// A task in the stream fails the loaded admission policy.
+    MissingAdmissionClock,
+    /// The clock reading belongs to a different creation.
+    AdmissionClockMismatch,
+    /// A task in the stream fails the admission policy in force when it was created.
     Admission(AdmissionRefusal),
 }
 
@@ -389,6 +499,14 @@ pub struct ReplayedTask {
     pub state: CommonQueueTaskStateV1,
     pub attempts: u64,
     pub anchor: Option<ClockAnchor>,
+    pub policy: QueuePolicy,
+}
+
+/// Core clock reading captured at admission and stored with the creation's event ID.
+#[derive(Debug, Clone, Copy)]
+pub struct ReplayAdmissionClock<'a> {
+    pub event_id: &'a CommonUlidV1,
+    pub now: &'a CommonTimestampV1,
 }
 
 /// Rebuilds the state and the retry budget of one task from the whole stream of its queue,
@@ -401,17 +519,20 @@ pub struct ReplayedTask {
 /// Every device actor belongs to the queue owner; creating, enabling and owner stops come from
 /// such a device, and so do the manual requests of every task of the queue; a task enters
 /// `running` only while the queue is enabled; and `review → done` is accepted by a device of the
-/// owner. Agents and the daemon may still cancel or fail tasks.
+/// owner. A task change names its channel exactly when a device made it. Agents and the daemon
+/// may still cancel or fail tasks.
 ///
-/// Every creation is checked against the loaded policy and the historical clock reading supplied
-/// by sequence number. Anchors come from the log. The stream cannot establish uniqueness across
-/// queues or verify the supplied clock readings.
-pub fn replay_task<'a, 'context>(
+/// Replay starts with the policy loaded when the queue was created, if available. Owner
+/// policy events set the policy for subsequent events. Each creation requires a policy.
+/// The caller reads the trusted admission clock by event ID, independently of the creation's
+/// timestamp. Anchors come from the log.
+/// The stream cannot establish uniqueness across queues or authenticate the supplied clock.
+pub fn replay_task<'a, 'clock>(
     task_id: &CommonIdV1,
     log: impl IntoIterator<Item = QueueLogEvent<'a>>,
     owner_at: impl Fn(&CommonIdV1, &CommonTimestampV1) -> Option<CommonIdV1>,
-    policy: &QueuePolicy,
-    now_at: impl Fn(u64) -> Option<&'context CommonTimestampV1>,
+    initial_policy: Option<&QueuePolicy>,
+    clock_at: impl Fn(&CommonUlidV1) -> Option<ReplayAdmissionClock<'clock>>,
 ) -> Result<ReplayedTask, ReplayRefusal> {
     let mut log = log.into_iter();
     let Some(QueueLogEvent::Created(created)) = log.next() else {
@@ -436,6 +557,7 @@ pub fn replay_task<'a, 'context>(
         return Err(ReplayRefusal::NotOwnerDevice);
     }
     let mut queue_state = Stopped;
+    let mut policy = initial_policy.cloned();
     // (state, attempts, ceiling) once the task is created.
     let mut task: Option<(CommonQueueTaskStateV1, u64, u64)> = None;
     let mut admissions = Vec::new();
@@ -472,7 +594,18 @@ pub fn replay_task<'a, 'context>(
                 }
                 anchor = Some(ClockAnchor::from_event(reanchored));
             }
-            QueueLogEvent::TaskCreated(_) | QueueLogEvent::TaskCreatedV2(_) => {
+            QueueLogEvent::PolicyChanged(changed) => {
+                if changed.data.owner_id != *owner || !owner_device(event) {
+                    return Err(ReplayRefusal::NotOwnerDevice);
+                }
+                policy = Some(
+                    QueuePolicy::from_event(&changed.data.policy)
+                        .ok_or(ReplayRefusal::InvalidPolicy)?,
+                );
+            }
+            QueueLogEvent::TaskCreated(_)
+            | QueueLogEvent::TaskCreatedV2(_)
+            | QueueLogEvent::TaskCreatedV3(_) => {
                 let admitted = event.task_creation().expect("task creation event");
                 if admitted.origin.is_manual() && !owner_device(event) {
                     return Err(ReplayRefusal::NotOwnerDevice);
@@ -480,10 +613,14 @@ pub fn replay_task<'a, 'context>(
                 if admitted.task_id == task_id && task.is_some() {
                     return Err(ReplayRefusal::TaskCreation);
                 }
-                let now = now_at(seq).ok_or(ReplayRefusal::MissingAdmissionContext)?;
+                let policy = policy.as_ref().ok_or(ReplayRefusal::MissingInitialPolicy)?;
+                let clock = clock_at(event.id()).ok_or(ReplayRefusal::MissingAdmissionClock)?;
+                if clock.event_id != event.id() {
+                    return Err(ReplayRefusal::AdmissionClockMismatch);
+                }
                 let inputs = AdmissionInputs {
                     policy,
-                    now,
+                    now: clock.now,
                     anchor: anchor.as_ref(),
                 };
                 check_admission(admitted, admissions.iter().copied(), owner, inputs)
@@ -494,39 +631,51 @@ pub fn replay_task<'a, 'context>(
                 }
                 task = Some((Queued, 0, admitted.attempt_limit.into()));
             }
-            QueueLogEvent::TaskStateChanged(change) => {
-                if change.data.task_id != *task_id {
+            QueueLogEvent::TaskStateChanged(_) | QueueLogEvent::TaskStateChangedV2(_) => {
+                let (changed_task, from, to, recorded_attempts) = match event {
+                    QueueLogEvent::TaskStateChanged(change) => {
+                        let data = &change.data;
+                        (&data.task_id, data.from, data.to, data.attempts.get())
+                    }
+                    QueueLogEvent::TaskStateChangedV2(change) => {
+                        let data = &change.data;
+                        (&data.task_id, data.from, data.to, data.attempts.get())
+                    }
+                    _ => unreachable!("task state change"),
+                };
+                if changed_task != task_id {
                     continue;
                 }
                 let (state, attempts, limit) = task.as_mut().ok_or(ReplayRefusal::TaskCreation)?;
-                if change.data.from != *state {
+                if from != *state {
                     return Err(ReplayRefusal::InvalidChange);
                 }
-                if change.data.to == Running {
+                if to == Running {
                     if queue_state != Enabled {
                         return Err(ReplayRefusal::QueueStopped);
                     }
                     *attempts += 1;
                 }
-                if (*state, change.data.to) == (Review, Done) && !owner_device(event) {
+                if (*state, to) == (Review, Done) && !owner_device(event) {
                     return Err(ReplayRefusal::NotOwnerDevice);
                 }
                 if *attempts > *limit
-                    || change.data.attempts.get() != *attempts
-                    || (*state == Failed && change.data.to == Queued && *attempts == *limit)
+                    || recorded_attempts != *attempts
+                    || (*state == Failed && to == Queued && *attempts == *limit)
                 {
                     return Err(ReplayRefusal::InvalidChange);
                 }
-                *state = change.data.to;
+                *state = to;
             }
         }
     }
-    task.map(|(state, attempts, _)| ReplayedTask {
+    let (state, attempts, _) = task.ok_or(ReplayRefusal::TaskCreation)?;
+    Ok(ReplayedTask {
         state,
         attempts,
         anchor,
+        policy: policy.ok_or(ReplayRefusal::MissingInitialPolicy)?,
     })
-    .ok_or(ReplayRefusal::TaskCreation)
 }
 
 /// Seconds since 1970-01-01T00:00:00Z, ignoring the fraction.
@@ -565,7 +714,7 @@ impl<'a> TaskOrigin<'a> {
     }
 }
 
-/// A borrowed task creation from either version of the queue contract.
+/// A borrowed task creation from any version of the queue contract.
 #[derive(Clone, Copy)]
 pub struct TaskCreation<'a> {
     queue_id: &'a CommonIdV1,
@@ -605,6 +754,7 @@ macro_rules! task_creation_from {
 
 task_creation_from!(EventQueueTaskCreatedV1, EventQueueTaskCreatedV1DataOrigin);
 task_creation_from!(EventQueueTaskCreatedV2, EventQueueTaskCreatedV2DataOrigin);
+task_creation_from!(EventQueueTaskCreatedV3, CommonQueueTaskOriginV1);
 
 /// Why the admission refuses a task.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -741,6 +891,50 @@ pub fn reanchor_admission_clock(
     })
 }
 
+/// Authorizes a policy change against the last sequence read from storage. The caller
+/// appends conditionally at the next sequence using the authenticated device as actor
+/// and activates the policy only after the append succeeds.
+pub fn change_queue_policy(
+    queue: &RecordTaskQueueV1,
+    device: Option<&AuthenticatedDevice>,
+    policy: &QueuePolicy,
+    expected_seq: u64,
+    stream_last_seq: u64,
+) -> Result<EventQueuePolicyChangedV1Data, QueueRefusal> {
+    let device = device.ok_or(QueueRefusal::Unauthenticated)?;
+    if device.owner_id != queue.owner_id {
+        return Err(QueueRefusal::NotOwner);
+    }
+    if expected_seq != stream_last_seq {
+        return Err(QueueRefusal::StaleSeq);
+    }
+    let encode_count =
+        |count: NonZeroUsize| NonZeroU64::new(count.get() as u64).expect("nonzero queue count");
+    Ok(EventQueuePolicyChangedV1Data {
+        queue_id: queue.id.clone(),
+        owner_id: device.owner_id.clone(),
+        via: match device.via {
+            Channel::LocalUi => EventQueuePolicyChangedV1DataVia::LocalUi,
+            Channel::Tray => EventQueuePolicyChangedV1DataVia::Tray,
+            Channel::RemoteDevice => EventQueuePolicyChangedV1DataVia::RemoteDevice,
+        },
+        policy: EventQueuePolicyChangedV1DataPolicy {
+            attempt_limit: EventQueuePolicyChangedV1DataPolicyAttemptLimit::new(
+                policy.attempt_limit.get(),
+            )
+            .expect("queue policies share the attempt limit range"),
+            admission_limit: encode_count(policy.admission_limit),
+            window_seconds: policy.window_seconds,
+            window_admissions: encode_count(policy.window_admissions),
+            manual_window_admissions: encode_count(policy.manual_window_admissions),
+            bug_rule_window_admissions: encode_count(policy.bug_rule_window_admissions),
+            clock_skew_seconds: policy.clock_skew_seconds,
+            clock_rewind_seconds: policy.clock_rewind_seconds,
+            host_confirm_seconds: policy.host_confirm_seconds,
+        },
+    })
+}
+
 /// What the producer knows when it decides an admission, besides the candidate and the history.
 pub struct AdmissionContext<'a> {
     pub policy: &'a QueuePolicy,
@@ -795,7 +989,7 @@ pub fn can_admit_task<'a>(
     can_admit_creation(created.into(), history.into_iter().map(Into::into), context)
 }
 
-/// Checks admission of either event version against a history that can mix versions.
+/// Checks admission of any event version against a history that can mix versions.
 pub fn can_admit_creation<'a>(
     created: TaskCreation<'_>,
     history: impl IntoIterator<Item = TaskCreation<'a>>,
@@ -906,34 +1100,37 @@ fn check_admission<'a>(
 }
 
 /// Returns the attempt count after an allowed transition in the current queue.
-pub fn next_attempt_count(
+pub fn next_attempt_count<'a>(
     queue: &RecordTaskQueueV1,
-    task: &RecordQueueTaskV1,
+    task: impl Into<TaskSnapshot<'a>>,
     next: CommonQueueTaskStateV1,
     device: Option<&AuthenticatedDevice>,
-) -> Option<RecordQueueTaskV1Attempts> {
-    if task.queue_id != queue.id {
+) -> Option<RecordQueueTaskV2Attempts> {
+    let task = task.into();
+    if task.queue_id != &queue.id {
         return None;
     }
     if next == Cancelled && matches!(task.state, Queued | Running | Review | Failed) {
-        return Some(task.attempts);
+        return RecordQueueTaskV2Attempts::new(task.attempts).ok();
     }
 
-    let attempts = task.attempts.get();
-    let limit = task.attempt_limit.get().into();
+    let attempts = task.attempts;
+    let limit = task.limit;
     if attempts > limit || (attempts == 0 && task.state != Queued) {
         return None;
     }
 
     match (task.state, next) {
         (Queued, Running) if queue.state == Enabled && attempts < limit => {
-            RecordQueueTaskV1Attempts::new(attempts + 1).ok()
+            RecordQueueTaskV2Attempts::new(attempts + 1).ok()
         }
-        (Failed, Queued) if attempts < limit => Some(task.attempts),
+        (Failed, Queued) if attempts < limit => RecordQueueTaskV2Attempts::new(task.attempts).ok(),
         (Review, Done) if device.is_some_and(|device| device.owner_id == queue.owner_id) => {
-            Some(task.attempts)
+            RecordQueueTaskV2Attempts::new(task.attempts).ok()
         }
-        (Running, Review | Failed) | (Review, Failed) => Some(task.attempts),
+        (Running, Review | Failed) | (Review, Failed) => {
+            RecordQueueTaskV2Attempts::new(task.attempts).ok()
+        }
         _ => None,
     }
 }

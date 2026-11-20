@@ -1,0 +1,27 @@
+{
+  "01-unknown.json": {
+    "rule": "A origem pertence a uma categoria conhecida.",
+    "keyword": "oneOf",
+    "instancePath": ""
+  },
+  "02-manual-ref.json": {
+    "rule": "O pedido manual usa identificador de pedido.",
+    "keyword": "additionalProperties",
+    "instancePath": ""
+  },
+  "03-issue-missing-ref.json": {
+    "rule": "A origem issue exige a referência.",
+    "keyword": "required",
+    "instancePath": ""
+  },
+  "04-issue-zero.json": {
+    "rule": "A referência da issue é positiva.",
+    "keyword": "minimum",
+    "instancePath": "/ref"
+  },
+  "05-bug-missing-target.json": {
+    "rule": "A regra de bug exige um alvo.",
+    "keyword": "required",
+    "instancePath": ""
+  }
+}
