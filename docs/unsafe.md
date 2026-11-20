@@ -1,6 +1,6 @@
 # Orçamento de `unsafe`
 
-Regra: `unsafe_code = "forbid"` vale para todo o workspace (`[workspace.lints.rust]` no `Cargo.toml` da raiz) e cada crate herda com `[lints] workspace = true`. As exceções em uso são duas, cada uma com uma tabela `[lints]` própria com `unsafe_code = "deny"` e o lint liberado em um só módulo, compilado apenas no Windows: `ads-ptyhost` (`crates/ptyhost/src/win.rs`) e `ads-adapter-fs` (`crates/adapters/fs/src/sys/windows.rs`). Fora desses módulos, `unsafe` continua reprovando a compilação.
+Regra: `unsafe_code = "forbid"` vale para todo o workspace (`[workspace.lints.rust]` no `Cargo.toml` da raiz) e cada crate herda com `[lints] workspace = true`. As exceções em uso são três, cada uma com uma tabela `[lints]` própria com `unsafe_code = "deny"` e o lint liberado em um só módulo, compilado apenas no Windows: `ads-ptyhost` (`crates/ptyhost/src/win.rs`), `ads-adapter-fs` (`crates/adapters/fs/src/sys/windows.rs`) e `ads-testkit` (`crates/testkit/src/win.rs`). O `ads-testkit` é só de teste: entra apenas como dependência de desenvolvimento e não chega a nenhum binário do produto, nem com `--all-features`. Fora desses módulos, `unsafe` continua reprovando a compilação.
 
 Exceção prevista, ainda não usada: `ads-adapter-vault` vai precisar de chamadas do sistema (cofre de credenciais). Quando o primeiro bloco entrar, o mesmo PR troca a herança desse crate do mesmo jeito e lista cada bloco abaixo, com o motivo. A contagem só sobe com justificativa aqui.
 
@@ -8,6 +8,7 @@ Exceção prevista, ainda não usada: `ads-adapter-vault` vai precisar de chamad
 |---|---|---|
 | `ads-ptyhost` | 30 | chamadas da API do Windows, listadas abaixo |
 | `ads-adapter-fs` | 4 | chamadas da API do Windows para abrir, mover e apagar por identificador aberto, listadas abaixo; no Linux as mesmas operações vêm do `rustix`, sem `unsafe` |
+| `ads-testkit` | 7 | só de teste, fora de qualquer binário do produto; listados abaixo |
 | `ads-storage` | 0 | SQLite e cifra pelas APIs seguras das dependências; herda `forbid` |
 | demais | 0 | nenhum |
 
@@ -30,7 +31,7 @@ Cada bloco é uma única operação (uma chamada da API do Windows pelo crate `w
 | `process_token` | 2 | `OpenProcessToken` (só `TOKEN_QUERY`), `OwnedHandle::from_raw_handle` | abrir para leitura o token de um processo: o próprio ou o do servidor de um pipe |
 | `token_sid` | 2 | `GetTokenInformation`, leitura do ponteiro inicial do `TOKEN_USER` ou `TOKEN_OWNER` preenchido | ler o usuário de um token ou o dono que ele dá aos objetos que cria |
 | `own_token` | 1 | `GetCurrentProcess` | pseudo handle do próprio processo, sempre válido; daí saem o usuário (para nomear o canal e restringi-lo a ele) e o dono padrão |
-| `pipe_server` | 3 | `GetNamedPipeServerProcessId`, `OpenProcess` (só `PROCESS_QUERY_LIMITED_INFORMATION`), `OwnedHandle::from_raw_handle` | o cliente descobrir qual processo serve o pipe que abriu, para ler o usuário dele |
+| `pipe_server_after` | 3 | `GetNamedPipeServerProcessId`, `OpenProcess` (só `PROCESS_QUERY_LIMITED_INFORMATION`), `OwnedHandle::from_raw_handle` | o cliente descobrir qual processo serve o pipe que abriu, para ler o usuário dele |
 | `object_owner_sid` | 1 | `GetSecurityInfo` (só o dono) | ler o dono do objeto do pipe, posto por quem criou o nome |
 | `create_user_pipe` | 2 | `ConvertStringSecurityDescriptorToSecurityDescriptorW`, `ServerOptions::create_with_security_attributes_raw` (do `tokio`) | criar o named pipe com lista de acesso de uma entrada só, a do usuário atual |
 | `access_list_text` | 2 | `GetSecurityInfo`, `ConvertSecurityDescriptorToStringSecurityDescriptorW` | ler a lista de acesso de um objeto (prova de que só o usuário abre o canal) |
@@ -44,3 +45,12 @@ A biblioteca padrão só abre, move e apaga por caminho, e um caminho é resolvi
 | `open_at` | 2 | `NtCreateFile`, `OwnedHandle::from_raw_handle` | abrir ou criar uma entrada por um nome só, relativa a uma pasta aberta, sem seguir ponto de reanálise |
 | `query` | 1 | `GetFileInformationByHandleEx` | ler do identificador aberto os atributos, a identidade (volume e identificador de arquivo), o tamanho e a lista de nomes de uma pasta |
 | `apply` | 1 | `NtSetInformationFile` | mover sem substituir o destino e apagar, os dois sobre o identificador aberto |
+
+## `ads-testkit` (`crates/testkit/src/win.rs`), só de teste
+
+Um processo filho do binário de teste fecha o próprio processo ou o próprio token a todos menos à conta do sistema, para fazer o papel do servidor de outra conta sem criar conta nem mudar permissões da máquina. O crate é dependência de desenvolvimento do `ads-ptyhost` e do `ads-daemon` e de nenhum outro alvo.
+
+| Onde | Blocos | Chamada | Motivo |
+|---|---|---|---|
+| `LocalMemory::drop` | 1 | `LocalFree` | liberar o descritor de segurança que o sistema alocou |
+| `restrict_own_process` | 6 | `ConvertStringSecurityDescriptorToSecurityDescriptorW`, `GetSecurityDescriptorDacl`, `GetCurrentProcess`, `OpenProcessToken` (só `WRITE_DAC`), `OwnedHandle::from_raw_handle`, `SetSecurityInfo` | trocar a lista de acesso do próprio processo ou do próprio token |
