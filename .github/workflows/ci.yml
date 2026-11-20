@@ -12,8 +12,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   commits:
@@ -149,8 +149,6 @@ jobs:
   # Entram depois, cada um com o gatilho que o liga. Mantenha o filtro por caminho para não
   # rodar o que não mudou, e inclua o job novo em `needs` do ci-ok.
   #
-  # deps:        gatilho = existir Cargo.lock ou package-lock.json. dependency-review; só se um arquivo de
-  #              dependências mudou.
   # artifact:    gatilho = o atualizador do daemon existir. Gera o executável, o SHA-256 e a atestação a cada junção
   #              na develop (runner Windows) e publica como pré-lançamento.
   # ---------------------------------------------------------------------------------------------------------
@@ -180,18 +178,18 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
           PUSH_AFTER_SHA: ${{ github.sha }}
-          # Casca: ela mesma, o que ela enxerga (contracts, e2e) e tudo que muda o resultado da compilação.
-          SHELL_PATHS: '^(crates/shell/|crates/contracts/|crates/e2e/|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
+          # Casca: ela mesma, os contratos e as entradas da compilação.
+          SHELL_PATHS: '^(crates/shell/|crates/contracts/|crates/e2e/|contracts/|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
           # Interface: ela mesma e o que ela lê dos contratos (tipos gerados e os Schemas do teste de contrato).
           UI_PATHS: '^(ui/|contracts/generated/|contracts/schemas/)'
           # Contratos: os Schemas e as ferramentas, os tipos Rust gerados deles e o que muda a forma como o rustfmt os escreve.
           CONTRACTS_PATHS: '^(contracts/|crates/contracts/|rust-toolchain\.toml$|rustfmt\.toml$)'
           # PTY: host, daemon, adaptadores ligados a ele, núcleo, contratos, parâmetros, workflow e entradas da compilação.
-          PTY_PATHS: '^(crates/ptyhost/|crates/daemon/|crates/testkit/|crates/contracts/|crates/adapters/(claude|codex)/|crates/core/|defaults/(ptyhost|daemon|harnesses)\.toml$|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
+          PTY_PATHS: '^(crates/ptyhost/|crates/daemon/|crates/testkit/|crates/contracts/|crates/adapters/(claude|codex)/|crates/core/|contracts/|defaults/(ptyhost|daemon|harnesses)\.toml$|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
           # Executor de arquivos: o crate, o portão que ele julga de novo, os parâmetros dos dois, este workflow e
           # tudo que muda o resultado da compilação.
-          FS_PATHS: '^(crates/adapters/fs/|crates/core/|defaults/action-gate\.toml$|defaults/fs-executor\.toml$|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
-          STORAGE_PATHS: '^(crates/storage/|defaults/storage\.toml$|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
+          FS_PATHS: '^(crates/adapters/fs/|crates/core/|crates/contracts/|contracts/|defaults/action-gate\.toml$|defaults/fs-executor\.toml$|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
+          STORAGE_PATHS: '^(crates/storage/|crates/contracts/|contracts/|defaults/storage\.toml$|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
         run: |
           set -euo pipefail
           # Na dúvida (disparo manual, push sem base conhecida, diff impossível), roda.
@@ -278,6 +276,9 @@ jobs:
           rustc --version
           cargo --version
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: linux
+          save-if: ${{ github.ref == 'refs/heads/develop' && github.event_name != 'pull_request' }}
       # Sem --workspace de propósito: a casca Tauri fica de fora (default-members) e compila no job shell-check.
       - name: Formatação
         run: cargo fmt --all --check
@@ -322,6 +323,9 @@ jobs:
           rustup toolchain install
           rustc --version
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: windows
+          save-if: ${{ github.ref == 'refs/heads/develop' && github.event_name != 'pull_request' }}
       # O Tauri embute `ui/dist` ao compilar; enquanto a interface não existir, uma página vazia basta.
       - name: Pasta da interface
         run: |
@@ -386,6 +390,9 @@ jobs:
           rustup toolchain install
           rustc --version
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: windows
+          save-if: ${{ github.ref == 'refs/heads/develop' && github.event_name != 'pull_request' }}
       - name: Lint do ptyhost e do cliente no Windows (avisos como erro)
         run: cargo clippy --locked -p ads-ptyhost -p ads-daemon -p ads-testkit --all-targets -j 2 -- -D warnings
       - name: Testes do ptyhost (inclui os 20 ciclos de ConPTY)
@@ -395,10 +402,12 @@ jobs:
       - name: Testes do cliente do daemon (inclui o binário real)
         run: cargo test --locked -p ads-daemon -j 2 -- --nocapture
       - name: Parâmetros de abertura das ferramentas (caminhos e ambiente do Windows)
-        run: cargo test --locked -p ads-core -p ads-adapter-claude -p ads-adapter-codex -j 2
+        run: |
+          cargo test --locked -p ads-core --lib --test child_env -j 2
+          cargo test --locked -p ads-adapter-claude -p ads-adapter-codex -j 2
 
   # Junção, ponto de reanálise e a remoção de link de pasta só existem no Windows: os testes do executor de
-  # arquivos rodam aqui também (no Linux eles já rodam no job `rust`), e só quando o código dele muda (ADR 0013).
+  # arquivos rodam aqui também (no Linux eles já rodam no job `rust`), e só quando uma entrada do job muda (ADR 0013).
   fs-windows:
     name: fs-windows
     needs: changes
@@ -420,6 +429,9 @@ jobs:
           rustup toolchain install
           rustc --version
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: windows
+          save-if: ${{ github.ref == 'refs/heads/develop' && github.event_name != 'pull_request' }}
       - name: Lint do executor no Windows (avisos como erro)
         run: cargo clippy --locked -p ads-adapter-fs --all-targets -- -D warnings
       - name: Testes do executor (inclui a junção)
@@ -435,7 +447,6 @@ jobs:
       run:
         shell: bash
     env:
-      CARGO_BUILD_JOBS: "2"
       CARGO_INCREMENTAL: "0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -444,6 +455,9 @@ jobs:
       - name: Instalar a versão fixada em rust-toolchain.toml
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: windows
+          save-if: ${{ github.ref == 'refs/heads/develop' && github.event_name != 'pull_request' }}
       - name: Lint e testes do armazenamento no Windows
         run: |
           cargo clippy --locked -p ads-storage --all-targets -j 2 -- -D warnings
