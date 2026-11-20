@@ -168,10 +168,11 @@ mod tests {
     #[test]
     fn the_disk_probe_does_not_find_a_folder_written_for_the_other_system() {
         if cfg!(windows) {
-            // `\Windows` written as `/Windows` resolves against the current drive.
-            let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
-            let posix = root.get(2..).unwrap_or_default().replace('\\', "/");
-            assert!(DiskProbe.is_dir(&root), "{root}");
+            // The current folder without its drive, written `/a/b`, resolves against the current
+            // drive, so it exists whichever drive the checkout is on.
+            let here = std::env::current_dir().unwrap().display().to_string();
+            let posix = here.get(2..).unwrap_or_default().replace('\\', "/");
+            assert!(DiskProbe.is_dir(&here), "{here}");
             assert!(Path::new(&posix).is_dir(), "{posix}");
             assert!(!DiskProbe.is_dir(&posix), "{posix}");
         } else {
