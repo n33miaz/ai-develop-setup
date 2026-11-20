@@ -6,7 +6,14 @@ use ads_core::gate::PathError;
 
 const OTHER_HARNESS: &str = "codex";
 const PROGRAM: &str = r"C:\Tools\claude\claude.exe";
-const POISON_EXTRA: &[&str] = &[];
+const POISON_EXTRA: &[&str] = &[
+    "CLAUDE_CONFIG_DIR",
+    "claude_config_dir",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "Claude_Code_Entrypoint",
+    "ANTHROPIC_BASE_URL",
+    "Anthropic_Base_Url",
+];
 const DENIED_EXTRA: &[&str] = &["Claude_Config_Dir"];
 const WRONG_HARNESSES: &[&str] = &["codex", "Claude", "harness-a"];
 
