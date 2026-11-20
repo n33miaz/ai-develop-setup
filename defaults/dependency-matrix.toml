@@ -58,11 +58,11 @@ allow = []
 path = "crates/e2e"
 allow = ["ads-contracts"]
 
-# Supervisor estavel: so contratos, para quase nunca precisar mudar.
+# Supervisor estável: contratos e política de ambiente dos filhos.
 
 [crates.ads-launcher]
 path = "crates/launcher"
-allow = ["ads-contracts"]
+allow = ["ads-contracts", "ads-core"]
 
 # Casca fina: so contratos e a sessao cifrada. Nada de politica, banco ou PTY.
 

@@ -8,3 +8,9 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+ads-core = { path = "../core" }
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
