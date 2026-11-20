@@ -106,6 +106,10 @@ COLORTERM = "truecolor"
 # A raiz de uma unidade (`C:\`) ou `/` e recusada: a ferramenta trabalharia no disco inteiro.
 [workdirs]
 
+[accounts]
+# No arquivo do usuario: [accounts.<ferramenta>.<apelido>] com profile_dir absoluto.
+# Sem perfis no padrao. Antigravity permanece manual.
+
 # Uma tabela por ferramenta. Cada adaptador le so a sua.
 [tools.claude]
 
@@ -119,8 +123,14 @@ args = []
 # Modo de uso. So `interactive` (terminal operado pela pessoa) e aceito por enquanto.
 mode = "interactive"
 
+# Limiar da cota observada (1 a 100). A configuracao ainda nao aciona a troca.
+switch = "propose"
+switch_at_pct = 90
+
 # Mesmas chaves e regras de `[tools.claude]`.
 [tools.codex]
 program = ""
 args = []
 mode = "interactive"
+switch = "propose"
+switch_at_pct = 90

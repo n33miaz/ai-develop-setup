@@ -243,7 +243,7 @@ Estado da mitigação, em cada risco:
 
 ## Contas por pasta de perfil
 
-Riscos da troca de conta por pasta de perfil ([ADR 0022](adr/0022-account-profile-folders-and-automatic-switching.md)). Nenhum código de perfil existe ainda; o adaptador atual nega `CLAUDE_*` e `CODEX_*` no ambiente do filho.
+Riscos da troca de conta por pasta de perfil ([ADR 0022](adr/0022-account-profile-folders-and-automatic-switching.md)). O núcleo valida a configuração de perfil e oferece a ligação após o filtro de ambiente. A abertura ainda usa o filtro sem ligação a perfil.
 
 ### Login sem chave do Console desfaz os perfis do Claude
 
@@ -271,9 +271,9 @@ Riscos da troca de conta por pasta de perfil ([ADR 0022](adr/0022-account-profil
 - **Impacto.** Quebra da regra C1; credencial exposta.
 - **Dono.** Núcleo (ligação ao perfil) e coletores de uso.
 - **Teto.** Lista de subpastas permitidas por ferramenta.
-- **Mitigação existente (decidida, não implementada).** A variável de pasta é constante do adaptador, injetada depois do filtro de ambiente; `CLAUDE_*` e `CODEX_*` continuam em `env.deny`. Coletores que leiam subpastas do perfil dependem de decisão do mantenedor e de exceção explícita na regra C1; até lá, só o comando de status.
+- **Mitigação existente.** A variável de pasta é constante do adaptador, injetada depois do filtro de ambiente; `CLAUDE_*` e `CODEX_*` continuam em `env.deny`. Coletores que leiam subpastas do perfil dependem de decisão do mantenedor e de exceção explícita na regra C1; até lá, só o comando de status.
 - **Plano B.** Remover a ligação ao perfil (condição de reversão da ADR 0022).
-- **O que falta.** O tipo de ligação ao perfil no núcleo; teste de arquivo sentinela nos coletores; teste com duas pastas de perfil e variável de chave envenenada no processo pai.
+- **O que falta.** Ligar os perfis após a validação do isolamento na máquina do mantenedor. Qualquer coletor de perfil exige a decisão prevista na ADR e um teste de arquivo sentinela.
 
 ### Chave passa na frente do login do perfil
 
