@@ -15,8 +15,8 @@ Usar SQLite embutido via `rusqlite`, sem features padrão, com `bundled`. Tudo q
 participa de uma invariante ficará em `audit.db`; `state.db` será uma projeção
 reconstruível. Métricas independentes podem manter arquivo próprio. Esta proposta
 diverge da divisão literal do ADR 0004 para preservar atomicidade das invariantes.
-O esquema versão 1 tem só `meta`; a versão 3 acrescenta o log de eventos (abaixo);
-a versão 2 está aposentada.
+O esquema versão 1 tem só `meta`, a versão 3 acrescenta o log de eventos e a
+versão 4 registra a gênese no banco. A versão 2 está aposentada.
 
 `synchronous = FULL` é fixo, sem alternativa de configuração. WAL, foreign keys,
 trusted schema desligado, cell size check, timeout, application id (`0x41445331`),
@@ -85,9 +85,8 @@ Conferência em 16/11/2026 por `cargo info` e API oficial do crates.io:
 é recente (11/11), escolha literal da anterior solicitada. `libsqlite3-sys 0.40.0`
 é MIT; o SQLite embutido é domínio público e requer revisão dos avisos no pacote.
 `chacha20poly1305 0.11.0`, `zeroize 1.9.1` e `getrandom 0.4.3` oferecem MIT ou
-Apache-2.0. Em 19/11/2026, para a cadeia com chave: `hmac 0.12.1` (MIT ou
-Apache-2.0), nova, e `subtle 2.6.1` (BSD-3-Clause), já no workspace e agora
-dependência direta; a feature `hooks` de `rusqlite`, para o autorizador, não
+Apache-2.0. A cadeia com chave usa `sha2 0.11.1` (MIT ou Apache-2.0) com
+a feature `zeroize` e `subtle 2.6.1` (BSD-3-Clause); a feature `hooks` de `rusqlite`, para o autorizador, não
 acrescenta crate. `cargo deny check` passa. Nenhuma exceção de licença nova é
 autorizada.
 `pkg-config` e `vcpkg` são dependências de compilação de `libsqlite3-sys`,
@@ -108,9 +107,10 @@ de um evento; `read_page_limit` (padrão 500, 1 a 10000) limita quantos eventos
 uma leitura decifra, e `read_page_max_bytes` (padrão 8 MiB, de `max_event_bytes`
 a 256 MiB) limita o texto cifrado de uma página, que é decifrada linha a linha.
 O teto conta texto cifrado, não memória: cada evento devolvido fica como JSON
-interpretado (`serde_json::Map`), que pode ocupar várias vezes o tamanho do texto
-(estimativa sem medição: até 10 a 20 vezes num `data` de arrays de números), e o
-SQLite já leu a linha que passa do teto antes de a página parar. A cifra usa XChaCha20-Poly1305 com nonce do sistema de 24 bytes, AAD
+interpretado (`serde_json::Map`), que pode ocupar várias vezes o tamanho do texto.
+O [README de storage](../../crates/storage/README.md#log-de-eventos) registra a
+medição de uma página de arrays numéricos. O SQLite já leu a linha que passa do
+teto antes de a página parar. A cifra usa XChaCha20-Poly1305 com nonce do sistema de 24 bytes, AAD
 com campos ordenados prefixados por tamanho e domínio versionado. O provedor de
 chaves é injetado; chave não implementa Debug, Display ou Clone. O armazenamento
 próprio da chave é `Box<Zeroizing<[u8; 32]>>`: movimentos transferem o ponteiro,
@@ -118,16 +118,25 @@ sem copiar o array por valor. O construtor recebe `&[u8; 32]` e copia para a alo
 continua responsável por apagar a origem. O texto decifrado retorna em
 `Zeroizing<Vec<u8>>`. Esses buffers são zerados no descarte normal; isso não
 promete apagar cópias externas, registradores, swap, dumps ou memória após abort.
-O estado interno da cifra usa a feature `zeroize` da dependência. O estado do
-HMAC (`hmac 0.12`), que guarda a chave combinada com os blocos de preenchimento
-durante a derivação e o cálculo da cadeia, e o resultado intermediário dele na
-pilha não são zerados.
+A cifra e o SHA-256 usado no HMAC habilitam a feature `zeroize`. O HMAC de
+chave de 32 bytes compõe duas instâncias de SHA-256 conforme a RFC 2104.
+Os blocos de preenchimento e os resultados intermediários usam `Zeroizing`.
+A finalização reinicializa as instâncias SHA-256 no lugar. A limpeza é de melhor
+esforço, pois movimentos de dados e registradores podem deixar cópias.
 
-## Log de eventos (esquema versão 3)
+## Log de eventos
 
 A versão 3 só acrescenta objetos à versão 1: `cipher_key` (identificador, cifra
 e `key_check`, nunca a chave) e `event` (um envelope por linha, `data` cifrado).
-Banco versão 1 é migrado na abertura. A migração roda numa transação `IMMEDIATE`
+A versão 4 acrescenta `log_genesis` e atualiza o gatilho de continuidade. Logs
+vazios recebem 32 bytes de gênese do gerador aleatório do sistema. Logs preenchidos na
+versão 3 mantêm a gênese de 32 zeros para preservar a autenticação da primeira linha,
+sem separação entre bancos pela gênese. A migração retorna `LegacyKeyReuse` antes de
+alterar o esquema se um identificador de chave aparecer em mais de um trecho, pois
+a versão 3 permitia esse retorno. A rotação só avança para um
+identificador de chave ainda não usado. Na transação de `append`, uma chave
+já registrada só pode gravar se for a da última linha, quando houver linhas. Bancos das versões 1 e 3 são
+migrados na abertura. A migração roda numa transação `IMMEDIATE`
 e, dentro dela, compara o esquema do arquivo com o da versão dele para qualquer
 versão, inclusive a atual: outro processo pode ter migrado ou alterado o arquivo
 entre a inspeção e o lock. A abertura compara o `sqlite_schema` inteiro,
@@ -135,8 +144,8 @@ inclusive índices automáticos e `sqlite_sequence`, com o que os scripts da ver
 do arquivo produzem num banco em memória.
 
 A versão 2 foi o mesmo log num formato anterior ao primeiro produtor e fica
-aposentada: a abertura a recusa com `RetiredSchema`, pelo cabeçalho, antes de o
-SQLite tocar o arquivo. Migrar não é possível sem perder garantias: a abertura não
+aposentada: a abertura a recusa com `RetiredSchema` se a versão estiver no
+cabeçalho principal ou na página 1 confirmada do WAL, antes de chamar o SQLite. Migrar não é possível sem perder garantias: a abertura não
 recebe chave, e as linhas da versão 2 só passariam ao formato novo decifradas,
 cifradas de novo e reencadeadas com a chave; descartá-las exigiria apagar
 tabelas numa migração que só acrescenta. Nenhum produtor gravou na versão 2,
@@ -173,7 +182,8 @@ com rótulos distintos, saem três chaves: a da cifra dos dados
 cada chave derivada a uma finalidade. O teste confere a derivação com o vetor
 A.1 da RFC 5869. Cada linha usa a chave da cadeia derivada da chave da própria
 linha, então `verify_chain` precisa do provedor. Ela confere `position`,
-`prev_chain` e `format` antes de pedir chave; linha fora de sequência, de formato
+`prev_chain` e `format` antes de pedir chave. Também recusa a volta a um
+identificador de chave de um trecho anterior. Uma linha fora de sequência, de formato
 desconhecido, de `key_id` que o provedor não entrega ou cujo `key_check` não
 confere sai como `ChainBroken` naquela posição, porque não se distingue de linha
 forjada: chaves antigas têm de ficar no cofre. A comparação do HMAC é em tempo
@@ -189,10 +199,10 @@ válidos.
 O que a cadeia detecta, sem decifrar `data`: alteração de qualquer coluna,
 remoção no meio, reordenação, troca de texto cifrado entre linhas e linha
 acrescentada por quem não tem a chave, inclusive por um `INSERT` simples que passa
-pelos gatilhos. O que não detecta: corte do fim do log e volta de uma cópia
-anterior do arquivo inteiro (não há âncora fora do arquivo nem gênese própria de
-cada banco); linhas escritas por quem tem a chave, inclusive com uma chave antiga
-que o provedor ainda entrega. A âncora planejada é o último `position` e `chain`
+pelos gatilhos. A cadeia pode aceitar um fim cortado, uma cópia anterior ou outro
+banco inteiro com a própria gênese. Quem tem uma chave ainda fornecida pelo cofre
+pode cortar o log ao fim do trecho dessa chave e acrescentar linhas autenticadas
+com ela, mantendo o trecho contíguo. A verificação depende da integridade das chaves. A âncora planejada é o último `position` e `chain`
 guardados no cofre a cada `append` do portão e conferidos ao abrir.
 Detectar não é impedir: um `INSERT` simples sem chave é aceito pelo banco e só
 `verify_chain` e `read_stream` o recusam depois. Com os índices únicos do

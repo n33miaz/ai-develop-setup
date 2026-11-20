@@ -29,3 +29,7 @@ read_page_limit = 500
 # memória: os eventos devolvidos ficam como JSON interpretado, que pode ocupar
 # várias vezes mais (estimativa, não medida: até 10 a 20 vezes).
 read_page_max_bytes = 8388608
+
+# Candidatos a chave alternativa por linha após falha de leitura.
+# Recomendado 8. Aceita 0 a 128; 0 preserva o erro original sem procurar.
+read_key_candidates = 8
