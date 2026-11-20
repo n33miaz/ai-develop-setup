@@ -38,15 +38,20 @@ Detecta: alteração, remoção no meio, reordenação, troca de texto cifrado e
 A abertura recusa qualquer `audit.db-journal` ao lado do banco, inclusive vazio ou com cabeçalho zerado, porque o SQLite o desfaria sobre o arquivo principal. Se a recusa persistir (`Corrupt` depois da espera, ou `Busy` com `busy_timeout_ms = 0`):
 
 1. Pare o produto e confira que nenhum processo usa o banco.
-2. Copie `audit.db`, `audit.db-journal` e, se existirem, `audit.db-wal` e `audit.db-shm` para uma pasta de quarentena. Não apague nada.
+2. Copie `audit.db`, `audit.db-journal` e, se existirem, `audit.db-wal` e `audit.db-shm` para a subpasta `copia` de uma pasta de quarentena, com os mesmos nomes. Não apague nada.
 3. Se o journal começa com os bytes `d9 d5 05 f9 20 a1 63 d7`, ele guarda as páginas anteriores a uma transação interrompida. Mantenha a cópia junto do `audit.db` da mesma hora.
-4. Mova `audit.db-journal` para a quarentena e abra de novo. A abertura confere cabeçalho, esquema e integridade; se recusar, restaure o backup.
+4. Mova `audit.db-journal` para a subpasta `movidos` da quarentena e abra de novo. A abertura confere cabeçalho, esquema e integridade.
+5. Se recusar, mova antes `audit.db-wal` e `audit.db-shm` para `movidos` e só então restaure o `audit.db` do backup, sem `-wal` nem `-shm` ao lado (ou com os do próprio backup). Nada liga o WAL ao arquivo principal: um `-wal` deixado ao lado seria aplicado sobre o backup.
 
 ## Reparo de `-wal` recusado
 
 A abertura recusa com `Corrupt` um `audit.db-wal` em que o SQLite descartaria um commit já confirmado: depois do primeiro quadro inválido, há um commit com o salt atual além do commit da transação que contém a quebra. Duas quedas seguidas, cada uma rasgando uma escrita mas deixando o quadro de commit dela no disco, podem produzir esse desenho num banco legítimo, sem nenhum commit confirmado perdido; a abertura não tem como distinguir os dois casos e recusa. Para reparar:
 
 1. Pare o produto e confira que nenhum processo usa o banco.
-2. Copie `audit.db`, `audit.db-wal` e, se existir, `audit.db-shm` para uma pasta de quarentena. Não apague nada.
-3. Mova `audit.db-wal` e `audit.db-shm` para a quarentena e abra de novo. O banco volta ao último checkpoint: todas as transações que estavam só no WAL somem, não só as posteriores à quebra, e o log de eventos perde o fim sem que `verify_chain` perceba.
-4. Para ver o que estava no WAL, faça uma segunda cópia do par da quarentena (banco e `-wal`) e abra essa segunda cópia com outra ferramenta SQLite, que aplica os quadros até o primeiro inválido e pode apagar o `-wal` ao fechar; a primeira cópia fica intacta. Se a recusa vier de adulteração e não de queda, restaure o backup.
+2. Copie `audit.db`, `audit.db-wal` e, se existir, `audit.db-shm` para a subpasta `copia` de uma pasta de quarentena, com os mesmos nomes. Não apague nada.
+3. Mova `audit.db-wal` e `audit.db-shm` para a subpasta `movidos` da quarentena e abra de novo. O banco volta ao último checkpoint: todas as transações que estavam só no WAL somem, não só as posteriores à quebra, e o log de eventos perde o fim sem que `verify_chain` perceba.
+4. Para ver o que estava no WAL, faça uma segunda cópia do par de `copia` (banco e `-wal`, mantendo os nomes `x.db` e `x.db-wal`, para a ferramenta achar o WAL) e abra essa segunda cópia com outra ferramenta SQLite, que aplica os quadros até o primeiro inválido e pode apagar o `-wal` ao fechar; `copia` fica intacta. Se a recusa vier de adulteração e não de queda, restaure o backup como no passo 5 do reparo de `-journal`, com o `-wal` já fora.
+
+## Recusa com `-wal` ao lado
+
+Recusa por esquema, identidade ou integridade deixa `audit.db` e `audit.db-wal` intactos; se não havia `-wal`, pode sobrar um `-wal` vazio e um `-shm`, que a abertura seguinte do mesmo arquivo usa normalmente. Antes de qualquer reparo, copie os três arquivos para a quarentena. Ao tirar o `audit.db` do lugar (para começar do zero ou restaurar), leve junto `-wal` e `-shm`: um `-wal`, mesmo vazio, ao lado de um principal ausente faz a abertura esperar `busy_timeout_ms` e recusar com `Corrupt`, sem criar banco nem apagar nada. O reparo é mover o par para a quarentena; a abertura nunca apaga esse `-wal` sozinha.

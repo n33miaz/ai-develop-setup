@@ -29,7 +29,8 @@ criação concorrente tem uma janela curta com `-journal`. Se ficarem parados
 durante a segunda metade da espera, recusa com `Corrupt` sem alterar a pasta
 (uma mudança só no começo não basta para `Busy`); se mudaram nessa metade, ou com
 `busy_timeout_ms = 0` (que recusa na hora e não distingue criação em andamento de
-sobra), recusa com `Busy`. Somada ao timeout do SQLite, a espera
+sobra), recusa com `Busy`. `Corrupt` aqui quer dizer parado por meio prazo, não
+necessariamente abandonado; por isso todo reparo começa parando o produto. Somada ao timeout do SQLite, a espera
 total pode chegar a cerca de duas vezes `busy_timeout_ms`. O reparo de um
 `-journal` sobrando está no README do crate.
 Arquivos existentes passam por inspeção do cabeçalho de 100 bytes pela biblioteca
@@ -62,7 +63,10 @@ a verificação de integridade roda uma vez. A conexão sempre abre com
 depender do tamanho do `-wal` visto antes de abrir: a recusa não transfere os
 quadros recusados para o arquivo principal nem apaga o `-wal`, e os bytes do
 banco e do `-wal` ficam iguais. A recusa pode deixar um `-shm` criado e, sem
-`-wal` antes, um `-wal` vazio; a abertura seguinte os usa normalmente. Para o arquivo não marcado, a mesma transação repete
+`-wal` antes, um `-wal` vazio; a abertura seguinte do mesmo arquivo os usa
+normalmente. Se o `audit.db` for tirado sem o par, esse `-wal` vazio ao lado de
+um principal ausente faz a abertura recusar com `Corrupt`; ela não o apaga, e o
+reparo (mover o par para a quarentena) está no README do crate. Para o arquivo não marcado, a mesma transação repete
 a inspeção depois da imagem. As conexões recebem `trusted_schema=OFF`,
 `cell_size_check=ON` e `DEFENSIVE` antes de consultar o esquema. Arquivo
 existente abre sem permissão de criação; arquivo vazio pode ser inicializado. O
