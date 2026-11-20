@@ -1,6 +1,7 @@
 //! Queue streams: the events of each task queue in the anchored log, one stream per queue.
 use crate::{EventLog, StorageConfig, StorageError, StoredEvent};
 use ads_contracts::{CommonIdV1, EventEnvelopeV1Stream};
+use rusqlite::OptionalExtension;
 use serde_json::{Map, Value};
 
 /// Stream family and event type family of the queue.
@@ -27,13 +28,39 @@ pub(crate) fn check_binding(
     }
 }
 
-/// Whether a queue event would pass `queue_max_events`. A stop always enters: the core records
-/// one only for an enabled queue, so stops stay bounded by the enables the cap refuses, and a
-/// full queue can still be stopped after a restart.
-pub(crate) fn over_cap(kind: &str, family: &str, seq: u64, config: &StorageConfig) -> bool {
-    family == QUEUE_FAMILY
-        && seq > config.queue_max_events
-        && !kind.starts_with("urn:ads:event:queue.stopped:")
+/// The only type the cap lets past: the stop version the core replays
+/// (`QueueStreamEvent::from_envelope` in `ads-core`). Another version would make the replay refuse
+/// the whole stream, so it stays behind the cap like any other event.
+pub const QUEUE_STOPPED: &str = "urn:ads:event:queue.stopped:1";
+
+/// Whether a queue event at `seq` may enter, checked inside the append transaction after the
+/// compare and set. Up to `queue_max_events` every event enters. Above it only `QUEUE_STOPPED`
+/// does, and only when the stream's previous event is not one: so at most one event lies past
+/// the head the queue had when it reached the cap (a lowered cap included), and a full queue
+/// can still be stopped after a restart. The bound is the storage's own, whatever the producer.
+pub(crate) fn within_cap(
+    tx: &rusqlite::Connection,
+    kind: &str,
+    stream: &str,
+    seq: i64,
+    config: &StorageConfig,
+) -> Result<bool, StorageError> {
+    let family = stream.split_once('/').map_or(stream, |(family, _)| family);
+    if family != QUEUE_FAMILY || u64::try_from(seq).is_ok_and(|seq| seq <= config.queue_max_events)
+    {
+        return Ok(true);
+    }
+    if kind != QUEUE_STOPPED {
+        return Ok(false);
+    }
+    let previous: Option<String> = tx
+        .query_row(
+            "SELECT type FROM event WHERE stream = ?1 AND seq = ?2",
+            rusqlite::params![stream, seq - 1],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(previous.as_deref() != Some(QUEUE_STOPPED))
 }
 
 /// Stream of one queue.

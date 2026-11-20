@@ -278,14 +278,14 @@ fn a_lowered_cap_keeps_the_queue_history_readable() {
         DEVICE,
         serde_json::json!({ "queue_id": "queue-01", "owner_id": "owner-01", "via": "local_ui" }),
     );
-    assert_eq!(log.append(&enabled), Err(StorageError::Full));
+    assert_eq!(log.append(&enabled), Err(StorageError::QueueFull));
     assert_eq!(log.verify_chain(), Ok(6));
     // A full queue can still be stopped, and nothing else enters after the stop.
     log.append(&next).unwrap();
     let mut after = enabled.clone();
     after.id = ads_contracts::CommonUlidV1::new("01ARZ3NDEKTSV4RR0000000008").unwrap();
     after.seq = std::num::NonZeroU64::new(8).unwrap();
-    assert_eq!(log.append(&after), Err(StorageError::Full));
+    assert_eq!(log.append(&after), Err(StorageError::QueueFull));
     drop(log);
 
     let mut log = open(&fixture.db(), &anchor, "queue_max_events = 8").unwrap();
@@ -293,4 +293,43 @@ fn a_lowered_cap_keeps_the_queue_history_readable() {
     let mut grown = events;
     grown.extend([next, after]);
     assert_eq!(read_back(&log).unwrap(), grown);
+}
+
+#[test]
+fn over_the_cap_only_one_replayable_stop_enters() {
+    let fixture = Fixture::new();
+    let anchor = MemoryAnchor::default();
+    let events = queue_events();
+    let mut log = open(&fixture.db(), &anchor, "queue_max_events = 6").unwrap();
+    for event in &events {
+        log.append(event).unwrap();
+    }
+    let stop = |seq: u64, kind: &str| {
+        let mut event = envelope(
+            seq,
+            kind,
+            ("daemon", "core-01"),
+            serde_json::json!({ "queue_id": "queue-01", "reason": "restart" }),
+        );
+        event.id = ads_contracts::CommonUlidV1::new(format!("01ARZ3NDEKTSV4RT{seq:010}")).unwrap();
+        event
+    };
+    // A version the replay would refuse stays behind the cap.
+    assert_eq!(
+        log.append(&stop(7, "stopped:2")),
+        Err(StorageError::QueueFull)
+    );
+    // A `seq` past the head is a conflict before the cap is looked at.
+    assert_eq!(
+        log.append(&stop(8, "stopped:1")),
+        Err(StorageError::Conflict)
+    );
+    log.append(&stop(7, "stopped:1")).unwrap();
+    // A second stop over the cap is refused: the storage bounds them, not the producer.
+    assert_eq!(
+        log.append(&stop(8, "stopped:1")),
+        Err(StorageError::QueueFull)
+    );
+    assert_eq!(log.verify_chain(), Ok(7));
+    assert_eq!(log.head(&queue_stream(&queue_id("queue-01"))), Ok(7));
 }
