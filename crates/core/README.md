@@ -25,15 +25,19 @@ O replay (`replay_task`) recebe o stream inteiro da fila, a partir de `queue.cre
 - todo evento é da fila e do stream `queue/<id>`;
 - todo ator que é aparelho pertencia ao dono da fila naquele instante;
 - a criação, a ativação e a parada pelo dono vêm de um aparelho do dono e repetem o dono da fila;
+- todo pedido manual, de qualquer tarefa da fila, foi criado por um aparelho do dono;
 - a tarefa só entra em `running` com a fila ligada naquele ponto do log;
 - `review → done` foi aceito por um aparelho do dono.
 
 O agente e o daemon continuam podendo reprovar e cancelar tarefas. O replay confere a coerência dos atores que o log declara, não a autenticidade deles: o log não é assinado por aparelho, e uma linha forjada é recusada pela cadeia HMAC do armazenamento ([ADR 0021](../../docs/adr/0021-storage-atomic-file-and-cipher.md)). O replay protege contra erro do produtor e contra log montado de forma errada.
 
+O replay não refaz a admissão: o teto de tentativas de cada criação vale como gravado, e as janelas não são reaplicadas. A política em vigor e a âncora de relógio de cada criação não estão no log. Conferir criações antigas contra a política atual recusaria um histórico legítimo depois que o dono baixasse um limite. Quem decide a admissão é o produtor.
+
 O cadastro responde pelo dono do aparelho em cada instante. Um aparelho mantém o dono que tinha quando agiu, e a revogação é uma marca com data: ela recusa os atos posteriores sem apagar os anteriores. O produtor usa o estado e o saldo reconstituídos antes de autorizar novas transições e reserva a origem na mesma operação que anexa a criação.
 
-[queue.toml](../../defaults/queue.toml) fornece os limites. O integrador pode passar uma política diferente com `QueuePolicy`. Chave ausente num arquivo anterior assume o valor de `queue.toml`. A admissão recusa:
+[queue.toml](../../defaults/queue.toml) fornece os limites. O integrador pode passar uma política diferente com `QueuePolicy`. Chave ausente num arquivo anterior assume o valor de `queue.toml`. A admissão (`can_admit_task`) recebe a política, o relógio, o dono da fila, o aparelho que pediu e a âncora de relógio em `AdmissionContext`. Ela devolve o motivo da recusa (`AdmissionRefusal`), para a interface poder explicá-lo. A admissão recusa:
 - criação com teto de tentativas acima do configurado;
+- pedido manual que não foi criado por um aparelho do dono da fila, com `actor.id` igual ao do aparelho;
 - `task_id` já usado em qualquer fila;
 - origem repetida na fila;
 - a fila que atingiu o total de admissões (`admission_limit`, 1000), que inclui origens encerradas;
@@ -44,7 +48,9 @@ O cadastro responde pelo dono do aparelho em cada instante. Um aparelho mantém 
 
 Os pedidos manuais contam à parte, para que as origens automáticas não ocupem o espaço do dono.
 
-O `ts` da criação vem do relógio do núcleo, nunca do pedido, e o produtor informa esse relógio em `now`. A admissão recusa a criação com `ts` anterior à última admissão da fila ou mais de `clock_skew_seconds` (5) adiante de `now`. Assim, um relógio ou um carimbo que salta para a frente não esvazia a janela.
+O `ts` da criação vem do relógio do núcleo, nunca do pedido, e o produtor informa esse relógio em `now`. A admissão recusa a criação com `ts` mais de `clock_skew_seconds` (5) adiante de `now` (`AheadOfClock`) ou mais de `clock_rewind_seconds` (300) antes de uma admissão anterior da fila (`BehindLastAdmission`). Assim, um carimbo adiantado em relação ao relógio do núcleo não esvazia a janela, e um ajuste pequeno do relógio para trás não trava a fila. Uma admissão anterior com `ts` depois do da candidata, dentro da tolerância, continua contando na janela.
+
+Se o próprio relógio do núcleo salta para a frente, `ts` e `now` andam juntos: a candidata passa e a janela se esvazia uma vez. Quando o relógio é corrigido, toda admissão seguinte fica além da tolerância e é recusada com `BehindLastAdmission`, inclusive os pedidos manuais do dono, até o tempo real alcançar a última admissão. A saída é o dono reancorar o relógio da fila: `reanchor_admission_clock` recebe o aparelho do dono e devolve a âncora (`ClockAnchor`) com o instante atual e o último `seq` do stream. Na admissão, as criações até esse `seq` com `ts` posterior à âncora contam como admitidas no instante da âncora. Elas continuam reservando a origem e ocupando a janela que começa ali. Gravar a âncora no log pede um evento novo nos contratos. Até ele existir, a função é pura e o produtor guarda a âncora, que se perde se ele não a mantiver.
 
 Os limites da janela se liberam sozinhos com o tempo. Uma fila que atingiu o total só volta a admitir quando o dono aumenta `admission_limit`. Criar outra fila também resolve, mas a chave de deduplicação inclui a fila: a fila nova não herda as origens reservadas, e a mesma issue pode ser admitida de novo.
 
