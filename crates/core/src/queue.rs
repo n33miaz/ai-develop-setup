@@ -535,16 +535,45 @@ pub enum AdmissionRefusal {
 /// Owner action that re-anchors the admission clock of a queue after the core clock ran ahead.
 /// Earlier admissions of the queue, up to `through_seq`, stamped after `at` count as admitted at
 /// `at`: they keep their origin reserved and fill the window that follows the anchor.
+///
+/// Only `reanchor_admission_clock` builds one, from a device of the owner: an anchor stamped long
+/// ago would otherwise empty every window. Reading one back from the log arrives with its event.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClockAnchor {
-    pub queue_id: CommonIdV1,
-    pub owner_id: CommonIdV1,
-    pub device_id: CommonIdV1,
-    pub via: Channel,
+    queue_id: CommonIdV1,
+    owner_id: CommonIdV1,
+    device_id: CommonIdV1,
+    via: Channel,
+    at: CommonTimestampV1,
+    through_seq: u64,
+}
+
+impl ClockAnchor {
+    pub fn queue_id(&self) -> &CommonIdV1 {
+        &self.queue_id
+    }
+
+    pub fn owner_id(&self) -> &CommonIdV1 {
+        &self.owner_id
+    }
+
+    pub fn device_id(&self) -> &CommonIdV1 {
+        &self.device_id
+    }
+
+    pub fn via(&self) -> Channel {
+        self.via
+    }
+
     /// Core clock when the owner acted.
-    pub at: CommonTimestampV1,
+    pub fn at(&self) -> &CommonTimestampV1 {
+        &self.at
+    }
+
     /// Last `seq` of the queue stream when the owner acted.
-    pub through_seq: u64,
+    pub fn through_seq(&self) -> u64 {
+        self.through_seq
+    }
 }
 
 /// Builds the anchor from the owner action. Recording it needs an event the contracts do not
