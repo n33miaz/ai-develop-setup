@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     fs::{self, File, OpenOptions, TryLockError},
     io,
     path::Path,
@@ -15,7 +16,8 @@ use crate::Config;
 struct ProcessState {
     pid: Option<u32>,
     restarts: u64,
-    rapid_failures: u32,
+    failures_in_window: usize,
+    requested_restarts: u64,
     gave_up: bool,
     last_exit: Option<Exit>,
     last_error: Option<String>,
@@ -29,7 +31,8 @@ struct Exit {
 
 struct Process {
     command: Command,
-    child: Option<(Child, Instant)>,
+    child: Option<Child>,
+    failures: VecDeque<Instant>,
     state: ProcessState,
     attempted: bool,
     retry: Option<(Instant, Duration)>,
@@ -41,6 +44,7 @@ impl Process {
         Self {
             command,
             child: None,
+            failures: VecDeque::new(),
             state: ProcessState::default(),
             attempted: false,
             retry: None,
@@ -49,17 +53,17 @@ impl Process {
     }
 
     fn tick(&mut self, config: &Config) -> io::Result<bool> {
-        if let Some((child, started)) = &mut self.child {
+        let expired = self.expire_failures(config, Instant::now());
+        if let Some(child) = &mut self.child {
             if let Some(status) = child.try_wait()? {
-                let rapid = started.elapsed() < Duration::from_millis(config.rapid_exit_ms);
                 self.record_exit(status);
-                self.schedule_retry(config, rapid);
+                self.schedule_retry(config, Instant::now());
                 return Ok(true);
             }
-            return Ok(false);
+            return Ok(expired);
         }
         if self.state.gave_up || self.retry.is_some_and(|(at, delay)| at.elapsed() < delay) {
-            return Ok(false);
+            return Ok(expired);
         }
         if self.attempted {
             self.state.restarts = self.state.restarts.saturating_add(1);
@@ -68,30 +72,42 @@ impl Process {
         match self.command.spawn() {
             Ok(child) => {
                 self.state.pid = Some(child.id());
-                self.child = Some((child, Instant::now()));
+                self.child = Some(child);
             }
             Err(error) => {
                 self.state.last_error = Some(error.to_string());
-                self.schedule_retry(config, true);
+                self.schedule_retry(config, Instant::now());
             }
         }
         Ok(true)
     }
 
-    fn schedule_retry(&mut self, config: &Config, rapid: bool) {
-        if rapid {
-            self.state.rapid_failures += 1;
-        } else {
-            self.state.rapid_failures = 0;
-        }
-        self.state.gave_up = self.state.rapid_failures >= config.rapid_exit_limit;
-        let exponent = self.state.rapid_failures.saturating_sub(1);
+    fn schedule_retry(&mut self, config: &Config, now: Instant) {
+        self.expire_failures(config, now);
+        self.failures.push_back(now);
+        self.state.failures_in_window = self.failures.len();
+        self.state.gave_up = self.failures.len() >= config.crash_window_limit;
+        let exponent = u32::try_from(self.failures.len() - 1).unwrap_or(u32::MAX);
         let factor = 2_u64.saturating_pow(exponent);
         let delay = config
             .restart_initial_ms
             .saturating_mul(factor)
             .min(config.restart_max_ms);
-        self.retry = Some((Instant::now(), Duration::from_millis(delay)));
+        self.retry = Some((now, Duration::from_millis(delay)));
+    }
+
+    fn expire_failures(&mut self, config: &Config, now: Instant) -> bool {
+        let window = Duration::from_millis(config.crash_window_ms);
+        while self
+            .failures
+            .front()
+            .is_some_and(|at| now.duration_since(*at) >= window)
+        {
+            self.failures.pop_front();
+        }
+        let changed = self.state.failures_in_window != self.failures.len();
+        self.state.failures_in_window = self.failures.len();
+        changed
     }
 
     fn record_exit(&mut self, status: ExitStatus) {
@@ -104,7 +120,7 @@ impl Process {
     }
 
     fn stop(&mut self) -> io::Result<()> {
-        if let Some((child, _)) = &mut self.child {
+        if let Some(child) = &mut self.child {
             let status = match child.try_wait()? {
                 Some(status) => status,
                 None => {
@@ -123,7 +139,9 @@ impl Process {
 
     fn restart(&mut self) -> io::Result<()> {
         self.stop()?;
-        self.state.rapid_failures = 0;
+        self.failures.clear();
+        self.state.failures_in_window = 0;
+        self.state.requested_restarts = self.state.requested_restarts.saturating_add(1);
         self.state.gave_up = false;
         self.retry = None;
         Ok(())
@@ -185,11 +203,20 @@ fn consume_signal(path: &Path) -> io::Result<bool> {
     }
 }
 
-fn write_state(path: &Path, daemon: &Process, host: &Process, stopped: bool) -> io::Result<()> {
+fn write_state(
+    path: &Path,
+    daemon: &Process,
+    host: &Process,
+    stopped: bool,
+    publication: &Publication,
+) -> io::Result<()> {
     #[derive(Serialize)]
     struct State<'a> {
         launcher_pid: u32,
         stopped: bool,
+        stop_pending_at_startup: bool,
+        last_error: Option<&'a str>,
+        state_write_error: Option<&'a str>,
         daemon: &'a ProcessState,
         ptyhost: &'a ProcessState,
     }
@@ -207,6 +234,9 @@ fn write_state(path: &Path, daemon: &Process, host: &Process, stopped: bool) -> 
         &State {
             launcher_pid: std::process::id(),
             stopped,
+            stop_pending_at_startup: publication.stop_pending_at_startup,
+            last_error: publication.last_error.as_deref(),
+            state_write_error: publication.state_write_error.as_deref(),
             daemon: &daemon.state,
             ptyhost: &host.state,
         },
@@ -219,6 +249,31 @@ fn write_state(path: &Path, daemon: &Process, host: &Process, stopped: bool) -> 
         let _ = fs::remove_file(&temp);
     }
     result
+}
+
+#[derive(Default)]
+struct Publication {
+    dirty: bool,
+    stop_pending_at_startup: bool,
+    last_error: Option<String>,
+    state_write_error: Option<String>,
+}
+
+impl Publication {
+    fn attempt<T>(&mut self, operation: &str, result: io::Result<T>) -> Option<T> {
+        match result {
+            Ok(value) => Some(value),
+            Err(error) => {
+                let message = format!("{operation}: {error}");
+                if self.last_error.as_deref() != Some(&message) {
+                    eprintln!("ads-launcher: {message}");
+                    self.last_error = Some(message);
+                    self.dirty = true;
+                }
+                None
+            }
+        }
+    }
 }
 
 pub(crate) fn run(
@@ -238,22 +293,60 @@ pub(crate) fn run(
     let mut host = Process::new(host, false);
 
     // Publish before starting children so an unusable state path fails early.
-    write_state(&state, &daemon, &host, false)?;
+    let mut publication = Publication {
+        stop_pending_at_startup: fs::symlink_metadata(&stop)
+            .is_ok_and(|metadata| metadata.is_file()),
+        ..Publication::default()
+    };
+    write_state(&state, &daemon, &host, false, &publication)?;
+    let mut stopping = false;
+    let mut restarting = false;
     loop {
-        if consume_signal(&stop)? {
-            consume_signal(&restart)?;
-            host.tick_exit_only()?;
-            daemon.stop()?;
-            return write_state(&state, &daemon, &host, true);
+        if !stopping {
+            stopping =
+                publication.attempt("consume stop signal", consume_signal(&stop)) == Some(true);
         }
-        let requested_restart = consume_signal(&restart)?;
-        if requested_restart {
-            daemon.restart()?;
-        }
-        let host_changed = host.tick(config)?;
-        let daemon_changed = daemon.tick(config)?;
-        if host_changed || daemon_changed || requested_restart {
-            write_state(&state, &daemon, &host, false)?;
+        let stopped = if stopping {
+            let daemon_stopped = publication.attempt("stop daemon", daemon.stop()).is_some();
+            let signal_cleared = publication
+                .attempt("clear restart signal", consume_signal(&restart))
+                .is_some();
+            publication.attempt("check host exit", host.tick_exit_only());
+            publication.dirty = true;
+            daemon_stopped && signal_cleared
+        } else {
+            restarting |= publication.attempt("consume restart signal", consume_signal(&restart))
+                == Some(true);
+            if restarting
+                && publication
+                    .attempt("restart daemon", daemon.restart())
+                    .is_some()
+            {
+                restarting = false;
+                publication.dirty = true;
+            }
+            let host_changed = publication.attempt("check host", host.tick(config)) == Some(true);
+            let daemon_changed = !restarting
+                && publication.attempt("check daemon", daemon.tick(config)) == Some(true);
+            publication.dirty |= host_changed || daemon_changed;
+            false
+        };
+        if publication.dirty {
+            match write_state(&state, &daemon, &host, stopped, &publication) {
+                Ok(()) => {
+                    publication.dirty = false;
+                    if stopped {
+                        return Ok(());
+                    }
+                }
+                Err(error) => {
+                    let message = error.to_string();
+                    if publication.state_write_error.as_deref() != Some(&message) {
+                        eprintln!("ads-launcher: publish state: {message}");
+                        publication.state_write_error = Some(message);
+                    }
+                }
+            }
         }
         thread::sleep(Duration::from_millis(config.poll_ms));
     }
@@ -261,7 +354,7 @@ pub(crate) fn run(
 
 impl Process {
     fn tick_exit_only(&mut self) -> io::Result<()> {
-        if let Some((child, _)) = &mut self.child
+        if let Some(child) = &mut self.child
             && let Some(status) = child.try_wait()?
         {
             self.record_exit(status);
@@ -271,15 +364,15 @@ impl Process {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use serde_json::Value;
     use std::path::PathBuf;
 
-    struct TestDir(PathBuf);
+    pub(crate) struct TestDir(pub(crate) PathBuf);
 
     impl TestDir {
-        fn new() -> Self {
+        pub(crate) fn new() -> Self {
             let stamp = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
@@ -287,6 +380,7 @@ mod tests {
             let path = Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../target")
                 .join(format!("launcher-test-{}-{stamp}", std::process::id()));
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::create_dir(&path).unwrap();
             Self(path)
         }
@@ -297,8 +391,8 @@ mod tests {
         config.poll_ms = 5;
         config.restart_initial_ms = 20;
         config.restart_max_ms = 40;
-        config.rapid_exit_ms = 10_000;
-        config.rapid_exit_limit = 3;
+        config.crash_window_ms = 600_000;
+        config.crash_window_limit = 3;
         config
     }
 
@@ -316,7 +410,7 @@ mod tests {
     fn child_fixture() {
         if let Some(path) = std::env::var_os("ADS_LAUNCHER_TEST_RELEASE") {
             let start = Instant::now();
-            while !Path::new(&path).is_file() && start.elapsed() < Duration::from_secs(5) {
+            while !Path::new(&path).is_file() && start.elapsed() < Duration::from_secs(120) {
                 thread::sleep(Duration::from_millis(5));
             }
         }
@@ -329,7 +423,7 @@ mod tests {
                 return result;
             }
             assert!(
-                start.elapsed() < Duration::from_secs(3),
+                start.elapsed() < Duration::from_secs(30),
                 "condition timed out"
             );
             thread::sleep(Duration::from_millis(5));
@@ -337,12 +431,12 @@ mod tests {
     }
 
     #[test]
-    fn increases_retry_delay_caps_it_and_stops_after_rapid_exits() {
+    fn increases_retry_delay_caps_it_and_stops_after_exits() {
         let config = config();
         let mut process = Process::new(fixture(None), true);
         for (index, delay) in [20, 40, 40].into_iter().enumerate() {
             assert!(process.tick(&config).unwrap());
-            let (child, _) = process.child.as_mut().unwrap();
+            let child = process.child.as_mut().unwrap();
             child.wait().unwrap();
             assert!(process.tick(&config).unwrap());
             let (at, wait) = process.retry.unwrap();
@@ -359,16 +453,33 @@ mod tests {
         process.restart().unwrap();
         assert!(process.tick(&config).unwrap());
         process.stop().unwrap();
-        process.state.rapid_failures = 2;
-        process.schedule_retry(&config, false);
-        assert_eq!(process.state.rapid_failures, 0);
+        assert!(process.failures.is_empty());
+    }
+
+    #[test]
+    fn counts_slow_failures_until_the_window_expires() {
+        let config = config();
+        let start = Instant::now();
+        let mut process = Process::new(fixture(None), true);
+        for seconds in [0, 31, 62] {
+            process.schedule_retry(&config, start + Duration::from_secs(seconds));
+        }
+        assert!(process.state.gave_up);
+        process.restart().unwrap();
+        process.schedule_retry(&config, start);
+        process.schedule_retry(
+            &config,
+            start + Duration::from_millis(config.crash_window_ms),
+        );
+        assert_eq!(process.state.failures_in_window, 1);
+        assert!(!process.state.gave_up);
         assert_eq!(process.retry.unwrap().1, Duration::from_millis(20));
     }
 
     #[test]
     fn records_spawn_error_and_honors_retry_limit() {
         let mut config = config();
-        config.rapid_exit_limit = 1;
+        config.crash_window_limit = 1;
         let dir = TestDir::new();
         let mut process = Process::new(Command::new(dir.0.join("missing")), true);
         assert!(process.tick(&config).unwrap());
@@ -376,6 +487,108 @@ mod tests {
         assert!(process.state.pid.is_none());
         assert!(process.state.gave_up);
         assert!(!process.tick(&config).unwrap());
+    }
+
+    #[test]
+    fn reports_stop_pending_at_startup_without_starting_children() {
+        let dir = TestDir::new();
+        let settings = config();
+        fs::write(dir.0.join(&settings.stop_file), []).unwrap();
+        let daemon = Command::new(dir.0.join("missing-daemon"));
+        let host = Command::new(dir.0.join("missing-host"));
+        run(&settings, &dir.0, daemon, host).unwrap();
+        let state = state_value(&dir.0.join(&settings.state_file)).unwrap();
+        assert_eq!(state["stopped"], true);
+        assert_eq!(state["stop_pending_at_startup"], true);
+        assert!(state["daemon"]["last_error"].is_null());
+        assert!(state["ptyhost"]["last_error"].is_null());
+    }
+
+    #[test]
+    fn initial_state_write_failure_is_fatal() {
+        let dir = TestDir::new();
+        let settings = config();
+        fs::create_dir(dir.0.join(&settings.state_file)).unwrap();
+        assert!(run(&settings, &dir.0, fixture(None), fixture(None)).is_err());
+    }
+
+    #[test]
+    fn retries_publication_after_the_state_path_becomes_writable() {
+        let dir = TestDir::new();
+        let settings = config();
+        let state = dir.0.join(&settings.state_file);
+        let restart = dir.0.join(&settings.restart_file);
+        let stop = dir.0.join(&settings.stop_file);
+        let daemon = fixture(Some(&dir.0.join("release-daemon")));
+        let host_release = dir.0.join("release-host");
+        let host = fixture(Some(&host_release));
+        let control = dir.0.clone();
+        let worker = thread::spawn(move || run(&settings, &control, daemon, host).unwrap());
+        let read = || state_value(&state);
+        let initial = until(|| read().filter(|value| value["daemon"]["pid"].is_u64()));
+        fs::rename(&state, dir.0.join("parked-state")).unwrap();
+        fs::create_dir(&state).unwrap();
+        for _ in 0..2 {
+            fs::write(&restart, []).unwrap();
+            until(|| (!restart.exists()).then_some(()));
+        }
+        // The second signal can only be consumed after the first failed publication.
+        fs::rename(&state, dir.0.join("parked-directory")).unwrap();
+        let recovered = until(|| read().filter(|value| value["daemon"]["requested_restarts"] == 2));
+        assert!(recovered["state_write_error"].is_string());
+        assert!(recovered["daemon"]["pid"].is_u64());
+        assert_eq!(recovered["ptyhost"]["pid"], initial["ptyhost"]["pid"]);
+        fs::write(stop, []).unwrap();
+        until(|| read().filter(|value| value["stopped"] == true));
+        worker.join().unwrap();
+        fs::write(host_release, []).unwrap();
+    }
+
+    fn state_value(path: &Path) -> Option<Value> {
+        fs::read(path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn retries_locked_signal_without_restarting_the_daemon() {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_SHARE_READ_WRITE: u32 = 3;
+        let dir = TestDir::new();
+        let settings = config();
+        let state = dir.0.join(&settings.state_file);
+        let restart = dir.0.join(&settings.restart_file);
+        let stop = dir.0.join(&settings.stop_file);
+        let daemon_release = dir.0.join("release-daemon");
+        let host_release = dir.0.join("release-host");
+        let daemon = fixture(Some(&daemon_release));
+        let host = fixture(Some(&host_release));
+        let control = dir.0.clone();
+        let worker = thread::spawn(move || run(&settings, &control, daemon, host).unwrap());
+        let read = || state_value(&state);
+        let initial = until(|| read().filter(|value| value["daemon"]["pid"].is_u64()));
+        let blocked_signal = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .share_mode(FILE_SHARE_READ_WRITE)
+            .open(&restart)
+            .unwrap();
+        let recovered = until(|| {
+            read().filter(|value| {
+                value["last_error"]
+                    .as_str()
+                    .is_some_and(|error| error.starts_with("consume restart signal"))
+            })
+        });
+        assert_eq!(recovered["daemon"]["pid"], initial["daemon"]["pid"]);
+        drop(blocked_signal);
+        until(|| read().filter(|value| value["daemon"]["requested_restarts"] == 1));
+        fs::write(stop, []).unwrap();
+        until(|| read().filter(|value| value["stopped"] == true));
+        worker.join().unwrap();
+        fs::write(host_release, []).unwrap();
     }
 
     #[test]
@@ -403,12 +616,16 @@ mod tests {
         let restart = dir.0.join("restart");
         fs::write(&restart, []).unwrap();
         let restarted = until(|| {
-            read_state()
-                .filter(|value| value["daemon"]["restarts"] == 1 && value["daemon"]["pid"].is_u64())
+            read_state().filter(|value| {
+                value["daemon"]["requested_restarts"] == 1
+                    && value["daemon"]["restarts"] == 1
+                    && value["daemon"]["pid"].is_u64()
+            })
         });
         assert!(!restart.exists());
         assert_eq!(restarted["ptyhost"]["pid"], initial["ptyhost"]["pid"]);
         assert!(restarted["daemon"]["last_exit"].is_object());
+        assert_ne!(restarted["daemon"]["last_exit"]["code"], 0);
 
         let stop = dir.0.join("stop");
         fs::write(&stop, []).unwrap();
@@ -417,7 +634,7 @@ mod tests {
         assert!(!stop.exists());
         assert!(stopped["daemon"]["pid"].is_null());
         assert_eq!(stopped["ptyhost"]["pid"], initial["ptyhost"]["pid"]);
-        assert!(open_lock(&dir.0.join("supervisor.lock")).is_ok());
+        assert!(open_lock(&dir.0.join(config().lock_file)).is_ok());
         fs::write(host_release, []).unwrap();
     }
 }

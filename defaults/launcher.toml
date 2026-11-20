@@ -1,4 +1,5 @@
-# Caminhos relativos partem da pasta do binário (ou do TOML com --config).
+# Programas e control_dir relativos partem da pasta do binário.
+# Os caminhos *_config relativos partem da pasta do TOML com --config.
 # No Windows, o lançador acrescenta .exe aos dois padrões embutidos.
 daemon_program = "ads-daemon"
 ptyhost_program = "ads-ptyhost"
@@ -16,7 +17,14 @@ poll_ms = 100
 # Espera inicial entre tentativas e teto para a progressão por duplicação.
 restart_initial_ms = 250
 restart_max_ms = 10000
-# Saída antes deste tempo conta como falha rápida. Falha ao iniciar também conta.
-rapid_exit_ms = 30000
-# Interrompe as tentativas de cada filho após esta quantidade de falhas rápidas.
-rapid_exit_limit = 5
+# Duração da janela móvel e limite de falhas por filho. Saídas e falhas de spawn contam.
+crash_window_ms = 600000
+crash_window_limit = 5
+
+# Nomes herdados pelos filhos. A sobreposição substitui toda a lista.
+# O lançador aplica também as proibições de defaults/harnesses.toml.
+child_env_allow = [
+  "SystemRoot", "windir", "ComSpec", "PATH", "PATHEXT",
+  "USERPROFILE", "APPDATA", "LOCALAPPDATA", "HOMEDRIVE", "HOMEPATH",
+  "TEMP", "TMP", "HOME", "TMPDIR", "LANG", "LC_ALL", "XDG_RUNTIME_DIR",
+]

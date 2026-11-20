@@ -4,6 +4,9 @@ use ads_daemon::api::{ApiError, LocalApi};
 use ads_daemon::pty_client::{ClientConfig, PtyClient};
 use ads_daemon::startup::load_config;
 use ads_daemon::tool_launcher::ToolLauncher;
+use std::fs::{File, OpenOptions, TryLockError};
+use std::io;
+use std::path::Path;
 use std::process::ExitCode;
 use std::sync::Arc;
 
@@ -14,10 +17,42 @@ fn print_launch_url(url: &mut String, out: &mut impl std::io::Write) -> std::io:
     result
 }
 
+fn acquire_instance_lock(path: &Path) -> io::Result<File> {
+    if !path.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "instance lock path must be absolute",
+        ));
+    }
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)?;
+    lock.try_lock().map_err(|error| match error {
+        TryLockError::WouldBlock => io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "another daemon is already running for this installation",
+        ),
+        TryLockError::Error(error) => error,
+    })?;
+    Ok(lock)
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let (config, host_config, tools) = load_config(std::env::args().skip(1))?;
+        let mut args = std::env::args_os().skip(1).peekable();
+        let _instance_lock = if args.next_if(|arg| arg == "--instance-lock").is_some() {
+            let path = args.next().ok_or("missing daemon instance lock path")?;
+            Some(acquire_instance_lock(Path::new(&path))?)
+        } else {
+            None
+        };
+        let args = args.map(|arg| arg.into_string().map_err(|_| "invalid daemon argument"));
+        let (config, host_config, tools) =
+            load_config(args.collect::<Result<Vec<_>, _>>()?.into_iter())?;
         let launcher = ToolLauncher::from_toml_str(
             &tools,
             ads_adapter_claude::process_env(),

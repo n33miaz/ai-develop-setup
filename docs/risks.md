@@ -167,7 +167,7 @@ Estado da mitigação, em cada risco:
 - **Teto.** Duas trocas por dia; prova de 10 minutos com volta em três quedas (ADR 0015).
 - **Mitigação existente (decidida, não implementada).** [ADR 0015](adr/0015-ci-built-artifact-with-verified-self-update.md): manifesto assinado no CI e conferido com chave embutida, versão anterior guardada, volta automática. Os Schemas `record.update-manifest` e `record.update-status` existem.
 - **Plano B.** Suspender a atualização automática (condição de reversão da ADR 0015).
-- **O que falta.** Implementar a atualização e o contrato de saúde do daemon que confirme o commit esperado. O supervisor usa a saída do processo como indicação de falha e aplica o limite configurado de tentativas. Um processo travado pode exigir um pedido local de reinício. O job de artefato do CI está só descrito em comentário.
+- **O que falta.** Implementar a atualização e o contrato de saúde do daemon que confirme o commit esperado. O supervisor conta saídas e falhas de partida em uma janela móvel configurável por filho. O limite de supervisão interrompe as tentativas. A prova de versão da ADR ainda depende do atualizador para voltar em três quedas. Um processo travado pode exigir um pedido local de reinício. O job de artefato do CI está só descrito em comentário.
 
 ### Elevação de privilégio
 
