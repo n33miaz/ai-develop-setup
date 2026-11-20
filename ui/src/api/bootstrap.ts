@@ -7,6 +7,7 @@ const STORAGE_KEY = 'ads.local-api'
 export function selectCoreClient(
   browser: Pick<Window, 'location' | 'history' | 'sessionStorage'>,
   createReal: (options: WsClientOptions) => CoreClient = createWsCoreClient,
+  replay: Pick<WsClientOptions, 'replayEvents' | 'replayBytes'> = {},
 ): { client: CoreClient; live: boolean } {
   const fragment = new URLSearchParams(browser.location.hash.slice(1))
   let credentials: { url: string; token: string } | null = null
@@ -39,6 +40,6 @@ export function selectCoreClient(
       /* A aba sem credenciais usa os exemplos locais. */
     }
   }
-  if (credentials) return { client: createReal(credentials), live: true }
+  if (credentials) return { client: createReal({ ...credentials, ...replay }), live: true }
   return { client: createFakeCoreClient(), live: false }
 }

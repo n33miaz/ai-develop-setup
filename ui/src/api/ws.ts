@@ -27,9 +27,12 @@ export interface WsClientOptions {
   listTimeoutMs?: number
   /**
    * Eventos recentes guardados por stream para quem assina depois, sem nova assinatura no núcleo.
-   * O padrão acompanha `events_per_stream` do daemon.
+   * Deve andar junto com `events_per_stream` do daemon (padrão 256 nos dois). Com 0 nada fica
+   * guardado: quem chega depois e pede eventos já recebidos termina com `-32004`.
    */
   replayEvents?: number
+  /** Teto em bytes do que fica guardado por stream, medido nas mensagens recebidas. */
+  replayBytes?: number
 }
 
 function accepted(response: Reply): boolean {
@@ -45,6 +48,7 @@ export function createWsCoreClient({
   socketFactory = (url) => new WebSocket(url),
   listTimeoutMs = 10000,
   replayEvents = 256,
+  replayBytes = 4 * 1024 * 1024,
 }: WsClientOptions): CoreClient {
   let endpoint: URL
   try {
@@ -80,14 +84,15 @@ export function createWsCoreClient({
   }
   // O protocolo não cancela assinaturas: uma assinatura no núcleo por stream e conexão serve a todos
   // os ouvintes locais e continua depois que o último sai, guardando os eventos recentes para quem
-  // vier depois. Só um ouvinte que precisa de eventos mais antigos que os guardados pede outra.
+  // vier depois. Um ouvinte que pede eventos que já não estão guardados recebe só o próprio fim.
   interface Shared {
     stream: string
-    /** Menor `after_seq` já pedido ao núcleo. */
+    /** `after_seq` pedido ao núcleo. */
     start: number
     /** Maior `seq` recebido. */
     last: number
-    events: EventEnvelopeV1[]
+    events: { event: EventEnvelopeV1; size: number }[]
+    bytes: number
     listeners: Set<Listener>
   }
   const streams = new Map<string, Shared>()
@@ -135,22 +140,27 @@ export function createWsCoreClient({
     listener.onEvent(event)
     return true
   }
-  function remember(shared: Shared, event: EventEnvelopeV1) {
-    if (replayEvents <= 0) return
-    const { events } = shared
-    let index = events.length
-    while (index > 0 && (events[index - 1]?.seq ?? 0) >= event.seq) index -= 1
-    if (events[index]?.seq === event.seq) return
-    events.splice(index, 0, event)
-    while (events.length > replayEvents) events.shift()
+  /** Guarda o evento recebido em ordem, descartando os mais antigos acima dos tetos. */
+  function remember(shared: Shared, event: EventEnvelopeV1, size: number) {
+    if (
+      replayEvents <= 0 ||
+      replayBytes <= 0 ||
+      event.seq <= (shared.events.at(-1)?.event.seq ?? 0)
+    )
+      return
+    shared.events.push({ event, size })
+    shared.bytes += size
+    while (shared.events.length > replayEvents || shared.bytes > replayBytes) {
+      shared.bytes -= shared.events.shift()?.size ?? 0
+    }
   }
   /** Os eventos guardados bastam para um ouvinte que começa depois de `afterSeq`. */
   function covers(shared: Shared, afterSeq: number): boolean {
-    if (afterSeq < shared.start) return false
     if (afterSeq >= shared.last) return true
+    if (replayEvents <= 0 || replayBytes <= 0 || afterSeq < shared.start) return false
     // A partir de 0 o núcleo também só reenviaria o que ainda retém.
     if (afterSeq === 0 && shared.start === 0) return true
-    const oldest = shared.events[0]?.seq
+    const oldest = shared.events[0]?.event.seq
     return oldest !== undefined && oldest <= afterSeq + 1
   }
   function transmit(command: CommandRequestV1): Promise<Reply> {
@@ -275,7 +285,7 @@ export function createWsCoreClient({
             }
             const shared = streams.get(event.stream)
             if (!shared) return
-            remember(shared, event)
+            remember(shared, event, String(message.data).length)
             shared.last = Math.max(shared.last, event.seq)
             for (const listener of [...shared.listeners]) {
               if (state !== 'connected' || !shared.listeners.has(listener)) continue
@@ -335,7 +345,7 @@ export function createWsCoreClient({
       const existing = streams.get(stream)
       if (existing && covers(existing, afterSeq)) {
         existing.listeners.add(listener)
-        for (const event of [...existing.events]) {
+        for (const { event } of [...existing.events]) {
           if (!existing.listeners.has(listener)) break
           if (!deliver(listener, event)) {
             disconnect()
@@ -344,16 +354,25 @@ export function createWsCoreClient({
         }
         return () => existing.listeners.delete(listener)
       }
-      // Primeiro ouvinte do stream, ou um que precisa de eventos que já não estão guardados.
-      const shared = existing ?? {
+      if (existing) {
+        // Os eventos pedidos já não estão guardados: só este ouvinte termina, como o núcleo faria.
+        let cancelled = false
+        queueMicrotask(() => {
+          if (!cancelled && streams.get(stream) === existing) listener.onEnd?.(-32004)
+        })
+        return () => {
+          cancelled = true
+        }
+      }
+      const shared: Shared = {
         stream,
         start: afterSeq,
         last: afterSeq,
         events: [],
-        listeners: new Set<Listener>(),
+        bytes: 0,
+        listeners: new Set(),
       }
       streams.set(stream, shared)
-      shared.start = Math.min(shared.start, afterSeq)
       shared.listeners.add(listener)
       const command = newCommand('events.subscribe', { stream, after_seq: afterSeq })
       subscriptionRequests.set(command.id, shared)

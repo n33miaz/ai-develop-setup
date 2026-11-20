@@ -598,39 +598,109 @@ describe('one core subscription per stream', () => {
     expect(subscribes(socket)).toHaveLength(1)
   })
 
-  it('asks the core again only for events no longer kept', async () => {
+  async function keeping(options: { replayEvents?: number; replayBytes?: number }) {
     const socket = new FakeSocket()
     const client = createWsCoreClient({
       url: 'ws://127.0.0.1:12345',
       token,
-      replayEvents: 2,
+      ...options,
       socketFactory: () => socket,
     })
     const ready = client.connect()
     socket.dispatchEvent(new Event('open'))
     socket.answer(0)
     await ready
+    return { client, socket }
+  }
+
+  it('ends only the listener that asks for events no longer kept', async () => {
+    const { client, socket } = await keeping({ replayEvents: 2 })
+    const first: number[] = []
+    client.subscribe('session/session-a', 0, (event) => first.push(event.seq))
+    socket.answer(1)
+    for (const seq of [1, 2, 3, 4]) socket.receive(event(seq))
+    // Events 3 and 4 are kept: a listener after 2 needs nothing else.
+    const kept: number[] = []
+    client.subscribe('session/session-a', 2, (event) => kept.push(event.seq))
+    expect(kept).toEqual([3, 4])
+    // Event 2 is gone: this listener alone ends, without asking the core again.
+    const late: number[] = []
+    const ended: number[] = []
+    client.subscribe(
+      'session/session-a',
+      1,
+      (event) => late.push(event.seq),
+      (code) => ended.push(code),
+    )
+    expect(ended).toEqual([])
+    await Promise.resolve()
+    expect(ended).toEqual([-32004])
+    socket.receive(event(5))
+    expect(late).toEqual([])
+    expect(first).toEqual([1, 2, 3, 4, 5])
+    expect(kept).toEqual([3, 4, 5])
+    expect(subscribes(socket)).toHaveLength(1)
+    expect(client.getState()).toBe('connected')
+  })
+
+  it('does not end a listener that left before its end was due', async () => {
+    const { client, socket } = await keeping({ replayEvents: 1 })
+    client.subscribe('session/session-a', 0, () => undefined)
+    socket.answer(1)
+    for (const seq of [1, 2]) socket.receive(event(seq))
+    const ended: number[] = []
+    const stop = client.subscribe(
+      'session/session-a',
+      0,
+      () => undefined,
+      (code) => ended.push(code),
+    )
+    stop()
+    const gone = client.subscribe(
+      'session/session-a',
+      1,
+      () => undefined,
+      (code) => ended.push(code),
+    )
+    gone()
+    await Promise.resolve()
+    expect(ended).toEqual([])
+  })
+
+  it('keeps nothing with replayEvents 0 and ends a late listener for old events', async () => {
+    const { client, socket } = await keeping({ replayEvents: 0 })
+    client.subscribe('session/session-a', 0, () => undefined)
+    socket.answer(1)
+    socket.receive(event(1))
+    const ended: number[] = []
+    const seen: number[] = []
+    client.subscribe(
+      'session/session-a',
+      0,
+      (event) => seen.push(event.seq),
+      (code) => ended.push(code),
+    )
+    await Promise.resolve()
+    expect(ended).toEqual([-32004])
+    // A listener that asks only for new events keeps working.
+    const fresh: number[] = []
+    client.subscribe('session/session-a', 1, (event) => fresh.push(event.seq))
+    socket.receive(event(2))
+    expect(seen).toEqual([])
+    expect(fresh).toEqual([2])
+    expect(subscribes(socket)).toHaveLength(1)
+  })
+
+  it('bounds what it keeps by bytes as well', async () => {
+    const one = JSON.stringify(event(1)).length
+    const { client, socket } = await keeping({ replayBytes: one * 2 + 10 })
     client.subscribe('session/session-a', 0, () => undefined)
     socket.answer(1)
     for (const seq of [1, 2, 3]) socket.receive(event(seq))
-    // Events 2 and 3 are kept: a listener after 1 needs nothing else.
-    const kept: number[] = []
-    client.subscribe('session/session-a', 1, (event) => kept.push(event.seq))
-    expect(kept).toEqual([2, 3])
-    expect(subscribes(socket)).toHaveLength(1)
-    // Event 2 is no longer kept: only a listener that needs it makes the core replay.
-    socket.receive(event(4))
-    const older: number[] = []
-    client.subscribe('session/session-a', 1, (event) => older.push(event.seq))
-    expect(older).toEqual([])
-    expect(subscribes(socket)).toHaveLength(2)
-    expect(subscribes(socket)[1]?.params).toMatchObject({ after_seq: 1 })
-    socket.answer(socket.sent.length - 1)
-    // The core replays from the lower cursor; the other listeners skip what they already have.
-    for (const seq of [2, 3, 4, 5]) socket.receive(event(seq))
-    expect(older).toEqual([2, 3, 4, 5])
-    expect(kept).toEqual([2, 3, 4, 5])
-    expect(client.getState()).toBe('connected')
+    // From the start, a late listener gets what is still kept, like the core would send.
+    const seen: number[] = []
+    client.subscribe('session/session-a', 0, (event) => seen.push(event.seq))
+    expect(seen).toEqual([2, 3])
   })
 
   it('ends every listener of the stream once', async () => {
