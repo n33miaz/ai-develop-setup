@@ -27,7 +27,12 @@
           "additionalProperties": false,
           "required": [
             "queue_id",
-            "task_id"
+            "task_id",
+            "attempt_limit",
+            "origin",
+            "workspace_alias",
+            "state",
+            "attempts"
           ],
           "properties": {
             "queue_id": {
@@ -35,6 +40,82 @@
             },
             "task_id": {
               "$ref": "urn:ads:common:id:1"
+            },
+            "attempt_limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10
+            },
+            "origin": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "request_id"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "manual"
+                    },
+                    "request_id": {
+                      "$ref": "urn:ads:common:id:1"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "ref"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "issue"
+                    },
+                    "ref": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 9007199254740991
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "rule_id",
+                    "target_id"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "bug_rule"
+                    },
+                    "rule_id": {
+                      "$ref": "urn:ads:common:id:1"
+                    },
+                    "target_id": {
+                      "$ref": "urn:ads:common:id:1"
+                    }
+                  }
+                }
+              ]
+            },
+            "workspace_alias": {
+              "type": "string",
+              "pattern": "^[a-z0-9]([a-z0-9._-]{0,62}[a-z0-9_-])?$",
+              "not": {
+                "pattern": "(^((con|prn|aux|nul|com[0-9]|lpt[0-9])(\\.|$)))|\\.\\."
+              }
+            },
+            "state": {
+              "const": "queued"
+            },
+            "attempts": {
+              "const": 0
             }
           }
         }
@@ -56,7 +137,15 @@
       "data_class": "internal",
       "data": {
         "queue_id": "queue-01",
-        "task_id": "task-01"
+        "task_id": "task-01",
+        "attempt_limit": 2,
+        "origin": {
+          "kind": "manual",
+          "request_id": "request-01"
+        },
+        "workspace_alias": "docs",
+        "state": "queued",
+        "attempts": 0
       }
     }
   ]

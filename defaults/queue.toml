@@ -1,0 +1,5 @@
+# Tentativas por tarefa, incluindo a primeira. O contrato aceita de 1 a 10.
+attempt_limit = 2
+
+# Total de origens admitidas por fila, inclusive as tarefas encerradas.
+admission_limit = 1000

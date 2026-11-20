@@ -99,8 +99,28 @@ export function actionPlanErrors(plan) {
 export function crossRuleErrors(key, data) {
   if (key.startsWith("event.")) {
     const problem = streamBindingError(data);
-    return problem ? [problem] : [];
+    const errors = problem ? [problem] : [];
+    if (/^event\.queue\.(created|enabled|stopped)\.v1$/.test(key)
+        && data.actor.id !== data.data.owner_id) {
+      errors.push("actor.id difere de data.owner_id");
+    }
+    return errors;
   }
   if (/^record\.action-plan\.v\d+$/.test(key)) return actionPlanErrors(data);
+  if (key === "record.queue-task.v1") return queueTaskErrors(data);
   return [];
+}
+
+export function queueTaskErrors(task) {
+  const errors = [];
+  if (task.attempts > task.attempt_limit) errors.push("attempts excede attempt_limit");
+  if (sortableTimestamp(task.updated_at) < sortableTimestamp(task.created_at)) {
+    errors.push("updated_at antecede created_at");
+  }
+  return errors;
+}
+
+function sortableTimestamp(value) {
+  const [seconds, fraction = ""] = value.slice(0, -1).split(".");
+  return seconds + fraction.padEnd(6, "0");
 }

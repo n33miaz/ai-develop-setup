@@ -12,6 +12,14 @@
   "data_class": "internal",
   "data": {
     "queue_id": "queue/01",
-    "task_id": "task-01"
+    "task_id": "task-01",
+    "attempt_limit": 2,
+    "origin": {
+      "kind": "manual",
+      "request_id": "request-01"
+    },
+    "workspace_alias": "docs",
+    "state": "queued",
+    "attempts": 0
   }
 }

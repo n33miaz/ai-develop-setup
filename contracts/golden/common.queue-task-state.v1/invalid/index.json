@@ -5,7 +5,7 @@
     "instancePath": ""
   },
   "02-empty.json": {
-    "rule": "O estado é obrigatório e tem um nome definido.",
+    "rule": "A cadeia vazia não representa um estado.",
     "keyword": "enum",
     "instancePath": ""
   },

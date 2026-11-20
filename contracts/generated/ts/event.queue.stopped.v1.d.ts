@@ -9,6 +9,11 @@ export type EventQueueStoppedV1 = EventEnvelopeV1 & {
   data: {
     queue_id: CommonIdV1;
     owner_id: CommonIdV1;
+    via: "local_ui" | "tray" | "remote_device";
+  };
+  actor: {
+    kind?: "device";
+    [k: string]: unknown;
   };
 };
 /**

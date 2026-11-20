@@ -4,7 +4,7 @@ Formato: uma seção por data. Contrato novo, campo opcional acrescentado, vers�
 
 ## 2026-11-19
 
-Contratos v1 da fila contínua: registros da tarefa e do controle pelo dono, estado compartilhado da tarefa e eventos de inclusão, mudança de estado e parada.
+Contratos v1 da fila contínua: registros da tarefa e do controle pelo dono, estado compartilhado da tarefa e eventos de criação, ativação, parada, inclusão de tarefa e mudança de estado.
 
 ## 2026-11-16
 

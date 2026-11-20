@@ -4,7 +4,6 @@
 //! edited by hand; `support` provides the validators the generated types lean on.
 
 pub mod generated;
-mod queue;
 pub mod support;
 
 pub use generated::*;

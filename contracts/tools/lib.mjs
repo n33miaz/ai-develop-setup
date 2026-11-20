@@ -149,7 +149,14 @@ function checkGolden(root, key, validate, errors, stats) {
       errors.push(`golden/${key}/invalid/${f}: entrada do index.json precisa de rule, keyword e instancePath`);
       continue;
     }
-    if (validate(data)) {
+    if (exp.keyword === "crossRule") {
+      if (!validate(data)) {
+        errors.push(`golden/${key}/invalid/${f}: deveria passar no Schema, obtido ${describeErrors(validate.errors)}`);
+      } else if (typeof exp.messagePrefix !== "string" || !exp.messagePrefix ||
+          !crossRuleErrors(key, data).some((problem) => problem.startsWith(exp.messagePrefix))) {
+        errors.push(`golden/${key}/invalid/${f}: deveria falhar na regra ${exp.rule}`);
+      }
+    } else if (validate(data)) {
       errors.push(`golden/${key}/invalid/${f}: deveria falhar e passou (regra declarada: ${exp.rule})`);
     } else if (!matchesExpectation(validate.errors, exp)) {
       errors.push(

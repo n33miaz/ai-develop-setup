@@ -23,14 +23,16 @@ export interface RecordQueueTaskV1 {
   origin:
     | {
         kind: "manual";
+        request_id: CommonIdV1;
       }
     | {
         kind: "issue";
-        ref: string;
+        ref: number;
       }
     | {
         kind: "bug_rule";
         rule_id: CommonIdV1;
+        target_id: CommonIdV1;
       };
   title: string;
   workspace_alias: string;
@@ -41,5 +43,5 @@ export interface RecordQueueTaskV1 {
   created_at: CommonTimestampV1;
   updated_at: CommonTimestampV1;
   branch?: string;
-  pull_request?: string;
+  pull_request?: number;
 }

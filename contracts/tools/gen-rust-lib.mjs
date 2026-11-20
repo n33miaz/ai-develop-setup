@@ -809,6 +809,9 @@ impl Serialize for ${name} {
           parts.push(`Rule::Type(&[${types.map((t) => `JsonType::${pascal(t)}`).join(", ")}])`);
           break;
         }
+        case "additionalProperties":
+          if (schema[k] !== true) this.fail(at, "additionalProperties sem tradu\u00e7\u00e3o para regra");
+          break;
         case "const":
           this.use("crate::support::Literal");
           parts.push(`Rule::Const(${this.literal(schema.const, at)})`);

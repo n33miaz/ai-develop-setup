@@ -9,6 +9,24 @@ export type EventQueueTaskCreatedV1 = EventEnvelopeV1 & {
   data: {
     queue_id: CommonIdV1;
     task_id: CommonIdV1;
+    attempt_limit: number;
+    origin:
+      | {
+          kind: "manual";
+          request_id: CommonIdV1;
+        }
+      | {
+          kind: "issue";
+          ref: number;
+        }
+      | {
+          kind: "bug_rule";
+          rule_id: CommonIdV1;
+          target_id: CommonIdV1;
+        };
+    workspace_alias: string;
+    state: "queued";
+    attempts: 0;
   };
 };
 /**

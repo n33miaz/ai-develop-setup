@@ -163,3 +163,22 @@ test("caminho absoluto: aceita só a forma normalizada, Windows e POSIX", () => 
     for (const bad of paths) assert.ok(!validate(bad), `${why}: ${JSON.stringify(bad)}`);
   }
 });
+
+test("queue task cross rules compare attempt ceilings and UTC fractions", () => {
+  const key = "record.queue-task.v1";
+  const base = {
+    attempts: 2,
+    attempt_limit: 2,
+    created_at: "2030-01-02T03:04:05Z",
+    updated_at: "2030-01-02T03:04:05Z",
+  };
+  for (const [changes, errors] of [
+    [{}, []],
+    [{ attempts: 3 }, ["attempts excede attempt_limit"]],
+    [{ updated_at: "2030-01-02T03:04:04.999999Z" }, ["updated_at antecede created_at"]],
+    [{ updated_at: "2030-01-02T03:04:05.000001Z" }, []],
+    [{ created_at: "2030-01-02T03:04:05.1Z", updated_at: "2030-01-02T03:04:05.100000Z" }, []],
+  ]) {
+    assert.deepEqual(crossRuleErrors(key, { ...base, ...changes }), errors);
+  }
+});

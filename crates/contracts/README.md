@@ -16,7 +16,7 @@ Os tipos ficam todos na raiz do crate (`ads_contracts::CommonIdV1`). O nome do t
 
 ## Fila contínua
 
-Os [contratos v1 da fila](../../contracts/README.md#fila-contínua) cobrem a tarefa, o estado da fila e seus eventos. `RecordTaskQueueV1::new_stopped` cria a fila parada e `permits_state_change` compara o dono com a identidade fornecida pela camada de autenticação. `RecordQueueTaskV1::next_attempt_count` confere a transição e devolve a nova contagem sem alterar o registro. Os testes de tabela exercitam o ciclo e o esgotamento das tentativas.
+Os [contratos v1 da fila](../../contracts/README.md#fila-contínua) definem os registros e eventos. A política de transição, restauração e autoridade do dono fica em `ads-core`.
 
 Implementar o agendador, a autenticação, a persistência e a execução fica para entregas futuras.
 

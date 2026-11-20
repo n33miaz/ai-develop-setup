@@ -12,7 +12,8 @@
       "required": [
         "type",
         "stream",
-        "data"
+        "data",
+        "actor"
       ],
       "properties": {
         "type": {
@@ -27,7 +28,8 @@
           "additionalProperties": false,
           "required": [
             "queue_id",
-            "owner_id"
+            "owner_id",
+            "via"
           ],
           "properties": {
             "queue_id": {
@@ -35,6 +37,22 @@
             },
             "owner_id": {
               "$ref": "urn:ads:common:id:1"
+            },
+            "via": {
+              "enum": [
+                "local_ui",
+                "tray",
+                "remote_device"
+              ]
+            }
+          }
+        },
+        "actor": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "kind": {
+              "const": "device"
             }
           }
         }
@@ -50,13 +68,14 @@
       "seq": 1,
       "actor": {
         "kind": "device",
-        "id": "device-01"
+        "id": "owner-01"
       },
       "cause": null,
       "data_class": "internal",
       "data": {
         "queue_id": "queue-01",
-        "owner_id": "owner-01"
+        "owner_id": "owner-01",
+        "via": "local_ui"
       }
     }
   ]

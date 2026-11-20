@@ -6,7 +6,7 @@
 export type CommonIdV1 = string;
 
 /**
- * Fila contínua. Controle da fila. Toda fila nasce parada; só o dono autenticado pode ativá-la.
+ * Fila contínua. Controle da fila. Toda fila nasce parada e volta parada a cada partida do núcleo; só o dono autenticado pode ativá-la, registrando queue.enabled.
  */
 export interface RecordTaskQueueV1 {
   version: 1;

@@ -79,7 +79,9 @@ pub enum RecordQueueTaskV1Origin {
 /// `origin|manual` in `urn:ads:record:queue-task:1`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RecordQueueTaskV1OriginManual {}
+pub struct RecordQueueTaskV1OriginManual {
+    pub request_id: CommonIdV1,
+}
 
 /// `origin|issue` in `urn:ads:record:queue-task:1`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -88,57 +90,45 @@ pub struct RecordQueueTaskV1OriginIssue {
     pub r#ref: RecordQueueTaskV1OriginIssueRef,
 }
 
-static RECORD_QUEUE_TASK_V1_ORIGIN_ISSUE_REF_PATTERN: Pattern =
-    Pattern::new(r"^[^\x{0000}-\x{001f}\x{007f}-\x{009f}]*$");
-
 /// `origin|issue.ref` in `urn:ads:record:queue-task:1`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
-#[serde(try_from = "String")]
-pub struct RecordQueueTaskV1OriginIssueRef(String);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[serde(try_from = "u64")]
+pub struct RecordQueueTaskV1OriginIssueRef(u64);
 
 impl RecordQueueTaskV1OriginIssueRef {
-    pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
-        let text = text.into();
-        if Self::accepts(&text) {
-            Ok(Self(text))
+    pub fn new(value: u64) -> Result<Self, ContractError> {
+        if (1..=9007199254740991).contains(&value) {
+            Ok(Self(value))
         } else {
-            Err(ContractError::new("RecordQueueTaskV1OriginIssueRef", text))
+            Err(ContractError::new(
+                "RecordQueueTaskV1OriginIssueRef",
+                value.to_string(),
+            ))
         }
     }
 
-    fn accepts(text: &str) -> bool {
-        let length = text.chars().count();
-        (1..=256).contains(&length) && RECORD_QUEUE_TASK_V1_ORIGIN_ISSUE_REF_PATTERN.matches(text)
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
+    pub fn get(self) -> u64 {
+        self.0
     }
 }
 
-impl TryFrom<String> for RecordQueueTaskV1OriginIssueRef {
+impl TryFrom<u64> for RecordQueueTaskV1OriginIssueRef {
     type Error = ContractError;
 
-    fn try_from(text: String) -> Result<Self, ContractError> {
-        Self::new(text)
+    fn try_from(value: u64) -> Result<Self, ContractError> {
+        Self::new(value)
     }
 }
 
-impl From<RecordQueueTaskV1OriginIssueRef> for String {
-    fn from(value: RecordQueueTaskV1OriginIssueRef) -> String {
+impl From<RecordQueueTaskV1OriginIssueRef> for u64 {
+    fn from(value: RecordQueueTaskV1OriginIssueRef) -> u64 {
         value.0
-    }
-}
-
-impl fmt::Display for RecordQueueTaskV1OriginIssueRef {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
     }
 }
 
 impl Serialize for RecordQueueTaskV1OriginIssueRef {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&self.0)
+        self.0.serialize(serializer)
     }
 }
 
@@ -147,10 +137,12 @@ impl Serialize for RecordQueueTaskV1OriginIssueRef {
 #[serde(deny_unknown_fields)]
 pub struct RecordQueueTaskV1OriginBugRule {
     pub rule_id: CommonIdV1,
+    pub target_id: CommonIdV1,
 }
 
-static RECORD_QUEUE_TASK_V1_TITLE_PATTERN: Pattern =
-    Pattern::new(r"^[^\x{0000}-\x{001f}\x{007f}-\x{009f}]*$");
+static RECORD_QUEUE_TASK_V1_TITLE_PATTERN: Pattern = Pattern::new(
+    r"^[^\x{0000}-\x{001f}\x{007f}-\x{009f}\x{061c}\x{200b}-\x{200f}\x{2028}-\x{202e}\x{2060}-\x{206f}\x{feff}]*$",
+);
 
 /// `title` in `urn:ads:record:queue-task:1`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
@@ -204,7 +196,9 @@ impl Serialize for RecordQueueTaskV1Title {
 }
 
 static RECORD_QUEUE_TASK_V1_WORKSPACE_ALIAS_PATTERN: Pattern =
-    Pattern::new(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$");
+    Pattern::new(r"^[a-z0-9]([a-z0-9._-]{0,62}[a-z0-9_-])?$");
+static RECORD_QUEUE_TASK_V1_WORKSPACE_ALIAS_EXCLUDED: Pattern =
+    Pattern::new(r"(^((con|prn|aux|nul|com[0-9]|lpt[0-9])(\.|$)))|\.\.");
 
 /// `workspace_alias` in `urn:ads:record:queue-task:1`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
@@ -223,6 +217,7 @@ impl RecordQueueTaskV1WorkspaceAlias {
 
     fn accepts(text: &str) -> bool {
         RECORD_QUEUE_TASK_V1_WORKSPACE_ALIAS_PATTERN.matches(text)
+            && !RECORD_QUEUE_TASK_V1_WORKSPACE_ALIAS_EXCLUDED.matches(text)
     }
 
     pub fn as_str(&self) -> &str {
@@ -300,12 +295,12 @@ impl Serialize for RecordQueueTaskV1Attempts {
 
 /// `attempt_limit` in `urn:ads:record:queue-task:1`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
-#[serde(try_from = "u64")]
-pub struct RecordQueueTaskV1AttemptLimit(u64);
+#[serde(try_from = "u16")]
+pub struct RecordQueueTaskV1AttemptLimit(u16);
 
 impl RecordQueueTaskV1AttemptLimit {
-    pub fn new(value: u64) -> Result<Self, ContractError> {
-        if (1..=9007199254740991).contains(&value) {
+    pub fn new(value: u16) -> Result<Self, ContractError> {
+        if (1..=10).contains(&value) {
             Ok(Self(value))
         } else {
             Err(ContractError::new(
@@ -315,21 +310,21 @@ impl RecordQueueTaskV1AttemptLimit {
         }
     }
 
-    pub fn get(self) -> u64 {
+    pub fn get(self) -> u16 {
         self.0
     }
 }
 
-impl TryFrom<u64> for RecordQueueTaskV1AttemptLimit {
+impl TryFrom<u16> for RecordQueueTaskV1AttemptLimit {
     type Error = ContractError;
 
-    fn try_from(value: u64) -> Result<Self, ContractError> {
+    fn try_from(value: u16) -> Result<Self, ContractError> {
         Self::new(value)
     }
 }
 
-impl From<RecordQueueTaskV1AttemptLimit> for u64 {
-    fn from(value: RecordQueueTaskV1AttemptLimit) -> u64 {
+impl From<RecordQueueTaskV1AttemptLimit> for u16 {
+    fn from(value: RecordQueueTaskV1AttemptLimit) -> u16 {
         value.0
     }
 }
@@ -341,7 +336,8 @@ impl Serialize for RecordQueueTaskV1AttemptLimit {
 }
 
 static RECORD_QUEUE_TASK_V1_BRANCH_PATTERN: Pattern =
-    Pattern::new(r"^[^\x{0000}-\x{001f}\x{007f}-\x{009f}]*$");
+    Pattern::new(r"^(feature|fix)/[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*$");
+static RECORD_QUEUE_TASK_V1_BRANCH_EXCLUDED: Pattern = Pattern::new(r"\.\.|\.lock(/|$)|\.$");
 
 /// `branch` in `urn:ads:record:queue-task:1`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
@@ -360,7 +356,9 @@ impl RecordQueueTaskV1Branch {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        (1..=255).contains(&length) && RECORD_QUEUE_TASK_V1_BRANCH_PATTERN.matches(text)
+        (1..=255).contains(&length)
+            && RECORD_QUEUE_TASK_V1_BRANCH_PATTERN.matches(text)
+            && !RECORD_QUEUE_TASK_V1_BRANCH_EXCLUDED.matches(text)
     }
 
     pub fn as_str(&self) -> &str {
@@ -394,56 +392,44 @@ impl Serialize for RecordQueueTaskV1Branch {
     }
 }
 
-static RECORD_QUEUE_TASK_V1_PULL_REQUEST_PATTERN: Pattern =
-    Pattern::new(r"^[^\x{0000}-\x{001f}\x{007f}-\x{009f}]*$");
-
 /// `pull_request` in `urn:ads:record:queue-task:1`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
-#[serde(try_from = "String")]
-pub struct RecordQueueTaskV1PullRequest(String);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[serde(try_from = "u64")]
+pub struct RecordQueueTaskV1PullRequest(u64);
 
 impl RecordQueueTaskV1PullRequest {
-    pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
-        let text = text.into();
-        if Self::accepts(&text) {
-            Ok(Self(text))
+    pub fn new(value: u64) -> Result<Self, ContractError> {
+        if (1..=9007199254740991).contains(&value) {
+            Ok(Self(value))
         } else {
-            Err(ContractError::new("RecordQueueTaskV1PullRequest", text))
+            Err(ContractError::new(
+                "RecordQueueTaskV1PullRequest",
+                value.to_string(),
+            ))
         }
     }
 
-    fn accepts(text: &str) -> bool {
-        let length = text.chars().count();
-        (1..=256).contains(&length) && RECORD_QUEUE_TASK_V1_PULL_REQUEST_PATTERN.matches(text)
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
+    pub fn get(self) -> u64 {
+        self.0
     }
 }
 
-impl TryFrom<String> for RecordQueueTaskV1PullRequest {
+impl TryFrom<u64> for RecordQueueTaskV1PullRequest {
     type Error = ContractError;
 
-    fn try_from(text: String) -> Result<Self, ContractError> {
-        Self::new(text)
+    fn try_from(value: u64) -> Result<Self, ContractError> {
+        Self::new(value)
     }
 }
 
-impl From<RecordQueueTaskV1PullRequest> for String {
-    fn from(value: RecordQueueTaskV1PullRequest) -> String {
+impl From<RecordQueueTaskV1PullRequest> for u64 {
+    fn from(value: RecordQueueTaskV1PullRequest) -> u64 {
         value.0
-    }
-}
-
-impl fmt::Display for RecordQueueTaskV1PullRequest {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
     }
 }
 
 impl Serialize for RecordQueueTaskV1PullRequest {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&self.0)
+        self.0.serialize(serializer)
     }
 }

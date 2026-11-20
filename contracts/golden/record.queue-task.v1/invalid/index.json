@@ -18,5 +18,112 @@
     "rule": "A branch sem valor é omitida.",
     "keyword": "type",
     "instancePath": "/branch"
+  },
+  "branch-option.json": {
+    "rule": "A branch segue a convenção de referências do Git.",
+    "keyword": "pattern",
+    "instancePath": "/branch"
+  },
+  "branch-protected.json": {
+    "rule": "A branch segue a convenção de referências do Git.",
+    "keyword": "pattern",
+    "instancePath": "/branch"
+  },
+  "branch-dots.json": {
+    "rule": "A branch segue a convenção de referências do Git.",
+    "keyword": "not",
+    "instancePath": "/branch"
+  },
+  "branch-lock.json": {
+    "rule": "A branch segue a convenção de referências do Git.",
+    "keyword": "not",
+    "instancePath": "/branch"
+  },
+  "branch-unicode.json": {
+    "rule": "A branch segue a convenção de referências do Git.",
+    "keyword": "pattern",
+    "instancePath": "/branch"
+  },
+  "branch-ref.json": {
+    "rule": "A branch segue a convenção de referências do Git.",
+    "keyword": "pattern",
+    "instancePath": "/branch"
+  },
+  "pr-url.json": {
+    "rule": "O pull request usa um número.",
+    "keyword": "type",
+    "instancePath": "/pull_request"
+  },
+  "pr-script.json": {
+    "rule": "O pull request usa um número.",
+    "keyword": "type",
+    "instancePath": "/pull_request"
+  },
+  "pr-zero.json": {
+    "rule": "O número do pull request é positivo.",
+    "keyword": "minimum",
+    "instancePath": "/pull_request"
+  },
+  "workspace-device.json": {
+    "rule": "O apelido evita dispositivos reservados.",
+    "keyword": "not",
+    "instancePath": "/workspace_alias"
+  },
+  "workspace-dot.json": {
+    "rule": "O apelido termina sem ponto.",
+    "keyword": "pattern",
+    "instancePath": "/workspace_alias"
+  },
+  "title-bidi.json": {
+    "rule": "O título exclui controles direcionais.",
+    "keyword": "pattern",
+    "instancePath": "/title"
+  },
+  "title-long.json": {
+    "rule": "O título tem no máximo 120 caracteres.",
+    "keyword": "maxLength",
+    "instancePath": "/title"
+  },
+  "limit-high.json": {
+    "rule": "O teto é dez tentativas.",
+    "keyword": "maximum",
+    "instancePath": "/attempt_limit"
+  },
+  "attempts-over-limit.json": {
+    "rule": "A contagem respeita o teto.",
+    "keyword": "crossRule",
+    "instancePath": "",
+    "messagePrefix": "attempts excede attempt_limit"
+  },
+  "updated-before-created.json": {
+    "rule": "A atualização sucede ou coincide com a criação.",
+    "keyword": "crossRule",
+    "instancePath": "",
+    "messagePrefix": "updated_at antecede created_at"
+  },
+  "origin-unknown.json": {
+    "rule": "A origem pertence a uma categoria conhecida.",
+    "keyword": "oneOf",
+    "instancePath": "/origin"
+  },
+  "manual-ref.json": {
+    "rule": "O pedido manual usa identificador de pedido.",
+    "keyword": "additionalProperties",
+    "instancePath": "/origin"
+  },
+  "issue-missing-ref.json": {
+    "rule": "A origem issue exige a referência.",
+    "keyword": "required",
+    "instancePath": "/origin"
+  },
+  "issue-zero.json": {
+    "rule": "A referência da issue é positiva.",
+    "keyword": "minimum",
+    "instancePath": "/origin/ref"
+  },
+  "bug-missing-target.json": {
+    "rule": "A regra de bug exige um alvo.",
+    "keyword": "required",
+    "instancePath": "/origin"
   }
 }

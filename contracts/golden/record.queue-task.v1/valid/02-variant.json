@@ -4,7 +4,7 @@
   "queue_id": "queue-01",
   "origin": {
     "kind": "issue",
-    "ref": "project/repo#42"
+    "ref": 42
   },
   "title": "Conferir documentação",
   "workspace_alias": "docs",
@@ -15,5 +15,5 @@
   "created_at": "2030-01-02T03:04:05Z",
   "updated_at": "2030-01-02T03:04:05Z",
   "branch": "feature/42-docs",
-  "pull_request": "project/repo#43"
+  "pull_request": 43
 }

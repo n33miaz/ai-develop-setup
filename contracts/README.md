@@ -286,19 +286,23 @@ WebSocket em loopback entre a interface (navegador ou casca) e o núcleo. Como a
 
 ## Fila contínua
 
-Uma fila nasce em `stopped`. Só seu dono autenticado pode alterá-la para `enabled` ou pará-la. O produtor confere a identidade autenticada contra o `owner_id` cadastrado antes de aceitar a mudança e, ao parar, emite `queue.stopped` com esse dono. A fila precisa estar ativa para uma tarefa começar a rodar.
+A criação fica registrada em `queue.created`, sempre em `stopped`. Na partida, o núcleo restaura toda fila em `stopped`, inclusive se o retrato persistido ou o último evento indicar `enabled`. Uma nova ativação precisa de `queue.enabled` após a partida.
 
-Uma tarefa começa em `queued`, com zero tentativas e um teto positivo que inclui a primeira. A origem identifica pedido manual, issue ou regra de bug. A pasta é identificada por apelido, sem unidade ou separadores. Branch e pull request são referências opcionais.
+O produtor obtém `owner_id` do cadastro de identidade autenticada ao criar a fila. Em `queue.enabled` e `queue.stopped`, compara o aparelho autenticado com esse cadastro e registra o identificador em `actor.id` e `data.owner_id`. A ativação aceita só `local_ui` e `tray`. Criação, parada e aceite de tarefa também aceitam `remote_device`, reservado para um futuro transporte autenticado e assinado.
+
+`queue.task_created` registra o estado inicial `queued`, zero tentativas e o teto imutável de 1 a 10, incluindo a primeira. O teto e a origem são recuperados do evento de criação. A chave de deduplicação combina fila, apelido e origem. A origem manual usa um identificador estável do pedido, a issue usa seu número no repositório do apelido e a regra de bug usa o par regra e alvo estável. O produtor reserva a chave e aplica o limite da fila ao anexar a criação, em uma operação, preservando chaves de tarefas encerradas e no replay.
+
+O apelido é um identificador de cadastro e a resolução da pasta usa esse cadastro. Branch opcional segue a forma ASCII `feature/...` ou `fix/...` e referências opcionais de pull request são números positivos do repositório cadastrado. O executor passa `--` antes da referência em comandos Git que aceitam esse separador.
 
 | Estado atual | Destinos permitidos |
 |---|---|
-| `queued` | `running` se ainda houver tentativa, ou `cancelled` |
+| `queued` | `running` se a fila correspondente estiver ligada e houver tentativa, ou `cancelled` |
 | `running` | `review`, `failed` ou `cancelled` |
-| `review` | `done`, `failed` ou `cancelled` |
-| `failed` | `queued` se ainda houver tentativa |
+| `review` | `done` com aceite do dono autenticado registrado em `actor` e `via`, `failed` ou `cancelled` |
+| `failed` | `queued` se houver tentativa, ou `cancelled` |
 | `done`, `cancelled` | nenhum |
 
-Cada entrada em `running` consome uma tentativa. As outras transições preservam a contagem. O produtor confere a mudança contra o registro atual antes de emitir `queue.task_state_changed`, que leva a contagem resultante. A data de atualização deve acompanhar a mudança e ser igual ou posterior à de criação.
+`failed` sem saldo encerra a execução. Cancelar continua permitido para encerrar administrativamente a tarefa, inclusive com contagem inconsistente. A entrada em `running` consome uma tentativa. As outras transições preservam a contagem. O produtor confere a mudança contra o registro atual antes de emitir `queue.task_state_changed`. A contagem respeita o teto e a data de atualização é igual ou posterior à criação.
 
 ## Atualização
 
@@ -379,6 +383,8 @@ Os seis comandos estendem `urn:ads:command:request:1` com `allOf`, fixam `method
 |---|---|
 | `urn:ads:event:queue.task_created:1` | Uma tarefa entrou na fila. |
 | `urn:ads:event:queue.task_state_changed:1` | Uma tarefa mudou de estado. |
+| `urn:ads:event:queue.created:1` | A fila foi criada parada. |
+| `urn:ads:event:queue.enabled:1` | O dono ligou a fila. |
 | `urn:ads:event:queue.stopped:1` | O dono parou a fila. |
 
 ### Eventos de aprovação

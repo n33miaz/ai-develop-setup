@@ -49,6 +49,8 @@ pub mod event_envelope_v1;
 pub mod event_host_alert_acked_v1;
 pub mod event_host_alert_raised_v1;
 pub mod event_host_sample_recorded_v1;
+pub mod event_queue_created_v1;
+pub mod event_queue_enabled_v1;
 pub mod event_queue_stopped_v1;
 pub mod event_queue_task_created_v1;
 pub mod event_queue_task_state_changed_v1;
@@ -131,6 +133,8 @@ pub use event_envelope_v1::*;
 pub use event_host_alert_acked_v1::*;
 pub use event_host_alert_raised_v1::*;
 pub use event_host_sample_recorded_v1::*;
+pub use event_queue_created_v1::*;
+pub use event_queue_enabled_v1::*;
 pub use event_queue_stopped_v1::*;
 pub use event_queue_task_created_v1::*;
 pub use event_queue_task_state_changed_v1::*;
@@ -284,6 +288,8 @@ pub const SCHEMAS: &[(&str, &str)] = &[
         "event.host.sample_recorded.v1",
         "urn:ads:event:host.sample_recorded:1",
     ),
+    ("event.queue.created.v1", "urn:ads:event:queue.created:1"),
+    ("event.queue.enabled.v1", "urn:ads:event:queue.enabled:1"),
     ("event.queue.stopped.v1", "urn:ads:event:queue.stopped:1"),
     (
         "event.queue.task_created.v1",
@@ -363,14 +369,17 @@ pub const SCHEMAS: &[(&str, &str)] = &[
 
 /// Every text pattern the generated types use, as handed to the regular expression engine.
 pub const PATTERNS: &[&str] = &[
+    r"(^((con|prn|aux|nul|com[0-9]|lpt[0-9])(\.|$)))|\.\.",
     r"(^|/)\.\.(/|$)",
     r"(^|[\\/])\.\.?([\\/]|$)",
     r"(^|[\\/])~",
     r"[$%]",
     r"[*?]",
     r"[\x{0000}-\x{001f}\x{007f}-\x{009f}]",
+    r"\.\.|\.lock(/|$)|\.$",
     r"^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
     r#"^([A-Z]:\\([^\\/:"<>|]*[^\\/:"<>|. ](\\[^\\/:"<>|]*[^\\/:"<>|. ])*)?|/([^/\\]+(/[^/\\]+)*)?)$"#,
+    r"^(feature|fix)/[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*$",
     r"^E_[A-Z0-9_]{1,60}$",
     r"^T[0-3]$",
     r"^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
@@ -380,11 +389,12 @@ pub const PATTERNS: &[&str] = &[
     r"^[A-Z]:\\([^\\]*\\)*[^\\]*~[0-9]+(\.|\\|$)",
     r"^[A-Za-z0-9+/]{43}=$",
     r"^[A-Za-z0-9._-][A-Za-z0-9._/-]*$",
-    r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
     r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
     r"^[A-Za-z0-9_-]{43}$",
     r"^[^\\/$%]*[*?][^\\/$%]*$",
+    r"^[^\x{0000}-\x{001f}\x{007f}-\x{009f}\x{061c}\x{200b}-\x{200f}\x{2028}-\x{202e}\x{2060}-\x{206f}\x{feff}]*$",
     r"^[^\x{0000}-\x{001f}\x{007f}-\x{009f}]*$",
+    r"^[a-z0-9]([a-z0-9._-]{0,62}[a-z0-9_-])?$",
     r"^[a-z][a-z0-9_-]*/[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
     r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$",
     r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$",
@@ -472,6 +482,8 @@ pub fn reencode(id: &str, value: Value) -> Option<Result<Value, serde_json::Erro
         "urn:ads:event:host.sample_recorded:1" => {
             support::reencode::<EventHostSampleRecordedV1>(value)
         }
+        "urn:ads:event:queue.created:1" => support::reencode::<EventQueueCreatedV1>(value),
+        "urn:ads:event:queue.enabled:1" => support::reencode::<EventQueueEnabledV1>(value),
         "urn:ads:event:queue.stopped:1" => support::reencode::<EventQueueStoppedV1>(value),
         "urn:ads:event:queue.task_created:1" => support::reencode::<EventQueueTaskCreatedV1>(value),
         "urn:ads:event:queue.task_state_changed:1" => {

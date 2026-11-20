@@ -35,11 +35,15 @@
           "type": "object",
           "additionalProperties": false,
           "required": [
-            "kind"
+            "kind",
+            "request_id"
           ],
           "properties": {
             "kind": {
               "const": "manual"
+            },
+            "request_id": {
+              "$ref": "urn:ads:common:id:1"
             }
           }
         },
@@ -55,10 +59,9 @@
               "const": "issue"
             },
             "ref": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 256,
-              "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]*$"
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
             }
           }
         },
@@ -67,13 +70,17 @@
           "additionalProperties": false,
           "required": [
             "kind",
-            "rule_id"
+            "rule_id",
+            "target_id"
           ],
           "properties": {
             "kind": {
               "const": "bug_rule"
             },
             "rule_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "target_id": {
               "$ref": "urn:ads:common:id:1"
             }
           }
@@ -84,11 +91,14 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 120,
-      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]*$"
+      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f\\u061c\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u206f\\ufeff]*$"
     },
     "workspace_alias": {
       "type": "string",
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+      "pattern": "^[a-z0-9]([a-z0-9._-]{0,62}[a-z0-9_-])?$",
+      "not": {
+        "pattern": "(^((con|prn|aux|nul|com[0-9]|lpt[0-9])(\\.|$)))|\\.\\."
+      }
     },
     "tool": {
       "$ref": "urn:ads:common:id:1"
@@ -104,7 +114,7 @@
     "attempt_limit": {
       "type": "integer",
       "minimum": 1,
-      "maximum": 9007199254740991
+      "maximum": 10
     },
     "created_at": {
       "$ref": "urn:ads:common:timestamp:1"
@@ -116,13 +126,15 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 255,
-      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]*$"
+      "pattern": "^(feature|fix)/[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*$",
+      "not": {
+        "pattern": "\\.\\.|\\.lock(/|$)|\\.$"
+      }
     },
     "pull_request": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 256,
-      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]*$"
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
     }
   },
   "examples": [
@@ -131,7 +143,8 @@
       "id": "task-01",
       "queue_id": "queue-01",
       "origin": {
-        "kind": "manual"
+        "kind": "manual",
+        "request_id": "request-01"
       },
       "title": "Conferir documentação",
       "workspace_alias": "docs",

@@ -13,5 +13,27 @@
     "rule": "O identificador da fila é opaco.",
     "keyword": "pattern",
     "instancePath": "/data/queue_id"
+  },
+  "wrong-queue.json": {
+    "rule": "O stream identifica a mesma fila.",
+    "keyword": "crossRule",
+    "instancePath": "",
+    "messagePrefix": "stream"
+  },
+  "extra-data.json": {
+    "rule": "Os dados do evento são fechados.",
+    "keyword": "additionalProperties",
+    "instancePath": "/data"
+  },
+  "agent.json": {
+    "rule": "O evento exige um aparelho autenticado.",
+    "keyword": "const",
+    "instancePath": "/actor/kind"
+  },
+  "owner-mismatch.json": {
+    "rule": "O ator identifica o dono registrado no evento.",
+    "keyword": "crossRule",
+    "instancePath": "",
+    "messagePrefix": "actor.id difere de data.owner_id"
   }
 }

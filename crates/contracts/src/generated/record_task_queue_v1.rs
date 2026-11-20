@@ -5,7 +5,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use super::common_id_v1::CommonIdV1;
 use crate::support;
 
-/// Fila contínua. Controle da fila. Toda fila nasce parada; só o dono autenticado pode ativá-la.
+/// Fila contínua. Controle da fila. Toda fila nasce parada e volta parada a cada partida do núcleo; só o dono autenticado pode ativá-la, registrando queue.enabled.
 ///
 /// `urn:ads:record:task-queue:1`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

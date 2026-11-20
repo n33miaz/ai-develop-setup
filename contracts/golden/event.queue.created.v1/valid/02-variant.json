@@ -1,0 +1,19 @@
+{
+  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAC",
+  "type": "urn:ads:event:queue.created:1",
+  "ts": "2030-01-02T03:04:05Z",
+  "stream": "queue/queue-01",
+  "seq": 2,
+  "actor": {
+    "kind": "device",
+    "id": "owner-01"
+  },
+  "cause": null,
+  "data_class": "internal",
+  "data": {
+    "queue_id": "queue-01",
+    "owner_id": "owner-01",
+    "via": "tray",
+    "state": "stopped"
+  }
+}

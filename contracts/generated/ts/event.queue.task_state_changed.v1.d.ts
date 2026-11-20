@@ -12,6 +12,7 @@ export type EventQueueTaskStateChangedV1 = EventEnvelopeV1 & {
     from: CommonQueueTaskStateV1;
     to: CommonQueueTaskStateV1;
     attempts: number;
+    via?: "local_ui" | "tray" | "remote_device";
   };
 };
 /**

@@ -3,7 +3,8 @@
   "id": "task-01",
   "queue_id": "queue-01",
   "origin": {
-    "kind": "manual"
+    "kind": "manual",
+    "request_id": "request-01"
   },
   "title": "Conferir documentação",
   "workspace_alias": "X:\\example",
