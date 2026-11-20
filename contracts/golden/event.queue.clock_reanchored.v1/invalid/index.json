@@ -1,0 +1,17 @@
+{
+  "agent.json": {
+    "rule": "O evento exige um aparelho.",
+    "keyword": "const",
+    "instancePath": "/actor/kind"
+  },
+  "invalid-via.json": {
+    "rule": "O canal precisa ser reconhecido.",
+    "keyword": "enum",
+    "instancePath": "/data/via"
+  },
+  "missing-owner.json": {
+    "rule": "O dono da fila é obrigatório.",
+    "keyword": "required",
+    "instancePath": "/data"
+  }
+}

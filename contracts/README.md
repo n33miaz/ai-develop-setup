@@ -391,6 +391,7 @@ Os sete comandos estendem `urn:ads:command:request:1` com `allOf`, fixam `method
 | URN | Significado |
 |---|---|
 | `urn:ads:event:queue.task_created:1` | Uma tarefa entrou na fila. |
+| `urn:ads:event:queue.clock_reanchored:1` | O aparelho do dono reancorou o relógio de admissão em `ts` para as criações até `seq - 1`. |
 | `urn:ads:event:queue.task_created:2` | Uma tarefa entrou na fila. A origem manual exige ator do tipo aparelho. O núcleo confere se ele pertence ao dono da fila. A versão 1 continua legível. |
 | `urn:ads:event:queue.task_state_changed:1` | Uma tarefa mudou de estado. |
 | `urn:ads:event:queue.created:1` | A fila foi criada parada. |

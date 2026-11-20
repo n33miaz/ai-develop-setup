@@ -54,6 +54,7 @@ pub mod event_envelope_v1;
 pub mod event_host_alert_acked_v1;
 pub mod event_host_alert_raised_v1;
 pub mod event_host_sample_recorded_v1;
+pub mod event_queue_clock_reanchored_v1;
 pub mod event_queue_created_v1;
 pub mod event_queue_enabled_v1;
 pub mod event_queue_stopped_v1;
@@ -147,6 +148,7 @@ pub use event_envelope_v1::*;
 pub use event_host_alert_acked_v1::*;
 pub use event_host_alert_raised_v1::*;
 pub use event_host_sample_recorded_v1::*;
+pub use event_queue_clock_reanchored_v1::*;
 pub use event_queue_created_v1::*;
 pub use event_queue_enabled_v1::*;
 pub use event_queue_stopped_v1::*;
@@ -322,6 +324,10 @@ pub const SCHEMAS: &[(&str, &str)] = &[
     (
         "event.host.sample_recorded.v1",
         "urn:ads:event:host.sample_recorded:1",
+    ),
+    (
+        "event.queue.clock_reanchored.v1",
+        "urn:ads:event:queue.clock_reanchored:1",
     ),
     ("event.queue.created.v1", "urn:ads:event:queue.created:1"),
     ("event.queue.enabled.v1", "urn:ads:event:queue.enabled:1"),
@@ -545,6 +551,9 @@ pub fn reencode(id: &str, value: Value) -> Option<Result<Value, serde_json::Erro
         "urn:ads:event:host.alert_raised:1" => support::reencode::<EventHostAlertRaisedV1>(value),
         "urn:ads:event:host.sample_recorded:1" => {
             support::reencode::<EventHostSampleRecordedV1>(value)
+        }
+        "urn:ads:event:queue.clock_reanchored:1" => {
+            support::reencode::<EventQueueClockReanchoredV1>(value)
         }
         "urn:ads:event:queue.created:1" => support::reencode::<EventQueueCreatedV1>(value),
         "urn:ads:event:queue.enabled:1" => support::reencode::<EventQueueEnabledV1>(value),
