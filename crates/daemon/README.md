@@ -61,10 +61,12 @@ inexistente e apelido de pasta fora da configuração recebem `-32602`.
    ```powershell
    Set-Location ui
    npm ci
-   $env:VITE_CORE_HARNESSES = 'claude,codex'
-   $env:VITE_CORE_WORKDIR = 'default'
    npm run dev
    ```
+
+   Conectada, a interface pergunta ao daemon (`harness.list`) quais ferramentas
+   estão ligadas e mostra um botão para cada uma; `VITE_CORE_HARNESSES` não é
+   necessária.
 
    Depois que o Vite confirmar a porta, abra no navegador a URL completa
    impressa pelo daemon
@@ -116,6 +118,23 @@ Os tipos gerados validam todos os comandos e eventos contra os contratos.
 incluindo uma assinatura feita antes de abrir a sessão. Nenhum `fs.*` está registrado.
 Todo comando remoto é recusado, mesmo com autenticação válida.
 
+`harness.list` (só depois de `auth.hello`; `params` leva apenas o `_meta`
+obrigatório de todo comando) responde
+`{"harnesses": [...], "workdir_aliases": [...]}`
+([`command.harness.list.response:1`](../../contracts/README.md#api-local)): os
+identificadores das ferramentas com `program` preenchido, na ordem `claude`,
+`codex`, e os apelidos de `[workdirs]` em ordem de nome. Só nomes: programa,
+argumentos, ambiente e caminhos nunca saem do daemon, e o contrato fechado da
+resposta não tem onde levá-los. A lista é montada uma vez, na partida (reinicie
+para reler a configuração), e não confere o disco: uma ferramenta listada ainda
+pode receber `-32602` em `session.open` se o programa ou a pasta não existir.
+Como só lê, não passa pela cache de idempotência: repetir a chave devolve a
+lista de novo, nunca `replayed`. `api::Launcher::catalog` fornece a lista; o
+padrão é vazio, como em `DisabledLauncher`. A resposta é a única mensagem
+que precisa da `local-api.server-message:2`; quem não envia `harness.list`
+continua recebendo só mensagens da `:1`. Um daemon anterior ao comando o recusa
+com `-32601`, e a interface mostra que o daemon precisa ser atualizado.
+
 Padrões em [defaults/daemon.toml](../../defaults/daemon.toml), aplicados ao iniciar:
 
 | Chave | Padrão | Efeito e alternativa |
@@ -129,22 +148,46 @@ Padrões em [defaults/daemon.toml](../../defaults/daemon.toml), aplicados ao ini
 | `idempotency_keys` | 1024 | Chaves aceitas retidas em FIFO; aumente para ampliar a janela de deduplicação. |
 | `command_queue` | 64 | Pedidos esperando o host; aumente para mais concorrência. |
 | `max_connections` | 32 | Conexões autenticadas simultâneas; excedentes são fechadas ao autenticar. |
-| `max_pending_auth` | 32 | Conexões pendentes, inclusive sem handshake; separadas das autenticadas. |
+| `max_pending_auth` | 32 | Tarefas de conexões ainda sem autenticar, inclusive as que estão sendo expulsas; separadas das autenticadas. Com a fila cheia, a mais antiga que ainda não fez upgrade é expulsa e a nova entra quando a vaga volta; se todas já fizeram upgrade, a nova é recusada. |
 | `accept_retry_ms` | 50 | Espera após erro de aceitação TCP; reduz tentativas sob falta de recursos. |
 | `max_message_bytes` | 131072 | Limite de mensagem e quadro WebSocket recebido; reduzir pode impedir escritas grandes. |
 | `send_timeout_ms` | 5000 | Prazo por envio; cliente lento é desconectado. |
-| `host_timeout_ms` | 10000 | Prazo por comando no host e na conexão inicial; falha encerra o serviço para evitar repetir efeito incerto. |
+| `host_timeout_ms` | 10000 | Prazo único por comando no host e na conexão inicial. Cada chamada ao host começa dentro do prazo. Falha encerra o serviço para evitar repetir efeito incerto. Duas exceções não encerram: no fechamento automático o prazo esgotado conta como tentativa falha, e na preparação depois de um `session.open` confirmado ele responde `-32014` (`session setup timed out`), guarda o registro e agenda o fechamento. |
+| `retired_sessions` | 1024 | Ids de sessões podadas que não podem ser reabertos nesta execução (acima do limite, o mais antigo volta a ser aceito) e, em separado, streams assinados antes do `session.open` (acima do limite, a espera mais antiga termina com `-32004` no id da assinatura, mesmo se a conexão estiver ociosa). |
+| `close_retries` | 3 | Tentativas do fechamento automático de sessão invalidada ou de `open` que falhou; esgotadas, a assinatura do stream recebe `-32013`. |
+| `close_retry_ms` | 1000 | Espera entre tentativas do fechamento automático. |
 
 Os inteiros de capacidade aceitam de 1 a 1048576 (`max_message_bytes`: mínimo
 1024); prazos aceitam de 1 a 300000 ms. Valores altos elevam o teto de memória.
 Quando há uma lacuna irrecuperável, o daemon invalida o stream e solicita o
-fechamento ao host. `session.close` continua aceito enquanto o registro da
-sessão invalidada estiver retido. Uma sessão cujo processo já terminou continua
+fechamento ao host. Recusa do host (fora `UnknownSession`) ou prazo esgotado
+repetem o pedido até `close_retries` vezes, com aviso no erro padrão sem
+conteúdo. Quem já assinava o stream não recebe nada enquanto as tentativas
+correm; o resultado final chega com o id da assinatura: `-32013` (`session close
+pending`) se as tentativas se esgotarem, `-32004` se o host confirmar. Só essa
+assinatura termina. Um `events.subscribe` novo desse stream recebe `-32004`
+durante as tentativas e `-32013` depois delas, até um `session.close` confirmado.
+`session.close` continua aceito enquanto o registro da sessão invalidada estiver
+retido. Cada tentativa vale só para a instância da sessão que a gerou e é
+descartada quando a vaga é devolvida. Se um `open` falhar depois de o host abrir o
+terminal, o fechamento vai para a mesma fila, com prazo próprio por tentativa;
+o registro e a vaga ficam até o host confirmar, e então o id volta a ser aceito.
+`UnknownSession` no fechamento libera a vaga e grava `ended` com `reason: "error"`. Uma sessão cujo processo já terminou continua
 no host, ocupando a vaga, até receber `session.close`; o fechamento encerra a
 árvore de processos que restar e devolve a vaga. Ao atingir o limite de registros fechados,
-o daemon descarta os mais antigos conforme novas sessões são fechadas.
+o daemon descarta os mais antigos conforme novas sessões são fechadas. O stream
+descartado vira lápide e o mesmo `session_id` é recusado com `-32012` enquanto
+ela existir (`retired_sessions`). Cada assinatura fica presa à encarnação do
+stream que assinou; quem assina antes do `session.open` fica presa à que o open
+preencher. Se ela for podada, removida ou tiver o fechamento resolvido, mesmo
+depois de a lápide expirar e o id voltar a ser usado, a assinatura recebe o
+primeiro resultado final com o seu id (`-32013` se as tentativas se esgotaram,
+`-32004` nos demais casos) e termina sem derrubar a conexão, sem nunca entregar
+eventos de outra sessão. Uma invalidação no meio de um lote suspende os quadros
+seguintes. Assinaturas novas são validadas pelo estado atual.
 
-Uma execução conserva no máximo `2 × max_sessions × events_per_stream` eventos;
+Uma execução conserva no máximo `2 × max_sessions × events_per_stream` eventos
+(um stream que sai do log, mesmo ainda assinado, descarta os seus);
 o tamanho de cada saída também é limitado pelo quadro do cliente do host.
 Assinaturas por conexão são limitadas a `max_sessions`. Filas, conexões e chaves
 também têm limites separados. Seq e offset recomeçam ao reiniciar.
@@ -167,7 +210,7 @@ sem encerrar o serviço. Falha do canal ou prazo do host encerra
 o daemon; as sessões continuam sob responsabilidade do ptyhost.
 Eventos são consumidos também durante chamadas ao host; a fila limitada aplica
 contrapressão ao canal, e o anel limitado recusa assinantes lentos. Falha depois
-de abrir uma sessão dispara seu fechamento no host antes de liberar o id.
+de abrir uma sessão agenda seu fechamento no host antes de liberar o id.
 Lacuna na sequência ou recusa da reassinatura do host invalida somente o stream
 afetado, que passa a recusar replay até reiniciar; os demais continuam disponíveis.
 Reiniciar não adota sessões antigas nesta implementação. Para desfazer, pare o daemon e volte

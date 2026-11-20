@@ -4,6 +4,13 @@ Formato: uma seção por data. Contrato novo, campo opcional acrescentado, vers�
 
 ## 2026-11-19
 
+Lista de ferramentas na API local. Nenhum contrato existente foi alterado.
+
+- Contratos novos (`:1`):
+  - Comando `harness.list`: estende `command.request:1` com `params` fechado só no `_meta`. Só leitura.
+  - Resposta `harness.list.response`: `result` fechado com `harnesses` e `workdir_aliases`, listas sem repetição de `common.id:1`. Só nomes; programa, argumentos, ambiente e caminho não cabem.
+- Versão nova, convivendo com a `:1`: `local-api.server-message:2`, que aceita também a resposta de `harness.list`. O núcleo passa a escrever a `:2`.
+
 Contratos v1 da fila contínua: registros da tarefa e do controle pelo dono, estado compartilhado da tarefa e eventos de criação, ativação, parada, inclusão de tarefa e mudança de estado.
 
 ## 2026-11-16

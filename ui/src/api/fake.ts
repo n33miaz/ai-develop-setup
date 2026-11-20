@@ -1,17 +1,32 @@
-import { CoreClientError, type ConnectionState, type CoreClient, type Unsubscribe } from './client'
-import type { CommandResponseV2, CommonActorV1, EventDraft, EventEnvelopeV1 } from './contracts'
+import {
+  CoreClientError,
+  type ConnectionState,
+  type CoreClient,
+  type SubscriptionEndCode,
+  type Unsubscribe,
+} from './client'
+import type {
+  CommandResponseV2,
+  CommonActorV1,
+  EventDraft,
+  EventEnvelopeV1,
+  HarnessCatalog,
+} from './contracts'
 import { newUlid } from './ulid'
 
 /** Cliente falso em memória: dá para testar a UI sem núcleo. Não simula rede nem atraso. */
 export interface FakeCoreClient extends CoreClient {
   /** Grava um evento no fluxo (como se o núcleo o tivesse produzido) e entrega aos assinantes. */
   emit(draft: EventDraft): EventEnvelopeV1
+  /** Encerra as assinaturas vivas do fluxo com o código dado, sem derrubar a conexão. */
+  end(stream: string, code: SubscriptionEndCode): void
 }
 
 interface Subscription {
   stream: string
   lastDelivered: number
   onEvent: (event: EventEnvelopeV1) => void
+  onEnd?: ((code: SubscriptionEndCode) => void) | undefined
 }
 
 const FAKE_ACTOR: CommonActorV1 = { kind: 'daemon', id: 'fake-core' }
@@ -24,13 +39,17 @@ function deepFreeze<T>(value: T): T {
   return value
 }
 
-export function createFakeCoreClient(): FakeCoreClient {
+/** `catalog` é o que `listHarnesses` responde; o padrão é nenhuma ferramenta. */
+export function createFakeCoreClient(
+  catalog: HarnessCatalog = { harnesses: [], workdir_aliases: [] },
+): FakeCoreClient {
   let state: ConnectionState = 'disconnected'
   const stateListeners = new Set<(state: ConnectionState) => void>()
   const logs = new Map<string, EventEnvelopeV1[]>()
   const subscriptions = new Set<Subscription>()
   const acceptedKeys = new Set<string>()
   let connecting: Promise<void> | null = null
+  let generation = 0
 
   function setState(next: ConnectionState): void {
     if (state === next) return
@@ -85,6 +104,7 @@ export function createFakeCoreClient(): FakeCoreClient {
 
   return {
     getState: () => state,
+    getGeneration: () => generation,
 
     onStateChange(listener) {
       stateListeners.add(listener)
@@ -99,6 +119,7 @@ export function createFakeCoreClient(): FakeCoreClient {
         // `disconnect()` no meio do caminho cancela a tentativa: ela não volta a conectar.
         if (connecting !== attempt) throw notConnected()
         connecting = null
+        generation += 1
         setState('connected')
       })
       connecting = attempt
@@ -113,9 +134,9 @@ export function createFakeCoreClient(): FakeCoreClient {
       setState('disconnected')
     },
 
-    subscribe(stream, afterSeq, onEvent): Unsubscribe {
+    subscribe(stream, afterSeq, onEvent, onEnd): Unsubscribe {
       if (state !== 'connected') throw notConnected()
-      const subscription: Subscription = { stream, lastDelivered: afterSeq, onEvent }
+      const subscription: Subscription = { stream, lastDelivered: afterSeq, onEvent, onEnd }
       subscriptions.add(subscription)
       deliver(subscription)
       return () => subscriptions.delete(subscription)
@@ -135,6 +156,19 @@ export function createFakeCoreClient(): FakeCoreClient {
       return Promise.resolve(response)
     },
 
+    listHarnesses() {
+      if (state !== 'connected') return Promise.reject(notConnected())
+      return Promise.resolve(structuredClone(catalog))
+    },
+
     emit: append,
+
+    end(stream, code) {
+      for (const subscription of [...subscriptions]) {
+        if (!isLive(subscription) || subscription.stream !== stream) continue
+        subscriptions.delete(subscription)
+        subscription.onEnd?.(code)
+      }
+    },
   }
 }

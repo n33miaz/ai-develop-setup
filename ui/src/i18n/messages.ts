@@ -3,8 +3,27 @@ export const ptBR = {
 
   'session.commandFailed':
     'Não foi possível executar o comando da sessão. Confira a conexão e a configuração do núcleo.',
+  'session.close': 'Fechar sessão',
+  'session.statusLabel': 'Estado da sessão',
+  'session.state.closing': 'Fechando',
+  'session.state.ended': 'Encerrada',
+  'session.state.setupFailed': 'Falhou ao iniciar',
+  'session.notice.closing':
+    'O núcleo não conseguiu fechar esta sessão sozinho. Feche-a para liberar a vaga.',
+  'session.notice.ended':
+    'O núcleo encerrou as atualizações desta sessão. A conexão continua ativa.',
+  'session.notice.setupFailed': 'A sessão não terminou de iniciar a tempo. O núcleo vai fechá-la.',
 
   'notice.live': 'Conexão ao núcleo local. As sessões exibem os eventos recebidos.',
+  'harness.loading': 'Consultando as ferramentas configuradas no núcleo.',
+  'harness.none': 'Nenhuma ferramenta configurada no núcleo.',
+  'harness.noWorkdir':
+    'Nenhuma pasta de trabalho configurada no núcleo; não é possível abrir sessões.',
+  'harness.failed': 'O núcleo recusou a lista de ferramentas.',
+  'harness.timeout':
+    'O núcleo não respondeu a tempo com a lista de ferramentas. Reabra a URL da execução.',
+  'harness.unsupported':
+    'Este núcleo não informa as ferramentas configuradas. Atualize o núcleo para abrir sessões.',
   'app.title': 'ai-develop-setup',
   'skip.toTerminal': 'Pular para o terminal',
   'notice.wip': 'Em construção. Esta tela mostra dados de exemplo locais; nada aqui vem do núcleo.',
@@ -53,8 +72,26 @@ export const en: Record<MessageKey, string> = {
 
   'session.commandFailed':
     'Could not execute the session command. Check the connection and core configuration.',
+  'session.close': 'Close session',
+  'session.statusLabel': 'Session state',
+  'session.state.closing': 'Closing',
+  'session.state.ended': 'Ended',
+  'session.state.setupFailed': 'Failed to start',
+  'session.notice.closing':
+    'The core could not close this session on its own. Close it to free its slot.',
+  'session.notice.ended':
+    'The core ended updates for this session. The connection is still active.',
+  'session.notice.setupFailed':
+    'The session did not finish starting in time. The core will close it.',
 
   'notice.live': 'Local core connection. Sessions display received events.',
+  'harness.loading': 'Asking the core for its configured tools.',
+  'harness.none': 'No tools are configured in the core.',
+  'harness.noWorkdir': 'No work folder is configured in the core; sessions cannot be opened.',
+  'harness.failed': 'The core refused the tool list.',
+  'harness.timeout': 'The core did not send the tool list in time. Reopen the run URL.',
+  'harness.unsupported':
+    'This core does not report its configured tools. Update the core to open sessions.',
   'app.title': 'ai-develop-setup',
   'skip.toTerminal': 'Skip to the terminal',
   'notice.wip':
