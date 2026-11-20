@@ -7,10 +7,11 @@ use ads_contracts::{
     EventQueueCreatedV1, EventQueueCreatedV1DataVia, EventQueueEnabledV1, EventQueueEnabledV1Data,
     EventQueueEnabledV1DataVia, EventQueueStoppedV1, EventQueueStoppedV1Data,
     EventQueueStoppedV1DataReason, EventQueueStoppedV1DataVia, EventQueueTaskCreatedV1,
-    EventQueueTaskCreatedV1DataOrigin, EventQueueTaskStateChangedV1,
-    EventQueueTaskStateChangedV1Data, EventQueueTaskStateChangedV1DataAttempts,
-    EventQueueTaskStateChangedV1DataFields, EventQueueTaskStateChangedV1DataVia, RecordQueueTaskV1,
-    RecordQueueTaskV1Attempts, RecordTaskQueueV1, RecordTaskQueueV1State, RecordTaskQueueV1Version,
+    EventQueueTaskCreatedV1DataOrigin, EventQueueTaskCreatedV2, EventQueueTaskCreatedV2DataOrigin,
+    EventQueueTaskStateChangedV1, EventQueueTaskStateChangedV1Data,
+    EventQueueTaskStateChangedV1DataAttempts, EventQueueTaskStateChangedV1DataFields,
+    EventQueueTaskStateChangedV1DataVia, RecordQueueTaskV1, RecordQueueTaskV1Attempts,
+    RecordTaskQueueV1, RecordTaskQueueV1State, RecordTaskQueueV1Version,
 };
 
 use CommonQueueTaskStateV1::{Cancelled, Done, Failed, Queued, Review, Running};
@@ -308,6 +309,7 @@ pub enum QueueLogEvent<'a> {
     Enabled(&'a EventQueueEnabledV1),
     Stopped(&'a EventQueueStoppedV1),
     TaskCreated(&'a EventQueueTaskCreatedV1),
+    TaskCreatedV2(&'a EventQueueTaskCreatedV2),
     TaskStateChanged(&'a EventQueueTaskStateChangedV1),
 }
 
@@ -318,6 +320,7 @@ macro_rules! each_event {
             QueueLogEvent::Enabled($name) => $body,
             QueueLogEvent::Stopped($name) => $body,
             QueueLogEvent::TaskCreated($name) => $body,
+            QueueLogEvent::TaskCreatedV2($name) => $body,
             QueueLogEvent::TaskStateChanged($name) => $body,
         }
     };
@@ -343,6 +346,14 @@ impl<'a> QueueLogEvent<'a> {
     fn ts(self) -> &'a CommonTimestampV1 {
         each_event!(self, event => &event.ts)
     }
+
+    fn task_creation(self) -> Option<TaskCreation<'a>> {
+        match self {
+            Self::TaskCreated(event) => Some(event.into()),
+            Self::TaskCreatedV2(event) => Some(event.into()),
+            _ => None,
+        }
+    }
 }
 
 /// Why a queue log does not rebuild a task.
@@ -363,6 +374,10 @@ pub enum ReplayRefusal {
     InvalidChange,
     /// The task was created twice or never.
     TaskCreation,
+    /// The policy and clock inputs used at creation were unavailable.
+    MissingAdmissionContext,
+    /// A task in the stream fails the admission rules in effect at its creation.
+    Admission(AdmissionRefusal),
 }
 
 /// Rebuilds the state and the retry budget of one task from the whole stream of its queue,
@@ -377,13 +392,13 @@ pub enum ReplayRefusal {
 /// `running` only while the queue is enabled; and `review → done` is accepted by a device of the
 /// owner. Agents and the daemon may still cancel or fail tasks.
 ///
-/// The replay does not run the admission again: neither the policy in force nor the clock anchor
-/// of each creation is in the log, so checking old creations against the current policy would
-/// refuse a legitimate history once the owner lowers a limit.
-pub fn replay_task<'a>(
+/// The caller supplies the admission inputs recorded at each creation, keyed by its sequence
+/// number in this queue. The stream alone cannot establish uniqueness across queues.
+pub fn replay_task<'a, 'context>(
     task_id: &CommonIdV1,
     log: impl IntoIterator<Item = QueueLogEvent<'a>>,
     owner_at: impl Fn(&CommonIdV1, &CommonTimestampV1) -> Option<CommonIdV1>,
+    admission_at: impl Fn(u64) -> Option<AdmissionInputs<'context>>,
 ) -> Result<(CommonQueueTaskStateV1, u64), ReplayRefusal> {
     let mut log = log.into_iter();
     let Some(QueueLogEvent::Created(created)) = log.next() else {
@@ -410,6 +425,7 @@ pub fn replay_task<'a>(
     let mut queue_state = Stopped;
     // (state, attempts, ceiling) once the task is created.
     let mut task: Option<(CommonQueueTaskStateV1, u64, u64)> = None;
+    let mut admissions = Vec::new();
     for (seq, event) in (2..).zip(log) {
         if event.seq() != seq {
             return Err(ReplayRefusal::SeqGap);
@@ -436,17 +452,22 @@ pub fn replay_task<'a>(
                 }
                 queue_state = Stopped;
             }
-            QueueLogEvent::TaskCreated(admitted) => {
-                if is_manual(&admitted.data.origin) && !owner_device(event) {
+            QueueLogEvent::TaskCreated(_) | QueueLogEvent::TaskCreatedV2(_) => {
+                let admitted = event.task_creation().expect("task creation event");
+                if admitted.origin.is_manual() && !owner_device(event) {
                     return Err(ReplayRefusal::NotOwnerDevice);
                 }
-                if admitted.data.task_id != *task_id {
-                    continue;
-                }
-                if task.is_some() {
+                if admitted.task_id == task_id && task.is_some() {
                     return Err(ReplayRefusal::TaskCreation);
                 }
-                task = Some((Queued, 0, admitted.data.attempt_limit.get().into()));
+                let inputs = admission_at(seq).ok_or(ReplayRefusal::MissingAdmissionContext)?;
+                check_admission(admitted, admissions.iter().copied(), owner, inputs)
+                    .map_err(ReplayRefusal::Admission)?;
+                admissions.push(admitted);
+                if admitted.task_id != task_id {
+                    continue;
+                }
+                task = Some((Queued, 0, admitted.attempt_limit.into()));
             }
             QueueLogEvent::TaskStateChanged(change) => {
                 if change.data.task_id != *task_id {
@@ -495,16 +516,66 @@ fn epoch_seconds(ts: &CommonTimestampV1) -> Option<i64> {
     Some(days * 86_400 + hour * 3_600 + minute * 60 + second)
 }
 
-fn bug_rule(origin: &EventQueueTaskCreatedV1DataOrigin) -> Option<&CommonIdV1> {
-    match origin {
-        EventQueueTaskCreatedV1DataOrigin::BugRule(bug) => Some(&bug.rule_id),
-        _ => None,
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TaskOrigin<'a> {
+    Manual(&'a CommonIdV1),
+    Issue(u64),
+    BugRule(&'a CommonIdV1, &'a CommonIdV1),
+}
+
+impl<'a> TaskOrigin<'a> {
+    fn is_manual(self) -> bool {
+        matches!(self, Self::Manual(_))
+    }
+
+    fn bug_rule(self) -> Option<&'a CommonIdV1> {
+        match self {
+            Self::BugRule(rule, _) => Some(rule),
+            _ => None,
+        }
     }
 }
 
-fn is_manual(origin: &EventQueueTaskCreatedV1DataOrigin) -> bool {
-    matches!(origin, EventQueueTaskCreatedV1DataOrigin::Manual(_))
+/// A borrowed task creation from either version of the queue contract.
+#[derive(Clone, Copy)]
+pub struct TaskCreation<'a> {
+    queue_id: &'a CommonIdV1,
+    task_id: &'a CommonIdV1,
+    attempt_limit: u16,
+    origin: TaskOrigin<'a>,
+    workspace_alias: &'a str,
+    ts: &'a CommonTimestampV1,
+    seq: u64,
+    actor: &'a CommonActorV1,
 }
+
+macro_rules! task_creation_from {
+    ($event:ident, $origin:ident) => {
+        impl<'a> From<&'a $event> for TaskCreation<'a> {
+            fn from(event: &'a $event) -> Self {
+                let data = &event.data;
+                let origin = match &data.origin {
+                    $origin::Manual(manual) => TaskOrigin::Manual(&manual.request_id),
+                    $origin::Issue(issue) => TaskOrigin::Issue(issue.r#ref.get()),
+                    $origin::BugRule(bug) => TaskOrigin::BugRule(&bug.rule_id, &bug.target_id),
+                };
+                Self {
+                    queue_id: &data.queue_id,
+                    task_id: &data.task_id,
+                    attempt_limit: data.attempt_limit.get(),
+                    origin,
+                    workspace_alias: data.workspace_alias.as_str(),
+                    ts: &event.ts,
+                    seq: event.seq.get(),
+                    actor: &event.actor,
+                }
+            }
+        }
+    };
+}
+
+task_creation_from!(EventQueueTaskCreatedV1, EventQueueTaskCreatedV1DataOrigin);
+task_creation_from!(EventQueueTaskCreatedV2, EventQueueTaskCreatedV2DataOrigin);
 
 /// Why the admission refuses a task.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -627,7 +698,18 @@ pub struct AdmissionContext<'a> {
     pub anchor: Option<&'a ClockAnchor>,
 }
 
-fn authored_by_owner(created: &EventQueueTaskCreatedV1, context: &AdmissionContext<'_>) -> bool {
+/// Historical inputs supplied by the producer for replay.
+#[derive(Clone, Copy)]
+pub struct AdmissionInputs<'a> {
+    /// Policy in force at the decision.
+    pub policy: &'a QueuePolicy,
+    /// Core clock at the decision.
+    pub now: &'a CommonTimestampV1,
+    /// Latest owner anchor at the decision, if any.
+    pub anchor: Option<&'a ClockAnchor>,
+}
+
+fn authored_by_owner(created: TaskCreation<'_>, context: &AdmissionContext<'_>) -> bool {
     context.author.is_some_and(|author| {
         author.owner_id == *context.queue_owner
             && created.actor.kind == CommonActorV1Kind::Device
@@ -656,17 +738,43 @@ pub fn can_admit_task<'a>(
     history: impl IntoIterator<Item = &'a EventQueueTaskCreatedV1>,
     context: &AdmissionContext<'_>,
 ) -> Result<(), AdmissionRefusal> {
+    can_admit_creation(created.into(), history.into_iter().map(Into::into), context)
+}
+
+/// Checks admission of either event version against a history that can mix versions.
+pub fn can_admit_creation<'a>(
+    created: TaskCreation<'_>,
+    history: impl IntoIterator<Item = TaskCreation<'a>>,
+    context: &AdmissionContext<'_>,
+) -> Result<(), AdmissionRefusal> {
+    if created.origin.is_manual() && !authored_by_owner(created, context) {
+        return Err(AdmissionRefusal::ManualNotOwnerDevice);
+    }
+    check_admission(
+        created,
+        history,
+        context.queue_owner,
+        AdmissionInputs {
+            policy: context.policy,
+            now: context.now,
+            anchor: context.anchor,
+        },
+    )
+}
+
+fn check_admission<'a>(
+    created: TaskCreation<'_>,
+    history: impl IntoIterator<Item = TaskCreation<'a>>,
+    queue_owner: &CommonIdV1,
+    inputs: AdmissionInputs<'_>,
+) -> Result<(), AdmissionRefusal> {
     use AdmissionRefusal as Refusal;
-    let policy = context.policy;
-    if created.data.attempt_limit.get() > policy.attempt_limit.get() {
+    let policy = inputs.policy;
+    if created.attempt_limit > policy.attempt_limit.get() {
         return Err(Refusal::AttemptCeiling);
     }
-    let manual = is_manual(&created.data.origin);
-    if manual && !authored_by_owner(created, context) {
-        return Err(Refusal::ManualNotOwnerDevice);
-    }
-    let (Some(stamp), Some(clock)) = (epoch_seconds(&created.ts), epoch_seconds(context.now))
-    else {
+    let manual = created.origin.is_manual();
+    let (Some(stamp), Some(clock)) = (epoch_seconds(created.ts), epoch_seconds(inputs.now)) else {
         return Err(Refusal::UnreadableInstant);
     };
     let seconds = |value: u64| i64::try_from(value).unwrap_or(i64::MAX);
@@ -674,14 +782,11 @@ pub fn can_admit_task<'a>(
     if stamp > latest_now {
         return Err(Refusal::AheadOfClock);
     }
-    let anchor = match context.anchor {
-        Some(anchor)
-            if anchor.queue_id != created.data.queue_id
-                || anchor.owner_id != *context.queue_owner =>
-        {
+    let anchor = match inputs.anchor {
+        Some(anchor) if &anchor.queue_id != created.queue_id || anchor.owner_id != *queue_owner => {
             return Err(Refusal::ForeignAnchor);
         }
-        Some(anchor) if anchor.through_seq >= created.seq.get() => {
+        Some(anchor) if anchor.through_seq >= created.seq => {
             return Err(Refusal::AnchorAfterCandidate);
         }
         Some(anchor) => {
@@ -695,7 +800,7 @@ pub fn can_admit_task<'a>(
     };
     let latest_prior = stamp.saturating_add(seconds(policy.clock_rewind_seconds));
     let window = seconds(policy.window_seconds.get());
-    let rule = bug_rule(&created.data.origin);
+    let rule = created.origin.bug_rule();
     let (class_limit, rule_limit) = if manual {
         (policy.manual_window_admissions.get(), usize::MAX)
     } else {
@@ -706,21 +811,19 @@ pub fn can_admit_task<'a>(
     };
     let (mut count, mut same_class, mut same_rule) = (0, 0, 0);
     for prior in history {
-        if prior.data.task_id == created.data.task_id {
+        if prior.task_id == created.task_id {
             return Err(Refusal::TaskIdUsed);
         }
-        if prior.data.queue_id != created.data.queue_id {
+        if prior.queue_id != created.queue_id {
             continue;
         }
-        if prior.data.workspace_alias == created.data.workspace_alias
-            && prior.data.origin == created.data.origin
-        {
+        if prior.workspace_alias == created.workspace_alias && prior.origin == created.origin {
             return Err(Refusal::OriginRepeated);
         }
         // The anchor moves only covered creations still ahead of the clock, so an old anchor
         // never takes an ordinary creation out of the window.
-        let then = epoch_seconds(&prior.ts).map(|then| match anchor {
-            Some((through, at)) if prior.seq.get() <= through && then > latest_now => then.min(at),
+        let then = epoch_seconds(prior.ts).map(|then| match anchor {
+            Some((through, at)) if prior.seq <= through && then > latest_now => then.min(at),
             _ => then,
         });
         if then.is_some_and(|then| then > latest_prior) {
@@ -729,21 +832,21 @@ pub fn can_admit_task<'a>(
         count += 1;
         // A prior stamped after the candidate, within the rewind, is recent too.
         let recent = then.is_none_or(|then| stamp.saturating_sub(then) < window);
-        if recent && is_manual(&prior.data.origin) == manual {
+        if recent && prior.origin.is_manual() == manual {
             same_class += 1;
-            if rule.is_some() && bug_rule(&prior.data.origin) == rule {
+            if rule.is_some() && prior.origin.bug_rule() == rule {
                 same_rule += 1;
             }
         }
-        if count >= policy.admission_limit.get() {
-            return Err(Refusal::AdmissionLimit);
-        }
-        if same_class >= class_limit {
-            return Err(Refusal::WindowFull);
-        }
-        if same_rule >= rule_limit {
-            return Err(Refusal::BugRuleWindowFull);
-        }
+    }
+    if count >= policy.admission_limit.get() {
+        return Err(Refusal::AdmissionLimit);
+    }
+    if same_class >= class_limit {
+        return Err(Refusal::WindowFull);
+    }
+    if same_rule >= rule_limit {
+        return Err(Refusal::BugRuleWindowFull);
     }
     Ok(())
 }
