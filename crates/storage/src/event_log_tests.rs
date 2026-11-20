@@ -642,7 +642,7 @@ fn tamper_with(path: &Path, change: impl FnOnce(&Connection)) {
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap();
-    assert_eq!(triggers.len(), 9);
+    assert_eq!(triggers.len(), 10);
     for (name, _) in &triggers {
         c.execute_batch(&format!("DROP TRIGGER {name}")).unwrap();
     }
@@ -2241,4 +2241,327 @@ fn read_stream_refuses_a_missing_seq_inside_the_page() {
     );
     // After the gap the rows still read.
     assert_eq!(log.read_stream(&stream("task/t1"), 3, 10).unwrap().len(), 2);
+}
+
+mod gate_journal {
+    use super::*;
+    use ads_core::gate::{
+        ActionPlan, ActionPlanRecord, Actor, ActorKind, Command, DataClass, Event, EventMeta,
+        GateHistory, GateJournal, GatePolicy, HostFacts, Id, JournalError, JournalGate,
+        OperationRequest, PlanRequest, ShortText, State, TargetRequest, Timestamp, Ulid, Via,
+    };
+    use std::sync::Barrier;
+
+    const NOW: &str = "2030-01-02T03:04:05Z";
+
+    fn meta(seq: u64, serial: u64) -> EventMeta {
+        EventMeta {
+            seq: NonZeroU64::new(seq).unwrap(),
+            id: Ulid::new(format!("01J{serial:023}")).unwrap(),
+            ts: Timestamp::new(NOW).unwrap(),
+            actor: Actor {
+                kind: ActorKind::Daemon,
+                id: Id::new("daemon").unwrap(),
+            },
+            cause: None,
+            data_class: DataClass::Internal,
+        }
+    }
+
+    fn policy() -> GatePolicy {
+        GatePolicy::defaults(&HostFacts {
+            user_home: "/home/test",
+        })
+        .unwrap()
+    }
+
+    fn create(log: &mut EventLog, action_id: &Id, serial: u64) {
+        let plan = ActionPlan::normalize(&PlanRequest {
+            operation: OperationRequest::DeleteRecursive,
+            targets: vec![TargetRequest {
+                path: "/home/test/work/build".into(),
+                repo_root: false,
+            }],
+            work_root: "/home/test/work".into(),
+            estimate: None,
+        })
+        .unwrap();
+        JournalGate::new(&policy(), log)
+            .plan(action_id.clone(), &plan, meta(1, serial))
+            .unwrap();
+    }
+
+    fn request(approval_id: &Id) -> Command {
+        Command::RequestApproval {
+            approval_id: approval_id.clone(),
+            summary: ShortText::new("Remove build").unwrap(),
+            expires_at: Timestamp::new("2030-01-02T03:09:05Z").unwrap(),
+        }
+    }
+
+    fn approved(log: &mut EventLog) -> (Id, Id) {
+        let action_id = Id::new("build").unwrap();
+        let approval_id = Id::new("approval-1").unwrap();
+        create(log, &action_id, 1);
+        let policy = policy();
+        let mut gate = JournalGate::new(&policy, log);
+        let request = gate
+            .apply(&action_id, request(&approval_id), meta(1, 2))
+            .unwrap();
+        gate.apply(
+            &action_id,
+            Command::Grant {
+                action_id: action_id.clone(),
+                approval_id: approval_id.clone(),
+                plan_hash: request.plan_hash,
+                via: Via::LocalUi,
+            },
+            meta(2, 3),
+        )
+        .unwrap();
+        (action_id, approval_id)
+    }
+
+    struct RacingJournal<'a> {
+        log: EventLog,
+        barrier: &'a Barrier,
+    }
+
+    impl GateJournal for RacingJournal<'_> {
+        fn load(&mut self, action_id: &Id) -> Result<GateHistory, JournalError> {
+            let result = self.log.load(action_id);
+            self.barrier.wait();
+            result
+        }
+
+        fn create(&mut self, plan: &ActionPlanRecord, first: &Event) -> Result<(), JournalError> {
+            self.log.create(plan, first)
+        }
+
+        fn append(
+            &mut self,
+            action_id: &Id,
+            expected: usize,
+            event: &Event,
+        ) -> Result<(), JournalError> {
+            GateJournal::append(&mut self.log, action_id, expected, event)
+        }
+    }
+
+    #[test]
+    fn only_one_writer_spends_an_approval() {
+        let path = fixture();
+        let anchor = MemoryAnchor::default();
+        let mut first = anchored(&path, &anchor).unwrap();
+        let (action_id, approval_id) = approved(&mut first);
+        let second = anchored(&path, &anchor).unwrap();
+        let barrier = Barrier::new(2);
+        let results = std::thread::scope(|scope| {
+            let [left, right] = [(first, 4), (second, 5)].map(|(log, serial)| {
+                let action_id = &action_id;
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    let mut journal = RacingJournal { log, barrier };
+                    JournalGate::new(&policy(), &mut journal).authorize(action_id, meta(2, serial))
+                })
+            });
+            [left.join().unwrap(), right.join().unwrap()]
+        });
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| matches!(result, Err(JournalError::Conflict)))
+                .count(),
+            1
+        );
+        let mut reopened = anchored(&path, &anchor).unwrap();
+        assert_eq!(reopened.verify_chain(), Ok(4));
+        let next = Id::new("another-build").unwrap();
+        create(&mut reopened, &next, 6);
+        assert_eq!(
+            JournalGate::new(&policy(), &mut reopened).apply(
+                &next,
+                request(&approval_id),
+                meta(1, 7)
+            ),
+            Err(JournalError::Conflict)
+        );
+    }
+
+    #[test]
+    fn recovery_after_start_does_not_issue_a_second_permit() {
+        let path = fixture();
+        let anchor = MemoryAnchor::default();
+        let action_id;
+        {
+            let mut log = anchored(&path, &anchor).unwrap();
+            (action_id, _) = approved(&mut log);
+            let _started = JournalGate::new(&policy(), &mut log)
+                .authorize(&action_id, meta(2, 4))
+                .unwrap();
+        }
+        let mut log = anchored(&path, &anchor).unwrap();
+        let policy = policy();
+        let mut gate = JournalGate::new(&policy, &mut log);
+        assert!(matches!(
+            gate.inspect(&action_id).unwrap().state,
+            State::Executing { .. }
+        ));
+        assert_eq!(
+            gate.authorize(&action_id, meta(3, 5)),
+            Err(JournalError::Transition)
+        );
+    }
+
+    #[test]
+    fn an_authenticated_v4_log_keeps_its_anchor_after_migration() {
+        let path = fixture();
+        let anchor = MemoryAnchor::default();
+        let mut log = anchored(&path, &anchor).unwrap();
+        let first = event("task/t1", 1, 1, serde_json::json!({}));
+        log.append(&first).unwrap();
+        drop(log);
+        let old_anchor = anchor.0.lock().unwrap().commitment;
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(crate::migrate::DROP_GATE_JOURNAL_SQL)
+            .unwrap();
+        connection.pragma_update(None, "user_version", 4).unwrap();
+        drop(connection);
+
+        let log = anchored(&path, &anchor).unwrap();
+        assert_eq!(anchor.0.lock().unwrap().commitment, old_anchor);
+        assert_eq!(
+            log.read_stream(&first.stream, 1, 1).unwrap()[0].event,
+            first
+        );
+    }
+
+    #[test]
+    fn a_collision_on_an_altered_row_is_an_integrity_failure() {
+        let path = fixture();
+        let anchor = MemoryAnchor::default();
+        let mut log = anchored(&path, &anchor).unwrap();
+        let (action_id, _) = approved(&mut log);
+        let (_, started) = JournalGate::new(&policy(), &mut log)
+            .authorize(&action_id, meta(2, 4))
+            .unwrap()
+            .into_parts();
+        assert_eq!(
+            GateJournal::append(&mut log, &action_id, 4, &started),
+            Err(JournalError::Conflict)
+        );
+        tamper(
+            &path,
+            "UPDATE event SET data_ct = zeroblob(length(data_ct)) WHERE position = 4",
+            None,
+        );
+        assert_eq!(
+            GateJournal::append(&mut log, &action_id, 4, &started),
+            Err(JournalError::Integrity)
+        );
+    }
+
+    #[test]
+    fn journal_rejects_an_altered_record_even_with_an_open_connection() {
+        let path = fixture();
+        let anchor = MemoryAnchor::default();
+        let mut log = anchored(&path, &anchor).unwrap();
+        let (action_id, _) = approved(&mut log);
+        tamper(
+            &path,
+            "UPDATE event SET data_ct = zeroblob(length(data_ct)) WHERE position = 1",
+            None,
+        );
+        assert_eq!(
+            JournalGate::new(&policy(), &mut log).authorize(&action_id, meta(2, 4)),
+            Err(JournalError::Integrity)
+        );
+    }
+    /// `event` under a new id and `seq`, with `change` applied to its JSON.
+    fn edited(
+        event: &Event,
+        serial: u64,
+        seq: u64,
+        change: impl FnOnce(&mut serde_json::Value),
+    ) -> Event {
+        let mut json = event.to_json();
+        json["id"] = format!("01J{serial:023}").into();
+        json["seq"] = seq.into();
+        change(&mut json);
+        Event::from_json(json).unwrap()
+    }
+
+    fn started(log: &mut EventLog) -> (Id, Event) {
+        let (action_id, _) = approved(log);
+        let (_, started) = JournalGate::new(&policy(), log)
+            .authorize(&action_id, meta(2, 4))
+            .unwrap()
+            .into_parts();
+        (action_id, started)
+    }
+
+    #[test]
+    fn a_second_start_with_a_free_sequence_is_refused() {
+        let path = fixture();
+        let anchor = MemoryAnchor::default();
+        let mut log = anchored(&path, &anchor).unwrap();
+        let (action_id, started) = started(&mut log);
+        let again = edited(&started, 5, 3, |_| ());
+        assert_eq!(
+            GateJournal::append(&mut log, &action_id, 4, &again),
+            Err(JournalError::Conflict)
+        );
+        assert_eq!(log.verify_chain(), Ok(4));
+    }
+
+    #[test]
+    fn an_approval_belongs_to_one_action_even_with_a_free_sequence() {
+        let path = fixture();
+        let anchor = MemoryAnchor::default();
+        let mut log = anchored(&path, &anchor).unwrap();
+        let (owner, _) = approved(&mut log);
+        let requested = log.load(&owner).unwrap().events[1].clone();
+        let other = Id::new("another-build").unwrap();
+        create(&mut log, &other, 5);
+        let stolen = edited(&requested, 6, 3, |json| {
+            json["data"]["action_id"] = other.as_str().into();
+        });
+        assert_eq!(
+            GateJournal::append(&mut log, &other, 1, &stolen),
+            Err(JournalError::Conflict)
+        );
+        assert_eq!(log.verify_chain(), Ok(4));
+    }
+
+    #[test]
+    fn a_plain_append_cannot_write_into_a_journal_action() {
+        let path = fixture();
+        let anchor = MemoryAnchor::default();
+        let mut log = anchored(&path, &anchor).unwrap();
+        let (_, started) = started(&mut log);
+        let again = edited(&started, 5, 3, |_| ());
+        let envelope: EventEnvelopeV1 = serde_json::from_value(again.to_json()).unwrap();
+        assert_eq!(log.append(&envelope), Err(StorageError::InvalidEvent));
+        assert_eq!(log.verify_chain(), Ok(4));
+    }
+
+    #[test]
+    fn a_deleted_start_does_not_reopen_the_action() {
+        let path = fixture();
+        let anchor = MemoryAnchor::default();
+        let mut log = anchored(&path, &anchor).unwrap();
+        let (action_id, _) = started(&mut log);
+        log.append(&event("task/t1", 1, 5, serde_json::json!({})))
+            .unwrap();
+        tamper(&path, "DELETE FROM event WHERE position = 4", None);
+        let policy = policy();
+        let mut gate = JournalGate::new(&policy, &mut log);
+        assert_eq!(gate.inspect(&action_id), Err(JournalError::Integrity));
+        assert_eq!(
+            gate.authorize(&action_id, meta(2, 6)),
+            Err(JournalError::Integrity)
+        );
+    }
 }

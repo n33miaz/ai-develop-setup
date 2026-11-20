@@ -153,6 +153,7 @@ name = "ads-storage"
 version = "0.0.0"
 dependencies = [
  "ads-contracts",
+ "ads-core",
  "chacha20poly1305",
  "getrandom 0.4.3",
  "rusqlite",
