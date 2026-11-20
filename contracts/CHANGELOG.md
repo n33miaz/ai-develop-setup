@@ -4,6 +4,8 @@ Formato: uma seção por data. Contrato novo, campo opcional acrescentado, vers�
 
 ## 2026-11-20
 
+- `queue.policy_changed:1` registra a política completa aprovada por um aparelho do dono para as admissões posteriores da fila.
+
 - `queue.task_state_changed:2` exige canal para aparelhos, recusa canal para os demais atores e registra o abandono por sessão sem confirmação como cancelamento terminal. O replay continua lendo a `:1` com as regras originais.
 - Tipos comuns novos: `common.workdir-alias:1` (apelido da pasta de trabalho) e `common.queue-task-origin:1` (origem da tarefa da fila), com as mesmas regras que o registro e a criação de tarefa repetiam.
 - Versões novas que referem esses tipos, sem mudar o que aceitam: `queue.task_created:3` e `record.queue-task:2` (`version` 2). Mudam os tipos gerados; a `:1` e a `:2` da criação e a `:1` do registro continuam legíveis.

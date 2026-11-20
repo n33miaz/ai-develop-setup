@@ -330,6 +330,7 @@ enum Owned {
     Enabled(EventQueueEnabledV1),
     Stopped(EventQueueStoppedV1),
     ClockReanchored(EventQueueClockReanchoredV1),
+    PolicyChanged(EventQueuePolicyChangedV1),
     TaskCreated(EventQueueTaskCreatedV1),
     TaskCreatedV2(EventQueueTaskCreatedV2),
     TaskCreatedV3(EventQueueTaskCreatedV3),
@@ -344,6 +345,7 @@ impl Owned {
             Self::Enabled(event) => QueueLogEvent::Enabled(event),
             Self::Stopped(event) => QueueLogEvent::Stopped(event),
             Self::ClockReanchored(event) => QueueLogEvent::ClockReanchored(event),
+            Self::PolicyChanged(event) => QueueLogEvent::PolicyChanged(event),
             Self::TaskCreated(event) => QueueLogEvent::TaskCreated(event),
             Self::TaskCreatedV2(event) => QueueLogEvent::TaskCreatedV2(event),
             Self::TaskCreatedV3(event) => QueueLogEvent::TaskCreatedV3(event),
@@ -386,6 +388,24 @@ impl Stream {
             "enabled",
             actor,
             serde_json::json!({ "queue_id": "queue-01", "owner_id": "owner-01", "via": "local_ui" }),
+        )
+    }
+
+    fn policy_changed(self, policy: &QueuePolicy) -> Self {
+        let seq = self.0.len() as u64;
+        let owner = device("device-01", "owner-01", LocalUi);
+        let data = change_queue_policy(
+            &new_stopped(id("queue-01"), &owner),
+            Some(&owner),
+            policy,
+            seq,
+            seq,
+        )
+        .unwrap();
+        self.push(
+            "policy_changed",
+            OWNER_DEVICE,
+            serde_json::to_value(data).unwrap(),
         )
     }
 
@@ -460,6 +480,7 @@ impl Stream {
         let mut values = self.0;
         for (index, value) in values.iter_mut().enumerate() {
             let seq = index as u64 + 1;
+            value["id"] = stream_event_id(seq).as_str().into();
             value["seq"] = seq.into();
             value["ts"] = format!("2030-01-02T03:{:02}:{:02}Z", 4 + seq / 60, seq % 60).into();
         }
@@ -490,6 +511,9 @@ fn typed(values: Vec<serde_json::Value>) -> Vec<Owned> {
                 "urn:ads:event:queue.clock_reanchored:1" => {
                     Owned::ClockReanchored(serde_json::from_value(parse()).unwrap())
                 }
+                "urn:ads:event:queue.policy_changed:1" => {
+                    Owned::PolicyChanged(serde_json::from_value(parse()).unwrap())
+                }
                 "urn:ads:event:queue.task_created:1" => {
                     Owned::TaskCreated(serde_json::from_value(parse()).unwrap())
                 }
@@ -515,25 +539,133 @@ fn replay_values(
     replay_events(&events, &policy()).map(|task| (task.state, task.attempts))
 }
 
+fn stream_event_id(seq: u64) -> CommonUlidV1 {
+    CommonUlidV1::new(format!("01ARZ3NDEKTSV4RR{seq:010}")).unwrap()
+}
+
 fn replay_events(events: &[Owned], policy: &QueuePolicy) -> Result<ReplayedTask, ReplayRefusal> {
+    replay_with_clocks(events, Some(policy), &[])
+}
+
+fn replay_with_clocks(
+    events: &[Owned],
+    policy: Option<&QueuePolicy>,
+    overrides: &[(CommonUlidV1, CommonTimestampV1)],
+) -> Result<ReplayedTask, ReplayRefusal> {
+    let clocks: Vec<_> = (1..=events.len() as u64)
+        .map(|seq| {
+            let id = stream_event_id(seq);
+            let now = overrides
+                .iter()
+                .find(|(event, _)| event == &id)
+                .map_or_else(|| ts("2030-01-02T03:04:30Z"), |(_, clock)| clock.clone());
+            (id, now)
+        })
+        .collect();
     replay_task(
         &id("task-01"),
         events.iter().map(Owned::as_log),
         registry,
         policy,
-        |seq| Some(events[(seq - 1) as usize].as_log().ts()),
+        |id| {
+            clocks
+                .iter()
+                .find(|(event, _)| event == id)
+                .map(|(event_id, now)| ReplayAdmissionClock { event_id, now })
+        },
     )
 }
 
 #[test]
-fn replay_checks_attempt_ceiling_for_every_creation() {
+fn policy_changes_require_the_authenticated_owner_and_current_sequence() {
+    let owner = device("device-01", "owner-01", RemoteDevice);
+    let other = device("device-02", "owner-02", Tray);
+    let queue = new_stopped(id("queue-01"), &owner);
+    let configured = policy();
+    for (actor, seq, refusal) in [
+        (None, 5, QueueRefusal::Unauthenticated),
+        (Some(&other), 5, QueueRefusal::NotOwner),
+        (Some(&owner), 4, QueueRefusal::StaleSeq),
+    ] {
+        assert_eq!(
+            change_queue_policy(&queue, actor, &configured, seq, 5),
+            Err(refusal)
+        );
+    }
+    let data = change_queue_policy(&queue, Some(&owner), &configured, 5, 5).unwrap();
+    assert_eq!(data.queue_id, queue.id);
+    assert_eq!(data.owner_id, owner.owner_id);
+    assert_eq!(data.via, EventQueuePolicyChangedV1DataVia::RemoteDevice);
+    assert_eq!(QueuePolicy::from_event(&data.policy), Some(configured));
+}
+
+#[test]
+fn replay_requires_an_owner_policy_event_to_raise_the_ceiling() {
+    let initial = policy();
+    let raised = QueuePolicy {
+        attempt_limit: ads_contracts::RecordQueueTaskV2AttemptLimit::new(3).unwrap(),
+        ..policy()
+    };
+    let origin = serde_json::json!({"kind": "issue", "ref": 42});
+    let stream = Stream::new().admit_by(DAEMON, "task-01", 3, Some(origin.clone()));
     assert_eq!(
-        Stream::new()
-            .admit("task-01", 2)
-            .admit("task-02", 3)
-            .replay(),
+        replay_events(&typed(stream.numbered()), &initial),
         Err(ReplayRefusal::Admission(AdmissionRefusal::AttemptCeiling))
     );
+
+    let authorized = Stream::new()
+        .policy_changed(&raised)
+        .admit_by(DAEMON, "task-01", 3, Some(origin))
+        .numbered();
+    assert_eq!(
+        replay_events(&typed(authorized.clone()), &initial)
+            .unwrap()
+            .policy,
+        raised
+    );
+
+    let mut unauthorized = authorized;
+    unauthorized[1]["actor"]["id"] = "device-02".into();
+    assert_eq!(
+        replay_events(&typed(unauthorized), &initial),
+        Err(ReplayRefusal::NotOwnerDevice)
+    );
+}
+
+#[test]
+fn replay_checks_the_independent_clock_and_its_event_id() {
+    let events = typed(Stream::new().admit("task-01", 2).numbered());
+    let initial = policy();
+    assert_eq!(
+        replay_with_clocks(&events, None, &[]),
+        Err(ReplayRefusal::MissingInitialPolicy)
+    );
+    let creation_id = stream_event_id(2);
+    let early_clock = ts("2030-01-02T03:03:50Z");
+    assert_eq!(
+        replay_with_clocks(&events, Some(&initial), &[(creation_id, early_clock)]),
+        Err(ReplayRefusal::Admission(AdmissionRefusal::AheadOfClock))
+    );
+
+    let wrong_id = stream_event_id(1);
+    let now = ts("2030-01-02T03:04:02Z");
+    let replay = |clock: Option<ReplayAdmissionClock<'_>>| {
+        replay_task(
+            &id("task-01"),
+            events.iter().map(Owned::as_log),
+            registry,
+            Some(&initial),
+            |_| clock,
+        )
+    };
+    assert_eq!(
+        replay(Some(ReplayAdmissionClock {
+            event_id: &wrong_id,
+            now: &now
+        })),
+        Err(ReplayRefusal::AdmissionClockMismatch)
+    );
+    assert_eq!(replay(None), Err(ReplayRefusal::MissingAdmissionClock));
 }
 
 #[test]
@@ -634,27 +766,27 @@ fn creation_v3_reads_the_shared_origin_and_alias_alongside_older_versions() {
 }
 
 #[test]
-fn replay_uses_the_loaded_policy_for_every_creation() {
-    let events = typed(
-        Stream::new()
-            .admit("task-01", 2)
-            .admit("task-02", 2)
-            .numbered(),
-    );
-    assert!(replay_events(&events, &windowed()).is_ok());
+fn replay_recovers_a_running_task_after_limits_are_lowered() {
+    let mut historical = windowed();
+    historical.attempt_limit = ads_contracts::RecordQueueTaskV2AttemptLimit::new(3).unwrap();
+    let lowered = one_manual();
+    let stream = Stream::new()
+        .policy_changed(&historical)
+        .enabled(OWNER_DEVICE)
+        .admit("task-01", 3)
+        .admit("task-02", 2)
+        .change(DAEMON, "queued", "running", 1)
+        .restart()
+        .policy_changed(&lowered);
+    let events = typed(Stream(stream.0.clone()).numbered());
+    let restored = replay_with_clocks(&events, None, &[]).unwrap();
+    assert_eq!((restored.state, restored.attempts), (Running, 1));
+    assert_eq!(restored.policy, lowered);
+
+    let events = typed(stream.admit("task-03", 2).numbered());
     assert_eq!(
-        replay_events(&events, &one_manual()),
+        replay_with_clocks(&events, None, &[]),
         Err(ReplayRefusal::Admission(AdmissionRefusal::WindowFull))
-    );
-    assert_eq!(
-        replay_task(
-            &id("task-01"),
-            events.iter().map(Owned::as_log),
-            registry,
-            &windowed(),
-            |_| None
-        ),
-        Err(ReplayRefusal::MissingAdmissionContext)
     );
 }
 
@@ -709,13 +841,14 @@ fn replay_restores_the_owner_anchor_and_admission_after_restart() {
     };
 
     let values: Vec<serde_json::Value> = serde_json::from_slice(&persisted).unwrap();
+    let clocks = [(stream_event_id(2), ts(jumped))];
     let mut missing = values.clone();
     missing.remove(2);
     for (index, value) in missing.iter_mut().enumerate().skip(2) {
         value["seq"] = (index + 1).into();
     }
     assert_eq!(
-        replay_events(&typed(missing), &policy),
+        replay_with_clocks(&typed(missing), Some(&policy), &clocks),
         Err(ReplayRefusal::Admission(
             AdmissionRefusal::BehindLastAdmission
         ))
@@ -723,10 +856,10 @@ fn replay_restores_the_owner_anchor_and_admission_after_restart() {
     let mut wrong_owner = values.clone();
     wrong_owner[2]["data"]["owner_id"] = "owner-02".into();
     assert_eq!(
-        replay_events(&typed(wrong_owner), &policy),
+        replay_with_clocks(&typed(wrong_owner), Some(&policy), &clocks),
         Err(ReplayRefusal::NotOwnerDevice)
     );
-    let restored = replay_events(&typed(values), &policy).unwrap();
+    let restored = replay_with_clocks(&typed(values), Some(&policy), &clocks).unwrap();
     assert_eq!((restored.state, restored.attempts), (Queued, 0));
     let third = manual_at("task-03", "2030-01-02T03:04:06Z", 6);
     assert_eq!(

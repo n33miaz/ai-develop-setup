@@ -25,10 +25,10 @@ Na partida, `restore_running_task` decide o destino da tarefa cujo último estad
 
 Hoje o daemon não adota sessões antigas ao reiniciar, então `Kept` ainda não acontece na prática.
 
-O replay (`replay_task`) recebe o stream inteiro da fila, a partir de `queue.created` com `seq` 1 e sem buraco, e uma consulta ao cadastro de aparelhos no instante de cada evento. Ele devolve o estado e o saldo, ou o motivo da recusa (`ReplayRefusal`). Além da ordem e do saldo, ele confere:
+O replay (`replay_task`) recebe o stream inteiro da fila, a partir de `queue.created` com `seq` 1 e sem buraco, uma consulta ao cadastro de aparelhos no instante de cada evento, a política inicial, quando disponível, e uma consulta ao relógio histórico por ID da criação. Ele devolve o estado, o saldo, a última âncora e a política vigente, ou o motivo da recusa (`ReplayRefusal`). Além da ordem e do saldo, ele confere:
 - todo evento é da fila e do stream `queue/<id>`;
 - todo ator que é aparelho pertencia ao dono da fila naquele instante;
-- a criação, a ativação e a parada pelo dono vêm de um aparelho do dono e repetem o dono da fila;
+- a criação, a ativação, a parada pelo dono e a mudança de política vêm de um aparelho do dono e repetem o dono da fila;
 - todo pedido manual, de qualquer tarefa da fila, foi criado por um aparelho do dono;
 - a tarefa só entra em `running` com a fila ligada naquele ponto do log;
 - `review → done` foi aceito por um aparelho do dono.
@@ -36,7 +36,11 @@ O replay (`replay_task`) recebe o stream inteiro da fila, a partir de `queue.cre
 
 O agente e o daemon continuam podendo reprovar e cancelar tarefas. O replay confere a coerência dos atores que o log declara, não a autenticidade deles: o log não é assinado por aparelho, e uma linha forjada é recusada pela cadeia HMAC do armazenamento ([ADR 0021](../../docs/adr/0021-storage-atomic-file-and-cipher.md)). O replay protege contra erro do produtor e contra log montado de forma errada.
 
-O replay aplica a política carregada no núcleo a todas as criações do stream, inclusive as de outras tarefas. Se a configuração passar a impor limites mais estritos, uma criação antes aceita pode falhar com `Admission`. O produtor precisa preservar o `now` usado na admissão e fornecê-lo por `seq`. O replay confia nesse valor e devolve `MissingAdmissionContext` se ele faltar. As âncoras vêm dos eventos do stream. A reserva de IDs entre filas cabe ao produtor.
+O replay confere cada criação, inclusive as de outras tarefas, com a política vigente naquele ponto do stream. Para filas sem um evento de política antes da primeira admissão, passe a configuração carregada na criação da fila. Um evento inicial com a política completa antes da primeira admissão torna essa configuração dispensável para validar as criações. Se a primeira criação vier antes da primeira política disponível, o replay devolve `MissingInitialPolicy`. Para uma fila antiga, recupere a configuração original do backup.
+
+O dono altera a política por um aparelho autenticado. `change_queue_policy` confere o dono e o último `seq` observado. O produtor anexa `queue.policy_changed:1` com o aparelho autenticado como ator e condiciona o append ao mesmo `seq`. O evento fica coberto pela cadeia HMAC. A política entra em vigor após o append e vale para admissões posteriores. O replay confere o dono do aparelho no cadastro e aplica a política na ordem do stream. Cada tarefa conserva o teto de tentativas gravado na sua criação.
+
+O produtor captura o `now` do relógio do núcleo na decisão e grava essa leitura com integridade e de forma atômica com a criação. A consulta recebe o ID do evento da criação e devolve o ID gravado junto à leitura de uma fonte independente de `ts`. O replay consulta o relógio somente para criações. Se a leitura faltar, devolve `MissingAdmissionClock`. Para uma leitura de outro evento, devolve `AdmissionClockMismatch`. Uma criação fora da política ou da tolerância do relógio resulta em `Admission`. A reserva de IDs entre filas cabe ao produtor.
 
 O cadastro responde pelo dono do aparelho em cada instante. Um aparelho mantém o dono que tinha quando agiu, e a revogação é uma marca com data: ela recusa os atos posteriores sem apagar os anteriores. O produtor usa o estado e o saldo reconstituídos antes de autorizar novas transições e reserva a origem na mesma operação que anexa a criação.
 
