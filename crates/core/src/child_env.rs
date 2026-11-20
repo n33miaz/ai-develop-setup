@@ -12,11 +12,12 @@ use serde::Deserialize;
 /// with the widest comparison (see [`EnvPolicy::is_denied`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NameCase {
-    /// Windows: `Path` and `PATH` are the same variable. Copying from the parent folds only
-    /// ASCII letters, while Windows also folds other letters (`Ä` and `ä`): an allowed name
-    /// copies only a parent name equal to it apart from ASCII case, so it can only let less
-    /// through. Repeated names and the names `set` replaces use the wider fold, so two entries
-    /// Windows takes as one variable are refused, and a `set` value always wins.
+    /// Windows: `Path` and `PATH` are the same variable. [`EnvPolicy::child_env`] over data
+    /// folds only ASCII letters, so it can only let less through. The real environment is read
+    /// by `process_env` with the native lookup, which also folds other letters (`Ä` and `ä`);
+    /// still safe, since a parent name Windows folds onto an allowed one has its upper-case
+    /// form, which the deny check already tests. Repeated names and the names `set` replaces
+    /// use the wider fold, so two entries Windows takes as one are refused and `set` wins.
     Insensitive,
     Sensitive,
 }
