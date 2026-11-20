@@ -78,11 +78,16 @@ fn a_real_child_gets_exactly_the_allowed_names_and_the_set_values() {
 allow = ["SystemRoot", "ADS_ALLOWED_SENTINEL", "ADS_MISSING_SENTINEL"]
 set = { ADS_SET_SENTINEL = "set-value", TERM = "xterm-256color" }"#;
     let printed = run(&user_toml(env, &[]), &parent);
-    let child: BTreeMap<String, String> = printed
+    let mut child: BTreeMap<String, String> = printed
         .lines()
         .filter_map(|line| line.split_once('='))
         .map(|(name, value)| (name.to_ascii_uppercase(), value.to_owned()))
         .collect();
+    // `cmd.exe` may add its own value for these; the parent's would be the sentinel.
+    child.retain(|name, value| {
+        !(cfg!(windows) && ["COMSPEC", "PATHEXT", "PROMPT"].contains(&name.as_str()))
+            || value == SECRET
+    });
     let mut expected = BTreeMap::from([
         (
             "ADS_ALLOWED_SENTINEL".to_owned(),
@@ -92,12 +97,6 @@ set = { ADS_SET_SENTINEL = "set-value", TERM = "xterm-256color" }"#;
         ("TERM".to_owned(), "xterm-256color".to_owned()),
     ]);
     expected.insert("SYSTEMROOT".to_owned(), root.clone());
-    if cfg!(windows) {
-        for name in ["COMSPEC", "PATHEXT", "PROMPT"] {
-            let own = child.get(name).cloned().unwrap_or_default();
-            expected.insert(name.to_owned(), own);
-        }
-    }
     // Only names are shown on failure, never values.
     assert_eq!(
         child.keys().collect::<Vec<_>>(),
