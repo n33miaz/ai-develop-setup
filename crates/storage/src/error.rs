@@ -10,7 +10,7 @@ pub enum StorageError {
     ReadOnly,
     Permission,
     CantOpen,
-    /// The disk is full: free space, then retry.
+    /// The disk is full, or at open the database passes `inspection_max_bytes`.
     Full,
     /// A queue stream reached `queue_max_events`: raise it and reopen, or create another queue.
     QueueFull,
@@ -51,7 +51,10 @@ pub enum StorageError {
 impl fmt::Display for StorageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Full => write!(f, "storage: Full: the disk is full; free space, then retry"),
+            Self::Full => write!(
+                f,
+                "storage: Full: the disk is full, or the database passes inspection_max_bytes                  at open; free space and retry, or raise inspection_max_bytes"
+            ),
             Self::QueueFull => write!(
                 f,
                 "storage: QueueFull: the queue reached queue_max_events; raise queue_max_events                  in storage.toml and reopen, or create another queue"
