@@ -1,5 +1,11 @@
 import { CoreClientError, type ConnectionState, type CoreClient, type Unsubscribe } from './client'
-import type { CommandResponseV2, CommonActorV1, EventDraft, EventEnvelopeV1 } from './contracts'
+import type {
+  CommandResponseV2,
+  CommonActorV1,
+  EventDraft,
+  EventEnvelopeV1,
+  HarnessCatalog,
+} from './contracts'
 import { newUlid } from './ulid'
 
 /** Cliente falso em memória: dá para testar a UI sem núcleo. Não simula rede nem atraso. */
@@ -24,7 +30,10 @@ function deepFreeze<T>(value: T): T {
   return value
 }
 
-export function createFakeCoreClient(): FakeCoreClient {
+/** `catalog` é o que `listHarnesses` responde; o padrão é nenhuma ferramenta. */
+export function createFakeCoreClient(
+  catalog: HarnessCatalog = { harnesses: [], workdir_aliases: [] },
+): FakeCoreClient {
   let state: ConnectionState = 'disconnected'
   const stateListeners = new Set<(state: ConnectionState) => void>()
   const logs = new Map<string, EventEnvelopeV1[]>()
@@ -133,6 +142,11 @@ export function createFakeCoreClient(): FakeCoreClient {
         result: { accepted: true, replayed },
       }
       return Promise.resolve(response)
+    },
+
+    listHarnesses() {
+      if (state !== 'connected') return Promise.reject(notConnected())
+      return Promise.resolve(structuredClone(catalog))
     },
 
     emit: append,

@@ -129,7 +129,7 @@ async fn receive(ws: &mut Socket) -> Value {
     };
     let value: Value = serde_json::from_str(&text).unwrap();
     assert!(
-        ads_contracts::reencode("urn:ads:contract:local-api.server-message:1", value.clone())
+        ads_contracts::reencode("urn:ads:contract:local-api.server-message:2", value.clone())
             .unwrap()
             .is_ok()
     );
@@ -208,6 +208,7 @@ async fn authentication_rejects_missing_wrong_late_token_and_command_before_hell
         command("auth.hello", json!({"token": "A".repeat(43)})),
         command("session.open", open_params("unauthenticated")),
         command("auth.hello", json!({"token": f.token, "extra": true})),
+        command("harness.list", json!({})),
     ] {
         let mut ws = connect(&f, Some("http://127.0.0.1:5173"), None)
             .await
@@ -818,6 +819,7 @@ async fn remote_commands_never_change_sessions_or_subscriptions() {
             "events.subscribe",
             json!({"stream": "session/local", "after_seq": 0}),
         ),
+        ("harness.list", json!({})),
     ] {
         transmit(&mut ws, &remote(command(method, params))).await;
         assert_eq!(receive(&mut ws).await["error"]["code"], -32010);
@@ -1593,4 +1595,110 @@ async fn unconfigured_and_unknown_tools_are_refused_before_spawning() {
         );
     }
     assert!(f.backend.terminals().is_empty());
+}
+
+struct ListProbe;
+
+impl ads_core::tool_launch::Probe for ListProbe {
+    fn is_file(&self, _: &str) -> bool {
+        panic!("listing must not probe the disk")
+    }
+
+    fn is_dir(&self, _: &str) -> bool {
+        panic!("listing must not probe the disk")
+    }
+}
+
+async fn raw_call(ws: &mut Socket, value: &Value) -> String {
+    transmit(ws, value).await;
+    let Message::Text(text) = bounded(ws.next()).await.unwrap().unwrap() else {
+        panic!("expected text")
+    };
+    let text = text.to_string();
+    let reply: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(reply["id"], value["id"]);
+    for schema in [
+        "urn:ads:contract:local-api.server-message:2",
+        "urn:ads:command:harness.list.response:1",
+    ] {
+        assert!(
+            ads_contracts::reencode(schema, reply.clone())
+                .unwrap()
+                .is_ok()
+        );
+    }
+    text
+}
+
+#[tokio::test]
+async fn harness_list_returns_only_tool_names_and_folder_aliases() {
+    let overrides = r#"
+[env]
+allow = ["PATH", "LIST_SENTINEL_VAR"]
+[workdirs]
+default = 'C:/dir-sentinel/inner'
+second = 'D:/other-sentinel'
+[tools.claude]
+program = 'C:/prog-sentinel/claude.exe'
+args = ['--arg-sentinel']
+"#;
+    let parent_env = [
+        ("PATH", "C:/path-sentinel"),
+        ("LIST_SENTINEL_VAR", "value-sentinel"),
+        ("ANTHROPIC_API_KEY", "key-sentinel"),
+    ]
+    .map(|(name, value)| (name.to_owned(), value.to_owned()))
+    .to_vec();
+    let launcher = ToolLauncher::from_toml_str(overrides, parent_env, ListProbe, ListProbe);
+    let launcher = launcher.unwrap();
+    let f = fixture("", Arc::new(launcher)).await;
+    let mut ws = authenticated(&f).await;
+    let request = command("harness.list", json!({}));
+    let text = raw_call(&mut ws, &request).await;
+    let reply: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        reply["result"],
+        json!({"harnesses": ["claude"], "workdir_aliases": ["default", "second"]})
+    );
+    for leak in [
+        "sentinel", ":/", ":\\", "\\", "PATH", "LIST_", "program", "args", "env", "cwd",
+    ] {
+        assert!(!text.contains(leak), "{leak} leaked in {text}");
+    }
+    // Reading twice with the same key answers the list again, not a replay marker.
+    let text = raw_call(&mut ws, &request).await;
+    assert!(text.contains("\"workdir_aliases\""), "{text}");
+    assert!(f.backend.terminals().is_empty());
+}
+
+#[tokio::test]
+async fn harness_list_is_empty_without_configured_tools() {
+    for launcher in [
+        Arc::new(DisabledLauncher) as Arc<dyn Launcher>,
+        Arc::new(
+            ToolLauncher::from_toml_str("", Vec::<(String, String)>::new(), ListProbe, ListProbe)
+                .unwrap(),
+        ),
+        Arc::new(TestLauncher),
+    ] {
+        let f = fixture("", launcher).await;
+        let mut ws = authenticated(&f).await;
+        let reply = call(&mut ws, "harness.list", json!({})).await;
+        assert_eq!(
+            reply["result"],
+            json!({"harnesses": [], "workdir_aliases": []})
+        );
+    }
+}
+
+#[tokio::test]
+async fn harness_list_refuses_parameters() {
+    let f = fixture("", Arc::new(TestLauncher)).await;
+    let mut ws = authenticated(&f).await;
+    let reply = call(&mut ws, "harness.list", json!({"program": "x"})).await;
+    assert_eq!(reply["error"]["code"], -32602);
+    assert_eq!(
+        call(&mut ws, "harness.list", json!({})).await["result"]["harnesses"],
+        json!([])
+    );
 }

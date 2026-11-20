@@ -197,6 +197,11 @@ impl<H: Harness> ToolConfig<H> {
         self.workdirs.get(alias.as_str())
     }
 
+    /// The configured folder aliases in name order; never the folders themselves.
+    pub fn workdir_aliases(&self) -> impl Iterator<Item = &str> {
+        self.workdirs.keys().map(String::as_str)
+    }
+
     pub fn env(&self) -> &EnvPolicy {
         &self.env
     }

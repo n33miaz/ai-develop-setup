@@ -15,6 +15,7 @@ import {
   useConnectionState,
   type CoreClient,
   type EventEnvelopeV1,
+  type HarnessCatalog,
 } from './api'
 
 import { sessionInput } from './api/session'
@@ -58,7 +59,7 @@ function isCompact() {
 interface AppProps {
   client: CoreClient
   live?: boolean
-
+  /** Reserva do modo de exemplo; conectada, a interface usa a lista do núcleo. */
   harnesses?: readonly string[]
 
   workdir?: string
@@ -104,6 +105,8 @@ export function App({
 
   const [liveEvents, setLiveEvents] = useState<SessionEvent[]>([])
 
+  const [catalog, setCatalog] = useState<HarnessCatalog | null>(null)
+
   const receiveSession = useCallback((event: EventEnvelopeV1) => {
     if (
       ![
@@ -137,6 +140,31 @@ export function App({
       client.disconnect()
     }
   }, [client, live])
+  useEffect(() => {
+    if (!live || connection !== 'connected') return
+    let current = true
+    client.listHarnesses().then(
+      (received) => {
+        if (current) setCatalog(received)
+      },
+      () => {
+        if (current) {
+          setCatalog({ harnesses: [], workdir_aliases: [] })
+          reportError()
+        }
+      },
+    )
+    return () => {
+      current = false
+      setCatalog(null)
+    }
+  }, [client, live, connection, reportError])
+
+  const liveCatalog = live && connection === 'connected' ? catalog : null
+  const available = live ? (liveCatalog?.harnesses ?? NO_STREAMS) : harnesses
+  const aliases = liveCatalog?.workdir_aliases ?? NO_STREAMS
+  const workdirAlias = aliases.length === 0 || aliases.includes(workdir) ? workdir : aliases[0]
+
   useEffect(() => {
     if (!live || connection !== 'connected') return
 
@@ -217,7 +245,7 @@ export function App({
         newCommand('session.open', {
           session_id: id,
           harness,
-          workdir_alias: workdir,
+          workdir_alias: workdirAlias,
           ...size.current,
         }),
       )
@@ -254,9 +282,9 @@ export function App({
         </button>
       </header>
 
-      {live && harnesses.length > 0 && (
+      {available.length > 0 && (
         <div className={styles.actions}>
-          {harnesses.map((harness) => (
+          {available.map((harness) => (
             <button
               key={harness}
               type="button"

@@ -30,7 +30,7 @@ class FakeSocket extends EventTarget {
     this.dispatchEvent(new Event('close'))
   }
   receive(message: unknown) {
-    valid('urn:ads:contract:local-api.server-message:1', message)
+    valid('urn:ads:contract:local-api.server-message:2', message)
     this.dispatchEvent(new MessageEvent('message', { data: JSON.stringify(message) }))
   }
   answer(index: number) {
@@ -231,6 +231,51 @@ describe('local WebSocket client', () => {
     const rejected = expect(client.connect()).rejects.toThrow('core disconnected')
     socket.dispatchEvent(new Event('open'))
     socket.receive({ jsonrpc: '2.0', id: socket.sent[0]?.id, error: { code: -1, message: token } })
+    await rejected
+  })
+  it('lists the configured tools through harness.list', async () => {
+    const { client, socket } = await connected()
+    const listed = client.listHarnesses()
+    expect(socket.sent[1]).toMatchObject({ method: 'harness.list', params: { _meta: {} } })
+    socket.receive({
+      jsonrpc: '2.0',
+      id: socket.sent[1]?.id,
+      result: { harnesses: ['claude'], workdir_aliases: ['default'] },
+    })
+    await expect(listed).resolves.toEqual({ harnesses: ['claude'], workdir_aliases: ['default'] })
+    await expect(client.send(newCommand('harness.list'))).rejects.toThrow('use listHarnesses')
+  })
+  it('rejects a refused harness.list without exposing the server message', async () => {
+    const { client, socket } = await connected()
+    const listed = client.listHarnesses()
+    socket.receive({ jsonrpc: '2.0', id: socket.sent[1]?.id, error: { code: -1, message: token } })
+    await expect(listed).rejects.toThrow('command rejected')
+    expect(client.getState()).toBe('connected')
+  })
+  it('disconnects when a reply does not have the shape of its request', async () => {
+    const list = await connected()
+    const listed = list.client.listHarnesses()
+    list.socket.answer(1)
+    await expect(listed).rejects.toThrow('core disconnected')
+    expect(list.client.getState()).toBe('disconnected')
+    const other = await connected()
+    const closing = other.client.send(newCommand('session.close', { session_id: 'session-a' }))
+    other.socket.receive({
+      jsonrpc: '2.0',
+      id: other.socket.sent[1]?.id,
+      result: { harnesses: [], workdir_aliases: [] },
+    })
+    await expect(closing).rejects.toThrow('core disconnected')
+  })
+  it('refuses to authenticate when the hello reply is a tool list', async () => {
+    const { client, socket } = setup()
+    const rejected = expect(client.connect()).rejects.toThrow('core disconnected')
+    socket.dispatchEvent(new Event('open'))
+    socket.receive({
+      jsonrpc: '2.0',
+      id: socket.sent[0]?.id,
+      result: { harnesses: [], workdir_aliases: [] },
+    })
     await rejected
   })
   it.each([

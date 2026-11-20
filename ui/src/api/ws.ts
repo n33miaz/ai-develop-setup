@@ -1,7 +1,14 @@
 import { CoreClientError, type ConnectionState, type CoreClient } from './client'
 import { newCommand } from './command'
-import type { CommandRequestV1, CommandResponseV2, EventEnvelopeV1 } from './contracts'
-import { isLocalCommand, isServerMessage } from './wire'
+import type {
+  CommandHarnessListResponseV1,
+  CommandRequestV1,
+  CommandResponseV2,
+  EventEnvelopeV1,
+} from './contracts'
+import { isHarnessList, isLocalCommand, isServerMessage } from './wire'
+
+type Reply = CommandResponseV2 | CommandHarnessListResponseV1
 
 export type CoreSocket = Pick<WebSocket, 'send' | 'close' | 'addEventListener'>
 
@@ -9,6 +16,10 @@ export interface WsClientOptions {
   url: string
   token: string
   socketFactory?: (url: string) => CoreSocket
+}
+
+function accepted(response: Reply): boolean {
+  return !isHarnessList(response) && 'result' in response
 }
 
 export function createWsCoreClient({
@@ -39,7 +50,7 @@ export function createWsCoreClient({
   const listeners = new Set<(state: ConnectionState) => void>()
   const pending = new Map<
     string,
-    { resolve: (response: CommandResponseV2) => void; reject: (error: Error) => void }
+    { method: string; resolve: (response: Reply) => void; reject: (error: Error) => void }
   >()
   const subscriptions = new Set<{
     stream: string
@@ -64,11 +75,11 @@ export function createWsCoreClient({
     setState('disconnected')
     previous?.close()
   }
-  function transmit(command: CommandRequestV1): Promise<CommandResponseV2> {
+  function transmit(command: CommandRequestV1): Promise<Reply> {
     if (!isLocalCommand(command)) return Promise.reject(new Error('invalid local command'))
     if (pending.has(command.id)) return Promise.reject(new Error('duplicate request id'))
     return new Promise((resolve, reject) => {
-      pending.set(command.id, { resolve, reject })
+      pending.set(command.id, { method: command.method, resolve, reject })
       try {
         socket?.send(JSON.stringify(command))
       } catch {
@@ -109,7 +120,7 @@ export function createWsCoreClient({
           void transmit(newCommand('auth.hello', { token })).then(
             (response) => {
               if (socket !== current) return
-              if (!response.result) {
+              if (!accepted(response)) {
                 fail()
                 return
               }
@@ -138,9 +149,14 @@ export function createWsCoreClient({
           }
           if ('jsonrpc' in value) {
             const response = value
-            if (response.error)
-              response.error = { code: response.error.code, message: 'command rejected' }
             const request = pending.get(response.id)
+            if ('error' in response) {
+              response.error = { code: response.error.code, message: 'command rejected' }
+            } else if (request && isHarnessList(response) !== (request.method === 'harness.list')) {
+              // Cada resposta tem a forma do pedido: a lista só responde a harness.list.
+              fail()
+              return
+            }
             pending.delete(response.id)
             request?.resolve(response)
           } else {
@@ -175,7 +191,16 @@ export function createWsCoreClient({
     },
     disconnect,
     send(command) {
-      return state === 'connected' ? transmit(command) : Promise.reject(unavailable())
+      if (state !== 'connected') return Promise.reject(unavailable())
+      if (command.method === 'harness.list') return Promise.reject(new Error('use listHarnesses'))
+      return transmit(command) as Promise<CommandResponseV2>
+    },
+    listHarnesses() {
+      if (state !== 'connected') return Promise.reject(unavailable())
+      return transmit(newCommand('harness.list')).then((response) => {
+        if (!isHarnessList(response)) throw new Error('command rejected')
+        return response.result
+      })
     },
     subscribe(stream, afterSeq, onEvent) {
       if (state !== 'connected') throw unavailable()
@@ -183,7 +208,7 @@ export function createWsCoreClient({
       subscriptions.add(subscription)
       void transmit(newCommand('events.subscribe', { stream, after_seq: afterSeq })).then(
         (response) => {
-          if (!response.result) disconnect()
+          if (!accepted(response)) disconnect()
         },
         () => undefined,
       )

@@ -45,19 +45,23 @@ Para abrir Claude ou Codex pelo navegador no Windows:
 3. Em outro terminal, na raiz, rode `cargo build -p ads-daemon -j 2` e
    `.\target\debug\ads-daemon.exe --config 'C:\Users\voce\ads-local\harnesses.toml'`,
    com o caminho absoluto do seu arquivo.
-4. Em `ui/`, rode `npm ci`, defina `$env:VITE_CORE_HARNESSES = 'claude,codex'`
-   e execute `npm run dev`.
+4. Em `ui/`, rode `npm ci` e `npm run dev`.
    Depois que o Vite confirmar a porta, abra a URL completa impressa pelo daemon
    (`http://127.0.0.1:5173/#core=...`) e clique em **Abrir claude** ou
-   **Abrir codex**.
+   **Abrir codex**. Os botões vêm da configuração do daemon, pelo comando
+   `harness.list`.
 
 O agente dentro do terminal edita arquivos e executa comandos conforme as
 permissões dele. Argumentos que desligam as confirmações ou a área isolada da
 ferramenta, somados ao controle do terminal pela API, dão a quem usa a interface
 acesso total à sua conta.
-`VITE_CORE_HARNESSES` aceita identificadores separados por vírgula. O padrão vazio
-oculta os botões de abertura. `VITE_CORE_WORKDIR` seleciona o apelido de pasta
-do daemon, com padrão `default`. Ao abrir, a interface assina o stream e envia
+Conectada, a interface mostra um botão de abertura para cada ferramenta que o
+daemon informa em `harness.list`; lista vazia ou recusada não mostra botão
+(a recusa aparece como aviso). `VITE_CORE_HARNESSES` (identificadores separados
+por vírgula, padrão vazio) vale só como reserva no modo de exemplo, sem núcleo,
+onde os botões ficam desativados. `VITE_CORE_WORKDIR` escolhe o apelido de pasta,
+com padrão `default`; se o daemon não conhecer esse apelido, a interface usa o
+primeiro que ele informar. Ao abrir, a interface assina o stream e envia
 `session.open`. Recusas aparecem como aviso traduzido. A sessão recebe foco
 ao abrir, e a digitação e a colagem enviam `session.write` em blocos ordenados
 de até 65.536 bytes.

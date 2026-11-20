@@ -23,9 +23,12 @@ import type { EventTaskStartedV1 } from '../../../contracts/generated/ts/event.t
 import type { EventUsageReconciledV1 } from '../../../contracts/generated/ts/event.usage.reconciled.v1'
 import type { EventUsageRecordedV1 } from '../../../contracts/generated/ts/event.usage.recorded.v1'
 
+import type { CommandHarnessListResponseV1 } from '../../../contracts/generated/ts/command.harness.list.response.v1'
+
 export type { CommandRequestV1 } from '../../../contracts/generated/ts/command.request.v1'
 export type { CommandResponseV2 } from '../../../contracts/generated/ts/command.response.v2'
-export type { ContractLocalApiServerMessageV1 } from '../../../contracts/generated/ts/contract.local-api.server-message.v1'
+export type { CommandHarnessListResponseV1 }
+export type { ContractLocalApiServerMessageV2 } from '../../../contracts/generated/ts/contract.local-api.server-message.v2'
 export type {
   CommonActorV1,
   CommonDataClassV1,
@@ -82,6 +85,9 @@ export type ApprovalEvent =
 export type UsageEvent = EventUsageReconciledV1 | EventUsageRecordedV1
 
 export type HostEvent = EventHostAlertAckedV1 | EventHostAlertRaisedV1 | EventHostSampleRecordedV1
+
+/** O que o núcleo sabe abrir: só nomes de ferramenta e apelidos de pasta. */
+export type HarnessCatalog = CommandHarnessListResponseV1['result']
 
 /** Os eventos que a interface conhece hoje; os demais chegam só como envelope. */
 export type KnownEvent = SessionEvent | TaskEvent | ApprovalEvent | UsageEvent | HostEvent

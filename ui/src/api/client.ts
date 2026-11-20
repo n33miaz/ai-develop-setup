@@ -1,4 +1,9 @@
-import type { CommandRequestV1, CommandResponseV2, EventEnvelopeV1 } from './contracts'
+import type {
+  CommandRequestV1,
+  CommandResponseV2,
+  EventEnvelopeV1,
+  HarnessCatalog,
+} from './contracts'
 
 export type Unsubscribe = () => void
 
@@ -40,4 +45,6 @@ export interface CoreClient {
    * volta como evento.
    */
   send(command: CommandRequestV1): Promise<CommandResponseV2>
+  /** Ferramentas ligadas e apelidos de pasta do núcleo (`harness.list`). A recusa vira erro. */
+  listHarnesses(): Promise<HarnessCatalog>
 }
