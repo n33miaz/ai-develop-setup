@@ -28,7 +28,14 @@ struct MemoryAnchorState {
 }
 
 impl crate::anchor::AnchorStore for MemoryAnchor {
-    fn read(&self) -> Result<Option<crate::anchor::Commitment>, StorageError> {
+    fn can_create(&self) -> Result<bool, StorageError> {
+        Ok(self.read([0; 32])?.is_none())
+    }
+
+    fn read(
+        &self,
+        _: crate::anchor::DatabaseId,
+    ) -> Result<Option<crate::anchor::Commitment>, StorageError> {
         let state = self.0.lock().unwrap();
         if state.deny_reads {
             return Err(StorageError::AnchorUnavailable);
@@ -36,7 +43,11 @@ impl crate::anchor::AnchorStore for MemoryAnchor {
         Ok(state.commitment)
     }
 
-    fn store(&self, commitment: &crate::anchor::Commitment) -> Result<(), StorageError> {
+    fn store(
+        &self,
+        _: crate::anchor::DatabaseId,
+        commitment: &crate::anchor::Commitment,
+    ) -> Result<(), StorageError> {
         let mut state = self.0.lock().unwrap();
         if state.deny_writes {
             return Err(StorageError::AnchorUnavailable);
@@ -401,9 +412,13 @@ fn failed_sqlite_commit_leaves_the_anchor_ahead_until_confirmed_recovery() {
     );
 
     let plan = EventLog::plan_reanchor(&path, &config, keys("key-a", 1), &anchor).unwrap();
+    let summary = plan.summary();
     assert_eq!(
-        plan.summary(),
+        summary,
         crate::anchor::ReanchorSummary {
+            previous_id: Some(summary.proposed_id),
+            proposed_id: summary.proposed_id,
+            location_changed: None,
             previous_position: Some(2),
             proposed_position: 1,
             position_delta: Some(-1),

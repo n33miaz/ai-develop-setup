@@ -242,7 +242,10 @@ a outra recebe `Conflict` (ler `head` e remontar). `Busy` é o lock além de
 `busy_timeout_ms`. Antes de tentar gravar novamente, confira o banco contra a
 âncora. `Constraint` indica recusa do banco. A abertura ancorada confere a cadeia
 inteira sob o lock de escrita ([log de eventos](../../crates/storage/README.md#log-de-eventos)).
-O daemon fornece a âncora do cofre. As invariantes do portão e a ligação com o
+O daemon fornece a âncora do cofre e usa o caminho absoluto `audit_database_path`
+da configuração de armazenamento. Quando omitido, usa `%LOCALAPPDATA%/ads/audit.db`
+no Windows. Para transferir um banco ancorado para outro caminho, o dono confirma
+um plano de recuperação com o mesmo compromisso. As invariantes do portão e a ligação com o
 executor ficam para entregas seguintes.
 
 ## Riscos, demonstração e reversão
