@@ -142,6 +142,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn launcher_configuration_refuses_credentials_before_a_session_exists() {
+        for (setting, key) in [
+            ("allow = ['AWS_PROFILE']", "env.allow"),
+            ("set = { AWS_PROFILE = 'fixture' }", "env.set"),
+        ] {
+            let error = ToolLauncher::from_toml_str(
+                &format!("[env]\n{setting}"),
+                HostRules::host(),
+                [("AWS_PROFILE", "fixture")],
+                claude::DiskProbe,
+                codex::DiskProbe,
+            )
+            .err();
+            assert_eq!(
+                error.as_deref(),
+                Some(
+                    format!("invalid user configuration: denied variable name at `{key}` entry 0")
+                        .as_str()
+                )
+            );
+        }
+    }
+
+    #[test]
     fn a_root_folder_is_reported_as_a_shared_error() {
         let error = ToolLauncher::from_toml_str(
             "[workdirs]\nscratch = '/'\n",

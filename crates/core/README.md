@@ -136,10 +136,9 @@ abertura. `DiskProbe` faz essa consulta no disco.
 - O login da ferramenta: fica com ela, no lugar padrão dela, achado pela pasta do
   usuário. As variáveis da pasta de configuração (`CLAUDE_CONFIG_DIR`,
   `CODEX_HOME`) e as demais que redirecionam o login não passam.
-- Link no lugar do programa ou da pasta: a conferência da carga lê só o texto, e
-  a da abertura segue o link e exige que o destino seja arquivo (programa) ou
-  pasta. O link é passado como escrito; uma junção para a raiz de uma unidade
-  passa pela recusa de raiz (ver [riscos](../../docs/risks.md#programa-ou-pasta-configurados-por-um-link)).
+- A abertura resolve links do programa e da pasta de trabalho, aplica as regras
+  de caminho ao destino e passa o caminho resolvido ao host. Veja os
+  [riscos de troca de caminho](../../docs/risks.md#programa-ou-pasta-configurados-por-um-link).
 - Que o programa seja o certo: confere-se que o arquivo existe, não quem o
   assinou. O arquivo pode sumir entre a conferência e a abertura; aí quem falha é
   a abertura no processo dos terminais.

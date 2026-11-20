@@ -4,8 +4,8 @@
 use super::Harness;
 
 use super::{ConfigError, DiskProbe, HostRules, LaunchError, Probe, open_params};
-use crate::child_env::{EnvList, EnvPolicyError, NameCase};
-use crate::gate::{PathError, PathStyle};
+use crate::child_env::{EnvList, EnvPolicyError};
+use crate::gate::PathError;
 
 /// A tool with its own table, appended to the shipped defaults. Written by hand: only this
 /// test tool replaces the defaults, so the public macro does not offer it.

@@ -147,3 +147,23 @@ set = { "ÄX" = "set-value" }"#;
     let parent = [("SystemRoot", root.as_str()), ("äx", "parent-value")];
     assert_eq!(child_defines(env, &parent, "äx"), "[set-value]");
 }
+
+#[test]
+fn production_configuration_refuses_known_credentials_before_launch() {
+    use crate::child_env::{EnvList, EnvPolicyError};
+    use crate::tool_launch::ConfigError;
+
+    for (setting, list) in [
+        ("allow = ['AWS_PROFILE']", EnvList::Allow),
+        ("set = { AWS_PROFILE = 'fixture' }", EnvList::Set),
+    ] {
+        let toml = user_toml(&format!("[env]\n{setting}"), &[]);
+        assert_eq!(
+            ToolConfig::from_toml_str(&toml, HostRules::host()),
+            Err(ConfigError::Env(EnvPolicyError::DeniedName {
+                list,
+                index: 0
+            }))
+        );
+    }
+}

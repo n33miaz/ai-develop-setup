@@ -7,6 +7,8 @@ use std::path::Path;
 use ads_contracts::{
     CommandSessionOpenV1Params, ContractPtyHostRequestV1SessionOpenParams as OpenParams,
     ContractPtyHostRequestV1SessionOpenParamsCols as Cols,
+    ContractPtyHostRequestV1SessionOpenParamsCwd as Cwd,
+    ContractPtyHostRequestV1SessionOpenParamsProgram as Program,
     ContractPtyHostRequestV1SessionOpenParamsRows as Rows,
 };
 
@@ -17,6 +19,14 @@ use crate::gate::{AbsPath, PathStyle};
 pub trait Probe {
     fn is_file(&self, path: &str) -> bool;
     fn is_dir(&self, path: &str) -> bool;
+
+    fn resolve_file(&self, path: &str) -> Option<String> {
+        self.is_file(path).then(|| path.to_owned())
+    }
+
+    fn resolve_workdir(&self, path: &str) -> Option<String> {
+        self.is_dir(path).then(|| path.to_owned())
+    }
 }
 
 /// The real file system. A path absolute only in the other system's style is never found: on
@@ -33,6 +43,44 @@ impl Probe for DiskProbe {
     fn is_dir(&self, path: &str) -> bool {
         absolute_on(path, host_style()) && Path::new(path).is_dir()
     }
+
+    fn resolve_file(&self, path: &str) -> Option<String> {
+        let (target, parsed) = resolved_local(path)?;
+        target.is_file().then(|| parsed.to_string())
+    }
+
+    fn resolve_workdir(&self, path: &str) -> Option<String> {
+        let (target, parsed) = resolved_local(path)?;
+        (!parsed.is_root() && target.is_dir()).then(|| parsed.to_string())
+    }
+}
+
+fn resolved_local(path: &str) -> Option<(std::path::PathBuf, AbsPath)> {
+    if !absolute_on(path, host_style()) {
+        return None;
+    }
+    let target = std::fs::canonicalize(path).ok()?;
+    let parsed = parse_local_target(&target)?;
+    Some((target, parsed))
+}
+
+fn parse_local_target(path: &Path) -> Option<AbsPath> {
+    let text = path.to_str()?;
+    #[cfg(windows)]
+    let text = {
+        use std::path::{Component, Prefix};
+        match path.components().next()? {
+            Component::Prefix(prefix) => match prefix.kind() {
+                Prefix::Disk(_) => text,
+                Prefix::VerbatimDisk(_) => text.strip_prefix(r"\\?\")?,
+                _ => return None,
+            },
+            _ => return None,
+        }
+    };
+    AbsPath::parse(text)
+        .ok()
+        .filter(|parsed| parsed.style() == host_style())
 }
 
 const fn host_style() -> PathStyle {
@@ -102,21 +150,23 @@ where
         Mode::Interactive => {}
     }
     let program = config.program().ok_or(LaunchError::Disabled)?;
-    if !probe.is_file(program.as_str()) {
-        return Err(LaunchError::ProgramMissing);
-    }
+    let program = probe
+        .resolve_file(program.as_str())
+        .and_then(|path| Program::new(path).ok())
+        .ok_or(LaunchError::ProgramMissing)?;
     let cwd = config
         .workdir(&request.workdir_alias)
         .ok_or(LaunchError::UnknownWorkdir)?;
-    if !probe.is_dir(cwd.as_str()) {
-        return Err(LaunchError::WorkdirMissing);
-    }
+    let cwd = probe
+        .resolve_workdir(cwd.as_str())
+        .and_then(|path| Cwd::new(path).ok())
+        .ok_or(LaunchError::WorkdirMissing)?;
     Ok(OpenParams {
         session_id: request.session_id.clone(),
-        program: program.clone(),
+        program,
         args: config.args().to_vec(),
         // Always set: without it the host would use its own current folder.
-        cwd: Some(cwd.clone()),
+        cwd: Some(cwd),
         env: config.env().child_env(parent_env),
         cols: Cols::new(request.cols.get()).map_err(|_| LaunchError::Size)?,
         rows: Rows::new(request.rows.get()).map_err(|_| LaunchError::Size)?,
@@ -185,6 +235,25 @@ mod tests {
         } else {
             assert!(DiskProbe.is_dir("/"));
             assert!(!DiskProbe.is_dir(r"C:\"));
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_resolved_targets_accept_only_local_drive_prefixes() {
+        for path in [r"C:\work", r"\\?\C:\work"] {
+            let parsed = parse_local_target(Path::new(path)).unwrap();
+            assert!(!parsed.is_root());
+            assert_eq!(parsed.to_string(), r"C:\work");
+        }
+        assert!(parse_local_target(Path::new(r"\\?\C:\")).unwrap().is_root());
+        for path in [
+            r"\\server\share\work",
+            r"\\?\UNC\server\share\work",
+            r"\\?\GLOBALROOT\Device\HarddiskVolume1\work",
+            r"\\.\C:\work",
+        ] {
+            assert!(parse_local_target(Path::new(path)).is_none(), "{path}");
         }
     }
 }

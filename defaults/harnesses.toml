@@ -58,27 +58,11 @@ deny = [
   "*_KEYS",
   "*_PAT",
   "*_PAT_*",
-  # `_AUTH` nas formas de credencial; `_AUTHOR` (`GIT_AUTHOR_NAME`) passa, `SSH_AUTH_SOCK` nao.
-  "*_AUTH",
-  "*_AUTH_*",
-  "*_AUTHENTICAT*",
-  "*_AUTHORIZ*",
-  "*_AUTHKEY*",
-  "*_AUTHN*",
-  "*_AUTHZ*",
-  "*_AUTHS",
-  "*_AUTHINFO*",
-  "*_AUTHFILE*",
+  "*_AUTH*",
   "*_PASS*",
   "*PASSPHRASE*",
   "*ASKPASS*",
-  # Sessoes que sao credencial; `WT_SESSION`, `XDG_SESSION_*` e `DBUS_SESSION_BUS_ADDRESS` passam. Um
-  # nome generico como `APP_SESSION` ou `APP_SESSION_ID` nao e negado pelo nome.
-  "BW_SESSION",
-  "OP_SESSION_*",
-  "*_SESSION_KEY*",
-  "*_SESSIONID*",
-  "*_SESSION_STRING*",
+  "*_SESSION*",
   "*_COOKIE*",
   "*_JWT*",
   "*_PWD",
@@ -92,7 +76,17 @@ deny = [
   "*NETRC*",
   "PGPASSFILE",
   "DOCKER_CONFIG",
-  "NPM_CONFIG_*",
+  "NPM_CONFIG_USERCONFIG",
+  "NPM_CONFIG_GLOBALCONFIG",
+  "NPM_CONFIG_PREFIX",
+  "NPM_CONFIG_REGISTRY",
+  "NPM_CONFIG_USERNAME",
+  "NPM_CONFIG_OTP",
+  "NPM_CONFIG_PROXY",
+  "NPM_CONFIG_HTTPS_PROXY",
+  "NPM_CONFIG_CERT",
+  "NPM_CONFIG_CERTFILE",
+  "NPM_CONFIG_KEYFILE",
   # Ferramentas e provedores: login, configuracao de login e chaves.
   "ANTHROPIC_*",
   "CLAUDE_*",
@@ -116,6 +110,20 @@ deny = [
   "HUGGING_FACE_*",
 ]
 
+# Excecoes nominais do produto, so para o padrao indicado. A camada do usuario pode negar
+# esses nomes, mas nao pode definir excecoes.
+[env.deny_exceptions]
+"*_AUTH*" = ["GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_AUTHOR_DATE"]
+"*_SESSION*" = [
+  "WT_SESSION",
+  "XDG_SESSION_ID",
+  "XDG_SESSION_TYPE",
+  "XDG_SESSION_CLASS",
+  "XDG_SESSION_DESKTOP",
+  "DBUS_SESSION_BUS_ADDRESS",
+  "DESKTOP_SESSION",
+]
+
 # Valores que o proprio produto define (nao vem do pai). A camada do usuario SUBSTITUI a tabela.
 # Nenhum pode casar com `deny`.
 [env.set]
@@ -126,7 +134,8 @@ COLORTERM = "truecolor"
 # apelido; apelido que nao esta aqui e recusado. A camada do usuario ACRESCENTA ou troca apelidos.
 # Apelido: letras, digitos e . _ : -, ate 64 caracteres. Padrao vazio: nenhuma pasta.
 # A raiz de uma unidade (`C:\`) ou `/` e recusada: a ferramenta trabalharia no disco inteiro. Pasta no
-# estilo do outro sistema tambem e recusada na carga.
+# estilo do outro sistema tambem e recusada na carga. Na abertura, o destino resolvido deve ser
+# local e nao pode ser a raiz.
 [workdirs]
 
 # Uma tabela por ferramenta. Cada adaptador le so a sua.

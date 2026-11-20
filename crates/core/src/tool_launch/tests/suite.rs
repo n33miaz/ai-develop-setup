@@ -2,8 +2,8 @@
 
 use super::{
     ConfigError, DENIED_EXTRA, DiskProbe, EnvList, EnvPolicyError, HARNESS_ID, HostRules,
-    LaunchError, NameCase, OTHER_HARNESS, POISON_EXTRA, PROGRAM, PathError, PathStyle, Probe,
-    ToolConfig, WRONG_HARNESSES, open_params,
+    LaunchError, OTHER_HARNESS, POISON_EXTRA, PROGRAM, PathError, Probe, ToolConfig,
+    WRONG_HARNESSES, open_params,
 };
 use std::collections::BTreeSet;
 
@@ -146,17 +146,11 @@ fn credentials_in_the_user_allow_list_or_set_refuse_the_configuration() {
                 user_toml(PROGRAM),
                 table.replace('%', name)
             );
-            for case in [NameCase::Insensitive, NameCase::Sensitive] {
-                let host = HostRules {
-                    case,
-                    paths: PathStyle::Windows,
-                };
-                assert_eq!(
-                    ToolConfig::from_toml_str(&text, host),
-                    Err(ConfigError::Env(EnvPolicyError::DeniedName { list, index })),
-                    "{name} {case:?}"
-                );
-            }
+            assert_eq!(
+                ToolConfig::from_toml_str(&text, HostRules::WINDOWS),
+                Err(ConfigError::Env(EnvPolicyError::DeniedName { list, index })),
+                "{name}"
+            );
         }
     }
 }
@@ -609,4 +603,27 @@ fn safe_path_forms_are_kept_as_program_and_as_folder() {
         assert_eq!(config.program().map(|p| p.as_str()), Some(*kept));
         assert_eq!(config.workdir(&alias).map(|c| c.as_str()), Some(*kept));
     }
+}
+
+#[test]
+fn the_windows_profile_checks_equivalent_names() {
+    for (setting, list) in [
+        ("allow = ['Demo', 'DEMO']", EnvList::Allow),
+        ("set = { Demo = 'a', DEMO = 'b' }", EnvList::Set),
+    ] {
+        let text = format!("[env]\n{setting}");
+        assert_eq!(
+            ToolConfig::from_toml_str(&text, HostRules::WINDOWS),
+            Err(ConfigError::Env(EnvPolicyError::DuplicateName {
+                list,
+                index: 1
+            }))
+        );
+    }
+    let text = "[env]\nallow = ['demo']\nset = { DEMO = 'replacement' }";
+    let config = ToolConfig::from_toml_str(text, HostRules::WINDOWS).unwrap();
+    assert_eq!(
+        config.env().child_env([("demo", "parent")]),
+        std::collections::BTreeMap::from([("DEMO".into(), "replacement".into())])
+    );
 }

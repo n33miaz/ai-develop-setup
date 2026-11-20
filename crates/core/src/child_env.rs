@@ -64,6 +64,8 @@ pub struct EnvLayer {
     pub allow: Option<Vec<String>>,
     /// Patterns never passed on. A later layer adds to the list, never removes.
     pub deny: Option<Vec<String>>,
+    /// Exact ASCII names exempt from their corresponding shipped pattern only.
+    pub deny_exceptions: Option<BTreeMap<String, Vec<String>>>,
     /// Values the product sets itself, not read from the parent. A later layer replaces the table.
     pub set: Option<BTreeMap<String, String>>,
 }
@@ -91,6 +93,7 @@ impl EnvList {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EnvPolicyError {
     MissingKey(&'static str),
+    BadDenyExceptions,
     /// Empty, or with `=`, `*` or a control character.
     BadName {
         list: EnvList,
@@ -120,6 +123,7 @@ impl fmt::Display for EnvPolicyError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MissingKey(key) => write!(f, "missing key `env.{key}`"),
+            Self::BadDenyExceptions => f.write_str("invalid `env.deny_exceptions`"),
             Self::BadName { list, index } => {
                 write!(f, "invalid variable name at `{}` entry {index}", list.key())
             }
@@ -191,12 +195,28 @@ fn valid_name(name: &str) -> bool {
     !name.is_empty() && !name.chars().any(|c| c == '=' || c == '*' || c.is_control())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DenyRule {
+    pattern: Pattern,
+    exceptions: Vec<String>,
+}
+
+impl DenyRule {
+    fn matches(&self, name: &str, upper_name: &str) -> bool {
+        self.pattern.matches(upper_name)
+            && !self
+                .exceptions
+                .iter()
+                .any(|item| name.eq_ignore_ascii_case(item))
+    }
+}
+
 /// The allow list, the deny patterns and the values the product sets. Only
 /// [`EnvPolicy::from_layers`] builds one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnvPolicy {
     allow: Vec<String>,
-    deny: Vec<Pattern>,
+    deny: Vec<DenyRule>,
     set: BTreeMap<String, String>,
     case: NameCase,
 }
@@ -209,6 +229,18 @@ impl EnvPolicy {
         case: NameCase,
     ) -> Result<Self, EnvPolicyError> {
         let over = over.cloned().unwrap_or_default();
+        if over.deny_exceptions.is_some() {
+            return Err(EnvPolicyError::BadDenyExceptions);
+        }
+        let exceptions = base.deny_exceptions.as_ref();
+        if exceptions.is_some_and(|rules| {
+            rules
+                .values()
+                .flatten()
+                .any(|name| !name.is_ascii() || !valid_name(name))
+        }) {
+            return Err(EnvPolicyError::BadDenyExceptions);
+        }
         let allow = over
             .allow
             .or_else(|| base.allow.clone())
@@ -225,7 +257,18 @@ impl EnvPolicy {
             .iter()
             .chain(over.deny.iter().flatten())
             .enumerate()
-            .map(|(index, raw)| Pattern::parse(raw).ok_or(EnvPolicyError::BadPattern { index }))
+            .map(|(index, raw)| {
+                let pattern = Pattern::parse(raw).ok_or(EnvPolicyError::BadPattern { index })?;
+                let exceptions = match exceptions {
+                    Some(rules) if index < base_deny.len() => rules.get(raw).cloned(),
+                    _ => None,
+                }
+                .unwrap_or_default();
+                Ok(DenyRule {
+                    pattern,
+                    exceptions,
+                })
+            })
             .collect::<Result<Vec<_>, _>>()?;
         let policy = Self {
             allow,
@@ -281,7 +324,7 @@ impl EnvPolicy {
                     form.to_lowercase().to_uppercase(),
                 ]
             })
-            .any(|upper| self.deny.iter().any(|pattern| pattern.matches(&upper)))
+            .any(|upper| self.deny.iter().any(|rule| rule.matches(name, &upper)))
     }
 
     /// The child's whole environment: each allowed name the parent has, written as the allow
@@ -332,6 +375,7 @@ mod tests {
         EnvLayer {
             allow: Some(allow.iter().map(|s| s.to_string()).collect()),
             deny: Some(deny.iter().map(|s| s.to_string()).collect()),
+            deny_exceptions: None,
             set: Some(
                 set.iter()
                     .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -377,7 +421,10 @@ mod tests {
         // Built by hand, skipping `from_layers`: the filter alone must still hold.
         let policy = EnvPolicy {
             allow: vec!["GH_TOKEN".into(), "PATH".into()],
-            deny: vec![Pattern::parse("*TOKEN*").unwrap()],
+            deny: vec![DenyRule {
+                pattern: Pattern::parse("*TOKEN*").unwrap(),
+                exceptions: Vec::new(),
+            }],
             set: BTreeMap::from([("MY_TOKEN".into(), "x".into())]),
             case: NameCase::Sensitive,
         };

@@ -195,6 +195,7 @@ fn a_user_layer_cannot_remove_the_shipped_deny_patterns() {
         allow: Some(vec!["GITHUB_PAT".into()]),
         deny: Some(vec![]),
         set: Some(BTreeMap::from([("GH_TOKEN_FILE".into(), "x".into())])),
+        deny_exceptions: None,
     };
     assert!(matches!(
         policy(Some(&over), NameCase::Sensitive),
@@ -207,6 +208,7 @@ fn a_user_layer_adds_deny_patterns() {
     let over = EnvLayer {
         allow: Some(vec!["HOMEPATH".into()]),
         deny: Some(vec!["HOME*".into()]),
+        deny_exceptions: None,
         set: None,
     };
     assert_eq!(
@@ -366,24 +368,11 @@ const SHIPPED_DENY: &[&str] = &[
     "*_KEYS",
     "*_PAT",
     "*_PAT_*",
-    "*_AUTH",
-    "*_AUTH_*",
-    "*_AUTHENTICAT*",
-    "*_AUTHORIZ*",
-    "*_AUTHKEY*",
-    "*_AUTHN*",
-    "*_AUTHZ*",
-    "*_AUTHS",
-    "*_AUTHINFO*",
-    "*_AUTHFILE*",
+    "*_AUTH*",
     "*_PASS*",
     "*PASSPHRASE*",
     "*ASKPASS*",
-    "BW_SESSION",
-    "OP_SESSION_*",
-    "*_SESSION_KEY*",
-    "*_SESSIONID*",
-    "*_SESSION_STRING*",
+    "*_SESSION*",
     "*_COOKIE*",
     "*_JWT*",
     "*_PWD",
@@ -396,7 +385,17 @@ const SHIPPED_DENY: &[&str] = &[
     "*NETRC*",
     "PGPASSFILE",
     "DOCKER_CONFIG",
-    "NPM_CONFIG_*",
+    "NPM_CONFIG_USERCONFIG",
+    "NPM_CONFIG_GLOBALCONFIG",
+    "NPM_CONFIG_PREFIX",
+    "NPM_CONFIG_REGISTRY",
+    "NPM_CONFIG_USERNAME",
+    "NPM_CONFIG_OTP",
+    "NPM_CONFIG_PROXY",
+    "NPM_CONFIG_HTTPS_PROXY",
+    "NPM_CONFIG_CERT",
+    "NPM_CONFIG_CERTFILE",
+    "NPM_CONFIG_KEYFILE",
     "ANTHROPIC_*",
     "CLAUDE_*",
     "OPENAI_*",
@@ -452,36 +451,38 @@ fn shipped_without(pattern: &str) -> EnvLayer {
 fn each_less_used_deny_pattern_refuses_its_names_on_its_own() {
     // Names that only the pattern under test catches, so that removing it lets them through.
     let cases: &[(&str, &[&str])] = &[
-        ("*_AUTH", &["CONSUL_HTTP_AUTH", "proxy_auth"]),
-        ("*_AUTH_*", &["SSH_AUTH_SOCK", "DOCKER_AUTH_CONFIG"]),
         (
-            "*_AUTHENTICAT*",
-            &["PROXY_AUTHENTICATION", "app_authenticator"],
+            "*_AUTH*",
+            &[
+                "CONSUL_HTTP_AUTH",
+                "SSH_AUTH_SOCK",
+                "APP_AUTHDATA",
+                "NPM_CONFIG__AUTH",
+            ],
         ),
-        (
-            "*_AUTHORIZ*",
-            &["HTTP_AUTHORIZATION", "App_Authorized_Hosts"],
-        ),
-        ("*_AUTHKEY*", &["NPM_AUTHKEY", "tailscale_authkey"]),
-        ("*_AUTHN*", &["BASIC_AUTHN"]),
-        ("*_AUTHZ*", &["APP_AUTHZ"]),
-        ("*_AUTHS", &["DOCKER_AUTHS"]),
-        ("*_AUTHINFO*", &["X_AUTHINFO"]),
-        ("*_AUTHFILE*", &["X_AUTHFILE"]),
         ("*PASSPHRASE*", &["PASSPHRASE", "GpgPassphrase"]),
         ("*ASKPASS*", &["GIT_ASKPASS", "SSH_ASKPASS", "sudo_askpass"]),
-        ("BW_SESSION", &["BW_SESSION", "bw_session"]),
-        ("OP_SESSION_*", &["OP_SESSION_myaccount"]),
-        ("*_SESSION_KEY*", &["APP_SESSION_KEYRING"]),
-        ("*_SESSIONID*", &["APP_SESSIONID", "web_sessionid_store"]),
-        ("*_SESSION_STRING*", &["TG_SESSION_STRING"]),
+        (
+            "*_SESSION*",
+            &[
+                "BW_SESSION",
+                "OP_SESSION_myaccount",
+                "APP_SESSION_ID",
+                "web_sessionid_store",
+                "TG_SESSION_STRING",
+            ],
+        ),
         ("*NETRC*", &["NETRC", "CURL_NETRC_FILE"]),
         ("PGPASSFILE", &["PGPASSFILE"]),
         ("DOCKER_CONFIG", &["DOCKER_CONFIG"]),
-        (
-            "NPM_CONFIG_*",
-            &["NPM_CONFIG_USERCONFIG", "npm_config_cache"],
-        ),
+        ("NPM_CONFIG_USERCONFIG", &["NPM_CONFIG_USERCONFIG"]),
+        ("NPM_CONFIG_GLOBALCONFIG", &["NPM_CONFIG_GLOBALCONFIG"]),
+        ("NPM_CONFIG_PREFIX", &["NPM_CONFIG_PREFIX"]),
+        ("NPM_CONFIG_REGISTRY", &["NPM_CONFIG_REGISTRY"]),
+        ("NPM_CONFIG_USERNAME", &["NPM_CONFIG_USERNAME"]),
+        ("NPM_CONFIG_CERT", &["NPM_CONFIG_CERT"]),
+        ("NPM_CONFIG_CERTFILE", &["NPM_CONFIG_CERTFILE"]),
+        ("NPM_CONFIG_KEYFILE", &["NPM_CONFIG_KEYFILE"]),
         (
             "*_COOKIE*",
             &["BROWSER_COOKIE_JAR", "site_cookie", "App_Cookies"],
@@ -702,4 +703,86 @@ fn the_documented_linux_allow_list_passes_home_and_replaces_the_shipped_one() {
     // A shipped name the example does not repeat stops passing.
     assert!(!child.contains_key("TEMP"));
     assert!(!child.values().any(|v| v == "s3cr3t"));
+}
+
+#[test]
+fn session_credentials_are_denied_in_allow_and_set() {
+    for name in ["APP_SESSION_ID", "APP_SESSION_SECRET"] {
+        for (over, list) in [
+            (allow_only(&[name]), EnvList::Allow),
+            (set_only(&[(name, "fixture")]), EnvList::Set),
+        ] {
+            assert_eq!(
+                policy(Some(&over), NameCase::host()),
+                Err(EnvPolicyError::DeniedName { list, index: 0 }),
+                "{name}"
+            );
+        }
+    }
+}
+
+#[test]
+fn npm_cache_is_allowed_and_userconfig_is_denied() {
+    let over = allow_only(&["NPM_CONFIG_CACHE"]);
+    let built = policy(Some(&over), NameCase::host()).unwrap();
+    assert_eq!(
+        built.child_env([("NPM_CONFIG_CACHE", "fixture")])["NPM_CONFIG_CACHE"],
+        "fixture"
+    );
+    for (over, list) in [
+        (allow_only(&["NPM_CONFIG_USERCONFIG"]), EnvList::Allow),
+        (
+            set_only(&[("NPM_CONFIG_USERCONFIG", "fixture")]),
+            EnvList::Set,
+        ),
+    ] {
+        assert_eq!(
+            policy(Some(&over), NameCase::host()),
+            Err(EnvPolicyError::DeniedName { list, index: 0 })
+        );
+    }
+}
+
+#[test]
+fn shipped_exceptions_are_nominal_and_user_denies_still_win() {
+    for name in ["WT_SESSION", "GIT_AUTHOR_NAME"] {
+        let over = set_only(&[(name, "fixture")]);
+        let built = policy(Some(&over), NameCase::host()).unwrap();
+        assert_eq!(
+            built.child_env(Vec::<(String, String)>::new())[name],
+            "fixture"
+        );
+    }
+    let over = EnvLayer {
+        allow: Some(vec!["WT_SESSION".into()]),
+        deny: Some(vec!["*_SESSION*".into()]),
+        ..EnvLayer::default()
+    };
+    assert_eq!(
+        policy(Some(&over), NameCase::host()),
+        Err(EnvPolicyError::DeniedName {
+            list: EnvList::Allow,
+            index: 0
+        })
+    );
+    assert!(
+        policy(None, NameCase::host())
+            .unwrap()
+            .is_denied("WT_SESSION_EXTRA")
+    );
+}
+
+#[test]
+fn user_configuration_cannot_add_deny_exceptions() {
+    let over = EnvLayer {
+        deny_exceptions: Some(BTreeMap::from([(
+            "*_SESSION*".into(),
+            vec!["APP_SESSION_ID".into()],
+        )])),
+        ..EnvLayer::default()
+    };
+    assert_eq!(
+        policy(Some(&over), NameCase::host()),
+        Err(EnvPolicyError::BadDenyExceptions)
+    );
 }

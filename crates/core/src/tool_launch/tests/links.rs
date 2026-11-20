@@ -1,14 +1,10 @@
-//! A link (junction on Windows, symbolic link elsewhere) as the program or the folder. The checks
-//! on the configuration read only the text; the lookup when the session opens follows the link
-//! and requires its target to be a file for the program and a folder for the folder. The open
-//! parameters keep the link as written, so the program and folder are whatever the link points
-//! to at that moment.
+//! Checks the targets of configured links when a session opens.
 
 use std::path::{Path, PathBuf};
 
 use super::{DiskProbe, HARNESS_ID, HostRules, LaunchError, ToolConfig, literal, open_params};
 
-/// A folder made by this test inside the build folder, with links in it. Dropping it removes
+/// A scratch folder made by this test, independent of the build folder. Dropping it removes
 /// each entry one by one, links with link removal; nothing is removed recursively.
 struct Scratch {
     base: PathBuf,
@@ -26,24 +22,21 @@ enum Kind {
 
 impl Scratch {
     fn new(name: &str) -> Self {
-        let deps = std::env::current_exe()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .to_path_buf();
-        // Written as the configuration keeps it, so every path below is literal text.
-        let base = PathBuf::from(literal(&deps)).join(format!("{name}-{}", std::process::id()));
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+
         let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
-        let (workspace, deps) = (
-            std::fs::canonicalize(workspace).unwrap(),
-            std::fs::canonicalize(&deps).unwrap(),
-        );
-        assert!(
-            deps.starts_with(&workspace),
-            "build folder outside the workspace"
-        );
+        let workspace = PathBuf::from(literal(&workspace));
+        let base = loop {
+            let sequence = NEXT.fetch_add(1, Ordering::Relaxed);
+            let base = workspace.join(format!(".{name}-{}-{sequence}", std::process::id()));
+            match std::fs::create_dir(&base) {
+                Ok(()) => break base,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => panic!("could not create scratch folder: {error}"),
+            }
+        };
         println!("link test folder: {}", base.display());
-        std::fs::create_dir(&base).unwrap();
         Self {
             base,
             made: Vec::new(),
@@ -134,9 +127,11 @@ fn system_cmd() -> PathBuf {
 fn open(program: &Path, folder: &Path) -> Result<(), LaunchError> {
     // The text of the link itself, normalized like any configured path; never its target.
     let text = |path: &Path| path.display().to_string();
-    let (folder, program) = (text(folder), text(program));
-    let toml =
-        format!("[workdirs]\nscratch = {folder:?}\n[tools.{HARNESS_ID}]\nprogram = {program:?}\n");
+    let toml = format!(
+        "[workdirs]\nscratch = {:?}\n[tools.{HARNESS_ID}]\nprogram = {:?}\n",
+        text(folder),
+        text(program)
+    );
     let config = ToolConfig::from_toml_str(&toml, HostRules::host()).unwrap();
     let request = serde_json::from_value(serde_json::json!({
         "session_id": "sess-01",
@@ -153,12 +148,8 @@ fn open(program: &Path, folder: &Path) -> Result<(), LaunchError> {
         Vec::<(String, String)>::new(),
         &DiskProbe,
     )?;
-    // The link is passed on as written, not replaced by its target.
-    assert_eq!(params.program.as_str(), program);
-    assert_eq!(
-        params.cwd.as_ref().map(|cwd| cwd.as_str()),
-        Some(folder.as_str())
-    );
+    assert_eq!(params.program.as_str(), literal(program));
+    assert_eq!(params.cwd.unwrap().as_str(), literal(folder));
     Ok(())
 }
 
@@ -190,4 +181,25 @@ fn a_link_is_followed_and_its_target_must_be_of_the_right_kind() {
         assert_eq!(open(&linked_file, &real), Ok(()));
         assert_eq!(open(&tool, &linked_file), Err(LaunchError::WorkdirMissing));
     }
+}
+
+#[test]
+fn a_workdir_link_to_the_volume_root_is_refused() {
+    let mut scratch = Scratch::new("root-link-probe");
+    let tool = scratch.file("tool.exe");
+    let root = scratch.base.ancestors().last().unwrap().to_owned();
+    let linked_root = scratch.dir_link("linked-root", &root);
+    assert_eq!(open(&tool, &linked_root), Err(LaunchError::WorkdirMissing));
+}
+
+#[test]
+fn scratch_is_independent_of_the_test_binary_folder() {
+    let scratch = Scratch::new("scratch-location-probe");
+    let executable = std::env::current_exe().unwrap();
+    let build_folder = std::fs::canonicalize(executable.parent().unwrap()).unwrap();
+    assert!(
+        !std::fs::canonicalize(&scratch.base)
+            .unwrap()
+            .starts_with(build_folder)
+    );
 }

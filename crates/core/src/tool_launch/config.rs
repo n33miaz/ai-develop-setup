@@ -43,21 +43,34 @@ pub enum Mode {
 
 /// The rules of the system the tool runs on: how it compares variable names and how it writes
 /// an absolute path. Passed in, so that both systems' rules can be checked on either.
+///
+/// ```compile_fail,E0574
+/// use ads_core::{child_env::NameCase, gate::PathStyle, tool_launch::HostRules};
+/// let _ = HostRules { case: NameCase::Sensitive, paths: PathStyle::Windows };
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct HostRules {
-    pub case: NameCase,
-    pub paths: PathStyle,
+pub enum HostRules {
+    Windows,
+    Posix,
 }
 
 impl HostRules {
-    pub const WINDOWS: Self = Self {
-        case: NameCase::Insensitive,
-        paths: PathStyle::Windows,
-    };
-    pub const POSIX: Self = Self {
-        case: NameCase::Sensitive,
-        paths: PathStyle::Posix,
-    };
+    pub const WINDOWS: Self = Self::Windows;
+    pub const POSIX: Self = Self::Posix;
+
+    const fn case(self) -> NameCase {
+        match self {
+            Self::Windows => NameCase::Insensitive,
+            Self::Posix => NameCase::Sensitive,
+        }
+    }
+
+    const fn paths(self) -> PathStyle {
+        match self {
+            Self::Windows => PathStyle::Windows,
+            Self::Posix => PathStyle::Posix,
+        }
+    }
 
     /// The rules of the system this code runs on.
     pub const fn host() -> Self {
@@ -163,7 +176,7 @@ impl<H: Harness> ToolConfig<H> {
         let env = EnvPolicy::from_layers(
             base.env.as_ref().ok_or(ConfigError::MissingKey("env"))?,
             over.env.as_ref(),
-            host.case,
+            host.case(),
         )
         .map_err(ConfigError::Env)?;
 
@@ -187,7 +200,7 @@ impl<H: Harness> ToolConfig<H> {
             None
         } else {
             let path = AbsPath::parse(&program).map_err(ConfigError::Program)?;
-            if path.style() != host.paths {
+            if path.style() != host.paths() {
                 return Err(ConfigError::ProgramOtherSystem);
             }
             Some(Program::new(path.to_string()).map_err(|_| ConfigError::ProgramTooLong)?)
@@ -217,7 +230,7 @@ impl<H: Harness> ToolConfig<H> {
             if path.is_root() {
                 return Err(ConfigError::WorkdirIsRoot(index));
             }
-            if path.style() != host.paths {
+            if path.style() != host.paths() {
                 return Err(ConfigError::WorkdirOtherSystem(index));
             }
             let cwd = Cwd::new(path.to_string()).map_err(|_| ConfigError::WorkdirTooLong(index))?;

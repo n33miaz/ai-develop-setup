@@ -1,8 +1,8 @@
 use ads_adapter_codex::{
     CodexConfig as ToolConfig, ConfigError, DiskProbe, HARNESS_ID, LaunchError, Probe, open_params,
 };
-use ads_core::child_env::{EnvList, EnvPolicyError, NameCase};
-use ads_core::gate::{PathError, PathStyle};
+use ads_core::child_env::{EnvList, EnvPolicyError};
+use ads_core::gate::PathError;
 use ads_core::tool_launch::HostRules;
 
 const OTHER_HARNESS: &str = "claude";
