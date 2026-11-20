@@ -5,7 +5,7 @@ Adapta a ferramenta de linha de comando Claude ao contrato do núcleo: transform
 ## Uso
 
 ```rust
-let config = ClaudeConfig::from_toml_str(&texto_do_arquivo_do_usuario, NameCase::host())?;
+let config = ClaudeConfig::from_toml_str(&texto_do_arquivo_do_usuario, HostRules::host())?;
 let params = open_params(&config, &pedido.params, process_env(), &DiskProbe)?;
 ```
 

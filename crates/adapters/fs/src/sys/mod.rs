@@ -79,9 +79,9 @@ pub fn crossing(fence: &Mount, entry: &Mount) -> Crossing {
 
 #[derive(Debug)]
 pub enum Error {
-    Missing,
+    Missing(io::Error),
     /// The name is taken.
-    Exists,
+    Exists(io::Error),
     /// The entry under the name is not the object that was checked.
     Changed,
     /// The name reaches an entry the folder lists under another spelling.
@@ -93,9 +93,18 @@ pub enum Error {
 impl From<io::Error> for Error {
     fn from(error: io::Error) -> Self {
         match error.kind() {
-            io::ErrorKind::NotFound => Self::Missing,
-            io::ErrorKind::AlreadyExists => Self::Exists,
+            io::ErrorKind::NotFound => Self::Missing(error),
+            io::ErrorKind::AlreadyExists => Self::Exists(error),
             _ => Self::Io(error),
+        }
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Missing(error) | Self::Exists(error) | Self::Io(error) => Some(error),
+            _ => None,
         }
     }
 }
@@ -103,8 +112,8 @@ impl From<io::Error> for Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Missing => f.write_str("it does not exist"),
-            Self::Exists => f.write_str("the name is taken"),
+            Self::Missing(_) => f.write_str("it does not exist"),
+            Self::Exists(_) => f.write_str("the name is taken"),
             Self::Changed => f.write_str("it is not the entry that was checked"),
             Self::Alias => f.write_str("the folder lists it under another spelling"),
             Self::Io(error) => write!(f, "{error}"),

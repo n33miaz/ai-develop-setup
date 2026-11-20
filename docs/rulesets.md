@@ -2,7 +2,7 @@
 
 Regras de proteção das branches `develop`, `homolog` e `main`, **como estão aplicadas no repositório**. Este documento descreve o estado real e guarda os comandos; mudar a proteção é decisão do mantenedor. Os comandos usam o `gh` e a API de rulesets do GitHub; troque `<dono>/<repo>` pelo repositório.
 
-Estado conferido em 15/11/2026 com os comandos de leitura da seção [Conferir](#conferir). Se a resposta deles divergir deste texto, o que vale é a resposta, e este arquivo tem de ser corrigido.
+Ruleset conferido em 15/11/2026 e opções de junção do repositório conferidas em 20/11/2026 pela API. Veja os comandos de leitura em [Conferir](#conferir). Se a resposta deles divergir deste texto, o que vale é a resposta, e este arquivo tem de ser corrigido.
 
 ## Resumo
 
@@ -15,10 +15,10 @@ Há **um** ruleset, `protected-branches-base`, ativo, que cobre as três branche
 | Check obrigatório | `ci-ok`; **sem** exigir branch atualizada; não cobrado na criação da branch |
 | Exclusão da branch | bloqueada |
 | Force-push | bloqueado |
-| Forma de junção | o ruleset admite `rebase` e `merge`; o repositório só deixa ligado o rebase (`allow_merge_commit` e `allow_squash_merge` desligados), então na prática a junção é só por rebase |
+| Forma de junção | o ruleset e o repositório permitem rebase e merge commit. PRs com commits de autoria de agente são juntados com merge commit ([ADR 0024](adr/0024-agent-authored-commits.md)) |
 | Exceção (bypass) | o papel de **administrador do repositório**, sempre |
 
-A exceção do administrador é decisão do mantenedor, de 15/11/2026, para ele poder fazer push direto quando precisar. Ela **diverge da ADR 0014**, que registra a regra valendo também para o administrador; a ADR não foi alterada. A exceção é do mantenedor: agentes nunca a usam, seguem sempre por PR com `ci-ok` verde, sem `--admin` e sem push direto (ver `AGENTS.md`).
+A exceção do administrador é decisão do mantenedor, de 15/11/2026, para ele poder fazer push direto quando precisar. Ela **diverge da ADR 0014**, que registra a regra valendo também para o administrador; a substituição parcial da ADR trata apenas da forma de junção. A exceção é do mantenedor: agentes nunca a usam, seguem sempre por PR com `ci-ok` verde, sem `--admin` e sem push direto (ver `AGENTS.md`).
 
 No modo expresso (`profile = "express"` em `defaults/devflow.toml`) a `develop` é a produção; `homolog` e `main` existem, sob a mesma proteção, e ficam sem uso. Elas não estão travadas contra atualização: um PR com `ci-ok` verde entraria. Sair do modo expresso é religar as promoções develop → homolog → main; a proteção já serve. Gatilho para exigir "branch atualizada": a `develop` ficar vermelha duas vezes por PRs incompatíveis entre si.
 
@@ -43,11 +43,11 @@ gh api repos/<dono>/<repo> -q '{default_branch,allow_rebase_merge,allow_squash_m
 gh api repos/<dono>/<repo>/private-vulnerability-reporting
 ```
 
-O que eles responderam:
+Resultados da conferência, com as opções de junção atualizadas em 20/11/2026:
 
 - um ruleset só, `protected-branches-base`, `enforcement: active`, com o conteúdo da seção [Ruleset aplicado](#ruleset-aplicado);
 - `rules/branches/develop` e `rules/branches/homolog`: `deletion`, `non_fast_forward`, `pull_request` e `required_status_checks`;
-- repositório: `default_branch: develop`, `allow_rebase_merge: true`, `allow_squash_merge: false`, `allow_merge_commit: false`, `allow_auto_merge: true`, `delete_branch_on_merge: true`; `secret_scanning` e `secret_scanning_push_protection` ligados;
+- repositório: `default_branch: develop`, `allow_rebase_merge: true`, `allow_squash_merge: false`, `allow_merge_commit: true`, `allow_auto_merge: true`, `delete_branch_on_merge: true`; `secret_scanning` e `secret_scanning_push_protection` ligados;
 - relato privado de vulnerabilidade: ligado;
 - a proteção de branch clássica (`gh api repos/<dono>/<repo>/branches/develop/protection`) responde 404: não há; tudo vem do ruleset.
 
@@ -102,7 +102,7 @@ Como ler:
 - `bypass_actors`: `RepositoryRole` com `actor_id` 5 é o papel de administrador do repositório; `always` vale para push direto e para junção de PR. Lista vazia faria a regra valer também para o administrador.
 - `strict_required_status_checks_policy: false` é o "sem exigir branch atualizada".
 - `do_not_enforce_on_create: true` deixa criar a branch sem o check.
-- `allowed_merge_methods` lista `merge` além de `rebase`, mas o commit de merge está desligado nas configurações do repositório.
+- `allowed_merge_methods` lista `merge` e `rebase`, ambos habilitados nas configurações do repositório.
 
 ## Recriar ou mudar
 
@@ -120,7 +120,7 @@ gh api -X PATCH repos/<dono>/<repo> \
   -F default_branch=develop \
   -F allow_rebase_merge=true \
   -F allow_squash_merge=false \
-  -F allow_merge_commit=false \
+  -F allow_merge_commit=true \
   -F allow_auto_merge=true \
   -F delete_branch_on_merge=true
 

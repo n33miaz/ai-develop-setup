@@ -20,6 +20,7 @@ async fn main() -> ExitCode {
         let (config, host_config, tools) = load_config(std::env::args().skip(1))?;
         let launcher = ToolLauncher::from_toml_str(
             &tools,
+            ads_core::tool_launch::HostRules::host(),
             ads_adapter_claude::process_env(),
             ads_adapter_claude::DiskProbe,
             ads_adapter_codex::DiskProbe,

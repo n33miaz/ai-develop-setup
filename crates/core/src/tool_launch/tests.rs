@@ -3,8 +3,8 @@
 
 use super::Harness;
 
-use super::{ConfigError, DiskProbe, LaunchError, Probe, open_params};
-use crate::child_env::{EnvList, EnvPolicyError, NameCase};
+use super::{ConfigError, DiskProbe, HostRules, LaunchError, Probe, open_params};
+use crate::child_env::{EnvList, EnvPolicyError};
 use crate::gate::PathError;
 
 /// A tool with its own table, appended to the shipped defaults. Written by hand: only this
@@ -33,7 +33,17 @@ const POISON_EXTRA: &[&str] = &[];
 const DENIED_EXTRA: &[&str] = &[];
 const WRONG_HARNESSES: &[&str] = &["harness-other", "Harness-Test", "harness-a"];
 
+mod links;
+mod real_process;
 mod suite;
+
+/// `path` as the configuration keeps it: canonical, so that a short name or a lowercase drive
+/// letter on the machine running the tests does not change the text, and without `\\?\`.
+fn literal(path: &std::path::Path) -> String {
+    let canonical = std::fs::canonicalize(path).unwrap().display().to_string();
+    let plain = canonical.strip_prefix(r"\\?\").unwrap_or(&canonical);
+    crate::gate::AbsPath::parse(plain).unwrap().to_string()
+}
 
 crate::tool_harness!(
     /// A tool declared like an adapter declares one, with no table in the shipped defaults.
@@ -77,7 +87,7 @@ fn every_diagnostic_key_is_derived_from_the_tool_id() {
 #[test]
 fn a_tool_without_a_shipped_table_is_refused() {
     assert_eq!(
-        super::ToolConfig::<Absent>::from_toml_str("", NameCase::Insensitive),
+        super::ToolConfig::<Absent>::from_toml_str("", HostRules::WINDOWS),
         Err(ConfigError::MissingKey("tools.harness-absent"))
     );
     // The user's file cannot add a tool: the table has to come from the shipped defaults.
@@ -91,7 +101,7 @@ args = []
 mode = 'interactive'
 ";
     assert_eq!(
-        super::ToolConfig::<Absent>::from_toml_str(complete, NameCase::Insensitive),
+        super::ToolConfig::<Absent>::from_toml_str(complete, HostRules::WINDOWS),
         Err(ConfigError::MissingKey("tools.harness-absent"))
     );
     assert!(!super::config::DEFAULTS_TOML.contains("[tools.harness-test]"));

@@ -1,6 +1,8 @@
 //! Why the executor refused or stopped, with the stable code that goes into `action.failed`.
 
-use std::fmt;
+use std::{error::Error, fmt, sync::Arc};
+
+pub(crate) type Cause = Arc<dyn Error + Send + Sync>;
 
 use ads_core::gate::ErrorCode;
 
@@ -167,11 +169,12 @@ impl Reason {
 }
 
 /// A refusal or a stop, before it is tied to a report.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct Stop {
     pub reason: Reason,
     /// For people: which path, which system error. Never parsed.
     pub detail: String,
+    pub(crate) cause: Option<Cause>,
 }
 
 impl Stop {
@@ -179,11 +182,39 @@ impl Stop {
         Self {
             reason,
             detail: detail.to_string(),
+            cause: None,
         }
     }
 
-    pub(crate) fn io(what: &str, at: impl fmt::Display, error: impl fmt::Display) -> Self {
-        Self::new(Reason::Io, format!("{what} {at}: {error}"))
+    pub(crate) fn with_cause(mut self, error: impl Error + Send + Sync + 'static) -> Self {
+        self.cause = Some(Arc::new(error));
+        self
+    }
+
+    pub(crate) fn caused_by(reason: Reason, error: impl Error + Send + Sync + 'static) -> Self {
+        Self::new(reason, &error).with_cause(error)
+    }
+
+    pub(crate) fn io(
+        what: &str,
+        at: impl fmt::Display,
+        error: impl Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::new(Reason::Io, format!("{what} {at}: {error}")).with_cause(error)
+    }
+}
+
+impl PartialEq for Stop {
+    fn eq(&self, other: &Self) -> bool {
+        self.reason == other.reason && self.detail == other.detail
+    }
+}
+
+impl Eq for Stop {}
+
+impl Error for Stop {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        self.cause.as_deref().map(|error| error as &dyn Error)
     }
 }
 

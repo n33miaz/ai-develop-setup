@@ -1,137 +1,59 @@
 # ai-develop-setup
 
+[![CI](https://github.com/n33miaz/ai-develop-setup/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/n33miaz/ai-develop-setup/actions/workflows/ci.yml?query=branch%3Adevelop) [![Licença: direitos reservados](https://img.shields.io/badge/licen%C3%A7a-direitos%20reservados-blue)](LICENSE)
+
 Codinome de uma plataforma local para delegar trabalho de desenvolvimento a agentes de IA: um daemon em Rust, uma casca Tauri e uma interface em React 19 + Vite + TypeScript. O nome comercial vem depois.
 
 ## Estado
 
 Em construção, sem versão estável: quando o CI de uma junção na `develop` termina verde, sai um pré-lançamento de desenvolvimento ([ADR 0025](docs/adr/0025-semver-dev-prereleases-until-first-installer.md)). Já existem os contratos e os tipos gerados deles, o portão de ações destrutivas, o executor de arquivos, o host de terminais com o cliente dele no daemon, a abertura do banco local com a cifra por coluna, a API local autenticada servida pelo daemon e a interface com o cliente dela; o estado de cada módulo está em [docs/modules.md](docs/modules.md) e os riscos conhecidos em [docs/risks.md](docs/risks.md).
 
-- Regras para quem altera o repo (pessoas e agentes): [AGENTS.md](AGENTS.md)
-- Como contribuir e o fluxo de branches: [CONTRIBUTING.md](CONTRIBUTING.md)
-- Segurança e relato de vulnerabilidade: [SECURITY.md](SECURITY.md)
+## Pré-requisitos
 
-## Interface e conexão local
+O fluxo completo de terminais usa ConPTY no Windows 10/11. O modo de exemplo é executado no navegador, e o CI também roda a suíte Rust padrão no Ubuntu.
 
-Em `ui/`, execute `npm ci` e `npm run dev`. O Vite escuta em `127.0.0.1:5173`
-no desenvolvimento e na prévia, o mesmo endereço do `ui_base_url` padrão do núcleo. Se a porta estiver ocupada, o Vite para em vez
-de pular para outra. Sem credenciais, a interface mantém
-os exemplos locais. A URL entregue pelo núcleo contém `#core=ws://127.0.0.1:<porta>&token=<token>`;
-a interface remove o fragmento, guarda as credenciais apenas no `sessionStorage`
-da aba e autentica com `auth.hello` antes de enviar comandos. Recarregar a aba
-reutiliza as credenciais; reiniciar o núcleo exige abrir a URL nova.
-Armazenamento indisponível não impede a conexão iniciada pelo fragmento.
+| Ferramenta | Versão ou requisito | Referência no repositório |
+|---|---|---|
+| Rust via rustup | Toolchain 1.96.0, mínimo 1.96 | [rust-toolchain.toml](rust-toolchain.toml), [Cargo.toml](Cargo.toml) |
+| Build Tools do MSVC | Ferramentas C++ do Windows: o Rust usa o linker delas em todos os crates, e o SQLite embutido (`rusqlite` com `bundled`) é compilado com elas | [Cargo.toml](Cargo.toml) |
+| Node.js com npm | Mínimo 24, usado pelo CI de contratos. O desenvolvimento da interface e o CI dela usam a versão de [ui/.node-version](ui/.node-version) | [ui/package.json](ui/package.json), [contracts/package.json](contracts/package.json), [CI](.github/workflows/ci.yml) |
+| Python | 3.11 ou mais novo (`tomllib`), para as verificações do repositório | [tools/check_deps.py](tools/check_deps.py), [CI](.github/workflows/ci.yml) |
+| Bash | Git Bash no Windows para o hook e o script de commit | [.githooks/commit-msg](.githooks/commit-msg), [tools/commit-as-agent.sh](tools/commit-as-agent.sh) |
+| Ferramenta de linha de comando de IA | Opcional para a demonstração. Instale uma das ferramentas compatíveis para abrir um terminal real | [README do daemon](crates/daemon/README.md) |
 
-`VITE_CORE_SESSION_STREAMS` configura os streams de sessões conhecidos, separados
-por vírgula, por exemplo `session/session-a,session/session-b`. O padrão recomendado
-é vazio: os contratos atuais não oferecem descoberta de sessões nem assinatura
-global. Configure os streams no ambiente de `npm run dev` ou `npm run build`;
-reinicie o servidor ou reconstrua a interface para trocar a lista. Nenhum token
-deve entrar nessa variável. No modo ao vivo, a lista e o terminal são reconstruídos
-dos eventos desses streams, sem dados de exemplo.
+## Ver em 2 minutos
 
-Para abrir Claude ou Codex pelo navegador no Windows:
+Na raiz do repositório, execute:
 
-1. Na raiz, inicie o host com `cargo run -p ads-ptyhost -j 2`.
-2. Localize os executáveis com `where.exe claude.exe` e `where.exe codex.exe`
-   (com o Codex instalado pelo npm, veja no README do daemon onde fica o
-   `codex.exe`; não use os arquivos `.cmd`). Salve os caminhos absolutos em
-   `[tools.claude]` e `[tools.codex]` num TOML fora do repositório e dentro do
-   seu perfil, como `C:\Users\voce\ads-local\harnesses.toml`. Em `[workdirs]`,
-   dê o apelido `default` a uma pasta de teste do perfil, sem nada importante.
-   O TOML, a pasta de trabalho e o programa precisam ser graváveis só por você;
-   nunca use a raiz de um disco de dados nem pasta compartilhada. Veja o
-   exemplo completo no
-   [README do daemon](crates/daemon/README.md#abrir-claude-ou-codex-no-navegador).
-3. Em outro terminal, na raiz, rode `cargo build -p ads-daemon -j 2` e
-   `.\target\debug\ads-daemon.exe --config 'C:\Users\voce\ads-local\harnesses.toml'`,
-   com o caminho absoluto do seu arquivo.
-4. Em `ui/`, rode `npm ci` e `npm run dev`.
-   Depois que o Vite confirmar a porta, abra a URL completa impressa pelo daemon
-   (`http://127.0.0.1:5173/#core=...`) e clique em **Abrir claude** ou
-   **Abrir codex**. Os botões vêm da configuração do daemon, pelo comando
-   `harness.list`.
+```bash
+cd ui
+npm ci
+npm run dev
+```
 
-O agente dentro do terminal edita arquivos e executa comandos conforme as
-permissões dele. Argumentos que desligam as confirmações ou a área isolada da
-ferramenta, somados ao controle do terminal pela API, dão a quem usa a interface
-acesso total à sua conta.
-Conectada, a interface mostra um botão de abertura para cada ferramenta que o
-daemon informa em `harness.list`. Enquanto a consulta não volta, um aviso diz que
-ela está em andamento. Sem botões, cada caso tem o seu aviso: lista vazia;
-falta de resposta em 10 segundos (reabra a URL da execução); daemon anterior ao
-comando, que responde `METHOD_NOT_FOUND` (atualize o daemon; reabrir a URL não resolve);
-e outra recusa do daemon, com aviso neutro. Sem apelido de pasta anunciado
-pelo daemon, os botões ficam desativados e um aviso explica o motivo. Cada
-conexão autenticada tem uma geração própria: a lista, o apelido e os botões
-valem só para a geração que os recebeu, então uma reconexão volta ao aviso de
-consulta em andamento mesmo que a tela não chegue a mostrar a queda. A resposta
-que chega depois do prazo é descartada sem derrubar a conexão. `VITE_CORE_HARNESSES` (identificadores separados
-por vírgula, padrão vazio) vale só como reserva no modo de exemplo, sem núcleo,
-onde os botões ficam desativados. `VITE_CORE_WORKDIR` escolhe o apelido de pasta,
-com padrão `default`; se o daemon não conhecer esse apelido, a interface usa o
-primeiro que ele informar, e nunca um que ele não informou. Ao abrir, a interface assina o stream e envia
-`session.open`. Recusas aparecem como aviso traduzido. A sessão recebe foco
-ao abrir, e a digitação e a colagem enviam `session.write` em blocos ordenados
-de até 65.536 bytes.
-O tamanho ajustado envia `session.resize`; `VITE_CORE_RESIZE_DEBOUNCE_MS` define a
-espera após o último ajuste (padrão recomendado 150 ms, zero desliga a espera).
-Essas variáveis são lidas ao iniciar o Vite ou construir a interface; reinicie ou
-reconstrua para alterá-las. Sem callback de entrada, o componente continua só leitura.
+Abra `http://127.0.0.1:5173` em uma aba nova para explorar a lista de sessões e o terminal com dados de exemplo, sem iniciar o daemon.
 
-O protocolo não cancela assinaturas. Por isso o cliente WebSocket mantém uma só assinatura no
-daemon por stream e conexão e reparte os eventos entre os ouvintes locais, como cada terminal
-montado. Sair só desliga o ouvinte; a assinatura continua, guardando os eventos recentes para quem
-assinar depois, por exemplo ao voltar a uma sessão. Os eventos guardados chegam a esse ouvinte já
-dentro de `subscribe`. Um ouvinte que pede eventos que já não estão guardados recebe só o próprio
-fim (`SUBSCRIPTION_REPLAY_UNAVAILABLE`), sem afetar os outros ouvintes nem a conexão, mesmo que o daemon ainda tenha esses
-eventos. O cliente não pede de novo ao daemon de propósito: sem cancelamento, uma segunda assinatura
-no mesmo stream e conexão ficaria viva para sempre e exigiria ligar vários ids de pedido ao mesmo
-stream. `VITE_CORE_REPLAY_EVENTS` (padrão 256) limita os eventos guardados por stream e deve
-acompanhar `events_per_stream` do daemon: com valor menor, quem chega depois recebe menos histórico
-do que o daemon teria. `VITE_CORE_REPLAY_BYTES` (padrão 4194304) limita o tamanho guardado por
-stream, contado em unidades UTF-16 das mensagens recebidas (igual a bytes para texto ASCII). Os dois
-valem de 1 em diante; 0, negativos e valores inválidos voltam ao padrão, porque sem nada guardado um
-terminal remontado ficaria vazio e uma nova assinatura depois de reconectar daria por encerrada uma
-sessão viva.
+## Rodar completo
 
-O contrato atual não traz um marcador de fim do replay nem seu último `seq`.
-Na API local, os eventos chegam em ordem de sequência; a fonte classifica como
-histórico cada bloco cujo `ts` é anterior ou igual ao instante local da assinatura.
-Isso pressupõe o mesmo relógio do daemon local; a igualdade é conservadora para a
-resolução de milissegundos. Cada bloco é analisado pelo xterm até seu callback de
-conclusão antes do próximo. Durante a análise de um bloco histórico, a entrada
-emitida pelo xterm é descartada, inclusive respostas de posição do cursor e atributos
-do dispositivo. Isso também suspende brevemente a digitação durante essa análise;
-após ela, a entrada normal e as respostas a consultas novas passam. Não se usa um
-temporizador para presumir que o replay acabou.
+Siga o [README do daemon](crates/daemon/README.md) para abrir uma ferramenta em um terminal real pelo navegador no Windows.
 
-Queda, recusa da autenticação ou falha de protocolo deixam a interface desconectada
-e rejeitam pedidos pendentes. Não há reconexão automática: reabra a URL da execução.
-Para voltar aos exemplos, limpe `ads.local-api` do armazenamento da aba e recarregue
-sem fragmento. O cliente não registra token nem saída do terminal em logs.
+## Rodar os testes
 
-Os comandos enviados e as mensagens recebidas são validados contra os Schemas.
-O build gera validadores estáticos com o Ajv já presente nas dependências de
-desenvolvimento, sem compilação dinâmica no navegador nem alteração de CSP.
-Replay desde zero aceita o início do histórico ainda retido; depois disso,
-uma lacuna na sequência encerra a conexão. Eventos repetidos são ignorados.
+Comandos das suítes do [CI](.github/workflows/ci.yml):
 
-## Instalar a interface como aplicativo
+| Pasta | Comandos |
+|---|---|
+| Raiz | `cargo test --locked` e `python tools/check_deps.py check` |
+| `contracts/` | `npm ci --ignore-scripts` e `npm test` |
+| `ui/` | `npm ci --ignore-scripts` e `npm test` |
 
-Em `ui/`, execute `npm ci`, `npm run build` e `npm run preview` para
-testar a instalação no PC. Abra o endereço local informado pelo Vite. Para servir
-o aplicativo em outro endereço, publique `ui/dist/` em um servidor estático
-HTTPS, incluindo o manifesto, os ícones e o service worker.
+## Mapa de documentos
 
-- No PC, abra a interface em um navegador compatível e use **Instalar
-  aplicativo** na barra de endereço ou no menu do navegador.
-- No Android, abra o endereço HTTPS no Chrome e use a opção para instalar ou
-  adicionar à tela inicial. No iPhone, abra no Safari e toque em
-  **Compartilhar** e **Adicionar à Tela de Início**.
-
-Ao receber o aviso de atualização, recarregue a página. O acesso remoto ao
-núcleo ainda não existe. No celular, uma interface servida por HTTPS pode
-ser instalada e aberta no modo de exemplo.
+- [Arquitetura local](docs/architecture.md) — processos, canais e fronteiras de confiança.
+- [Cliente da interface](ui/README.md) — conexão, terminal e instalação como aplicativo.
+- [Decisões de arquitetura](docs/adr/README.md) — decisões e seus estados.
+- [Regras do repositório](AGENTS.md) e [guia de contribuição](CONTRIBUTING.md) — regras para alterações e fluxo de branches.
+- [Política de segurança](SECURITY.md) — escopo e relato de vulnerabilidades.
 
 ## Licença
 

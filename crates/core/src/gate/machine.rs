@@ -129,6 +129,16 @@ pub enum TransitionError {
     Inconsistent(ReplayError),
 }
 
+impl std::error::Error for TransitionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Unrecordable(error) => Some(error),
+            Self::Inconsistent(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
 impl fmt::Display for TransitionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -176,6 +186,8 @@ pub enum ReplayError {
     NotFromThisGate(&'static str),
 }
 
+impl std::error::Error for ReplayError {}
+
 impl fmt::Display for ReplayError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -206,6 +218,12 @@ pub struct Refused {
 impl fmt::Display for Refused {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.error.fmt(f)
+    }
+}
+
+impl std::error::Error for Refused {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
     }
 }
 

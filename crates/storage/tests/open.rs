@@ -79,7 +79,16 @@ fn reopen_preserves_meta_and_reads_every_pragma() {
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap();
-    assert_eq!(tables, ["cipher_key", "event", "meta", "sqlite_sequence"]);
+    assert_eq!(
+        tables,
+        [
+            "cipher_key",
+            "event",
+            "log_genesis",
+            "meta",
+            "sqlite_sequence"
+        ]
+    );
 }
 
 #[test]
@@ -130,7 +139,7 @@ fn refuses_foreign_newer_and_truncated_files_without_modification() {
     let path = fixture();
     drop(AuditStore::open(&path, &StorageConfig::defaults()).unwrap());
     let bytes = std::fs::read(&path).unwrap();
-    for length in [16, 99, 100, bytes.len() / 2] {
+    for length in [16, 99, 100, bytes.len() / 2, bytes.len() / 2 - 1] {
         let truncated = fixture();
         assert!(
             truncated.starts_with(

@@ -19,8 +19,9 @@ Estado da mitigação, em cada risco:
 | [Licença de execução usada duas vezes](#licença-de-execução-usada-duas-vezes) | portão, executor e armazenamento | parcial: só dentro de um processo |
 | [Perda de sessões de terminal](#perda-de-sessões-de-terminal) | host de terminais | implementada e testada; lançador ausente |
 | [Outro usuário da máquina alcança as sessões](#outro-usuário-da-máquina-alcança-as-sessões) | host de terminais e daemon | implementada e testada no Windows; teste com duas contas ausente |
-| [Credencial de CLI de IA vaza para o processo filho](#credencial-de-cli-de-ia-vaza-para-o-processo-filho) | adaptadores de ferramenta e host | parcial |
-| [Página ou programa local comanda os terminais](#página-ou-programa-local-comanda-os-terminais) | daemon (API local) | decidida (proposta); só o lado da interface implementado |
+| [Credencial de CLI de IA vaza para o processo filho](#credencial-de-cli-de-ia-vaza-para-o-processo-filho) | adaptadores de ferramenta e host | parcial: filtro do ambiente implementado |
+| [Programa ou pasta configurados por um link](#programa-ou-pasta-configurados-por-um-link) | adaptadores de ferramenta | implementada e testada; a abertura usa o caminho resolvido |
+| [Página ou programa local comanda os terminais](#página-ou-programa-local-comanda-os-terminais) | daemon (API local) | implementada e testada; ADR proposta; conferência manual da porta da interface |
 | [Dado sensível em claro no disco](#dado-sensível-em-claro-no-disco) | armazenamento | parcial: `data` dos eventos cifrado no banco e testado; chave ainda fora do cofre |
 | [Perda do estado local](#perda-do-estado-local) | armazenamento | parcial: abertura recusa arquivo corrompido sem alterá-lo; backup ausente |
 | [Atualização ruim instalada](#atualização-ruim-instalada) | lançador | decidida, não implementada |
@@ -101,9 +102,20 @@ Estado da mitigação, em cada risco:
 - **Impacto.** Credencial exposta ou login do CLI alterado.
 - **Dono.** Adaptadores de ferramenta e host de terminais.
 - **Teto.** Não se aplica.
-- **Mitigação existente.** O processo filho vê só o `env` do pedido, nada herdado do host (testes `the_child_environment_is_exactly_what_the_spec_carries` e `child_sees_only_the_environment_of_the_spec`). O comando `session.open` da API local recusa `program`, `args`, `env` e `cwd` no Schema ([API local](../contracts/README.md#api-local)). Os erros do cliente do daemon não carregam ambiente (`errors_never_include_the_host_message_or_environment`).
+- **Mitigação existente.** [`child_env`](../crates/core/src/child_env.rs) filtra o ambiente herdado com a lista comum `allow` e os padrões `deny` de [`[env]`](../defaults/harnesses.toml), para as duas ferramentas integradas. O processo filho vê só o `env` do pedido, nada herdado do host (testes `the_child_environment_is_exactly_what_the_spec_carries` e `child_sees_only_the_environment_of_the_spec`). O comando `session.open` da API local recusa `program`, `args`, `env` e `cwd` no Schema ([API local](../contracts/README.md#api-local)). Os erros do cliente do daemon não carregam ambiente (`errors_never_include_the_host_message_or_environment`).
 - **Plano B.** Não há.
-- **O que falta.** Os adaptadores de ferramenta são esqueletos: ainda não há lista permitida de ambiente por ferramenta. O teste que compara o status do CLI antes e depois, pedido pela regra C1 do [AGENTS.md](../AGENTS.md), não existe.
+- **Mitigação existente (ambiente das ferramentas).** O filho recebe os nomes de `allow` e os valores de `env.set`. O lançador recusa credenciais conhecidas nas duas listas durante a carga, antes de preparar a abertura (`launcher_configuration_refuses_credentials_before_a_session_exists`). O teste `a_real_child_gets_exactly_the_allowed_names_and_the_set_values` executa um programa do sistema com o ambiente montado pelo núcleo e confere os nomes e valores recebidos. No Windows, a cópia do pai compara só ASCII. A recusa de duplicatas e a precedência de `env.set` usam uma comparação mais ampla, que também trata `ÄX` e `äx` como equivalentes.
+- **O que falta.** Ainda falta o teste da regra C1 que compara o status do CLI antes e depois da sessão. Os padrões cobrem credenciais pelo nome, inclusive nomes genéricos de sessão como `APP_SESSION_ID`. Uma credencial sob um nome que escape dos padrões ainda pode passar se esse nome for incluído em `allow` ou `env.set`. Em Linux e macOS ainda falta verificar com um CLI real se a ferramenta e os programas que ela abre acham suas configurações sem `HOME`.
+
+### Programa ou pasta configurados por um link
+
+- **Descrição.** O programa ou a pasta de trabalho configurados são uma junção ou um link simbólico. As conferências da configuração leem só o texto; ao abrir a sessão, a busca segue o link.
+- **Impacto.** Um link pode levar a outro programa, a uma pasta fora do local esperado, à raiz de um volume ou a um compartilhamento de rede.
+- **Dono.** Adaptadores de ferramenta (`ads-core::tool_launch`).
+- **Teto.** Não se aplica.
+- **Mitigação existente.** Na abertura, o núcleo canonicaliza o caminho, recusa destinos de rede e prefixos de dispositivo no Windows, e recusa uma pasta de trabalho que resolva para a raiz. O programa deve resolver para um arquivo e a pasta para um diretório. O host recebe o caminho resolvido. Os testes em disco usam junções no Windows e links simbólicos nos demais sistemas.
+- **Plano B.** Corrigir o caminho no arquivo de configuração se o destino for recusado.
+- **O que falta.** O lançamento ainda usa caminhos. Uma entrada no caminho resolvido pode mudar entre a conferência e o uso pelo host. No Linux e no macOS uma montagem de rede (NFS, SMB) parece um caminho local e não é reconhecida. Passar o caminho resolvido quebra programas que dependem do nome com que são chamados (atalhos de gerenciadores de versão, `busybox`, atalhos de aplicativos da Microsoft Store no Windows); nesse caso, configure o programa real.
 
 ### Página ou programa local comanda os terminais
 
@@ -111,9 +123,9 @@ Estado da mitigação, em cada risco:
 - **Impacto.** Comando arbitrário num terminal do usuário com uma ferramenta de IA dentro.
 - **Dono.** Daemon (API local).
 - **Teto.** Prazo do `auth.hello` (padrão proposto 5 s).
-- **Mitigação existente (implementada, ADR ainda proposta).** [ADR 0020](adr/0020-local-api-authentication.md): porta efêmera em `127.0.0.1`, conferência de `Host` e `Origin`, token por execução entregue pelo fragmento e conferido em tempo constante, recusa de origem remota. O Schema `urn:ads:command:auth.hello:1` existe.
+- **Mitigação existente (implementada, ADR ainda proposta).** [ADR 0020](adr/0020-local-api-authentication.md): porta efêmera em `127.0.0.1`, conferência de `Host` e `Origin`, token por execução entregue pelo fragmento e conferido em tempo constante, recusa de origem remota. Os testes em [`local_api.rs`](../crates/daemon/tests/local_api.rs) exercitam a autenticação, inclusive o prazo único. O Schema `urn:ads:command:auth.hello:1` existe.
 - **Plano B.** Condição de reversão da ADR 0020.
-- **O que falta.** A ADR aguarda ratificação. A API local implementa porta efêmera, `Host`, `Origin`, token e prazo único, com testes em `crates/daemon/tests/local_api.rs`. A propriedade da porta da interface ainda exige conferência manual (risco abaixo). O lado da interface já lê o token do fragmento, guarda só na aba e manda `auth.hello` primeiro ([README da raiz](../README.md#interface-e-conexão-local)).
+- **O que falta.** A ADR aguarda ratificação. A propriedade da porta da interface ainda exige [conferência manual](#outro-usuário-ocupa-a-porta-da-interface). O [README da interface](../ui/README.md) descreve o cliente.
 
 ### Outro usuário ocupa a porta da interface
 
@@ -219,7 +231,7 @@ Estado da mitigação, em cada risco:
 - **Teto.** `adapters.agy.headless = false` por padrão, decidido na ADR 0010. Troca de conta: `switch = "propose"` por padrão (o mantenedor confirma cada troca) até o isolamento por perfil estar validado; Antigravity fixo em manual ([ADR 0022](adr/0022-account-profile-folders-and-automatic-switching.md)).
 - **Mitigação existente (decidida, não implementada).** [ADR 0010](adr/0010-api-key-for-automation-agy-headless-on-demand.md): automação pela chave de API, modo sem interface só depois de aceite registrado. [ADR 0022](adr/0022-account-profile-folders-and-automatic-switching.md): troca só entre pastas de perfil em que o mantenedor fez o login, nunca no meio da sessão. O FAQ do Antigravity declara a rotação automática fora dos termos; Claude Code e Codex documentam várias contas por pasta, sem dizer se a troca automática entre elas é aceita.
 - **Plano B.** Voltar a troca para manual em todas as ferramentas (condição de reversão da ADR 0022); retirar a CLI do produto (condição de reversão da ADR 0010).
-- **O que falta.** Adaptadores são esqueletos; os parâmetros `adapters.agy.headless`, `switch` e `switch_at_pct` ainda não existem em `defaults/`. Os termos atuais de Claude e Codex sobre troca automática entre contas não foram conferidos.
+- **O que falta.** Os adaptadores de Antigravity e API são esqueletos; os parâmetros `adapters.agy.headless`, `switch` e `switch_at_pct` ainda não existem em `defaults/`. Os termos atuais de Claude e Codex sobre troca automática entre contas não foram conferidos.
 
 ### Gasto de IA sem teto
 
