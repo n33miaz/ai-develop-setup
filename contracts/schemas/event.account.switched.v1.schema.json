@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:event:account.switched:1",
+  "title": "Perfil de conta selecionado",
+  "description": "O perfil selecionado para a próxima sessão mudou.",
+  "allOf": [
+    {
+      "$ref": "urn:ads:event:envelope:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "type",
+        "stream",
+        "data"
+      ],
+      "properties": {
+        "type": {
+          "const": "urn:ads:event:account.switched:1"
+        },
+        "stream": {
+          "type": "string",
+          "pattern": "^account/"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "harness",
+            "from_account_alias",
+            "account_alias",
+            "mode"
+          ],
+          "properties": {
+            "harness": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "from_account_alias": {
+              "anyOf": [
+                {
+                  "$ref": "urn:ads:common:id:1"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "account_alias": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "mode": {
+              "enum": [
+                "manual",
+                "propose",
+                "auto"
+              ]
+            }
+          }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+      "type": "urn:ads:event:account.switched:1",
+      "ts": "2030-01-02T03:04:05Z",
+      "stream": "account/harness-a",
+      "seq": 1,
+      "actor": {
+        "kind": "daemon",
+        "id": "core-01"
+      },
+      "cause": null,
+      "data_class": "internal",
+      "data": {
+        "harness": "harness-a",
+        "from_account_alias": "primary",
+        "account_alias": "secondary",
+        "mode": "propose"
+      }
+    }
+  ]
+}

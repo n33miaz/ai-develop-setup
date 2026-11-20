@@ -432,6 +432,20 @@ Os sete comandos estendem `urn:ads:command:request:1` com `allOf`, fixam `method
 | `urn:ads:event:routing.decided:1` | A rota em vigor de uma tarefa foi fixada: pelo dono (modo manual, ou aceite de uma proposta) ou por regra (modo auto). O autor do evento diz quem decidiu. |
 | `urn:ads:event:routing.fallback:1` | A rota de uma tarefa caiu para o plano B depois de uma falha: registra de onde saiu, para onde foi e o código do erro que causou a troca. Nunca troca de conta. |
 
+| `urn:ads:event:routing.proposed:2` | Proposta com `account_alias`, nulo na ausência de um perfil. |
+| `urn:ads:event:routing.decided:2` | Decisão com `account_alias`, nulo na ausência de um perfil. |
+| `urn:ads:event:routing.fallback:2` | Plano B com o `account_alias` de cada rota, nulo na ausência de um perfil. |
+
+### Eventos de conta
+
+Usam o stream `account/<ferramenta>`. O apelido identifica o perfil
+configurado no produto.
+
+| Schema | O que descreve |
+|---|---|
+| `urn:ads:event:account.switched:1` | Seleção do perfil para a próxima sessão, com o modo da decisão e o apelido anterior (nulo na primeira seleção). |
+| `urn:ads:event:account.status_observed:1` | Estado do login, método, provedor, tipo de plano e caminho absoluto da configuração usada, quando disponíveis. Evento privado. E-mail, organização e identificadores de conta são recusados. |
+
 ### Eventos de revisão
 
 | Schema | O que descreve |

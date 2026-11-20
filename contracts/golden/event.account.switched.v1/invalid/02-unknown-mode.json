@@ -1,0 +1,19 @@
+{
+  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+  "type": "urn:ads:event:account.switched:1",
+  "ts": "2030-01-02T03:04:05Z",
+  "stream": "account/harness-a",
+  "seq": 1,
+  "actor": {
+    "kind": "daemon",
+    "id": "core-01"
+  },
+  "cause": null,
+  "data_class": "internal",
+  "data": {
+    "harness": "harness-a",
+    "from_account_alias": "primary",
+    "account_alias": "secondary",
+    "mode": "shadow"
+  }
+}
