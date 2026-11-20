@@ -34,6 +34,8 @@ pub struct QueuePolicy {
     pub bug_rule_window_admissions: NonZeroUsize,
     #[serde(default = "default_clock_skew_seconds")]
     pub clock_skew_seconds: u64,
+    #[serde(default = "default_clock_rewind_seconds")]
+    pub clock_rewind_seconds: u64,
 }
 
 /// Reads one key of the bundled defaults, which a test loads in full.
@@ -64,6 +66,10 @@ fn default_bug_rule_window_admissions() -> NonZeroUsize {
 
 fn default_clock_skew_seconds() -> u64 {
     bundled_default("clock_skew_seconds")
+}
+
+fn default_clock_rewind_seconds() -> u64 {
+    bundled_default("clock_rewind_seconds")
 }
 
 /// Channel through which a device acted, independent of the event that records it.
@@ -141,6 +147,8 @@ pub enum QueueRefusal {
     NotOwner,
     RemoteEnable,
     Unchanged,
+    /// The `seq` the owner acted on is not the last one of the stream.
+    StaleSeq,
 }
 
 pub fn new_stopped(id: CommonIdV1, owner: &AuthenticatedDevice) -> RecordTaskQueueV1 {
@@ -365,8 +373,13 @@ pub enum ReplayRefusal {
 /// The replay checks the coherence of the actors the log declares, not their authenticity:
 /// the log is not signed per device, and a forged line is caught by the storage HMAC chain.
 /// Every device actor belongs to the queue owner; creating, enabling and owner stops come from
-/// such a device; a task enters `running` only while the queue is enabled; and `review → done`
-/// is accepted by a device of the owner. Agents and the daemon may still cancel or fail tasks.
+/// such a device, and so do the manual requests of every task of the queue; a task enters
+/// `running` only while the queue is enabled; and `review → done` is accepted by a device of the
+/// owner. Agents and the daemon may still cancel or fail tasks.
+///
+/// The replay does not run the admission again: neither the policy in force nor the clock anchor
+/// of each creation is in the log, so checking old creations against the current policy would
+/// refuse a legitimate history once the owner lowers a limit.
 pub fn replay_task<'a>(
     task_id: &CommonIdV1,
     log: impl IntoIterator<Item = QueueLogEvent<'a>>,
@@ -424,6 +437,9 @@ pub fn replay_task<'a>(
                 queue_state = Stopped;
             }
             QueueLogEvent::TaskCreated(admitted) => {
+                if is_manual(&admitted.data.origin) && !owner_device(event) {
+                    return Err(ReplayRefusal::NotOwnerDevice);
+                }
                 if admitted.data.task_id != *task_id {
                     continue;
                 }
@@ -490,13 +506,145 @@ fn is_manual(origin: &EventQueueTaskCreatedV1DataOrigin) -> bool {
     matches!(origin, EventQueueTaskCreatedV1DataOrigin::Manual(_))
 }
 
+/// Why the admission refuses a task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdmissionRefusal {
+    /// The attempt ceiling of the task is above the policy.
+    AttemptCeiling,
+    /// A manual request was not created by a device of the queue owner.
+    ManualNotOwnerDevice,
+    /// The clock anchor belongs to another queue or another owner.
+    ForeignAnchor,
+    /// The clock anchor covers the candidate itself or later events, so it would move
+    /// admissions made after the owner acted.
+    AnchorAfterCandidate,
+    /// The clock anchor is more than `clock_skew_seconds` ahead of the core clock.
+    AnchorAheadOfClock,
+    /// An instant could not be read.
+    UnreadableInstant,
+    /// The stamp is more than `clock_skew_seconds` ahead of the core clock.
+    AheadOfClock,
+    /// The stamp is more than `clock_rewind_seconds` behind an earlier admission of the queue,
+    /// usually because the core clock ran ahead and was corrected; the owner re-anchors it.
+    BehindLastAdmission,
+    /// The task id was already used in some queue.
+    TaskIdUsed,
+    /// The origin was already admitted in this queue.
+    OriginRepeated,
+    /// The queue reached `admission_limit`.
+    AdmissionLimit,
+    /// The window of manual requests, or of issues and bug rules, is full.
+    WindowFull,
+    /// The window of this bug rule is full.
+    BugRuleWindowFull,
+}
+
+/// Owner action that re-anchors the admission clock of a queue after the core clock ran ahead.
+/// Earlier admissions of the queue, up to `through_seq`, stamped after `at` and still ahead of
+/// the core clock count as admitted at `at`: they keep their origin reserved and fill the window
+/// that follows the anchor. The admission refuses an anchor that covers the candidate or a later
+/// `seq`, or whose `at` is ahead of the core clock.
+///
+/// Only `reanchor_admission_clock` builds one, from a device of the owner. Reading one back from
+/// the log arrives with its event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClockAnchor {
+    queue_id: CommonIdV1,
+    owner_id: CommonIdV1,
+    device_id: CommonIdV1,
+    via: Channel,
+    at: CommonTimestampV1,
+    through_seq: u64,
+}
+
+impl ClockAnchor {
+    pub fn queue_id(&self) -> &CommonIdV1 {
+        &self.queue_id
+    }
+
+    pub fn owner_id(&self) -> &CommonIdV1 {
+        &self.owner_id
+    }
+
+    pub fn device_id(&self) -> &CommonIdV1 {
+        &self.device_id
+    }
+
+    pub fn via(&self) -> Channel {
+        self.via
+    }
+
+    /// Core clock when the owner acted.
+    pub fn at(&self) -> &CommonTimestampV1 {
+        &self.at
+    }
+
+    /// Last `seq` of the queue stream when the owner acted.
+    pub fn through_seq(&self) -> u64 {
+        self.through_seq
+    }
+}
+
+/// Builds the anchor from the owner action. `now` is the core clock when the owner acts, with
+/// the same contract as `created.ts`; `through_seq` is the `seq` the owner acted on, and
+/// `stream_last_seq` the last `seq` of the queue stream read from storage, which must be equal.
+/// Recording the anchor needs an event the contracts do not have yet, so until then the caller
+/// keeps it.
+pub fn reanchor_admission_clock(
+    queue: &RecordTaskQueueV1,
+    device: Option<&AuthenticatedDevice>,
+    now: &CommonTimestampV1,
+    through_seq: u64,
+    stream_last_seq: u64,
+) -> Result<ClockAnchor, QueueRefusal> {
+    let device = device.ok_or(QueueRefusal::Unauthenticated)?;
+    if device.owner_id != queue.owner_id {
+        return Err(QueueRefusal::NotOwner);
+    }
+    if through_seq != stream_last_seq {
+        return Err(QueueRefusal::StaleSeq);
+    }
+    Ok(ClockAnchor {
+        queue_id: queue.id.clone(),
+        owner_id: device.owner_id.clone(),
+        device_id: device.device_id.clone(),
+        via: device.via,
+        at: now.clone(),
+        through_seq,
+    })
+}
+
+/// What the producer knows when it decides an admission, besides the candidate and the history.
+pub struct AdmissionContext<'a> {
+    pub policy: &'a QueuePolicy,
+    /// Core clock when the producer decides.
+    pub now: &'a CommonTimestampV1,
+    /// Owner of the queue the candidate names.
+    pub queue_owner: &'a CommonIdV1,
+    /// Device that asked for the task, required for a manual request.
+    pub author: Option<&'a AuthenticatedDevice>,
+    /// Latest clock anchor of the queue, if the owner re-anchored it.
+    pub anchor: Option<&'a ClockAnchor>,
+}
+
+fn authored_by_owner(created: &EventQueueTaskCreatedV1, context: &AdmissionContext<'_>) -> bool {
+    context.author.is_some_and(|author| {
+        author.owner_id == *context.queue_owner
+            && created.actor.kind == CommonActorV1Kind::Device
+            && created.actor.id == author.device_id
+    })
+}
+
 /// Previously admitted origins remain reserved after termination and replay. Task ids are
 /// unique across queues, and the attempt ceiling of a new task follows the configured policy.
+/// A manual request is created by a device of the queue owner, with `actor.id` equal to its id.
 ///
 /// `created.ts` must come from the core clock, never from the request, and `now` is that clock
-/// when the producer decides. A candidate stamped before the last admission of the queue, or
-/// more than `clock_skew_seconds` after `now`, is refused, so a clock or a stamp that jumps
-/// ahead does not empty the window.
+/// when the producer decides. A candidate stamped more than `clock_skew_seconds` after `now`, or
+/// more than `clock_rewind_seconds` before an earlier admission of the queue, is refused, so a
+/// stamp ahead of the core clock does not empty the window. If the core clock itself runs ahead,
+/// the window empties once; once the clock is corrected, admissions stop until real time reaches
+/// the last one or the owner re-anchors the clock with `reanchor_admission_clock`.
 ///
 /// In any `window_seconds` ending at the candidate `ts`, the queue admits at most
 /// `manual_window_admissions` manual requests and `window_admissions` tasks from issues and bug
@@ -506,21 +654,47 @@ fn is_manual(origin: &EventQueueTaskCreatedV1DataOrigin) -> bool {
 pub fn can_admit_task<'a>(
     created: &EventQueueTaskCreatedV1,
     history: impl IntoIterator<Item = &'a EventQueueTaskCreatedV1>,
-    policy: &QueuePolicy,
-    now: &CommonTimestampV1,
-) -> bool {
+    context: &AdmissionContext<'_>,
+) -> Result<(), AdmissionRefusal> {
+    use AdmissionRefusal as Refusal;
+    let policy = context.policy;
     if created.data.attempt_limit.get() > policy.attempt_limit.get() {
-        return false;
+        return Err(Refusal::AttemptCeiling);
     }
-    let (Some(stamp), Some(clock)) = (epoch_seconds(&created.ts), epoch_seconds(now)) else {
-        return false;
-    };
-    let skew = i64::try_from(policy.clock_skew_seconds).unwrap_or(i64::MAX);
-    if stamp > clock.saturating_add(skew) {
-        return false;
-    }
-    let window = i64::try_from(policy.window_seconds.get()).unwrap_or(i64::MAX);
     let manual = is_manual(&created.data.origin);
+    if manual && !authored_by_owner(created, context) {
+        return Err(Refusal::ManualNotOwnerDevice);
+    }
+    let (Some(stamp), Some(clock)) = (epoch_seconds(&created.ts), epoch_seconds(context.now))
+    else {
+        return Err(Refusal::UnreadableInstant);
+    };
+    let seconds = |value: u64| i64::try_from(value).unwrap_or(i64::MAX);
+    let latest_now = clock.saturating_add(seconds(policy.clock_skew_seconds));
+    if stamp > latest_now {
+        return Err(Refusal::AheadOfClock);
+    }
+    let anchor = match context.anchor {
+        Some(anchor)
+            if anchor.queue_id != created.data.queue_id
+                || anchor.owner_id != *context.queue_owner =>
+        {
+            return Err(Refusal::ForeignAnchor);
+        }
+        Some(anchor) if anchor.through_seq >= created.seq.get() => {
+            return Err(Refusal::AnchorAfterCandidate);
+        }
+        Some(anchor) => {
+            let at = epoch_seconds(&anchor.at).ok_or(Refusal::UnreadableInstant)?;
+            if at > latest_now {
+                return Err(Refusal::AnchorAheadOfClock);
+            }
+            Some((anchor.through_seq, at))
+        }
+        None => None,
+    };
+    let latest_prior = stamp.saturating_add(seconds(policy.clock_rewind_seconds));
+    let window = seconds(policy.window_seconds.get());
     let rule = bug_rule(&created.data.origin);
     let (class_limit, rule_limit) = if manual {
         (policy.manual_window_admissions.get(), usize::MAX)
@@ -533,7 +707,7 @@ pub fn can_admit_task<'a>(
     let (mut count, mut same_class, mut same_rule) = (0, 0, 0);
     for prior in history {
         if prior.data.task_id == created.data.task_id {
-            return false;
+            return Err(Refusal::TaskIdUsed);
         }
         if prior.data.queue_id != created.data.queue_id {
             continue;
@@ -541,28 +715,37 @@ pub fn can_admit_task<'a>(
         if prior.data.workspace_alias == created.data.workspace_alias
             && prior.data.origin == created.data.origin
         {
-            return false;
+            return Err(Refusal::OriginRepeated);
         }
-        let then = epoch_seconds(&prior.ts);
-        if then.is_some_and(|then| then > stamp) {
-            return false;
+        // The anchor moves only covered creations still ahead of the clock, so an old anchor
+        // never takes an ordinary creation out of the window.
+        let then = epoch_seconds(&prior.ts).map(|then| match anchor {
+            Some((through, at)) if prior.seq.get() <= through && then > latest_now => then.min(at),
+            _ => then,
+        });
+        if then.is_some_and(|then| then > latest_prior) {
+            return Err(Refusal::BehindLastAdmission);
         }
         count += 1;
-        let recent = then.is_none_or(|then| stamp - then < window);
+        // A prior stamped after the candidate, within the rewind, is recent too.
+        let recent = then.is_none_or(|then| stamp.saturating_sub(then) < window);
         if recent && is_manual(&prior.data.origin) == manual {
             same_class += 1;
             if rule.is_some() && bug_rule(&prior.data.origin) == rule {
                 same_rule += 1;
             }
         }
-        if count >= policy.admission_limit.get()
-            || same_class >= class_limit
-            || same_rule >= rule_limit
-        {
-            return false;
+        if count >= policy.admission_limit.get() {
+            return Err(Refusal::AdmissionLimit);
+        }
+        if same_class >= class_limit {
+            return Err(Refusal::WindowFull);
+        }
+        if same_rule >= rule_limit {
+            return Err(Refusal::BugRuleWindowFull);
         }
     }
-    true
+    Ok(())
 }
 
 /// Returns the attempt count after an allowed transition in the current queue.

@@ -21,3 +21,8 @@ bug_rule_window_admissions = 3
 
 # Quanto o instante da criação pode estar adiante do relógio do núcleo, em segundos.
 clock_skew_seconds = 5
+
+# Quanto o instante da criação pode estar antes de uma admissão anterior da fila, em segundos, para
+# um relógio do núcleo corrigido para trás não travar a fila. Um salto maior pede que o dono
+# reancore o relógio da fila.
+clock_rewind_seconds = 300

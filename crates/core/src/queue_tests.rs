@@ -247,15 +247,39 @@ fn starting_requires_the_enabled_queue_and_acceptance_requires_its_owner() {
     }
 }
 
+/// The golden manual request, created by device-01 of owner-01.
 fn creation() -> EventQueueTaskCreatedV1 {
-    serde_json::from_str(include_str!(
+    let mut value: serde_json::Value = serde_json::from_str(include_str!(
         "../../../contracts/golden/event.queue.task_created.v1/valid/01-base.json"
     ))
-    .unwrap()
+    .unwrap();
+    value["actor"] = serde_json::json!({ "kind": "device", "id": "device-01" });
+    serde_json::from_value(value).unwrap()
+}
+
+/// Admission asked by device-01 of owner-01, the owner of every queue in these tests.
+fn admit_as_owner<'a>(
+    candidate: &EventQueueTaskCreatedV1,
+    history: impl IntoIterator<Item = &'a EventQueueTaskCreatedV1>,
+    policy: &QueuePolicy,
+    now: &CommonTimestampV1,
+    anchor: Option<&ClockAnchor>,
+) -> Result<(), AdmissionRefusal> {
+    let author = device("device-01", "owner-01", LocalUi);
+    let owner = id("owner-01");
+    let context = AdmissionContext {
+        policy,
+        now,
+        queue_owner: &owner,
+        author: Some(&author),
+        anchor,
+    };
+    can_admit_task(candidate, history, &context)
 }
 
 #[test]
 fn task_admission_uses_the_origin_after_a_retry_or_restart() {
+    use AdmissionRefusal::{AdmissionLimit, AttemptCeiling, OriginRepeated, TaskIdUsed};
     let base = creation();
     let mut alternate = serde_json::to_value(&base).unwrap();
     alternate["data"]["task_id"] = "task-02".into();
@@ -276,20 +300,20 @@ fn task_admission_uses_the_origin_after_a_retry_or_restart() {
         ..policy()
     };
     for (candidate, admission, expected) in [
-        (&base, 2, false),
-        (&duplicate, 2, false),
-        (&independent, 2, true),
-        (&independent, 1, false),
-        (&different_queue, 1, true),
-        (&same_id_other_queue, 2, false),
-        (&above_ceiling, 2, false),
+        (&base, 2, Err(TaskIdUsed)),
+        (&duplicate, 2, Err(OriginRepeated)),
+        (&independent, 2, Ok(())),
+        (&independent, 1, Err(AdmissionLimit)),
+        (&different_queue, 1, Ok(())),
+        (&same_id_other_queue, 2, Err(TaskIdUsed)),
+        (&above_ceiling, 2, Err(AttemptCeiling)),
     ] {
         assert_eq!(
-            can_admit_task(candidate, [&base], &limited(admission), &base.ts),
+            admit_as_owner(candidate, [&base], &limited(admission), &base.ts, None),
             expected
         );
     }
-    assert!(can_admit_task(&base, [], &policy(), &base.ts));
+    assert_eq!(admit_as_owner(&base, [], &policy(), &base.ts, None), Ok(()));
 }
 
 fn ts(text: &str) -> CommonTimestampV1 {
@@ -374,12 +398,26 @@ impl Stream {
         )
     }
 
+    /// Manual request of the owner.
     fn admit(self, task: &str, limit: u64) -> Self {
+        self.admit_by(OWNER_DEVICE, task, limit, None)
+    }
+
+    fn admit_by(
+        self,
+        actor: (&str, &str),
+        task: &str,
+        limit: u64,
+        origin: Option<serde_json::Value>,
+    ) -> Self {
         let mut data = serde_json::to_value(creation()).unwrap()["data"].clone();
         data["task_id"] = task.into();
         data["origin"]["request_id"] = format!("request-{task}").into();
+        if let Some(origin) = origin {
+            data["origin"] = origin;
+        }
         data["attempt_limit"] = limit.into();
-        self.push("task_created", DAEMON, data)
+        self.push("task_created", actor, data)
     }
 
     fn change(self, actor: (&str, &str), from: &str, to: &str, attempts: u64) -> Self {
@@ -666,6 +704,34 @@ fn replay_refuses_a_task_change_by_a_device_of_another_owner() {
 }
 
 #[test]
+fn replay_refuses_a_manual_request_outside_the_owner_devices() {
+    let agent = ("agent", "agent-01");
+    for actor in [DAEMON, agent, ("device", "device-02")] {
+        let own = Stream::new().admit_by(actor, "task-01", 2, None);
+        assert_eq!(
+            own.replay(),
+            Err(ReplayRefusal::NotOwnerDevice),
+            "{actor:?}"
+        );
+        let other_task = Stream::new()
+            .admit("task-01", 2)
+            .admit_by(actor, "task-02", 2, None);
+        assert_eq!(
+            other_task.replay(),
+            Err(ReplayRefusal::NotOwnerDevice),
+            "{actor:?}"
+        );
+    }
+    let from_issue = Stream::new().admit_by(
+        DAEMON,
+        "task-01",
+        2,
+        Some(serde_json::json!({ "kind": "issue", "ref": 1 })),
+    );
+    assert_eq!(from_issue.replay(), Ok((Queued, 0)));
+}
+
+#[test]
 fn replay_reads_the_device_owner_at_the_instant_of_each_event() {
     // moved-01 belongs to owner-02 until 03:04:03, so its enable at seq 2 is refused.
     let early = Stream::new()
@@ -763,11 +829,22 @@ fn a_restart_keeps_fails_or_cancels_the_running_task() {
     assert_eq!(replay_values(values), Ok((Failed, 1)));
 }
 
+/// Admission of `task` at `at`; a manual request comes from device-01, any other origin from
+/// the daemon.
 fn admitted(task: &str, origin: serde_json::Value, at: &str) -> EventQueueTaskCreatedV1 {
     let mut value = serde_json::to_value(creation()).unwrap();
+    if origin["kind"] != "manual" {
+        value["actor"] = serde_json::json!({ "kind": "daemon", "id": "core-01" });
+    }
     value["data"]["task_id"] = task.into();
     value["data"]["origin"] = origin;
     value["ts"] = at.into();
+    serde_json::from_value(value).unwrap()
+}
+
+fn with_seq(event: EventQueueTaskCreatedV1, seq: u64) -> EventQueueTaskCreatedV1 {
+    let mut value = serde_json::to_value(event).unwrap();
+    value["seq"] = seq.into();
     serde_json::from_value(value).unwrap()
 }
 
@@ -794,8 +871,11 @@ fn windowed() -> QueuePolicy {
 }
 
 /// Admits at the candidate's own instant, as a producer stamping with the core clock does.
-fn admit_now(candidate: &EventQueueTaskCreatedV1, history: &[EventQueueTaskCreatedV1]) -> bool {
-    can_admit_task(candidate, history, &windowed(), &candidate.ts)
+fn admit_now(
+    candidate: &EventQueueTaskCreatedV1,
+    history: &[EventQueueTaskCreatedV1],
+) -> Result<(), AdmissionRefusal> {
+    admit_as_owner(candidate, history, &windowed(), &candidate.ts, None)
 }
 
 #[test]
@@ -827,9 +907,12 @@ fn admission_limits_each_bug_rule_and_the_automatic_origins_within_the_window() 
         rule("rule-01", "target-03"),
         "2030-01-02T04:00:00Z",
     );
-    assert!(!admit_now(&same_rule, &history));
-    assert!(admit_now(&other_rule, &history));
-    assert!(admit_now(&later, &history), "the window clears");
+    assert_eq!(
+        admit_now(&same_rule, &history),
+        Err(AdmissionRefusal::BugRuleWindowFull)
+    );
+    assert_eq!(admit_now(&other_rule, &history), Ok(()));
+    assert_eq!(admit_now(&later, &history), Ok(()), "the window clears");
 
     let full = [
         admitted("task-01", issue(1), "2030-01-02T03:00:00Z"),
@@ -847,9 +930,9 @@ fn admission_limits_each_bug_rule_and_the_automatic_origins_within_the_window() 
     let next = admitted("task-04", issue(4), "2030-01-02T03:59:59Z");
     let after = admitted("task-04", issue(4), "2030-01-02T04:00:00Z");
     let next_day = admitted("task-04", issue(4), "2030-01-03T03:20:00Z");
-    assert!(!admit_now(&next, &full));
-    assert!(admit_now(&after, &full));
-    assert!(admit_now(&next_day, &full));
+    assert_eq!(admit_now(&next, &full), Err(AdmissionRefusal::WindowFull));
+    assert_eq!(admit_now(&after, &full), Ok(()));
+    assert_eq!(admit_now(&next_day, &full), Ok(()));
 }
 
 #[test]
@@ -872,19 +955,58 @@ fn automatic_origins_never_use_up_the_manual_window() {
         ),
     ];
     let request = admitted("task-04", manual("request-04"), "2030-01-02T03:03:00Z");
-    assert!(admit_now(&request, &rules_full));
+    assert_eq!(admit_now(&request, &rules_full), Ok(()));
     let manual_full = [
         admitted("task-01", manual("request-01"), "2030-01-02T03:00:00Z"),
         admitted("task-02", manual("request-02"), "2030-01-02T03:01:00Z"),
     ];
     let third = admitted("task-03", manual("request-03"), "2030-01-02T03:02:00Z");
     let automatic = admitted("task-03", issue(3), "2030-01-02T03:02:00Z");
-    assert!(!admit_now(&third, &manual_full));
-    assert!(admit_now(&automatic, &manual_full));
+    assert_eq!(
+        admit_now(&third, &manual_full),
+        Err(AdmissionRefusal::WindowFull)
+    );
+    assert_eq!(admit_now(&automatic, &manual_full), Ok(()));
+}
+
+#[test]
+fn a_manual_request_needs_a_device_of_the_queue_owner() {
+    let request = admitted("task-01", manual("request-01"), "2030-01-02T03:00:00Z");
+    let by = |kind: &str, actor: &str| {
+        let mut value = serde_json::to_value(&request).unwrap();
+        value["actor"] = serde_json::json!({ "kind": kind, "id": actor });
+        serde_json::from_value::<EventQueueTaskCreatedV1>(value).unwrap()
+    };
+    let policy = policy();
+    let owner = id("owner-01");
+    let check = |candidate: &EventQueueTaskCreatedV1, author: Option<&AuthenticatedDevice>| {
+        let context = AdmissionContext {
+            policy: &policy,
+            now: &candidate.ts,
+            queue_owner: &owner,
+            author,
+            anchor: None,
+        };
+        can_admit_task(candidate, [], &context)
+    };
+    let owner_device = device("device-01", "owner-01", LocalUi);
+    let other_owner = device("device-02", "owner-02", LocalUi);
+    let other_device = device("phone-01", "owner-01", RemoteDevice);
+    let refused = Err(AdmissionRefusal::ManualNotOwnerDevice);
+    assert_eq!(check(&request, Some(&owner_device)), Ok(()));
+    assert_eq!(check(&request, None), refused);
+    assert_eq!(check(&request, Some(&other_owner)), refused);
+    assert_eq!(check(&request, Some(&other_device)), refused, "actor id");
+    for (kind, actor) in [("daemon", "device-01"), ("agent", "device-01")] {
+        assert_eq!(check(&by(kind, actor), Some(&owner_device)), refused);
+    }
+    let from_issue = admitted("task-01", issue(1), "2030-01-02T03:00:00Z");
+    assert_eq!(check(&from_issue, None), Ok(()));
 }
 
 #[test]
 fn admission_refuses_a_stamp_ahead_of_the_core_clock_or_behind_the_log() {
+    use AdmissionRefusal::{AheadOfClock, BehindLastAdmission};
     let history = [
         admitted("task-01", issue(1), "2030-01-02T03:00:00Z"),
         admitted("task-02", issue(2), "2030-01-02T03:10:00Z"),
@@ -893,19 +1015,274 @@ fn admission_refuses_a_stamp_ahead_of_the_core_clock_or_behind_the_log() {
     // A stamp a day ahead would leave the whole history out of the window.
     let ahead = admitted("task-04", issue(4), "2030-01-03T03:20:00Z");
     let clock = ts("2030-01-02T03:30:00Z");
-    assert!(!can_admit_task(&ahead, &history, &windowed(), &clock));
+    let admit = |candidate: &EventQueueTaskCreatedV1, policy: &QueuePolicy| {
+        admit_as_owner(candidate, &history, policy, &clock, None)
+    };
+    assert_eq!(admit(&ahead, &windowed()), Err(AheadOfClock));
     let within_skew = admitted("task-04", issue(4), "2030-01-02T03:30:05Z");
     let past_skew = admitted("task-04", issue(4), "2030-01-02T03:30:06Z");
     let policy = QueuePolicy {
         window_admissions: NonZeroUsize::new(4).unwrap(),
         ..windowed()
     };
-    assert!(can_admit_task(&within_skew, &history, &policy, &clock));
-    assert!(!can_admit_task(&past_skew, &history, &policy, &clock));
-    let behind = admitted("task-04", issue(4), "2030-01-02T03:19:59Z");
-    assert!(!can_admit_task(&behind, &history, &policy, &clock));
+    assert_eq!(admit(&within_skew, &policy), Ok(()));
+    assert_eq!(admit(&past_skew, &policy), Err(AheadOfClock));
+    let within_rewind = admitted("task-04", issue(4), "2030-01-02T03:15:00Z");
+    let past_rewind = admitted("task-04", issue(4), "2030-01-02T03:14:59Z");
+    assert_eq!(admit(&within_rewind, &policy), Ok(()));
+    assert_eq!(admit(&past_rewind, &policy), Err(BehindLastAdmission));
     let same_instant = admitted("task-04", issue(4), "2030-01-02T03:20:00Z");
-    assert!(can_admit_task(&same_instant, &history, &policy, &clock));
+    assert_eq!(admit(&same_instant, &policy), Ok(()));
+    let no_rewind = QueuePolicy {
+        clock_rewind_seconds: 0,
+        ..policy
+    };
+    let behind = admitted("task-04", issue(4), "2030-01-02T03:19:59Z");
+    assert_eq!(admit(&behind, &no_rewind), Err(BehindLastAdmission));
+    // Within the rewind, a later prior still fills the window of the candidate.
+    let full = QueuePolicy {
+        window_admissions: NonZeroUsize::new(3).unwrap(),
+        ..no_rewind
+    };
+    let rewound = QueuePolicy {
+        clock_rewind_seconds: 300,
+        ..full
+    };
+    assert_eq!(
+        admit(&within_rewind, &rewound),
+        Err(AdmissionRefusal::WindowFull)
+    );
+}
+
+fn manual_at(task: &str, at: &str, seq: u64) -> EventQueueTaskCreatedV1 {
+    with_seq(admitted(task, manual(&format!("request-{task}")), at), seq)
+}
+
+fn one_manual() -> QueuePolicy {
+    QueuePolicy {
+        manual_window_admissions: NonZeroUsize::new(1).unwrap(),
+        ..windowed()
+    }
+}
+
+/// owner-01 re-anchors queue-01 from device-01 at `at`, through `seq`, the last of the stream.
+fn owner_anchor(at: &str, seq: u64) -> ClockAnchor {
+    let owner = device("device-01", "owner-01", Tray);
+    let queue = new_stopped(id("queue-01"), &owner);
+    reanchor_admission_clock(&queue, Some(&owner), &ts(at), seq, seq).unwrap()
+}
+
+/// Admits at the candidate's own instant with `anchor`.
+fn admit_anchored(
+    candidate: &EventQueueTaskCreatedV1,
+    history: &[EventQueueTaskCreatedV1],
+    policy: &QueuePolicy,
+    anchor: &ClockAnchor,
+) -> Result<(), AdmissionRefusal> {
+    admit_as_owner(candidate, history, policy, &candidate.ts, Some(anchor))
+}
+
+#[test]
+fn the_owner_reanchors_the_queue_after_the_core_clock_ran_ahead() {
+    use AdmissionRefusal::{BehindLastAdmission, ForeignAnchor, OriginRepeated, WindowFull};
+    let owner = device("device-01", "owner-01", Tray);
+    let queue = new_stopped(id("queue-01"), &owner);
+    let policy = windowed();
+    // Admitted while the core clock read 2031, then the clock is corrected.
+    let ahead = manual_at("task-01", "2031-06-01T00:00:00Z", 2);
+    assert_eq!(admit_as_owner(&ahead, [], &policy, &ahead.ts, None), Ok(()));
+    let history = [ahead];
+    let now = ts("2030-01-02T03:30:00Z");
+    let next = manual_at("task-02", "2030-01-02T03:30:00Z", 4);
+    assert_eq!(
+        admit_as_owner(&next, &history, &policy, &now, None),
+        Err(BehindLastAdmission),
+        "the queue stays refused until the owner acts"
+    );
+
+    assert_eq!(
+        reanchor_admission_clock(&queue, None, &now, 2, 2),
+        Err(QueueRefusal::Unauthenticated)
+    );
+    let stranger = device("device-02", "owner-02", Tray);
+    assert_eq!(
+        reanchor_admission_clock(&queue, Some(&stranger), &now, 2, 2),
+        Err(QueueRefusal::NotOwner)
+    );
+    for (through, last) in [(3, 2), (u64::MAX, 2), (1, 2)] {
+        assert_eq!(
+            reanchor_admission_clock(&queue, Some(&owner), &now, through, last),
+            Err(QueueRefusal::StaleSeq),
+            "{through} {last}"
+        );
+    }
+    let anchor = reanchor_admission_clock(&queue, Some(&owner), &now, 2, 2).unwrap();
+    assert_eq!(
+        (anchor.queue_id(), anchor.owner_id(), anchor.device_id()),
+        (&id("queue-01"), &id("owner-01"), &id("device-01"))
+    );
+    assert_eq!(
+        (anchor.via(), anchor.at(), anchor.through_seq()),
+        (Tray, &now, 2)
+    );
+    assert_eq!(admit_anchored(&next, &history, &policy, &anchor), Ok(()));
+
+    // The anchored admission still counts, at the anchor, and keeps its origin.
+    assert_eq!(
+        admit_anchored(&next, &history, &one_manual(), &anchor),
+        Err(WindowFull)
+    );
+    let window_later = manual_at("task-02", "2030-01-02T04:30:00Z", 4);
+    assert_eq!(
+        admit_anchored(&window_later, &history, &one_manual(), &anchor),
+        Ok(())
+    );
+    let mut same_origin = serde_json::to_value(&next).unwrap();
+    same_origin["data"]["origin"]["request_id"] = "request-task-01".into();
+    let same_origin = serde_json::from_value(same_origin).unwrap();
+    assert_eq!(
+        admit_anchored(&same_origin, &history, &policy, &anchor),
+        Err(OriginRepeated)
+    );
+
+    // An admission after the anchor is not moved by it.
+    let after_anchor = [
+        history[0].clone(),
+        manual_at("task-03", "2031-06-01T00:00:00Z", 3),
+    ];
+    assert_eq!(
+        admit_anchored(&next, &after_anchor, &policy, &anchor),
+        Err(BehindLastAdmission)
+    );
+
+    for (queue_id, owner_id) in [("queue-02", "owner-01"), ("queue-01", "owner-02")] {
+        let mut foreign = anchor.clone();
+        foreign.queue_id = id(queue_id);
+        foreign.owner_id = id(owner_id);
+        assert_eq!(
+            admit_as_owner(&next, &history, &policy, &now, Some(&foreign)),
+            Err(ForeignAnchor),
+            "{queue_id} {owner_id}"
+        );
+    }
+}
+
+#[test]
+fn an_anchor_never_covers_the_candidate_or_later_admissions() {
+    use AdmissionRefusal::{AnchorAfterCandidate, WindowFull};
+    let ahead = manual_at("task-01", "2031-06-01T00:00:00Z", 2);
+    let anchor = owner_anchor("2030-01-02T03:30:00Z", 2);
+    let mut beyond = anchor.clone();
+    beyond.through_seq = u64::MAX;
+
+    // Requests every 20 minutes for three hours: the legitimate anchor lets one in per hour,
+    // and one that covers the rest of the stream is refused at once.
+    let mut history = vec![ahead];
+    let mut admitted_at = Vec::new();
+    for step in 0..9u64 {
+        let minutes = 31 + step * 20;
+        let at = format!("2030-01-02T{:02}:{:02}:00Z", 3 + minutes / 60, minutes % 60);
+        let seq = history.len() as u64 + 2;
+        let candidate = manual_at(&format!("task-{seq:02}"), &at, seq);
+        assert_eq!(
+            admit_anchored(&candidate, &history, &one_manual(), &beyond),
+            Err(AnchorAfterCandidate),
+            "{at}"
+        );
+        match admit_anchored(&candidate, &history, &one_manual(), &anchor) {
+            Ok(()) => {
+                admitted_at.push(minutes);
+                history.push(candidate);
+            }
+            refusal => assert_eq!(refusal, Err(WindowFull), "{at}"),
+        }
+    }
+    assert_eq!(
+        admitted_at,
+        [91, 151],
+        "one request per window after the anchor"
+    );
+
+    let covering = owner_anchor("2030-01-02T03:30:00Z", 3);
+    let candidate = manual_at("task-03", "2030-01-02T03:31:00Z", 3);
+    assert_eq!(
+        admit_anchored(&candidate, &history[..1], &windowed(), &covering),
+        Err(AnchorAfterCandidate)
+    );
+}
+
+#[test]
+fn an_anchor_ahead_of_the_clock_is_refused_and_an_old_one_keeps_the_window() {
+    use AdmissionRefusal::{AnchorAheadOfClock, WindowFull};
+    let ahead = manual_at("task-01", "2031-06-01T00:00:00Z", 2);
+    let candidate = manual_at("task-02", "2030-01-02T03:30:00Z", 3);
+    let early = owner_anchor("2031-01-01T00:00:00Z", 2);
+    assert_eq!(
+        admit_anchored(
+            &candidate,
+            std::slice::from_ref(&ahead),
+            &windowed(),
+            &early
+        ),
+        Err(AnchorAheadOfClock)
+    );
+    let within_skew = owner_anchor("2030-01-02T03:30:05Z", 2);
+    assert_eq!(
+        admit_anchored(
+            &candidate,
+            std::slice::from_ref(&ahead),
+            &windowed(),
+            &within_skew
+        ),
+        Ok(())
+    );
+
+    // An old instant does not move ordinary creations out of the window.
+    let ordinary = [
+        manual_at("task-01", "2030-01-02T03:00:00Z", 2),
+        manual_at("task-02", "2030-01-02T03:10:00Z", 3),
+    ];
+    let old = owner_anchor("1970-01-01T00:00:00Z", 3);
+    let third = manual_at("task-03", "2030-01-02T03:20:00Z", 4);
+    assert_eq!(
+        admit_anchored(&third, &ordinary, &windowed(), &old),
+        Err(WindowFull)
+    );
+}
+
+#[test]
+fn a_second_anchor_covers_the_creations_of_the_first() {
+    use AdmissionRefusal::{BehindLastAdmission, WindowFull};
+    let first = owner_anchor("2030-01-02T03:30:00Z", 2);
+    let mut history = vec![manual_at("task-01", "2031-06-01T00:00:00Z", 2)];
+    let after_first = manual_at("task-03", "2030-01-02T03:30:00Z", 3);
+    assert_eq!(
+        admit_anchored(&after_first, &history, &windowed(), &first),
+        Ok(())
+    );
+    history.push(after_first);
+    // The clock runs ahead again, and is corrected again.
+    history.push(manual_at("task-04", "2032-01-01T00:00:00Z", 4));
+    let next = manual_at("task-05", "2030-01-02T03:50:00Z", 5);
+    let wide = QueuePolicy {
+        manual_window_admissions: NonZeroUsize::new(4).unwrap(),
+        ..windowed()
+    };
+    assert_eq!(
+        admit_anchored(&next, &history, &wide, &first),
+        Err(BehindLastAdmission)
+    );
+    let second = owner_anchor("2030-01-02T03:50:00Z", 4);
+    assert_eq!(admit_anchored(&next, &history, &wide, &second), Ok(()));
+    let three = QueuePolicy {
+        manual_window_admissions: NonZeroUsize::new(3).unwrap(),
+        ..windowed()
+    };
+    assert_eq!(
+        admit_anchored(&next, &history, &three, &second),
+        Err(WindowFull),
+        "the creations of both jumps still fill the window"
+    );
 }
 
 #[test]
@@ -917,13 +1294,14 @@ fn the_longest_window_never_clears() {
     };
     let history = [admitted("task-01", issue(1), "1970-01-01T00:00:00Z")];
     let candidate = admitted("task-02", issue(2), "9999-12-31T23:59:59Z");
-    assert!(!can_admit_task(
-        &candidate,
-        &history,
-        &policy,
-        &candidate.ts
-    ));
-    assert!(can_admit_task(&candidate, [], &policy, &candidate.ts));
+    assert_eq!(
+        admit_as_owner(&candidate, &history, &policy, &candidate.ts, None),
+        Err(AdmissionRefusal::WindowFull)
+    );
+    assert_eq!(
+        admit_as_owner(&candidate, [], &policy, &candidate.ts, None),
+        Ok(())
+    );
 }
 
 #[test]
@@ -948,6 +1326,7 @@ fn queue_policy_validates_configured_limits() {
     assert_eq!(policy.manual_window_admissions.get(), 10);
     assert_eq!(policy.bug_rule_window_admissions.get(), 3);
     assert_eq!(policy.clock_skew_seconds, 5);
+    assert_eq!(policy.clock_rewind_seconds, 300);
     for (key, value) in [
         ("attempt_limit", "0"),
         ("attempt_limit", "11"),
@@ -957,6 +1336,7 @@ fn queue_policy_validates_configured_limits() {
         ("manual_window_admissions", "0"),
         ("bug_rule_window_admissions", "0"),
         ("clock_skew_seconds", "-1"),
+        ("clock_rewind_seconds", "-1"),
     ] {
         let prefix = format!("{key} =");
         let settings: String = DEFAULT_POLICY
@@ -991,5 +1371,6 @@ fn an_older_policy_file_loads_with_the_bundled_window_limits() {
         bundled.bug_rule_window_admissions
     );
     assert_eq!(older.clock_skew_seconds, bundled.clock_skew_seconds);
+    assert_eq!(older.clock_rewind_seconds, bundled.clock_rewind_seconds);
     assert!(toml::from_str::<QueuePolicy>("attempt_limit = 3\n").is_err());
 }
