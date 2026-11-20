@@ -208,6 +208,8 @@ impl Serialize for EventRoutingProposedV2DataTier {
 pub struct EventRoutingProposedV2DataModel(String);
 
 impl EventRoutingProposedV2DataModel {
+    pub const MAX_CHARS: usize = 128;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -219,7 +221,7 @@ impl EventRoutingProposedV2DataModel {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        (1..=128).contains(&length)
+        (1..=Self::MAX_CHARS).contains(&length)
     }
 
     pub fn as_str(&self) -> &str {
@@ -259,6 +261,8 @@ impl Serialize for EventRoutingProposedV2DataModel {
 pub struct EventRoutingProposedV2DataEffort(String);
 
 impl EventRoutingProposedV2DataEffort {
+    pub const MAX_CHARS: usize = 32;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -270,7 +274,7 @@ impl EventRoutingProposedV2DataEffort {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        (1..=32).contains(&length)
+        (1..=Self::MAX_CHARS).contains(&length)
     }
 
     pub fn as_str(&self) -> &str {

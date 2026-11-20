@@ -320,9 +320,12 @@ class Module {
     const base = screaming(name);
     const statics = [];
     const checks = [];
-    if (hasMin && hasMax) checks.push(min === max ? `length == ${min}` : `(${min}..=${max}).contains(&length)`);
+    // `maxLength` counts code points, as `chars().count()` does; the constant is public so a
+    // caller can check the bound before building the value, from this one source.
+    const maxChars = hasMax ? "Self::MAX_CHARS" : "";
+    if (hasMin && hasMax) checks.push(min === max ? `length == ${maxChars}` : `(${min}..=${maxChars}).contains(&length)`);
     else if (hasMin) checks.push(`length >= ${min}`);
-    else if (hasMax) checks.push(`length <= ${max}`);
+    else if (hasMax) checks.push(`length <= ${maxChars}`);
     const declare = (list, label, negate) => {
       list.forEach((p, i) => {
         const id = `${base}_${label}${list.length > 1 ? `_${i + 1}` : ""}`;
@@ -345,7 +348,9 @@ ${this.docOf(node, where)}
 #[serde(try_from = "String")]
 pub struct ${name}(String);
 
-impl ${name} {
+impl ${name} {${hasMax ? `
+    pub const MAX_CHARS: usize = ${max};
+` : ""}
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -739,11 +744,12 @@ ${values.map((v, i) => `    #[serde(rename = ${rustString(v, at)})]\n    ${names
     const unique = node.uniqueItems === true;
     if (min === 0 && max === undefined && !unique) return { ty: `Vec<${item.ty}>`, hash: item.hash };
     const checks = [];
-    if (min > 0 && max !== undefined) checks.push(min === max ? `items.len() == ${min}` : `(${min}..=${max}).contains(&items.len())`);
+    const hasMax = max !== undefined && max > 0;
+    if (min > 0 && max !== undefined) checks.push(min === max ? `items.len() == Self::MAX_ITEMS` : `(${min}..=Self::MAX_ITEMS).contains(&items.len())`);
     else if (min === 1) checks.push("!items.is_empty()");
     else if (min > 0) checks.push(`items.len() >= ${min}`);
     else if (max === 0) checks.push("items.is_empty()");
-    else if (max !== undefined) checks.push(`items.len() <= ${max}`);
+    else if (max !== undefined) checks.push(`items.len() <= Self::MAX_ITEMS`);
     if (unique) checks.push(`support::${item.hash ? "all_distinct" : "all_distinct_slow"}(&items)`);
     if (unique) this.use("crate::support");
     for (const u of ["serde::Deserialize", "serde::Serialize", "serde::Serializer", "crate::support::ContractError"]) this.use(u);
@@ -752,7 +758,9 @@ ${values.map((v, i) => `    #[serde(rename = ${rustString(v, at)})]\n    ${names
 #[serde(try_from = "Vec<${item.ty}>")]
 pub struct ${name}(Vec<${item.ty}>);
 
-impl ${name} {
+impl ${name} {${hasMax ? `
+    pub const MAX_ITEMS: usize = ${max};
+` : ""}
     pub fn new(items: Vec<${item.ty}>) -> Result<Self, ContractError> {
         if ${checks.join(" && ")} {
             Ok(Self(items))

@@ -153,6 +153,8 @@ static RECORD_QUEUE_TASK_V1_TITLE_EXCLUDED: Pattern = Pattern::new(
 pub struct RecordQueueTaskV1Title(String);
 
 impl RecordQueueTaskV1Title {
+    pub const MAX_CHARS: usize = 120;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -164,7 +166,7 @@ impl RecordQueueTaskV1Title {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        (1..=120).contains(&length)
+        (1..=Self::MAX_CHARS).contains(&length)
             && RECORD_QUEUE_TASK_V1_TITLE_PATTERN.matches(text)
             && !RECORD_QUEUE_TASK_V1_TITLE_EXCLUDED.matches(text)
     }
@@ -351,6 +353,8 @@ static RECORD_QUEUE_TASK_V1_BRANCH_EXCLUDED: Pattern =
 pub struct RecordQueueTaskV1Branch(String);
 
 impl RecordQueueTaskV1Branch {
+    pub const MAX_CHARS: usize = 255;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -362,7 +366,7 @@ impl RecordQueueTaskV1Branch {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        (1..=255).contains(&length)
+        (1..=Self::MAX_CHARS).contains(&length)
             && RECORD_QUEUE_TASK_V1_BRANCH_PATTERN.matches(text)
             && !RECORD_QUEUE_TASK_V1_BRANCH_EXCLUDED.matches(text)
     }

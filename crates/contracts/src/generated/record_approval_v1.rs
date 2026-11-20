@@ -133,6 +133,8 @@ impl<'de> Deserialize<'de> for RecordApprovalV1Version {
 pub struct RecordApprovalV1Summary(String);
 
 impl RecordApprovalV1Summary {
+    pub const MAX_CHARS: usize = 500;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -144,7 +146,7 @@ impl RecordApprovalV1Summary {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        (1..=500).contains(&length)
+        (1..=Self::MAX_CHARS).contains(&length)
     }
 
     pub fn as_str(&self) -> &str {
@@ -229,6 +231,8 @@ impl RecordApprovalV1Via {
 pub struct RecordApprovalV1Reason(String);
 
 impl RecordApprovalV1Reason {
+    pub const MAX_CHARS: usize = 500;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -240,7 +244,7 @@ impl RecordApprovalV1Reason {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        (1..=500).contains(&length)
+        (1..=Self::MAX_CHARS).contains(&length)
     }
 
     pub fn as_str(&self) -> &str {

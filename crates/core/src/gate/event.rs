@@ -84,8 +84,7 @@ text_type!(
     PathText,
     "normalized absolute path",
     |text| {
-        text.chars().count() <= 4096
-            && AbsPath::parse(text).is_ok_and(|path| path.to_string() == text)
+        AbsPath::parse(text).is_ok_and(|path| path.to_string() == text)
     }
 );
 pub use wire::RecordActionPlanV2TargetsItemPattern as PatternText;
@@ -551,8 +550,8 @@ impl ActionPlanFields {
             return broken("action plan version", self.version.to_string());
         }
         let count = self.targets.len();
-        if !(1..=10_000).contains(&count) {
-            return broken("count of 1 to 10000 targets", count.to_string());
+        if !(1..=wire::RecordActionPlanV2Targets::MAX_ITEMS).contains(&count) {
+            return broken("count of targets the record holds", count.to_string());
         }
         let mut previous: Option<TargetPath> = None;
         for target in &self.targets {
@@ -577,7 +576,7 @@ impl ActionPlanFields {
         }
         let verdict = &self.verdict;
         let coherent = verdict.decision.risk() == verdict.risk
-            && verdict.reasons.len() <= 1000
+            && verdict.reasons.len() <= wire::RecordActionPlanV2VerdictReasons::MAX_ITEMS
             && (verdict.decision == Decision::Allowed) == verdict.reasons.is_empty();
         if !coherent {
             let reasons = verdict.reasons.len();

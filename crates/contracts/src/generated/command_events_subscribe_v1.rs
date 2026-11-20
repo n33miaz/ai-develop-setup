@@ -192,6 +192,8 @@ static COMMAND_EVENTS_SUBSCRIBE_V1_PARAMS_META_REMOTE_SIGNATURE_PATTERN: Pattern
 pub struct CommandEventsSubscribeV1ParamsMetaRemoteSignature(String);
 
 impl CommandEventsSubscribeV1ParamsMetaRemoteSignature {
+    pub const MAX_CHARS: usize = 88;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -206,7 +208,7 @@ impl CommandEventsSubscribeV1ParamsMetaRemoteSignature {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        length == 88
+        length == Self::MAX_CHARS
             && COMMAND_EVENTS_SUBSCRIBE_V1_PARAMS_META_REMOTE_SIGNATURE_PATTERN.matches(text)
     }
 

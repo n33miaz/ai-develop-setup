@@ -199,6 +199,7 @@ O plano só existe com todos os caminhos absolutos e normalizados (separadores r
 - caminho de rede (`\servidor\pasta`, `//servidor/pasta`) e os prefixos `\?\` e `\.\`;
 - no Windows, o que é apelido de outro caminho: nome curto (`NOME~1`), componente terminado em ponto ou espaço, `:` depois da unidade, nomes de dispositivo com qualquer extensão (`NUL`, `nul.txt`, `COM0` a `COM9`, `LPT0` a `LPT9` e os mesmos com `¹`, `²` ou `³`) e `< > " |`;
 - caractere de controle; `\` dentro de componente POSIX; lista de alvos vazia.
+- o que não cabe no registro do plano: caminho normalizado com mais caracteres que `urn:ads:common:abspath:2` (erro `TooLong`), curinga maior que o `pattern` do registro (`PatternTooLong`) e mais alvos, depois de juntar os repetidos, do que o registro guarda (`TooManyTargets`). Os limites vêm das constantes geradas do contrato (`MAX_CHARS`, `MAX_ITEMS` em `ads-contracts`), não de número copiado.
 
 Alvo com curinga é julgado como a pasta sobre a qual o curinga age: `pasta/*` vale como `pasta`.
 
@@ -271,7 +272,7 @@ SHA-256 da [serialização canônica dos contratos](../../contracts/README.md#se
 
 ### Registro do plano
 
-Todo veredito vira um `urn:ads:record:action-plan:2` (`Verdict::record`, devolvido por `Action::plan`; a `:1` é só lida, por `ActionPlanRecordV1`): a operação pedida, os alvos na ordem canônica, a raiz de trabalho, a estimativa, o veredito com os códigos, `quarantined` e `destination` (a pasta de quarentena quando o apagar foi reescrito; o destino pedido em "mover"). O registro só existe se cumprir o contrato inteiro, inclusive a ordem dos alvos e o `plan_hash` recalculado dos seus próprios campos; isso vale tanto para o que o núcleo monta quanto para o que ele lê. Plano que não cabe nos limites do contrato (caminho com mais de 4096 caracteres, curinga com mais de 255, mais de 10000 alvos ou de 1000 regras disparadas, estimativa de itens ou de bytes acima de 2^53 − 1) não tem registro e, por isso, não vira ação nem evento.
+Todo veredito vira um `urn:ads:record:action-plan:2` (`Verdict::record`, devolvido por `Action::plan`; a `:1` é só lida, por `ActionPlanRecordV1`): a operação pedida, os alvos na ordem canônica, a raiz de trabalho, a estimativa, o veredito com os códigos, `quarantined` e `destination` (a pasta de quarentena quando o apagar foi reescrito; o destino pedido em "mover"). O registro só existe se cumprir o contrato inteiro, inclusive a ordem dos alvos e o `plan_hash` recalculado dos seus próprios campos; isso vale tanto para o que o núcleo monta quanto para o que ele lê. Caminho, curinga e quantidade de alvos acima dos limites do contrato já são recusados na normalização ([Normalização](#normalização)). O que só aparece depois do julgamento continua sem registro e, por isso, não vira ação nem evento: mais regras disparadas do que `verdict.reasons` guarda, estimativa de itens ou de bytes acima de 2^53 − 1, e caminho gerado pelo julgamento (a pasta de quarentena, a entrada que o "mover" criaria citada como motivo) maior que o limite.
 
 ### Máquina de estados
 

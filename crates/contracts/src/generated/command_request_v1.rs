@@ -56,6 +56,8 @@ static COMMAND_REQUEST_V1_METHOD_PATTERN: Pattern =
 pub struct CommandRequestV1Method(String);
 
 impl CommandRequestV1Method {
+    pub const MAX_CHARS: usize = 64;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -67,7 +69,7 @@ impl CommandRequestV1Method {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        length <= 64 && COMMAND_REQUEST_V1_METHOD_PATTERN.matches(text)
+        length <= Self::MAX_CHARS && COMMAND_REQUEST_V1_METHOD_PATTERN.matches(text)
     }
 
     pub fn as_str(&self) -> &str {
@@ -271,6 +273,8 @@ static COMMAND_REQUEST_V1_PARAMS_META_REMOTE_SIGNATURE_PATTERN: Pattern =
 pub struct CommandRequestV1ParamsMetaRemoteSignature(String);
 
 impl CommandRequestV1ParamsMetaRemoteSignature {
+    pub const MAX_CHARS: usize = 88;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -285,7 +289,8 @@ impl CommandRequestV1ParamsMetaRemoteSignature {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        length == 88 && COMMAND_REQUEST_V1_PARAMS_META_REMOTE_SIGNATURE_PATTERN.matches(text)
+        length == Self::MAX_CHARS
+            && COMMAND_REQUEST_V1_PARAMS_META_REMOTE_SIGNATURE_PATTERN.matches(text)
     }
 
     pub fn as_str(&self) -> &str {

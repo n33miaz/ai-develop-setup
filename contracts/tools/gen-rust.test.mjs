@@ -79,6 +79,23 @@ test("cada restrição do Schema vira tipo ou regra conferida", () => {
   assert.match(thing, /#\[serde\(deny_unknown_fields\)\]\npub struct RecordThingV1Fields \{/);
 });
 
+test("os limites de tamanho viram constantes públicas, a fonte única para quem confere antes", () => {
+  const { put, generate } = tree();
+  const body = {
+    type: "array",
+    minItems: 1,
+    maxItems: 7,
+    items: { type: "string", minLength: 1, maxLength: 9 },
+  };
+  put("record.list.v1.schema.json", schema("urn:ads:record:list:1", body, ["a"]));
+  const list = generate().get("record_list_v1.rs");
+  assert.match(list, /impl RecordListV1 \{\n\s+pub const MAX_ITEMS: usize = 7;/);
+  assert.match(list, /\(1\.\.=Self::MAX_ITEMS\)\.contains\(&items\.len\(\)\)/);
+  assert.match(list, /impl RecordListV1Item \{\n\s+pub const MAX_CHARS: usize = 9;/);
+  assert.match(list, /\(1\.\.=Self::MAX_CHARS\)\.contains\(&length\)/);
+  assert.doesNotMatch(generate().get("common_id_v1.rs"), /MAX_CHARS/);
+});
+
 test("a geração é determinística", () => {
   const { generate } = tree();
   assert.deepEqual([...generate()], [...generate()]);

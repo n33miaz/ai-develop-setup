@@ -88,6 +88,10 @@ impl Target {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlanError {
     NoTargets,
+    /// More distinct targets than the record of the plan holds.
+    TooManyTargets {
+        count: usize,
+    },
     WorkRoot(PathError),
     Destination(PathError),
     /// One bad target refuses the whole plan; `index` is its position in the request.
@@ -103,7 +107,7 @@ impl std::error::Error for PlanError {
             Self::WorkRoot(error) | Self::Destination(error) | Self::Target { error, .. } => {
                 Some(error)
             }
-            Self::NoTargets => None,
+            Self::NoTargets | Self::TooManyTargets { .. } => None,
         }
     }
 }
@@ -112,6 +116,9 @@ impl fmt::Display for PlanError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NoTargets => f.write_str("the plan has no targets"),
+            Self::TooManyTargets { count } => {
+                write!(f, "{count} targets, more than the contract holds")
+            }
             Self::WorkRoot(error) => write!(f, "work root: {error}"),
             Self::Destination(error) => write!(f, "destination: {error}"),
             Self::Target { index, error } => write!(f, "target {index}: {error}"),
@@ -157,6 +164,11 @@ impl ActionPlan {
         // Repeats of one path collapse into one target that keeps the stricter fact.
         targets.sort_by(|a, b| a.path.cmp(&b.path).then(b.repo_root.cmp(&a.repo_root)));
         targets.dedup_by(|later, first| later.path == first.path);
+        if targets.len() > ads_contracts::RecordActionPlanV2Targets::MAX_ITEMS {
+            return Err(PlanError::TooManyTargets {
+                count: targets.len(),
+            });
+        }
         Ok(Self {
             operation,
             work_root,
@@ -340,6 +352,79 @@ mod tests {
         let plan = ActionPlan::normalize(&repeated).unwrap();
         assert_eq!(plan.targets().len(), 1);
         assert!(plan.targets()[0].is_repo_root());
+    }
+
+    #[test]
+    fn paths_and_wildcards_past_the_contract_limits_are_refused() {
+        let max = ads_contracts::CommonAbspathV2::MAX_CHARS;
+        // The normalized text is measured: `//` and `/./` do not count.
+        let fits = format!("/{}", "a".repeat(max - 1));
+        let spelled = format!("/{}//./", "a".repeat(max - 1));
+        let over = format!("/{}", "a".repeat(max));
+        assert!(ActionPlan::normalize(&request(&[&fits])).is_ok());
+        assert!(ActionPlan::normalize(&request(&[&spelled])).is_ok());
+        assert_eq!(
+            ActionPlan::normalize(&request(&["/work/proj/a", &over])),
+            Err(PlanError::Target {
+                index: 1,
+                error: PathError::TooLong
+            })
+        );
+        // Characters, not bytes, as the Schema counts them.
+        let wide = format!("C:\\{}", "\u{e9}".repeat(max - 3));
+        assert!(ActionPlan::normalize(&request(&[&wide])).is_ok());
+
+        let mut long_root = request(&["/work/proj/a"]);
+        long_root.work_root = over.clone();
+        assert_eq!(
+            ActionPlan::normalize(&long_root),
+            Err(PlanError::WorkRoot(PathError::TooLong))
+        );
+        let mut long_destination = request(&["/work/proj/a"]);
+        long_destination.operation = OperationRequest::Move {
+            destination: over.clone(),
+        };
+        assert_eq!(
+            ActionPlan::normalize(&long_destination),
+            Err(PlanError::Destination(PathError::TooLong))
+        );
+
+        let max = ads_contracts::RecordActionPlanV2TargetsItemPattern::MAX_CHARS;
+        let fits = format!("/work/proj/{}", "*".repeat(max));
+        let over = format!("/work/proj/{}", "*".repeat(max + 1));
+        assert!(ActionPlan::normalize(&request(&[&fits])).is_ok());
+        assert_eq!(
+            ActionPlan::normalize(&request(&[&over])),
+            Err(PlanError::Target {
+                index: 0,
+                error: PathError::PatternTooLong
+            })
+        );
+    }
+
+    #[test]
+    fn more_targets_than_the_record_holds_are_refused() {
+        let max = ads_contracts::RecordActionPlanV2Targets::MAX_ITEMS;
+        let paths: Vec<String> = (0..=max).map(|n| format!("/work/proj/{n}")).collect();
+        let at_most = |count: usize| {
+            let refs: Vec<&str> = paths[..count].iter().map(String::as_str).collect();
+            ActionPlan::normalize(&request(&refs))
+        };
+        assert_eq!(at_most(max).unwrap().targets().len(), max);
+        assert_eq!(
+            at_most(max + 1),
+            Err(PlanError::TooManyTargets { count: max + 1 })
+        );
+        // What counts is what the record keeps: repeats collapse first.
+        let mut repeated: Vec<&str> = paths[..max].iter().map(String::as_str).collect();
+        repeated.push("/work/proj/0/");
+        assert_eq!(
+            ActionPlan::normalize(&request(&repeated))
+                .unwrap()
+                .targets()
+                .len(),
+            max
+        );
     }
 
     #[test]

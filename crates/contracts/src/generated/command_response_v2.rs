@@ -155,6 +155,8 @@ pub struct CommandResponseV2Error {
 pub struct CommandResponseV2ErrorMessage(String);
 
 impl CommandResponseV2ErrorMessage {
+    pub const MAX_CHARS: usize = 500;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -166,7 +168,7 @@ impl CommandResponseV2ErrorMessage {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        (1..=500).contains(&length)
+        (1..=Self::MAX_CHARS).contains(&length)
     }
 
     pub fn as_str(&self) -> &str {

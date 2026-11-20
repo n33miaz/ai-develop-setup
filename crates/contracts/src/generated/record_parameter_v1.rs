@@ -179,6 +179,8 @@ static RECORD_PARAMETER_V1_KEY_PATTERN: Pattern =
 pub struct RecordParameterV1Key(String);
 
 impl RecordParameterV1Key {
+    pub const MAX_CHARS: usize = 96;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -190,7 +192,7 @@ impl RecordParameterV1Key {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        length <= 96 && RECORD_PARAMETER_V1_KEY_PATTERN.matches(text)
+        length <= Self::MAX_CHARS && RECORD_PARAMETER_V1_KEY_PATTERN.matches(text)
     }
 
     pub fn as_str(&self) -> &str {
@@ -267,6 +269,8 @@ pub enum RecordParameterV1Value {
 pub struct RecordParameterV1ValueString(String);
 
 impl RecordParameterV1ValueString {
+    pub const MAX_CHARS: usize = 500;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -278,7 +282,7 @@ impl RecordParameterV1ValueString {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        length <= 500
+        length <= Self::MAX_CHARS
     }
 
     pub fn as_str(&self) -> &str {
@@ -318,6 +322,8 @@ impl Serialize for RecordParameterV1ValueString {
 pub struct RecordParameterV1ValueArrayItem(String);
 
 impl RecordParameterV1ValueArrayItem {
+    pub const MAX_CHARS: usize = 500;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -329,7 +335,7 @@ impl RecordParameterV1ValueArrayItem {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        length <= 500
+        length <= Self::MAX_CHARS
     }
 
     pub fn as_str(&self) -> &str {
@@ -369,6 +375,8 @@ impl Serialize for RecordParameterV1ValueArrayItem {
 pub struct RecordParameterV1Description(String);
 
 impl RecordParameterV1Description {
+    pub const MAX_CHARS: usize = 500;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -380,7 +388,7 @@ impl RecordParameterV1Description {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        (1..=500).contains(&length)
+        (1..=Self::MAX_CHARS).contains(&length)
     }
 
     pub fn as_str(&self) -> &str {
@@ -466,6 +474,8 @@ impl Serialize for RecordParameterV1Choices {
 pub struct RecordParameterV1ChoicesItem(String);
 
 impl RecordParameterV1ChoicesItem {
+    pub const MAX_CHARS: usize = 64;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -477,7 +487,7 @@ impl RecordParameterV1ChoicesItem {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        (1..=64).contains(&length)
+        (1..=Self::MAX_CHARS).contains(&length)
     }
 
     pub fn as_str(&self) -> &str {

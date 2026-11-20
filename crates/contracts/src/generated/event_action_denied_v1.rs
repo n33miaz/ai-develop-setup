@@ -129,6 +129,8 @@ static EVENT_ACTION_DENIED_V1_DATA_VERB_PATTERN: Pattern =
 pub struct EventActionDeniedV1DataVerb(String);
 
 impl EventActionDeniedV1DataVerb {
+    pub const MAX_CHARS: usize = 64;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -140,7 +142,7 @@ impl EventActionDeniedV1DataVerb {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        length <= 64 && EVENT_ACTION_DENIED_V1_DATA_VERB_PATTERN.matches(text)
+        length <= Self::MAX_CHARS && EVENT_ACTION_DENIED_V1_DATA_VERB_PATTERN.matches(text)
     }
 
     pub fn as_str(&self) -> &str {
@@ -180,8 +182,10 @@ impl Serialize for EventActionDeniedV1DataVerb {
 pub struct EventActionDeniedV1DataRules(Vec<CommonActionRuleV1>);
 
 impl EventActionDeniedV1DataRules {
+    pub const MAX_ITEMS: usize = 100;
+
     pub fn new(items: Vec<CommonActionRuleV1>) -> Result<Self, ContractError> {
-        if (1..=100).contains(&items.len()) && support::all_distinct(&items) {
+        if (1..=Self::MAX_ITEMS).contains(&items.len()) && support::all_distinct(&items) {
             Ok(Self(items))
         } else {
             Err(ContractError::new(

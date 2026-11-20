@@ -280,9 +280,19 @@ fn denied_event_lists_each_denying_rule_once_and_no_approval_rule() {
 
 #[test]
 fn plan_that_does_not_fit_the_record_starts_nothing() {
-    let long = format!("{WIN_ROOT}\\{}", "a".repeat(4096));
+    // The path at the limit of the contract is recorded; one more is refused before the plan.
+    let max = ads_contracts::CommonAbspathV2::MAX_CHARS;
+    let long = format!("{WIN_ROOT}\\{}", "a".repeat(max - WIN_ROOT.len() - 1));
     let verdict = win(Op::Overwrite, &[&long]);
     assert_eq!(verdict.decision(), Decision::Allowed);
+    assert!(Action::plan(id("act-01"), &verdict, meta(T0, 1)).is_ok());
+
+    // More rules fired than the record holds: still no record, so no action.
+    let max = ads_contracts::RecordActionPlanV2VerdictReasons::MAX_ITEMS;
+    let outside: Vec<String> = (0..=max).map(|n| format!("D:\\other\\{n}")).collect();
+    let outside: Vec<&str> = outside.iter().map(String::as_str).collect();
+    let verdict = win(Op::Overwrite, &outside);
+    assert_eq!(verdict.decision(), Decision::Denied);
     assert!(matches!(
         Action::plan(id("act-01"), &verdict, meta(T0, 1)),
         Err(TransitionError::Unrecordable(_))
