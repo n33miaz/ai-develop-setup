@@ -23,9 +23,10 @@ use crate::CodexConfig;
 /// # use ads_adapter_codex::{DiskProbe, open_params};
 /// # use ads_contracts::CommandSessionOpenV1Params;
 /// # use ads_core::child_env::NameCase;
-/// # use ads_core::tool_launch::{Claude, ToolConfig};
+/// # use ads_core::tool_launch::ToolConfig;
+/// ads_core::tool_harness!(Other = "other");
 /// fn open(request: &CommandSessionOpenV1Params) {
-///     let config = ToolConfig::<Claude>::defaults(NameCase::Sensitive);
+///     let config = ToolConfig::<Other>::defaults(NameCase::Sensitive);
 ///     let _ = open_params(&config, request, Vec::<(String, String)>::new(), &DiskProbe);
 /// }
 /// ```

@@ -67,11 +67,12 @@ Em `src/tool_launch/`, o núcleo carrega
 usuário em `[tools.<id>]`, `[workdirs]` e `[env]`. Outras tabelas de ferramenta
 são tratadas pelos adaptadores correspondentes.
 
-As ferramentas são as do próprio módulo (`Claude`, `Codex`), cada uma com sua
-tabela nos padrões. O trait `Harness` é selado: outro crate não declara
-ferramenta nova, e as chaves dos diagnósticos (`tools.<id>`, `tools.<id>.program`,
-`tools.<id>.args`, `tools.<id>.mode`) saem do identificador. Ferramenta nova
-entra aqui, com a tabela em `defaults/harnesses.toml`, e ganha um adaptador.
+Cada adaptador declara a ferramenta com `ads_core::tool_harness!`, que tira do
+identificador as chaves dos diagnósticos (`tools.<id>`, `tools.<id>.program`,
+`tools.<id>.args`, `tools.<id>.mode`). O trait `Harness` fica aberto: selá-lo
+poria a lista de ferramentas, com nomes de fornecedores, no núcleo. Uma
+implementação de fora não abre nada: sem a tabela `[tools.<id>]` nos padrões, a
+carga recusa com `MissingKey`.
 
 O pedido `session.open` fornece a ferramenta, o apelido da pasta e o tamanho.
 `open_params` monta o pedido do contrato `pty-host/1`. A função do núcleo é
@@ -89,6 +90,8 @@ abertura. `DiskProbe` faz essa consulta no disco.
   do pedido recusa esses campos e a função não tem por onde recebê-los.
 - Programa: caminho absoluto e literal, que precisa ser um arquivo existente
   quando a sessão abre. Caminho vazio (o padrão) desliga a ferramenta.
+- Modo: só `interactive` (terminal operado pela pessoa); `headless` e chaves
+  desconhecidas recusam a configuração.
 - Formas de caminho recusadas no programa e na pasta: relativo (inclusive `C:pasta`
   e `\pasta`), variável (`%VAR%`, `$VAR`), `~`, `..`, caminho de rede, prefixos
   `\?\` e `\.\`, fluxo alternativo (`arquivo:fluxo`), nome curto do Windows

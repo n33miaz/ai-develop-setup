@@ -23,4 +23,11 @@ mod tests {
     fn crate_name_matches_manifest() {
         assert_eq!(crate_name(), "ads-adapter-claude");
     }
+
+    #[test]
+    fn the_table_key_is_derived_from_the_tool_id() {
+        use ads_core::tool_launch::Harness;
+        assert_eq!(HARNESS_ID, "claude");
+        assert_eq!(<Claude as Harness>::TABLE_KEY, "tools.claude");
+    }
 }

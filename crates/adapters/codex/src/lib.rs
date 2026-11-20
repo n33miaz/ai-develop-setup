@@ -23,4 +23,11 @@ mod tests {
     fn crate_name_matches_manifest() {
         assert_eq!(crate_name(), "ads-adapter-codex");
     }
+
+    #[test]
+    fn the_table_key_is_derived_from_the_tool_id() {
+        use ads_core::tool_launch::Harness;
+        assert_eq!(HARNESS_ID, "codex");
+        assert_eq!(<Codex as Harness>::TABLE_KEY, "tools.codex");
+    }
 }
