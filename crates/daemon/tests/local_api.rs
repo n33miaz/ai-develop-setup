@@ -1177,6 +1177,19 @@ async fn scripted_fixture(
                         )
                         .await
                         .unwrap(),
+                    "exit-on-write" => far
+                        .write_all(
+                            &wire::encode_json(&wire::Notification::SessionExited(
+                                wire::SessionExited {
+                                    session_id: params.session_id.clone(),
+                                    last_seq: 0,
+                                    exit_code: Some(0),
+                                },
+                            ))
+                            .unwrap(),
+                        )
+                        .await
+                        .unwrap(),
                     "gap-exit" => far
                         .write_all(
                             &wire::encode_json(&wire::Notification::SessionExited(
@@ -1462,45 +1475,196 @@ async fn unknown_session_on_close_releases_the_slot() {
     );
 }
 
+/// Waits a bounded time for the host to drop `count` sessions; returns either way so the caller asserts.
+async fn host_sessions_settle(f: &Fixture, count: usize) {
+    let _ = tokio::time::timeout(Duration::from_secs(2), async {
+        while f.host.sessions().len() != count {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await;
+}
+
 #[tokio::test]
-async fn ended_sessions_can_be_closed_and_return_their_slots() {
+async fn ended_sessions_return_their_slots_without_a_client_close() {
     let f = fixture("max_sessions = 2", Arc::new(TestLauncher)).await;
-    let mut ws = authenticated(&f).await;
+    let mut watcher = authenticated(&f).await;
+    let mut control = authenticated(&f).await;
+    let mut subscriptions = Vec::new();
     for (index, id) in ["first", "second"].into_iter().enumerate() {
-        call(&mut ws, "session.open", open_params(id)).await;
-        call(
-            &mut ws,
-            "events.subscribe",
-            json!({"stream": format!("session/{id}"), "after_seq": 0}),
-        )
-        .await;
-        assert_eq!(receive(&mut ws).await["seq"], 1);
-        f.backend.terminals()[index].exit(0);
-        assert_eq!(
-            receive(&mut ws).await["type"],
-            "urn:ads:event:session.ended:1"
+        call(&mut control, "session.open", open_params(id)).await;
+        subscriptions.push(
+            call(
+                &mut watcher,
+                "events.subscribe",
+                json!({"stream": format!("session/{id}"), "after_seq": 0}),
+            )
+            .await["id"]
+                .clone(),
         );
+        assert_eq!(receive(&mut watcher).await["seq"], 1);
+        f.backend.terminals()[index].exit(0);
+        let ended = receive(&mut watcher).await;
+        assert_eq!(ended["type"], "urn:ads:event:session.ended:1");
+        assert_eq!(ended["data"]["reason"], "exit");
     }
-    assert_eq!(
-        call(&mut ws, "session.open", open_params("third")).await["error"]["code"],
-        -32003
-    );
-    assert_eq!(f.host.sessions().len(), 2);
+    host_sessions_settle(&f, 0).await;
+    assert!(f.host.sessions().is_empty());
+    // A client that still closes an ended session is answered as before, without a second close.
     for id in ["first", "second"] {
         assert_eq!(
-            call(&mut ws, "session.close", json!({"session_id": id})).await["result"]["accepted"],
+            call(&mut control, "session.close", json!({"session_id": id})).await["result"]["accepted"],
             true
         );
     }
-    assert!(f.host.sessions().is_empty());
+    // The released stream is intact: nothing reached the watcher after `ended`, and replay has both events.
+    call(
+        &mut control,
+        "events.subscribe",
+        json!({"stream": "session/first", "after_seq": 0}),
+    )
+    .await;
+    assert_eq!(receive(&mut control).await["seq"], 1);
+    assert_eq!(receive(&mut control).await["seq"], 2);
     assert_eq!(
-        call(&mut ws, "session.close", json!({"session_id": "first"})).await["error"]["code"],
-        -32602
-    );
-    assert_eq!(
-        call(&mut ws, "session.open", open_params("third")).await["result"]["accepted"],
+        call(&mut control, "session.open", open_params("third")).await["result"]["accepted"],
         true
     );
+    // A session the client closed itself still refuses a second close.
+    assert_eq!(
+        call(
+            &mut control,
+            "session.close",
+            json!({"session_id": "third"})
+        )
+        .await["result"]["accepted"],
+        true
+    );
+    // Three released records exceed max_sessions = 2: the oldest is pruned, as before this change.
+    let pruned = receive(&mut watcher).await;
+    assert_eq!(pruned["id"], subscriptions[0]);
+    assert_eq!(pruned["error"]["code"], -32004);
+    let pruned = receive(&mut control).await;
+    assert_eq!(pruned["error"]["code"], -32004);
+    assert_eq!(
+        call(
+            &mut control,
+            "session.close",
+            json!({"session_id": "third"})
+        )
+        .await["error"]["code"],
+        -32602
+    );
+}
+
+#[tokio::test]
+async fn exhausted_release_of_an_ended_session_keeps_its_stream_and_client_close() {
+    let (f, calls) = scripted_fixture(
+        "max_sessions = 1
+close_retries = 2
+close_retry_ms = 20",
+        "exit-on-write",
+        ads_ptyhost::wire::ErrorCode::InternalError,
+        0,
+        &[("close", 2)],
+    )
+    .await;
+    let mut ws = authenticated(&f).await;
+    call(&mut ws, "session.open", open_params("session")).await;
+    call(
+        &mut ws,
+        "events.subscribe",
+        json!({"stream": "session/session", "after_seq": 0}),
+    )
+    .await;
+    assert_eq!(receive(&mut ws).await["seq"], 1);
+    call(
+        &mut ws,
+        "session.write",
+        json!({"session_id": "session", "data": "YQ=="}),
+    )
+    .await;
+    let ended = receive(&mut ws).await;
+    assert_eq!(ended["seq"], 2);
+    assert_eq!(ended["data"]["reason"], "exit");
+    let closes = || {
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|c| *c == "close")
+            .count()
+    };
+    bounded(async {
+        while closes() < 2 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    // Both automatic attempts were refused: the stream stays whole and the slot stays taken.
+    let mut late = authenticated(&f).await;
+    assert_eq!(
+        call(
+            &mut late,
+            "events.subscribe",
+            json!({"stream": "session/session", "after_seq": 0}),
+        )
+        .await["result"]["accepted"],
+        true
+    );
+    assert_eq!(receive(&mut late).await["seq"], 1);
+    assert_eq!(receive(&mut late).await, ended);
+    assert_eq!(
+        call(&mut late, "session.open", open_params("other")).await["error"]["code"],
+        -32003
+    );
+    assert_eq!(closes(), 2);
+    assert_eq!(
+        call(&mut late, "session.close", json!({"session_id": "session"})).await["result"]["accepted"],
+        true
+    );
+    assert_eq!(
+        call(&mut late, "session.open", open_params("other")).await["result"]["accepted"],
+        true
+    );
+}
+
+#[tokio::test]
+async fn more_sessions_than_the_limit_can_end_on_their_own() {
+    let f = fixture("", Arc::new(TestLauncher)).await;
+    let mut ws = authenticated(&f).await;
+    // The default limit is 32; ending each one on its own must keep the next open working.
+    let total = 40;
+    for index in 0..total {
+        let id = format!("natural-{index}");
+        assert_eq!(
+            call(&mut ws, "session.open", open_params(&id)).await["result"]["accepted"],
+            true,
+            "open {index}"
+        );
+        f.backend.terminals()[index].exit(0);
+        host_sessions_settle(&f, 0).await;
+    }
+    assert!(f.host.sessions().is_empty());
+    assert_eq!(
+        call(&mut ws, "session.open", open_params("after")).await["result"]["accepted"],
+        true
+    );
+    // The last ended session keeps its full stream for a late subscriber.
+    let mut late = authenticated(&f).await;
+    call(
+        &mut late,
+        "events.subscribe",
+        json!({"stream": format!("session/natural-{}", total - 1), "after_seq": 0}),
+    )
+    .await;
+    assert_eq!(
+        receive(&mut late).await["type"],
+        "urn:ads:event:session.created:1"
+    );
+    let ended = receive(&mut late).await;
+    assert_eq!(ended["type"], "urn:ads:event:session.ended:1");
+    assert_eq!(ended["data"]["reason"], "exit");
 }
 
 async fn assert_invalidated_session_closed(f: &Fixture, ws: &mut Socket) {

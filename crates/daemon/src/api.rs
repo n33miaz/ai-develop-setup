@@ -234,6 +234,8 @@ struct Session {
     released: bool,
     /// O `open` falhou depois de chegar ao host: o fechamento confirmado remove o registro e devolve o id.
     failed_open: bool,
+    /// Terminou sozinha e o daemon devolveu a vaga: um `session.close` depois disso é aceito sem efeito.
+    self_released: bool,
 }
 struct Entry {
     key: String,
@@ -344,6 +346,7 @@ impl Service {
                         closing: false,
                         invalidated: false,
                         released: false,
+                        self_released: false,
                     },
                 );
                 let setup = async {
@@ -415,7 +418,7 @@ impl Service {
             .sessions
             .get_mut(id.as_str())
             .ok_or(ApiError::Invalid)?;
-        if session.invalidated && session.released {
+        if session.released && (session.invalidated || session.self_released) {
             return Ok(());
         }
         // Uma sessão encerrada segue no host com a vaga e possíveis filhos vivos até o fechamento.
@@ -492,6 +495,13 @@ impl Service {
         match outcome {
             // Liberada, já fechada pelo cliente ou podada: nada mais a fazer.
             Ok(()) | Err(ApiError::Invalid | ApiError::Host(ErrorCode::UnknownSession)) => {
+                if let Some(session) = self.sessions.get_mut(retry.id.as_str())
+                    && session.generation == retry.generation
+                    && session.released
+                    && !session.invalidated
+                {
+                    session.self_released = true;
+                }
                 return Ok(());
             }
             Err(ApiError::Unavailable) => return Err(ApiError::Unavailable),
@@ -510,12 +520,34 @@ impl Service {
             self.retries.push_back(retry);
         } else {
             eprintln!("ads-daemon: automatic session close failed; session.close is required");
-            self.log
-                .lock()
-                .await
-                .invalidate(retry.id.as_str(), Closing::Failed);
+            // Uma sessão que só terminou guarda o stream inteiro; o `session.close` do cliente segue aceito.
+            if self
+                .sessions
+                .get(retry.id.as_str())
+                .is_some_and(|s| s.invalidated)
+            {
+                self.log
+                    .lock()
+                    .await
+                    .invalidate(retry.id.as_str(), Closing::Failed);
+            }
         }
         Ok(())
+    }
+    /// Uma sessão que terminou sozinha devolve a vaga pela mesma fila do fechamento automático.
+    fn release_ended(&mut self, id: &SessionId) {
+        if let Some(session) = self.sessions.get(id.as_str())
+            && !session.closing
+            && !session.released
+            && !session.invalidated
+        {
+            self.retries.push_back(Retry {
+                id: id.clone(),
+                generation: session.generation,
+                attempts: 0,
+                due: Instant::now(),
+            });
+        }
     }
     async fn invalidate(&mut self, id: SessionId) {
         if let Some(session) = self.sessions.get_mut(id.as_str())
@@ -603,6 +635,7 @@ impl Service {
                 }
                 session.ended = true;
                 self.log.lock().await.append(id, "ended", json!({"session_id": id, "reason": if session.closing || session.released { "killed" } else if exit.exit_code.is_some() { "exit" } else { "error" }, "exit_code": exit.exit_code}), None)?;
+                self.release_ended(&exit.session_id);
             }
             Event::Notification(Notification::SubscriptionClosed(closed))
                 if closed.reason == ads_ptyhost::wire::CloseReason::SessionClosed =>
@@ -623,6 +656,7 @@ impl Service {
                         json!({"session_id": id, "reason": "killed", "exit_code": null}),
                         None,
                     )?;
+                    self.release_ended(&closed.session_id);
                 }
             }
             Event::ResubscribeFailed { session_id, error }
