@@ -744,11 +744,10 @@ ${values.map((v, i) => `    #[serde(rename = ${rustString(v, at)})]\n    ${names
     const unique = node.uniqueItems === true;
     if (min === 0 && max === undefined && !unique) return { ty: `Vec<${item.ty}>`, hash: item.hash };
     const checks = [];
-    const hasMax = max !== undefined && max > 0;
+    const hasMax = max !== undefined;
     if (min > 0 && max !== undefined) checks.push(min === max ? `items.len() == Self::MAX_ITEMS` : `(${min}..=Self::MAX_ITEMS).contains(&items.len())`);
     else if (min === 1) checks.push("!items.is_empty()");
     else if (min > 0) checks.push(`items.len() >= ${min}`);
-    else if (max === 0) checks.push("items.is_empty()");
     else if (max !== undefined) checks.push(`items.len() <= Self::MAX_ITEMS`);
     if (unique) checks.push(`support::${item.hash ? "all_distinct" : "all_distinct_slow"}(&items)`);
     if (unique) this.use("crate::support");

@@ -94,6 +94,12 @@ test("os limites de tamanho viram constantes públicas, a fonte única para quem
   assert.match(list, /impl RecordListV1Item \{\n\s+pub const MAX_CHARS: usize = 9;/);
   assert.match(list, /\(1\.\.=Self::MAX_CHARS\)\.contains\(&length\)/);
   assert.doesNotMatch(generate().get("common_id_v1.rs"), /MAX_CHARS/);
+
+  // `maxItems: 0` também tem a constante, e é ela que a validação usa.
+  put("record.none.v1.schema.json", schema("urn:ads:record:none:1", { type: "array", maxItems: 0 }, []));
+  const none = generate().get("record_none_v1.rs");
+  assert.match(none, /impl RecordNoneV1 \{\n\s+pub const MAX_ITEMS: usize = 0;/);
+  assert.match(none, /items\.len\(\) <= Self::MAX_ITEMS/);
 });
 
 test("a geração é determinística", () => {
