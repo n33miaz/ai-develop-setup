@@ -12,7 +12,19 @@ if (!root) throw new Error('missing #root element')
 const locale = resolveLocale(navigator.language)
 document.documentElement.lang = locale
 
-const { client, live } = selectCoreClient(window)
+/** Inteiro não negativo da configuração, ou `undefined` para o padrão do cliente. */
+function count(value: unknown): number | undefined {
+  const parsed = Number(value)
+  return value !== undefined && value !== '' && Number.isSafeInteger(parsed) && parsed >= 0
+    ? parsed
+    : undefined
+}
+const replayEvents = count(import.meta.env.VITE_CORE_REPLAY_EVENTS)
+const replayBytes = count(import.meta.env.VITE_CORE_REPLAY_BYTES)
+const { client, live } = selectCoreClient(window, undefined, {
+  ...(replayEvents === undefined ? {} : { replayEvents }),
+  ...(replayBytes === undefined ? {} : { replayBytes }),
+})
 const configuredStreams: unknown = import.meta.env.VITE_CORE_SESSION_STREAMS
 const sessionStreams =
   typeof configuredStreams === 'string'

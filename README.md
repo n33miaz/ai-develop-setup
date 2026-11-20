@@ -78,6 +78,18 @@ espera após o último ajuste (padrão recomendado 150 ms, zero desliga a espera
 Essas variáveis são lidas ao iniciar o Vite ou construir a interface; reinicie ou
 reconstrua para alterá-las. Sem callback de entrada, o componente continua só leitura.
 
+O protocolo não cancela assinaturas. Por isso o cliente WebSocket mantém uma só assinatura no
+daemon por stream e conexão e reparte os eventos entre os ouvintes locais, como cada terminal
+montado. Sair só desliga o ouvinte; a assinatura continua, guardando os eventos recentes para quem
+assinar depois, por exemplo ao voltar a uma sessão. Os eventos guardados chegam a esse ouvinte já
+dentro de `subscribe`. Um ouvinte que pede eventos que já não estão guardados recebe só o próprio
+fim (`-32004`), sem nova assinatura no daemon e sem afetar os outros ouvintes nem a conexão.
+`VITE_CORE_REPLAY_EVENTS` (padrão 256) limita os eventos guardados por stream e deve acompanhar
+`events_per_stream` do daemon: com valor menor, quem chega depois recebe menos histórico do que o
+daemon teria. `VITE_CORE_REPLAY_BYTES` (padrão 4194304) limita os bytes guardados por stream, medidos
+nas mensagens recebidas. Com 0 em qualquer um deles nada fica guardado, e quem chega depois pedindo
+eventos já recebidos termina com `-32004`. Valores inválidos voltam ao padrão.
+
 O contrato atual não traz um marcador de fim do replay nem seu último `seq`.
 Na API local, os eventos chegam em ordem de sequência; a fonte classifica como
 histórico cada bloco cujo `ts` é anterior ou igual ao instante local da assinatura.

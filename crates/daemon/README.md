@@ -152,8 +152,9 @@ Padrões em [defaults/daemon.toml](../../defaults/daemon.toml), aplicados ao ini
 | `accept_retry_ms` | 50 | Espera após erro de aceitação TCP; reduz tentativas sob falta de recursos. |
 | `max_message_bytes` | 131072 | Limite de mensagem e quadro WebSocket recebido; reduzir pode impedir escritas grandes. |
 | `send_timeout_ms` | 5000 | Prazo por envio; cliente lento é desconectado. |
-| `host_timeout_ms` | 10000 | Prazo único por comando no host e na conexão inicial. Cada chamada ao host começa dentro do prazo. Falha encerra o serviço para evitar repetir efeito incerto. Duas exceções não encerram: no fechamento automático o prazo esgotado conta como tentativa falha, e na preparação depois de um `session.open` confirmado ele responde `-32014` (`session setup failed`), como qualquer outra falha dessa etapa (ver abaixo). |
+| `host_timeout_ms` | 10000 | Prazo único por comando no host e na conexão inicial. Cada chamada ao host começa dentro do prazo, e uma resposta já recebida vale mesmo se o prazo vencer enquanto o daemon trata um evento do host. Falha encerra o serviço para evitar repetir efeito incerto. Duas exceções não encerram: no fechamento automático o prazo esgotado conta como tentativa falha, e na preparação depois de um `session.open` confirmado ele responde `-32014` (`session setup failed`), como qualquer outra falha dessa etapa (ver abaixo). |
 | `retired_sessions` | 1024 | Ids de sessões podadas que não podem ser reabertos nesta execução (acima do limite, o mais antigo volta a ser aceito) e, em separado, streams assinados antes do `session.open` (acima do limite, a espera mais antiga termina com `-32004` no id da assinatura, mesmo se a conexão estiver ociosa). |
+| `subscription_ids_per_stream` | 2 | Ids de assinatura por conexão: este valor vezes `max_sessions`. Reassinar a mesma encarnação na mesma conexão soma um id, que só sai quando o stream termina; ids de encarnação já terminada não contam. A interface mantém uma assinatura por stream e conexão, então raramente passa de um id por stream; aumente para clientes que reassinam muito. |
 | `close_retries` | 3 | Tentativas do fechamento automático de sessão invalidada, de `open` que falhou ou de sessão que terminou sozinha; esgotadas numa sessão invalidada, a assinatura do stream recebe `-32013`. |
 | `close_retry_ms` | 1000 | Espera entre tentativas do fechamento automático. |
 
@@ -171,8 +172,9 @@ durante as tentativas e `-32013` depois delas, até um `session.close` confirmad
 retido. Cada tentativa vale só para a instância da sessão que a gerou e é
 descartada quando a vaga é devolvida. Se um `open` falhar depois de o host abrir o
 terminal, seja pelo prazo, seja por recusa do host ou do registro, a resposta é
-sempre `-32014` (`session setup failed`); só uma falha que encerra o serviço, como
-a perda do host, responde `-32603`. Recusas anteriores ao terminal aberto mantêm o próprio código.
+sempre `-32014` (`session setup failed`), inclusive com a fila de pedidos do cliente do host
+cheia; só uma falha que encerra o serviço, como a perda do host ou a parada do cliente dele por
+qualquer causa, responde `-32603`. Recusas anteriores ao terminal aberto mantêm o próprio código.
 Com `-32014`, o fechamento vai para a mesma fila, com prazo próprio por tentativa;
 o registro e a vaga ficam até o host confirmar, e então o id volta a ser aceito.
 A conexão que abriu não recebe nenhum evento dessa sessão: os eventos só seguem
@@ -209,7 +211,13 @@ seguintes. Assinaturas novas são validadas pelo estado atual.
 Uma execução conserva no máximo `2 × max_sessions × events_per_stream` eventos
 (um stream que sai do log, mesmo ainda assinado, descarta os seus);
 o tamanho de cada saída também é limitado pelo quadro do cliente do host.
-Assinaturas por conexão são limitadas a `max_sessions`. Filas, conexões e chaves
+Assinaturas por conexão são limitadas a `max_sessions` streams. Assinar de novo, na mesma
+conexão, a mesma encarnação de um stream junta o id à assinatura existente: a entrega segue um
+cursor só, o menor pedido, e o resultado final chega a cada id. Se o novo `after_seq` for menor que
+o que já saiu, os eventos desde ele saem de novo; o consumidor descarta por `seq` o que já tinha. Os
+ids por conexão são limitados a `subscription_ids_per_stream × max_sessions`, sem contar os de
+encarnação já terminada; acima disso a assinatura é recusada com `-32003`. Se a encarnação
+assinada antes já terminou, o fim dela chega aos ids antigos antes da confirmação da nova. Filas, conexões e chaves
 também têm limites separados. Seq e offset recomeçam ao reiniciar.
 
 Uma chave ainda retida com o mesmo método e parâmetros devolve `replayed: true`,
@@ -291,7 +299,9 @@ limites do host. Não há salto silencioso quando o replay foi descartado. Após
 do host; `queue_capacity` usa `subscriber_queue_chunks`. Este último limita a fila
 de eventos, a fila de comandos e o número de pedidos pendentes. Para consumidores comuns, uma fila de eventos
 cheia encerra a conexão com `Capacity`; o consumidor drena os eventos já guardados
-e reconecta com a última sequência consumida. A composição da API habilita contrapressão nessa fila e a consome também ao
+e reconecta com a última sequência consumida. Depois que o cliente para, qualquer que seja a
+causa, toda chamada responde `Disconnected`, e só `next` informa a causa; numa chamada,
+`Capacity` significa apenas fila de pedidos cheia, com o cliente ainda ativo. A composição da API habilita contrapressão nessa fila e a consome também ao
 esperar respostas, preservando o canal sob rajadas de saída. A memória é limitada pelo produto do
 limite de quadro pelo tamanho das filas, além dos comandos fornecidos pelo chamador.
 Erros guardam apenas categorias, códigos e limites; mensagens do host e payloads
@@ -315,7 +325,12 @@ Configura `claude` e `codex` com o programa `cmd.exe` e argumentos fixos
 `ANTHROPIC_API_KEY` e `OPENAI_API_KEY` com um valor de teste. Pela API WebSocket,
 confere que a chave chega literal ao filho (`%...%` não expandido, ou seja, a
 variável não existe nele) e que `SystemRoot`, permitida, chega com o valor do
-pai; depois encerra o host de teste. Não abre agentes nem shells interativos. Os demais testes usam `FakeBackend` e rodam também em Linux.
+pai; depois encerra o host de teste. Não abre agentes nem shells interativos. Só no Windows,
+`ended_session_leaves_no_child_behind_on_windows` (`tests/local_api.rs`) roda o host no próprio
+processo de teste com ConPTY: um `cmd.exe` abre outro, minimizado num console próprio, que espera
+60 s com `timeout.exe`, e sai depois de 3 s. O teste acha esse filho pelo processo pai, não pela lista
+do Job Object, confere que ele está no job e que, quando o daemon devolve a vaga sozinho, ele e o que
+iniciou não continuam vivos. Fechar o console do terminal não o encerraria; só o job encerra. Os demais testes usam `FakeBackend` e rodam também em Linux.
 
 Para desfazer a integração, remova o consumidor da biblioteca; nenhuma sessão é
 migrada nem formato de armazenamento é alterado. A contiguidade de `seq`, os códigos

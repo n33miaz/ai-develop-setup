@@ -1053,6 +1053,7 @@ async fn scripted_fixture(
         let mut released = false;
         let mut dropped = false;
         let mut held = false;
+        let mut other_exited = false;
         let mut subscriptions = 0;
         while let Ok(Some(wire::Frame::Json(payload))) = wire::read_frame(&mut far, 131072).await {
             let request = wire::Request::parse(&payload).unwrap();
@@ -1083,6 +1084,42 @@ async fn scripted_fixture(
                 // The host opened the terminal but never answers the subscription.
                 held = true;
                 continue;
+            }
+            if method == "subscribe" && target == "host-lost-on-subscribe" {
+                // The host goes away after opening the terminal, before answering the subscription.
+                break;
+            }
+            if method == "subscribe" && target == "flood-on-subscribe" {
+                // The host stops reading and keeps asking for resubscriptions: the client's
+                // outgoing queue fills and the client stops.
+                let notice = wire::encode_json(&wire::Notification::SubscriptionClosed(
+                    wire::SubscriptionClosed {
+                        session_id: wire::SessionId::new("x").unwrap(),
+                        last_seq: 0,
+                        reason: wire::CloseReason::SlowSubscriber,
+                    },
+                ))
+                .unwrap();
+                while far.write_all(&notice).await.is_ok() {}
+                break;
+            }
+            if method == "subscribe" && target == "busy-on-open" {
+                // Resubscriptions stay unanswered and take every pending call of the client.
+                continue;
+            }
+            if method == "close" && target.starts_with("exit-other-") && !other_exited {
+                // Another session ends while the daemon waits for this close.
+                other_exited = true;
+                far.write_all(
+                    &wire::encode_json(&wire::Notification::SessionExited(wire::SessionExited {
+                        session_id: wire::SessionId::new("b").unwrap(),
+                        last_seq: 0,
+                        exit_code: Some(0),
+                    }))
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
             }
             if method == "close" && target.ends_with("drop-close") && !dropped {
                 // The first close never gets a reply, as if the host stalled on it.
@@ -1187,6 +1224,22 @@ async fn scripted_fixture(
                 released = true;
                 peer_release.notified().await;
             }
+            if matches!(request.call, Call::Open(_)) && target == "busy-on-open" {
+                for name in ["x", "y"] {
+                    far.write_all(
+                        &wire::encode_json(&wire::Notification::SubscriptionClosed(
+                            wire::SubscriptionClosed {
+                                session_id: wire::SessionId::new(name).unwrap(),
+                                last_seq: 0,
+                                reason: wire::CloseReason::SlowSubscriber,
+                            },
+                        ))
+                        .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                }
+            }
             if let Call::Write(params) = &request.call {
                 if target == "stall" {
                     std::future::pending::<()>().await;
@@ -1206,6 +1259,22 @@ async fn scripted_fixture(
                     .unwrap();
                 }
                 match target {
+                    "exit-other-then-hold-close" | "exit-other-then-drop-close"
+                        if params.session_id.as_str() == "a" =>
+                    {
+                        far.write_all(
+                            &wire::encode_json(&wire::Notification::SessionExited(
+                                wire::SessionExited {
+                                    session_id: params.session_id.clone(),
+                                    last_seq: 0,
+                                    exit_code: Some(0),
+                                },
+                            ))
+                            .unwrap(),
+                        )
+                        .await
+                        .unwrap()
+                    }
                     "gap-output" | "gap-output-drop-close" => far
                         .write_all(
                             &wire::encode_output(&params.session_id, 2, b"terminal-sentinel")
@@ -1843,7 +1912,7 @@ async fn unknown_session_on_the_automatic_release_keeps_the_natural_end() {
 #[tokio::test]
 async fn refused_release_of_an_ended_session_never_reaches_a_reopened_id() {
     let (f, calls) = scripted_fixture(
-        "max_sessions = 1\nretired_sessions = 1\nclose_retry_ms = 1000",
+        "max_sessions = 1\nretired_sessions = 1\nclose_retry_ms = 20",
         "exit-on-write",
         ads_ptyhost::wire::ErrorCode::InternalError,
         0,
@@ -1851,6 +1920,9 @@ async fn refused_release_of_an_ended_session_never_reaches_a_reopened_id() {
     )
     .await;
     let mut ws = authenticated(&f).await;
+    // Only the first automatic attempt passes; the repeated one waits at the barrier.
+    f.hooks.automatic_close.hold();
+    f.hooks.automatic_close.admit_one();
     call(&mut ws, "session.open", open_params("a")).await;
     call(
         &mut ws,
@@ -1858,7 +1930,6 @@ async fn refused_release_of_an_ended_session_never_reaches_a_reopened_id() {
         json!({"session_id": "a", "data": "YQ=="}),
     )
     .await;
-    // The first automatic attempt is refused; the next one waits a second.
     wait_closes(&calls, 1).await;
     assert_eq!(
         call(&mut ws, "session.close", json!({"session_id": "a"})).await["result"]["accepted"],
@@ -1867,6 +1938,9 @@ async fn refused_release_of_an_ended_session_never_reaches_a_reopened_id() {
     // The second close of "a" was the client's: the daemon sent only the refused one.
     assert_eq!(close_calls(&calls), 2);
     assert_eq!(f.hooks.automatic_closes(), 1);
+    // Returning the slot dropped the held attempt.
+    assert_eq!(f.hooks.queued_closes(), 0);
+    f.hooks.automatic_close.release();
     // Another released session prunes "a"; its tombstone keeps the id taken.
     call(&mut ws, "session.open", open_params("b")).await;
     call(&mut ws, "session.close", json!({"session_id": "b"})).await;
@@ -1887,19 +1961,15 @@ async fn refused_release_of_an_ended_session_never_reaches_a_reopened_id() {
         true
     );
     let closes = close_calls(&calls);
-    tokio::time::sleep(Duration::from_millis(1300)).await;
-    assert_eq!(
-        call(&mut ws, "unknown", json!({})).await["error"]["code"],
-        -32601
-    );
-    assert_eq!(close_calls(&calls), closes);
-    assert_eq!(f.hooks.automatic_closes(), 1);
+    assert_eq!(f.hooks.queued_closes(), 0);
     // The new generation is still active.
     let resize = json!({"session_id": "a", "cols": 100, "rows": 30});
     assert_eq!(
         call(&mut ws, "session.resize", resize.clone()).await["result"]["accepted"],
         true
     );
+    assert_eq!(close_calls(&calls), closes);
+    assert_eq!(f.hooks.automatic_closes(), 1);
     // As documented, a close by the reused id refers to the current session.
     assert_eq!(
         call(&mut ws, "session.close", json!({"session_id": "a"})).await["result"]["accepted"],
@@ -3179,4 +3249,397 @@ async fn a_client_that_never_lists_tools_only_receives_first_version_frames() {
         call(&mut ws, "session.close", json!({"session_id": "legacy"})).await["result"]["accepted"],
         true
     );
+}
+
+#[tokio::test]
+async fn host_lost_during_setup_answers_unavailable() {
+    // Either the channel drops, or the client stops on its own full queue: the service ends.
+    for target in ["host-lost-on-subscribe", "flood-on-subscribe"] {
+        let (mut f, _) =
+            refusing_fixture("", target, ads_ptyhost::wire::ErrorCode::InternalError, 0).await;
+        let mut ws = authenticated(&f).await;
+        transmit(&mut ws, &command("session.open", open_params("session"))).await;
+        // The command itself stops the service, instead of a later turn of the loop.
+        assert_eq!(
+            bounded(&mut f.api).await.unwrap(),
+            Err(ApiError::Unavailable),
+            "{target}"
+        );
+        // The connection may close before the reply goes out; a reply that does says unavailable.
+        if let Some(Ok(Message::Text(text))) = bounded(ws.next()).await {
+            let reply: Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(reply["error"]["code"], -32603, "{target}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn full_host_queue_during_setup_keeps_the_service() {
+    let (f, calls) = refusing_fixture(
+        "",
+        "busy-on-open",
+        ads_ptyhost::wire::ErrorCode::InternalError,
+        0,
+    )
+    .await;
+    let mut ws = authenticated(&f).await;
+    // The client refuses the subscription itself: setup failed, close scheduled, service alive.
+    assert_eq!(
+        call(&mut ws, "session.open", open_params("session")).await["error"]["code"],
+        -32014
+    );
+    wait_until(|| calls.lock().unwrap().len() >= 4).await;
+    assert_eq!(
+        &*calls.lock().unwrap(),
+        &["hello", "open", "subscribe", "subscribe"]
+    );
+    assert_eq!(
+        call(
+            &mut ws,
+            "events.subscribe",
+            json!({"stream": "session/alive", "after_seq": 0})
+        )
+        .await["result"]["accepted"],
+        true
+    );
+    assert!(!f.api.is_finished());
+}
+
+#[tokio::test]
+async fn repeated_subscription_on_one_connection_gets_every_final_result() {
+    let f = fixture("max_sessions = 1", Arc::new(TestLauncher)).await;
+    let mut ws = authenticated(&f).await;
+    let mut control = authenticated(&f).await;
+    let subscribe = || {
+        command(
+            "events.subscribe",
+            json!({"stream": "session/a", "after_seq": 0}),
+        )
+    };
+    let (first, second) = (subscribe(), subscribe());
+    for request in [&first, &second] {
+        transmit(&mut ws, request).await;
+        let reply = receive(&mut ws).await;
+        assert_eq!(reply["id"], request["id"]);
+        assert_eq!(reply["result"]["accepted"], true);
+    }
+    // Ids per connection are bounded too.
+    let third = subscribe();
+    transmit(&mut ws, &third).await;
+    let refused = receive(&mut ws).await;
+    assert_eq!(refused["id"], third["id"]);
+    assert_eq!(refused["error"]["code"], -32003);
+    call(&mut control, "session.open", open_params("a")).await;
+    call(&mut control, "session.close", json!({"session_id": "a"})).await;
+    // Another closed session prunes "a": every subscription gets its final result.
+    call(&mut control, "session.open", open_params("b")).await;
+    call(&mut control, "session.close", json!({"session_id": "b"})).await;
+    let mut seqs = Vec::new();
+    let mut ended = Vec::new();
+    while ended.len() < 2 {
+        let frame = receive(&mut ws).await;
+        if let Some(seq) = frame["seq"].as_u64() {
+            seqs.push(seq);
+        } else {
+            assert_eq!(frame["error"]["code"], -32004);
+            ended.push(frame["id"].clone());
+        }
+    }
+    // Each event went out once, and each id got its own end.
+    assert!(!seqs.is_empty());
+    assert!(seqs.windows(2).all(|w| w[1] == w[0] + 1), "{seqs:?}");
+    assert!(ended.contains(&first["id"]) && ended.contains(&second["id"]));
+}
+
+#[tokio::test]
+async fn repeated_subscription_with_a_lower_cursor_sends_events_again() {
+    let f = fixture("", Arc::new(TestLauncher)).await;
+    let mut ws = authenticated(&f).await;
+    let mut control = authenticated(&f).await;
+    call(&mut control, "session.open", open_params("a")).await;
+    let resize = |cols: u64| json!({"session_id": "a", "cols": cols, "rows": 24});
+    call(&mut control, "session.resize", resize(90)).await;
+    call(
+        &mut ws,
+        "events.subscribe",
+        json!({"stream": "session/a", "after_seq": 0}),
+    )
+    .await;
+    assert_eq!(receive(&mut ws).await["seq"], 1);
+    assert_eq!(receive(&mut ws).await["seq"], 2);
+    // The second subscription asks from the start: the shared cursor goes back and 1 and 2 go out again.
+    call(
+        &mut ws,
+        "events.subscribe",
+        json!({"stream": "session/a", "after_seq": 0}),
+    )
+    .await;
+    assert_eq!(receive(&mut ws).await["seq"], 1);
+    assert_eq!(receive(&mut ws).await["seq"], 2);
+    call(&mut control, "session.resize", resize(100)).await;
+    assert_eq!(receive(&mut ws).await["seq"], 3);
+    // Nothing else is pending: the next frame answers this request.
+    assert_eq!(
+        call(&mut ws, "unknown", json!({})).await["error"]["code"],
+        -32601
+    );
+}
+
+#[tokio::test]
+async fn ended_incarnation_answers_its_ids_before_the_new_subscription() {
+    let (f, calls) = scripted_fixture(
+        "max_sessions = 1\nretired_sessions = 1",
+        "exit-then-hold-close",
+        ads_ptyhost::wire::ErrorCode::InternalError,
+        0,
+        &[],
+    )
+    .await;
+    let mut watcher = authenticated(&f).await;
+    let mut other = authenticated(&f).await;
+    let mut control = authenticated(&f).await;
+    let first = command(
+        "events.subscribe",
+        json!({"stream": "session/a", "after_seq": 0}),
+    );
+    transmit(&mut watcher, &first).await;
+    assert_eq!(receive(&mut watcher).await["result"]["accepted"], true);
+    // The service waits for the host while the next commands queue behind the close.
+    call(&mut control, "session.open", open_params("s")).await;
+    let close = command("session.close", json!({"session_id": "s"}));
+    transmit(&mut control, &close).await;
+    wait_until(|| calls.lock().unwrap().iter().any(|c| c == "close")).await;
+    let queued = f.hooks.queued_commands();
+    // Queued first: a subscription that pushes the waiting "a" out of the quota.
+    transmit(
+        &mut other,
+        &command(
+            "events.subscribe",
+            json!({"stream": "session/b", "after_seq": 0}),
+        ),
+    )
+    .await;
+    wait_until(|| f.hooks.queued_commands() == queued + 1).await;
+    // Queued second: the watcher subscribes "a" again and waits for the answer, without delivering.
+    let second = command(
+        "events.subscribe",
+        json!({"stream": "session/a", "after_seq": 0}),
+    );
+    transmit(&mut watcher, &second).await;
+    wait_until(|| f.hooks.queued_commands() == queued + 2).await;
+    f.release.notify_one();
+    assert_eq!(receive(&mut control).await["id"], close["id"]);
+    let ended = receive(&mut watcher).await;
+    assert_eq!(ended["id"], first["id"]);
+    assert_eq!(ended["error"]["code"], -32004);
+    let confirmed = receive(&mut watcher).await;
+    assert_eq!(confirmed["id"], second["id"]);
+    assert_eq!(confirmed["result"]["accepted"], true);
+}
+
+async fn host_event_during_an_automatic_close(target: &'static str) {
+    let (f, calls) = scripted_fixture(
+        "max_sessions = 2\nhost_timeout_ms = 300\nclose_retry_ms = 20",
+        target,
+        ads_ptyhost::wire::ErrorCode::InternalError,
+        0,
+        &[],
+    )
+    .await;
+    let mut watcher = authenticated(&f).await;
+    let mut control = authenticated(&f).await;
+    call(&mut control, "session.open", open_params("a")).await;
+    call(&mut control, "session.open", open_params("b")).await;
+    call(
+        &mut watcher,
+        "events.subscribe",
+        json!({"stream": "session/b", "after_seq": 0}),
+    )
+    .await;
+    assert_eq!(receive(&mut watcher).await["seq"], 1);
+    // "a" ends; the host holds the automatic close of "a" and reports the end of "b" meanwhile.
+    call(
+        &mut control,
+        "session.write",
+        json!({"session_id": "a", "data": "YQ=="}),
+    )
+    .await;
+    let ended = receive(&mut watcher).await;
+    assert_eq!(ended["type"], "urn:ads:event:session.ended:1");
+    assert_eq!(ended["data"]["reason"], "exit");
+    if target.ends_with("hold-close") {
+        // The event came while the close of "a" still had no reply.
+        assert_eq!(close_calls(&calls), 1);
+        f.release.notify_one();
+    }
+    // After the reply, or after the deadline and one more attempt, both slots come back.
+    let expected = if target.ends_with("hold-close") { 2 } else { 3 };
+    wait_closes(&calls, expected).await;
+    for id in ["c", "d"] {
+        assert_eq!(
+            call(&mut control, "session.open", open_params(id)).await["result"]["accepted"],
+            true,
+            "{target}"
+        );
+    }
+    assert_eq!(close_calls(&calls), expected);
+    assert_eq!(f.hooks.automatic_closes(), expected);
+    assert!(!f.api.is_finished());
+}
+
+#[tokio::test]
+async fn host_event_during_an_automatic_close_is_handled() {
+    host_event_during_an_automatic_close("exit-other-then-hold-close").await;
+}
+
+#[tokio::test]
+async fn host_event_during_a_timed_out_automatic_close_is_handled() {
+    host_event_during_an_automatic_close("exit-other-then-drop-close").await;
+}
+
+/// A real shell that starts a second interpreter in a console of its own, then exits after 3 s.
+/// The second one waits 60 s: closing the shell's console does not end it, only its Job Object does.
+#[cfg(windows)]
+struct LeftBehindLauncher;
+#[cfg(windows)]
+impl Launcher for LeftBehindLauncher {
+    fn prepare(&self, request: &CommandSessionOpenV1Params) -> Result<OpenParams, ApiError> {
+        // Only what a system command needs to run; nothing else reaches the shell.
+        let env: serde_json::Map<String, Value> = std::env::vars()
+            .filter(|(name, _)| {
+                ["SystemRoot", "windir", "ComSpec", "PATH", "PATHEXT"]
+                    .iter()
+                    .any(|allowed| allowed.eq_ignore_ascii_case(name))
+            })
+            .map(|(name, value)| (name, Value::String(value)))
+            .collect();
+        let system = r"%SystemRoot%\System32";
+        let line = format!(
+            r"start /min {system}\cmd.exe /d /c {system}\timeout.exe /t 60 /nobreak & {system}\timeout.exe /t 3 /nobreak >nul"
+        );
+        serde_json::from_value(json!({
+            "session_id": request.session_id, "cols": request.cols, "rows": request.rows,
+            "program": "cmd.exe", "args": ["/d", "/c", line], "cwd": null, "env": env
+        }))
+        .map_err(|_| ApiError::Invalid)
+    }
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn ended_session_leaves_no_child_behind_on_windows() {
+    use ads_ptyhost::{
+        PortablePtyBackend,
+        win::{ProcessProbe, process_table},
+    };
+    let host =
+        Arc::new(PtyHost::new(Arc::new(PortablePtyBackend), HostConfig::defaults()).unwrap());
+    let (near, far) = tokio::io::duplex(262144);
+    let peer = tokio::spawn(server::connection(host.clone(), far));
+    let client = bounded(PtyClient::over(
+        near,
+        ClientConfig::recommended(host.config()),
+    ))
+    .await
+    .unwrap();
+    let api = LocalApi::bind(
+        ApiConfig::from_toml_str("max_sessions = 1").unwrap(),
+        client,
+        Arc::new(LeftBehindLauncher),
+    )
+    .await
+    .unwrap();
+    let token = api
+        .launch_url()
+        .unwrap()
+        .split_once("&token=")
+        .unwrap()
+        .1
+        .to_owned();
+    let f = Fixture {
+        port: api.port().unwrap(),
+        token,
+        backend: Arc::new(FakeBackend::new()),
+        host: host.clone(),
+        hooks: api.test_hooks(),
+        release: Arc::default(),
+        api: tokio::spawn(api.run()),
+        peer,
+    };
+    let mut ws = authenticated(&f).await;
+    call(
+        &mut ws,
+        "events.subscribe",
+        json!({"stream": "session/tree", "after_seq": 0}),
+    )
+    .await;
+    assert_eq!(
+        call(&mut ws, "session.open", open_params("tree")).await["result"]["accepted"],
+        true
+    );
+    let id = ads_ptyhost::wire::SessionId::new("tree").unwrap();
+    // The shell is the session process whose parent is this test, which runs the host.
+    let me = std::process::id();
+    let children_of = |parent: u32| -> Vec<u32> {
+        process_table()
+            .unwrap()
+            .into_iter()
+            .filter(|entry| entry.parent_process_id == parent)
+            .map(|entry| entry.process_id)
+            .collect()
+    };
+    let mut shell = None;
+    let mut left = Vec::new();
+    bounded(async {
+        while left.len() < 2 {
+            let tree = host.tree_process_ids(&id).unwrap_or_default();
+            shell = shell.or_else(|| {
+                tree.iter()
+                    .copied()
+                    .find(|pid| children_of(me).contains(pid))
+            });
+            // Found by parent, not by the Job Object's list: the interpreter the shell started in a
+            // console of its own (the shell's child that has children) and its 60 s wait.
+            left = shell
+                .into_iter()
+                .flat_map(&children_of)
+                .filter_map(|pid| {
+                    let below = children_of(pid);
+                    (!below.is_empty()).then(|| [vec![pid], below].concat())
+                })
+                .next()
+                .unwrap_or_default();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    let tree = host.tree_process_ids(&id).unwrap();
+    let probes: Vec<ProcessProbe> = left
+        .iter()
+        .map(|pid| ProcessProbe::open(*pid).expect("open a left-behind process"))
+        .collect();
+    for (pid, probe) in left.iter().zip(&probes) {
+        assert!(probe.is_alive().expect("query a left-behind process"));
+        assert!(tree.contains(pid), "{pid} outside the job: {tree:?}");
+    }
+    loop {
+        let event = receive(&mut ws).await;
+        if event["type"] == "urn:ads:event:session.ended:1" {
+            assert_eq!(event["data"]["reason"], "exit");
+            break;
+        }
+    }
+    // The daemon gives the slot back on its own, and what ran in its own console is gone too.
+    let alive = || {
+        probes
+            .iter()
+            .any(|p| p.is_alive().expect("query a left-behind process"))
+    };
+    bounded(async {
+        while !host.sessions().is_empty() || alive() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert_eq!(f.hooks.automatic_closes(), 1);
 }

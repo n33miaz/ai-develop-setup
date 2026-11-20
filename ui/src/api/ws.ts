@@ -25,6 +25,14 @@ export interface WsClientOptions {
   socketFactory?: (url: string) => CoreSocket
   /** Prazo de `harness.list`; ao vencer, o pedido é esquecido e a consulta falha. */
   listTimeoutMs?: number
+  /**
+   * Eventos recentes guardados por stream para quem assina depois, sem nova assinatura no núcleo.
+   * Deve andar junto com `events_per_stream` do daemon (padrão 256 nos dois). Com 0 nada fica
+   * guardado: quem chega depois e pede eventos já recebidos termina com `-32004`.
+   */
+  replayEvents?: number
+  /** Teto em bytes do que fica guardado por stream, medido nas mensagens recebidas. */
+  replayBytes?: number
 }
 
 function accepted(response: Reply): boolean {
@@ -39,6 +47,8 @@ export function createWsCoreClient({
   token,
   socketFactory = (url) => new WebSocket(url),
   listTimeoutMs = 10000,
+  replayEvents = 256,
+  replayBytes = 4 * 1024 * 1024,
 }: WsClientOptions): CoreClient {
   let endpoint: URL
   try {
@@ -67,16 +77,28 @@ export function createWsCoreClient({
     string,
     { method: string; resolve: (response: Reply) => void; reject: (error: Error) => void }
   >()
-  interface Subscription {
-    stream: string
+  interface Listener {
     seq: number
     onEvent: (event: EventEnvelopeV1) => void
     onEnd?: (code: SubscriptionEndCode) => void
   }
-  const subscriptions = new Set<Subscription>()
+  // O protocolo não cancela assinaturas: uma assinatura no núcleo por stream e conexão serve a todos
+  // os ouvintes locais e continua depois que o último sai, guardando os eventos recentes para quem
+  // vier depois. Um ouvinte que pede eventos que já não estão guardados recebe só o próprio fim.
+  interface Shared {
+    stream: string
+    /** `after_seq` pedido ao núcleo. */
+    start: number
+    /** Maior `seq` recebido. */
+    last: number
+    events: { event: EventEnvelopeV1; size: number }[]
+    bytes: number
+    listeners: Set<Listener>
+  }
+  const streams = new Map<string, Shared>()
   // O resultado final de uma assinatura chega como resposta ao id do `events.subscribe`, mesmo
-  // depois de ela ter sido aceita; por isso o id continua ligado à assinatura enquanto ela vive.
-  const subscriptionRequests = new Map<string, Subscription>()
+  // depois de ela ter sido aceita; por isso o id continua ligado ao stream enquanto ele vive.
+  const subscriptionRequests = new Map<string, Shared>()
   const unavailable = () => new CoreClientError('not_connected', 'core disconnected')
   const setState = (next: ConnectionState) => {
     if (state === next) return
@@ -89,7 +111,7 @@ export function createWsCoreClient({
     connecting = null
     rejectConnection?.(unavailable())
     rejectConnection = null
-    subscriptions.clear()
+    streams.clear()
     subscriptionRequests.clear()
     expired.clear()
     for (const request of pending.values()) request.reject(unavailable())
@@ -97,12 +119,49 @@ export function createWsCoreClient({
     setState('disconnected')
     previous?.close()
   }
-  function endSubscription(id: string, code: SubscriptionEndCode) {
-    const subscription = subscriptionRequests.get(id)
-    subscriptionRequests.delete(id)
-    if (!subscription || !subscriptions.has(subscription)) return
-    subscriptions.delete(subscription)
-    subscription.onEnd?.(code)
+  /** Encerra o stream inteiro: o núcleo termina juntas as assinaturas da mesma encarnação. */
+  function endStream(shared: Shared, code?: SubscriptionEndCode) {
+    if (streams.get(shared.stream) !== shared) return
+    streams.delete(shared.stream)
+    for (const [id, owner] of subscriptionRequests) {
+      if (owner === shared) subscriptionRequests.delete(id)
+    }
+    const listeners = [...shared.listeners]
+    shared.listeners.clear()
+    if (code === undefined) return
+    for (const listener of listeners) listener.onEnd?.(code)
+  }
+  /** Entrega um evento a um ouvinte; false quando há buraco na sequência. */
+  function deliver(listener: Listener, event: EventEnvelopeV1): boolean {
+    if (event.seq <= listener.seq) return true
+    // O servidor entrega o replay em ordem; um buraco encerra a conexão sem perder dados silenciosamente.
+    if (listener.seq !== 0 && event.seq !== listener.seq + 1) return false
+    listener.seq = event.seq
+    listener.onEvent(event)
+    return true
+  }
+  /** Guarda o evento recebido em ordem, descartando os mais antigos acima dos tetos. */
+  function remember(shared: Shared, event: EventEnvelopeV1, size: number) {
+    if (
+      replayEvents <= 0 ||
+      replayBytes <= 0 ||
+      event.seq <= (shared.events.at(-1)?.event.seq ?? 0)
+    )
+      return
+    shared.events.push({ event, size })
+    shared.bytes += size
+    while (shared.events.length > replayEvents || shared.bytes > replayBytes) {
+      shared.bytes -= shared.events.shift()?.size ?? 0
+    }
+  }
+  /** Os eventos guardados bastam para um ouvinte que começa depois de `afterSeq`. */
+  function covers(shared: Shared, afterSeq: number): boolean {
+    if (afterSeq >= shared.last) return true
+    if (replayEvents <= 0 || replayBytes <= 0 || afterSeq < shared.start) return false
+    // A partir de 0 o núcleo também só reenviaria o que ainda retém.
+    if (afterSeq === 0 && shared.start === 0) return true
+    const oldest = shared.events[0]?.event.seq
+    return oldest !== undefined && oldest <= afterSeq + 1
   }
   function transmit(command: CommandRequestV1): Promise<Reply> {
     if (!isLocalCommand(command)) return Promise.reject(new Error('invalid local command'))
@@ -199,15 +258,19 @@ export function createWsCoreClient({
               return
             }
             pending.delete(response.id)
-            // Resposta de assinatura ativa, inicial ou tardia: -32004 e -32013 encerram só ela;
-            // outro erro não tem explicação e derruba a conexão. Assinatura cancelada não chega aqui.
-            if (subscriptionRequests.has(response.id) && 'error' in response) {
+            // Resposta de assinatura, inicial ou tardia: -32004 e -32013 encerram só o stream dela;
+            // outro erro não tem explicação e derruba a conexão, a menos que ninguém mais ouça o stream.
+            const shared = subscriptionRequests.get(response.id)
+            if (shared && 'error' in response) {
               const { code } = response.error
-              if (!isSubscriptionEndCode(code)) {
+              if (shared.listeners.size === 0) {
+                endStream(shared)
+              } else if (!isSubscriptionEndCode(code)) {
                 fail()
                 return
+              } else {
+                endStream(shared, code)
               }
-              endSubscription(response.id, code)
             }
             request?.resolve(response)
           } else {
@@ -220,16 +283,16 @@ export function createWsCoreClient({
               fail()
               return
             }
-            for (const subscription of [...subscriptions]) {
-              if (state !== 'connected' || !subscriptions.has(subscription)) continue
-              if (event.stream !== subscription.stream || event.seq <= subscription.seq) continue
-              // O servidor entrega o replay em ordem; um buraco encerra a conexão sem perder dados silenciosamente.
-              if (subscription.seq !== 0 && event.seq !== subscription.seq + 1) {
+            const shared = streams.get(event.stream)
+            if (!shared) return
+            remember(shared, event, String(message.data).length)
+            shared.last = Math.max(shared.last, event.seq)
+            for (const listener of [...shared.listeners]) {
+              if (state !== 'connected' || !shared.listeners.has(listener)) continue
+              if (!deliver(listener, event)) {
                 fail()
                 return
               }
-              subscription.seq = event.seq
-              subscription.onEvent(event)
             }
           }
         })
@@ -277,17 +340,45 @@ export function createWsCoreClient({
     },
     subscribe(stream, afterSeq, onEvent, onEnd) {
       if (state !== 'connected') throw unavailable()
-      const subscription: Subscription = { stream, seq: afterSeq, onEvent }
-      if (onEnd) subscription.onEnd = onEnd
-      const command = newCommand('events.subscribe', { stream, after_seq: afterSeq })
-      subscriptions.add(subscription)
-      subscriptionRequests.set(command.id, subscription)
-      void transmit(command).catch(() => undefined)
-      return () => {
-        subscriptions.delete(subscription)
-        subscriptionRequests.delete(command.id)
-        pending.delete(command.id)
+      const listener: Listener = { seq: afterSeq, onEvent }
+      if (onEnd) listener.onEnd = onEnd
+      const existing = streams.get(stream)
+      if (existing && covers(existing, afterSeq)) {
+        existing.listeners.add(listener)
+        for (const { event } of [...existing.events]) {
+          if (!existing.listeners.has(listener)) break
+          if (!deliver(listener, event)) {
+            disconnect()
+            break
+          }
+        }
+        return () => existing.listeners.delete(listener)
       }
+      if (existing) {
+        // Os eventos pedidos já não estão guardados: só este ouvinte termina, como o núcleo faria.
+        let cancelled = false
+        queueMicrotask(() => {
+          if (!cancelled && streams.get(stream) === existing) listener.onEnd?.(-32004)
+        })
+        return () => {
+          cancelled = true
+        }
+      }
+      const shared: Shared = {
+        stream,
+        start: afterSeq,
+        last: afterSeq,
+        events: [],
+        bytes: 0,
+        listeners: new Set(),
+      }
+      streams.set(stream, shared)
+      shared.listeners.add(listener)
+      const command = newCommand('events.subscribe', { stream, after_seq: afterSeq })
+      subscriptionRequests.set(command.id, shared)
+      void transmit(command).catch(() => undefined)
+      // Sair só desliga este ouvinte; a assinatura no núcleo segue para os demais e para quem vier.
+      return () => shared.listeners.delete(listener)
     },
   }
 }

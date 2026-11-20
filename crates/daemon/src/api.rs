@@ -106,6 +106,7 @@ pub struct ApiConfig {
     pub send_timeout_ms: u64,
     pub host_timeout_ms: u64,
     pub retired_sessions: usize,
+    pub subscription_ids_per_stream: usize,
     pub close_retries: usize,
     pub close_retry_ms: u64,
 }
@@ -137,6 +138,7 @@ impl ApiConfig {
             self.max_pending_auth,
             self.max_message_bytes,
             self.retired_sessions,
+            self.subscription_ids_per_stream,
             self.close_retries,
         ];
         if positive.iter().any(|n| *n == 0 || *n > 1_048_576)
@@ -612,17 +614,20 @@ impl Service {
         future: impl Future<Output = Result<T, ClientError>>,
         deadline: Instant,
     ) -> Result<T, ApiError> {
+        // Só a primeira sondagem confere o prazo: uma chamada nunca começa depois dele.
+        if Instant::now() >= deadline {
+            return Err(ApiError::HostTimeout);
+        }
         tokio::pin!(future);
         let expired = tokio::time::sleep_until(deadline);
         tokio::pin!(expired);
         loop {
-            if Instant::now() >= deadline {
-                return Err(ApiError::HostTimeout);
-            }
+            // A resposta pronta vence o prazo, e o prazo vence os eventos, que não podem adiá-lo.
             tokio::select! {
+                biased;
                 result = &mut future => return result.map_err(host_error),
-                event = self.host.next() => self.event(event.map_err(host_error)?).await?,
                 _ = &mut expired => return Err(ApiError::HostTimeout),
+                event = self.host.next() => self.event(event.map_err(host_error)?).await?,
             }
         }
     }
@@ -727,6 +732,8 @@ pub struct LocalApi {
 #[derive(Default)]
 pub struct Gate {
     closed: AtomicBool,
+    /// Passagens liberadas uma a uma com o portão fechado.
+    passes: AtomicUsize,
     opened: Notify,
     #[cfg(test)]
     reached: Notify,
@@ -739,12 +746,22 @@ impl Gate {
         self.closed.store(false, Ordering::Release);
         self.opened.notify_waiters();
     }
+    /// Deixa passar uma espera, atual ou futura, sem abrir o portão.
+    pub fn admit_one(&self) {
+        self.passes.fetch_add(1, Ordering::AcqRel);
+        self.opened.notify_waiters();
+    }
     async fn pass(&self) {
         loop {
             let opened = self.opened.notified();
             tokio::pin!(opened);
             opened.as_mut().enable();
-            if !self.closed.load(Ordering::Acquire) {
+            if !self.closed.load(Ordering::Acquire)
+                || self
+                    .passes
+                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1))
+                    .is_ok()
+            {
                 return;
             }
             #[cfg(test)]
@@ -766,6 +783,10 @@ pub struct TestHooks {
     pub evicted_exit: Gate,
     /// Antes de cada entrega a uma conexão com assinaturas.
     pub before_delivery: Gate,
+    /// Antes de cada tentativa automática de fechamento, sem parar o resto do serviço.
+    pub automatic_close: Gate,
+    queued_closes: AtomicUsize,
+    queued_commands: AtomicUsize,
     pending_live: AtomicUsize,
     pending_peak: AtomicUsize,
     waiting_peak: AtomicUsize,
@@ -778,6 +799,14 @@ impl TestHooks {
     /// Closes the daemon sent to the host on its own, without a client command.
     pub fn automatic_closes(&self) -> usize {
         self.automatic_closes.load(Ordering::Acquire)
+    }
+    /// Commands the connections have handed to the service so far.
+    pub fn queued_commands(&self) -> usize {
+        self.queued_commands.load(Ordering::Acquire)
+    }
+    /// Automatic closes still queued when the last command was answered.
+    pub fn queued_closes(&self) -> usize {
+        self.queued_closes.load(Ordering::Acquire)
     }
     pub fn accept_faults_left(&self) -> usize {
         self.accept_faults.load(Ordering::Acquire)
@@ -982,7 +1011,10 @@ impl LocalApi {
         loop {
             let retry_due = service.retries.iter().map(|r| r.due).min();
             tokio::select! {
-                _ = tokio::time::sleep_until(retry_due.unwrap_or_else(Instant::now)), if retry_due.is_some() => {
+                _ = async {
+                    tokio::time::sleep_until(retry_due.unwrap_or_else(Instant::now)).await;
+                    hooks.automatic_close.pass().await;
+                }, if retry_due.is_some() => {
                     service.retry_close().await?;
                 },
                 event = service.host.next() => {
@@ -996,6 +1028,7 @@ impl LocalApi {
                         let _ = request.reply.send(Err(ApiError::Unavailable));
                         return Err(ApiError::Unavailable);
                     }
+                    hooks.queued_closes.store(service.retries.len(), Ordering::Release);
                     let _ = request.reply.send(result);
                 }
                 admission = &mut accepting => {
@@ -1184,7 +1217,8 @@ async fn connection(
     drop(slot);
     send(&mut ws, response(&id, Ok(false)), &config).await?;
     let mut changed = log.lock().await.watch();
-    let mut subscriptions = HashMap::<String, (u64, Value, Arc<Stream>)>::new();
+    // Por stream: cursor, ids das assinaturas e a encarnação assinada.
+    let mut subscriptions = HashMap::<String, (u64, Vec<Value>, Arc<Stream>)>::new();
     loop {
         let message = tokio::select! {
             message = ws.next() => Some(message),
@@ -1231,9 +1265,19 @@ async fn connection(
                         .as_str()
                         .unwrap_or("")
                         .to_owned();
+                    // Ids de uma encarnação já terminada saem na próxima entrega e não contam.
+                    let ids = subscriptions
+                        .values()
+                        .filter(|s| !s.2.ended())
+                        .map(|s| s.1.len())
+                        .sum::<usize>();
                     if subscribe
-                        && !subscriptions.contains_key(&stream)
-                        && subscriptions.len() >= config.max_sessions
+                        && ((!subscriptions.contains_key(&stream)
+                            && subscriptions.len() >= config.max_sessions)
+                            || ids
+                                >= config
+                                    .subscription_ids_per_stream
+                                    .saturating_mul(config.max_sessions))
                     {
                         send(&mut ws, response(&id, Err(ApiError::Capacity)), &config).await?;
                         continue;
@@ -1244,16 +1288,42 @@ async fn connection(
                         .send(Request { command, reply })
                         .await
                         .map_err(|_| ApiError::Unavailable)?;
+                    hooks.queued_commands.fetch_add(1, Ordering::AcqRel);
                     let outcome = answer.await.map_err(|_| ApiError::Unavailable)?;
                     let replayed = outcome.as_ref().map(|r| r.replayed).map_err(|e| *e);
+                    if subscribe
+                        && let Ok(Reply {
+                            stream: Some(handle),
+                            ..
+                        }) = &outcome
+                        && let Some((cursor, mut ids, current)) = subscriptions.remove(&stream)
+                    {
+                        if Arc::ptr_eq(&current, handle) {
+                            // A mesma encarnação de novo: um cursor só, e o resultado final vai a cada id.
+                            if !ids.contains(&id) {
+                                ids.push(id.clone());
+                            }
+                            subscriptions.insert(stream.clone(), (cursor.min(after), ids, current));
+                        } else {
+                            // A encarnação anterior já terminou: o fim dela sai antes da confirmação da nova.
+                            let error = match current.poll(cursor) {
+                                Poll::End(error) | Poll::Fatal(error) => error,
+                                Poll::Events(_) | Poll::Wait => ApiError::Replay,
+                            };
+                            for old in &ids {
+                                send(&mut ws, response(old, Err(error)), &config).await?;
+                            }
+                        }
+                    }
                     send(&mut ws, response(&id, replayed), &config).await?;
                     if subscribe
                         && let Ok(Reply {
                             stream: Some(handle),
                             ..
                         }) = outcome
+                        && !subscriptions.contains_key(&stream)
                     {
-                        subscriptions.insert(stream, (after, id, handle));
+                        subscriptions.insert(stream, (after, vec![id], handle));
                     }
                 }
             }
@@ -1262,19 +1332,23 @@ async fn connection(
             hooks.before_delivery.pass().await;
         }
         let mut finished = Vec::new();
-        for (name, (after, subscription_id, stream)) in &mut subscriptions {
+        for (name, (after, subscription_ids, stream)) in &mut subscriptions {
             let events = match stream.poll(*after) {
                 // Fechamento automático em curso: a entrega espera o resultado final.
                 Poll::Wait => continue,
                 // Encarnação podada, removida ou com o fechamento resolvido: termina só esta assinatura.
                 Poll::End(error) => {
-                    send(&mut ws, response(subscription_id, Err(error)), &config).await?;
+                    for subscription_id in subscription_ids.iter() {
+                        send(&mut ws, response(subscription_id, Err(error)), &config).await?;
+                    }
                     finished.push(name.clone());
                     continue;
                 }
                 Poll::Events(events) => events,
                 Poll::Fatal(error) => {
-                    send(&mut ws, response(subscription_id, Err(error)), &config).await?;
+                    for subscription_id in subscription_ids.iter() {
+                        send(&mut ws, response(subscription_id, Err(error)), &config).await?;
+                    }
                     let _ = timeout(
                         Duration::from_millis(config.send_timeout_ms),
                         ws.close(None),
@@ -1404,7 +1478,7 @@ mod tests {
         (api, backend, host, peer)
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn confirmed_open_with_expired_setup_budget_schedules_cleanup() {
         let (mut api, backend, host, peer) = fake_service().await;
         let gate = api.service.before_setup.clone();
@@ -1418,7 +1492,6 @@ mod tests {
                 async {
                     gate.reached.notified().await;
                     assert_eq!(host.sessions().len(), 1);
-                    tokio::time::pause();
                     tokio::time::advance(budget).await;
                     gate.release();
                 }
@@ -1426,8 +1499,11 @@ mod tests {
         })
         .await
         .unwrap();
-        tokio::time::resume();
         assert_eq!(result.map(|_| ()), Err(ApiError::SetupFailed));
+        // Let the host serve anything already sent: the subscription never reached it.
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        let id: SessionId = "session".to_owned().try_into().unwrap();
+        assert_eq!(host.subscriber_count(&id), Ok(0));
         assert_eq!(api.service.retries.len(), 1);
         let mut other = params.clone();
         other["session_id"] = json!("other");
@@ -1558,6 +1634,88 @@ mod tests {
         }
         assert_eq!(polls, 0);
         peer.abort();
+    }
+
+    /// A service whose host side the test writes by hand; `host.hello` is already answered.
+    async fn hand_driven_service() -> (LocalApi, tokio::io::DuplexStream) {
+        use crate::pty_client::ClientConfig;
+        use ads_ptyhost::wire::{self, ResultBody};
+        use tokio::io::AsyncWriteExt;
+        let (near, mut far) = tokio::io::duplex(65536);
+        let hello = async {
+            let wire::Frame::Json(payload) =
+                wire::read_frame(&mut far, 131072).await.unwrap().unwrap()
+            else {
+                panic!()
+            };
+            let hello = wire::Request::parse(&payload).unwrap();
+            far.write_all(
+                &wire::encode_json(&wire::Response {
+                    id: Some(hello.id),
+                    outcome: Ok(ResultBody::Hello(wire::HelloResult {
+                        contract: Default::default(),
+                    })),
+                })
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        };
+        let config = ClientConfig {
+            max_frame_bytes: 131072,
+            queue_capacity: 8,
+        };
+        let (client, ()) = tokio::join!(PtyClient::over(near, config), hello);
+        let api = LocalApi::bind(
+            ApiConfig::from_toml_str("").unwrap(),
+            client.unwrap(),
+            Arc::new(DisabledLauncher),
+        )
+        .await
+        .unwrap();
+        (api, far)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn ready_reply_wins_over_a_deadline_crossed_by_a_host_event() {
+        use tokio::io::AsyncWriteExt;
+        let (mut api, mut far) = hand_driven_service().await;
+        api.service.sessions.insert(
+            "session".to_owned(),
+            Session {
+                generation: 1,
+                offset: 0,
+                last_host_seq: 0,
+                ended: false,
+                closing: false,
+                invalidated: false,
+                released: false,
+                failed_open: false,
+                self_released: false,
+            },
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (reply, answer) = oneshot::channel::<()>();
+        let response = async { answer.await.map_err(|_| ClientError::Disconnected) };
+        let log = api.service.log.clone();
+        let (result, ()) = tokio::join!(api.service.wait_host(response, deadline), async {
+            // The output handler waits for the log while the deadline passes and the reply arrives.
+            let held = log.lock().await;
+            let id = "session".to_owned().try_into().unwrap();
+            far.write_all(&ads_ptyhost::wire::encode_output(&id, 1, b"terminal-sentinel").unwrap())
+                .await
+                .unwrap();
+            // The clock only moves once every task waits: the handler is blocked on the log.
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            tokio::time::advance(Duration::from_secs(5)).await;
+            reply.send(()).unwrap();
+            drop(held);
+        });
+        assert_eq!(result, Ok(()));
+        assert_eq!(
+            log.lock().await.after("session/session", 0).unwrap().len(),
+            1
+        );
     }
 
     #[tokio::test]

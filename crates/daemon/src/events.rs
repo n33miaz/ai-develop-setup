@@ -94,6 +94,10 @@ impl Stream {
             Err(error) => Poll::Fatal(error),
         }
     }
+    /// Whether this incarnation already has its final result.
+    pub fn ended(&self) -> bool {
+        self.state().outcome.is_some()
+    }
     /// Whether events may still be delivered; checked again before each frame of a batch.
     pub fn deliverable(&self) -> bool {
         let state = self.state();

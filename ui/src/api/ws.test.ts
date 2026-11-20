@@ -560,3 +560,181 @@ describe('expired tool list ids', () => {
     expect(client.getState()).toBe('disconnected')
   })
 })
+
+describe('one core subscription per stream', () => {
+  const subscribes = (socket: FakeSocket) =>
+    socket.sent.filter((command) => command.method === 'events.subscribe')
+
+  it('serves repeated subscriptions of a stream from one core subscription', async () => {
+    const { client, socket } = await connected()
+    const first: number[] = []
+    client.subscribe('session/session-a', 0, (event) => first.push(event.seq))
+    socket.answer(1)
+    socket.receive(event(1))
+    socket.receive(event(2))
+    // Each new listener gets what was already received, and the core is not asked again.
+    for (let round = 0; round < 200; round += 1) {
+      const seen: number[] = []
+      const stop = client.subscribe('session/session-a', 0, (event) => seen.push(event.seq))
+      expect(seen).toEqual([1, 2])
+      stop()
+    }
+    socket.receive(event(3))
+    expect(subscribes(socket)).toHaveLength(1)
+    expect(first).toEqual([1, 2, 3])
+    expect(client.getState()).toBe('connected')
+  })
+
+  it('keeps the core subscription after the last listener leaves', async () => {
+    const { client, socket } = await connected()
+    const stop = client.subscribe('session/session-a', 0, () => undefined)
+    socket.answer(1)
+    stop()
+    socket.receive(event(1))
+    const seen: number[] = []
+    client.subscribe('session/session-a', 0, (event) => seen.push(event.seq))
+    socket.receive(event(2))
+    expect(seen).toEqual([1, 2])
+    expect(subscribes(socket)).toHaveLength(1)
+  })
+
+  async function keeping(options: { replayEvents?: number; replayBytes?: number }) {
+    const socket = new FakeSocket()
+    const client = createWsCoreClient({
+      url: 'ws://127.0.0.1:12345',
+      token,
+      ...options,
+      socketFactory: () => socket,
+    })
+    const ready = client.connect()
+    socket.dispatchEvent(new Event('open'))
+    socket.answer(0)
+    await ready
+    return { client, socket }
+  }
+
+  it('ends only the listener that asks for events no longer kept', async () => {
+    const { client, socket } = await keeping({ replayEvents: 2 })
+    const first: number[] = []
+    client.subscribe('session/session-a', 0, (event) => first.push(event.seq))
+    socket.answer(1)
+    for (const seq of [1, 2, 3, 4]) socket.receive(event(seq))
+    // Events 3 and 4 are kept: a listener after 2 needs nothing else.
+    const kept: number[] = []
+    client.subscribe('session/session-a', 2, (event) => kept.push(event.seq))
+    expect(kept).toEqual([3, 4])
+    // Event 2 is gone: this listener alone ends, without asking the core again.
+    const late: number[] = []
+    const ended: number[] = []
+    client.subscribe(
+      'session/session-a',
+      1,
+      (event) => late.push(event.seq),
+      (code) => ended.push(code),
+    )
+    expect(ended).toEqual([])
+    await Promise.resolve()
+    expect(ended).toEqual([-32004])
+    socket.receive(event(5))
+    expect(late).toEqual([])
+    expect(first).toEqual([1, 2, 3, 4, 5])
+    expect(kept).toEqual([3, 4, 5])
+    expect(subscribes(socket)).toHaveLength(1)
+    expect(client.getState()).toBe('connected')
+  })
+
+  it('does not end a listener that left before its end was due', async () => {
+    const { client, socket } = await keeping({ replayEvents: 1 })
+    client.subscribe('session/session-a', 0, () => undefined)
+    socket.answer(1)
+    for (const seq of [1, 2]) socket.receive(event(seq))
+    const ended: number[] = []
+    const stop = client.subscribe(
+      'session/session-a',
+      0,
+      () => undefined,
+      (code) => ended.push(code),
+    )
+    stop()
+    const gone = client.subscribe(
+      'session/session-a',
+      1,
+      () => undefined,
+      (code) => ended.push(code),
+    )
+    gone()
+    await Promise.resolve()
+    expect(ended).toEqual([])
+  })
+
+  it('keeps nothing with replayEvents 0 and ends a late listener for old events', async () => {
+    const { client, socket } = await keeping({ replayEvents: 0 })
+    client.subscribe('session/session-a', 0, () => undefined)
+    socket.answer(1)
+    socket.receive(event(1))
+    const ended: number[] = []
+    const seen: number[] = []
+    client.subscribe(
+      'session/session-a',
+      0,
+      (event) => seen.push(event.seq),
+      (code) => ended.push(code),
+    )
+    await Promise.resolve()
+    expect(ended).toEqual([-32004])
+    // A listener that asks only for new events keeps working.
+    const fresh: number[] = []
+    client.subscribe('session/session-a', 1, (event) => fresh.push(event.seq))
+    socket.receive(event(2))
+    expect(seen).toEqual([])
+    expect(fresh).toEqual([2])
+    expect(subscribes(socket)).toHaveLength(1)
+  })
+
+  it('bounds what it keeps by bytes as well', async () => {
+    const one = JSON.stringify(event(1)).length
+    const { client, socket } = await keeping({ replayBytes: one * 2 + 10 })
+    client.subscribe('session/session-a', 0, () => undefined)
+    socket.answer(1)
+    for (const seq of [1, 2, 3]) socket.receive(event(seq))
+    // From the start, a late listener gets what is still kept, like the core would send.
+    const seen: number[] = []
+    client.subscribe('session/session-a', 0, (event) => seen.push(event.seq))
+    expect(seen).toEqual([2, 3])
+  })
+
+  it('ends every listener of the stream once', async () => {
+    const { client, socket } = await connected()
+    const ended: string[] = []
+    const stop = client.subscribe(
+      'session/session-a',
+      0,
+      () => undefined,
+      () => ended.push('gone'),
+    )
+    client.subscribe(
+      'session/session-a',
+      0,
+      () => undefined,
+      (code) => ended.push(`second ${String(code)}`),
+    )
+    client.subscribe(
+      'session/session-a',
+      0,
+      () => undefined,
+      (code) => ended.push(`third ${String(code)}`),
+    )
+    socket.answer(1)
+    stop()
+    socket.receive({
+      jsonrpc: '2.0',
+      id: socket.sent[1]?.id,
+      error: { code: -32004, message: 'replay unavailable' },
+    })
+    expect(ended).toEqual(['second -32004', 'third -32004'])
+    // A new listener after the end asks the core for the new incarnation.
+    client.subscribe('session/session-a', 0, () => undefined)
+    expect(subscribes(socket)).toHaveLength(2)
+    expect(client.getState()).toBe('connected')
+  })
+})

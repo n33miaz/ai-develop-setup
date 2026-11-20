@@ -19,6 +19,14 @@ describe('client selection', () => {
     const real = vi.fn(() => client)
     expect(selectCoreClient(window, real)).toEqual({ client, live: true })
     expect(real).toHaveBeenCalledWith({ url: 'ws://127.0.0.1:12345', token })
+    // The replay limits from the interface configuration reach the client.
+    selectCoreClient(window, real, { replayEvents: 0, replayBytes: 1024 })
+    expect(real).toHaveBeenLastCalledWith({
+      url: 'ws://127.0.0.1:12345',
+      token,
+      replayEvents: 0,
+      replayBytes: 1024,
+    })
     expect(window.location.hash).toBe('')
     expect(window.location.search).toBe('?view=terminal')
     expect(JSON.parse(window.sessionStorage.getItem('ads.local-api') ?? 'null')).toEqual({

@@ -64,7 +64,8 @@ export interface CoreClient {
    * Entrega, em ordem de `seq`, os eventos do fluxo com `seq` maior que `afterSeq` (o último que
    * a UI viu; 0 para ler desde o começo) e depois os novos, sem repetir nem pular. Se o núcleo
    * encerrar só esta assinatura (`-32004` ou `-32013`), ela para de entregar eventos, `onEnd`
-   * recebe o código e a conexão continua.
+   * recebe o código e a conexão continua. Eventos já disponíveis podem chegar a `onEvent` antes de
+   * `subscribe` retornar; `onEnd` nunca é chamado dentro dele.
    */
   subscribe(
     stream: string,
