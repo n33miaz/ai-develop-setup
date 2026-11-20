@@ -31,6 +31,8 @@ Na partida, `restore_running_task` decide o destino da tarefa cujo último estad
 
 Hoje o daemon não adota sessões antigas ao reiniciar, então `Kept` ainda não acontece na prática.
 
+O armazenamento devolve o stream como envelopes (`EventLog::read_queue`). `QueueStreamEvent::from_envelope` lê cada um no contrato do seu tipo, entre as dez versões que o replay aceita, e recusa tipo desconhecido (`UnknownType`) ou envelope fora do contrato (`Invalid`); `as_log` entrega a forma emprestada que o replay lê.
+
 O replay (`replay_task`) recebe o stream inteiro da fila, a partir de `queue.created` com `seq` 1 e sem buraco, uma consulta ao cadastro de aparelhos no instante de cada evento, e a política inicial, quando disponível. Ele devolve o estado, o saldo, a última âncora e a política vigente, ou o motivo da recusa (`ReplayRefusal`). Além da ordem e do saldo, ele confere:
 - todo evento é da fila e do stream `queue/<id>`;
 - todo ator que é aparelho pertencia ao dono da fila naquele instante;
