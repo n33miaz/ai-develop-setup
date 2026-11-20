@@ -372,6 +372,12 @@ pub(crate) fn access_list_text(path: &Path) -> io::Result<String> {
     win::access_list_text(path)
 }
 
+/// `text` in the form `access_list_text` returns, with the SIDs Windows abbreviates replaced.
+#[cfg(all(windows, test))]
+pub(crate) fn canonical_access_list(text: &str) -> io::Result<String> {
+    win::canonical_access_list(text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -391,6 +397,17 @@ mod tests {
             owner: owner.into(),
             dacl: Some(entries.to_vec()),
         }
+    }
+
+    /// Windows writes some SIDs back as aliases (the built-in administrator as `LA`), so the
+    /// expected lists are compared in the form it writes.
+    #[cfg(windows)]
+    #[test]
+    fn canonical_access_list_uses_the_aliases_windows_writes() {
+        let text = |sid: &str| canonical_access_list(&format!("D:P(A;;FA;;;{sid})")).unwrap();
+        assert_eq!(text("S-1-5-18"), "D:P(A;;FA;;;SY)");
+        assert_eq!(text("S-1-5-32-544"), "D:P(A;;FA;;;BA)");
+        assert_eq!(text(USER), format!("D:P(A;;FA;;;{USER})"));
     }
 
     #[test]

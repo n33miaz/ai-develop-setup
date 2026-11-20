@@ -499,7 +499,6 @@ pub(super) fn security(file: &File) -> io::Result<Security> {
 /// inheritance flags included.
 #[cfg(test)]
 pub(super) fn access_list_text(path: &Path) -> io::Result<String> {
-    use windows::Win32::Security::Authorization::ConvertSecurityDescriptorToStringSecurityDescriptorW;
     let file = OpenOptions::new()
         .access_mode(READ_CONTROL.0)
         .custom_flags(FLAG_BACKUP_SEMANTICS | FLAG_OPEN_REPARSE_POINT)
@@ -522,9 +521,34 @@ pub(super) fn access_list_text(path: &Path) -> io::Result<String> {
         return Err(io::Error::from_raw_os_error(status.0 as i32));
     }
     let _memory = LocalMemory(descriptor.0);
+    descriptor_text(descriptor)
+}
+
+/// `text` as Windows writes it back, so a list built with a raw SID compares equal to one read
+/// from disk when Windows abbreviates that SID (`LA` for the built-in administrator).
+#[cfg(test)]
+pub(super) fn canonical_access_list(text: &str) -> io::Result<String> {
+    let wide: Vec<u16> = text.encode_utf16().chain([0]).collect();
+    let mut descriptor = PSECURITY_DESCRIPTOR::default();
+    // SAFETY: `wide` is a terminated wide string alive during the call; `descriptor` receives
+    // a new allocation.
+    unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            PCWSTR(wide.as_ptr()),
+            SDDL_REVISION_1,
+            &raw mut descriptor,
+            None,
+        )
+    }?;
+    let _memory = LocalMemory(descriptor.0);
+    descriptor_text(descriptor)
+}
+
+#[cfg(test)]
+fn descriptor_text(descriptor: PSECURITY_DESCRIPTOR) -> io::Result<String> {
+    use windows::Win32::Security::Authorization::ConvertSecurityDescriptorToStringSecurityDescriptorW;
     let mut text = PWSTR::null();
-    // SAFETY: `descriptor` is the allocation the previous call returned, still alive; `text`
-    // receives a new string.
+    // SAFETY: the caller keeps `descriptor` alive during the call; `text` receives a new string.
     unsafe {
         ConvertSecurityDescriptorToStringSecurityDescriptorW(
             descriptor,

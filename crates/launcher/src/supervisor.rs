@@ -567,9 +567,12 @@ pub(crate) mod tests {
         let files = [&settings.lock_file, &settings.state_file].map(|name| control.join(name));
         #[cfg(windows)]
         {
-            let folder = format!("D:P(A;OICI;FA;;;{})", local.user);
+            let folder =
+                private::canonical_access_list(&format!("D:P(A;OICI;FA;;;{})", local.user))
+                    .unwrap();
             assert_eq!(private::access_list_text(control).unwrap(), folder);
-            let file = format!("D:P(A;;FA;;;{})", local.user);
+            let file =
+                private::canonical_access_list(&format!("D:P(A;;FA;;;{})", local.user)).unwrap();
             for path in files {
                 assert_eq!(private::access_list_text(&path).unwrap(), file, "{path:?}");
             }
@@ -617,7 +620,7 @@ pub(crate) mod tests {
         let folder = private::access_list_text(&dir.0).unwrap();
         assert!(!folder.contains("OI") && !folder.contains("CI"), "{folder}");
         run(&settings, &dir.0, fixture(None), fixture(None)).unwrap();
-        let file = format!("D:P(A;;FA;;;{})", local.user);
+        let file = private::canonical_access_list(&format!("D:P(A;;FA;;;{})", local.user)).unwrap();
         for name in [&settings.lock_file, &settings.state_file] {
             assert_eq!(private::access_list_text(&dir.0.join(name)).unwrap(), file);
         }
