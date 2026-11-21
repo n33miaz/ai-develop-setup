@@ -3,6 +3,8 @@
 use std::{
     fs::{self, File, TryLockError},
     path::{Path, PathBuf},
+    sync::{Arc, Mutex, MutexGuard},
+    time::{Duration, Instant},
 };
 
 use ads_adapter_vault::OsVault;
@@ -325,16 +327,50 @@ pub fn open(
     EventLog::open(&path, config, keys, Box::new(anchor))
 }
 
+pub(crate) fn lock_with_timeout<T>(
+    mutex: &Mutex<T>,
+    timeout: Duration,
+) -> Result<MutexGuard<'_, T>, StorageError> {
+    use std::sync::TryLockError;
+
+    let deadline = Instant::now() + timeout;
+    loop {
+        match mutex.try_lock() {
+            Ok(guard) => return Ok(guard),
+            Err(TryLockError::Poisoned(_)) => return Err(StorageError::Unavailable),
+            Err(TryLockError::WouldBlock) => {}
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(StorageError::Busy);
+        }
+        std::thread::sleep(remaining.min(Duration::from_millis(1)));
+        if Instant::now() >= deadline {
+            return Err(StorageError::Busy);
+        }
+    }
+}
+
 /// The audit log with the product state it was opened with. A session gate is built from it
 /// and only acts on a log with the same state, so what the gate protects is the log it writes.
 pub struct ProductLog {
-    log: EventLog,
+    log: Arc<Mutex<EventLog>>,
     state: ProductState,
+    busy_timeout: Duration,
 }
 
 impl ProductLog {
-    pub fn log(&mut self) -> &mut EventLog {
-        &mut self.log
+    pub fn log(&self) -> Result<MutexGuard<'_, EventLog>, StorageError> {
+        lock_with_timeout(&self.log, self.busy_timeout)
+    }
+
+    pub(crate) fn busy_timeout(&self) -> Duration {
+        self.busy_timeout
+    }
+
+    /// Gives another component access to the same audit connection.
+    pub fn shared_log(&self) -> Arc<Mutex<EventLog>> {
+        Arc::clone(&self.log)
     }
 
     pub fn state(&self) -> &ProductState {
@@ -406,7 +442,11 @@ fn open_product_in<V: Vault + Send + 'static>(
         instance.map(InstanceLock::folder),
     )
     .map_err(ProductLogError::State)?;
-    Ok(ProductLog { log, state })
+    Ok(ProductLog {
+        log: Arc::new(Mutex::new(log)),
+        state,
+        busy_timeout: Duration::from_millis(config.busy_timeout_ms().into()),
+    })
 }
 
 /// Prepares a plan against the OS vault. Review its summary before confirming.
@@ -509,21 +549,172 @@ mod tests {
         }
     }
 
-    fn fixture() -> PathBuf {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let dir = std::env::current_exe()
-            .unwrap()
-            .ancestors()
-            .nth(3)
-            .unwrap()
-            .join("tmp")
-            .join(format!("audit-anchor-{}-{stamp}", std::process::id()));
-        fs::create_dir_all(dir.parent().unwrap()).unwrap();
-        ads_private_dir::create_dir(&dir, &ads_private_dir::Identity::current().unwrap()).unwrap();
-        dir.canonicalize().unwrap()
+    struct Fixture {
+        path: PathBuf,
+        directories: Vec<PathBuf>,
+    }
+
+    impl Fixture {
+        fn new(name: &str, subdirs: &[&str]) -> Self {
+            let worktree = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../..")
+                .canonicalize()
+                .unwrap();
+            let root = worktree.join(".test-tmp");
+            fs::create_dir_all(&root).unwrap();
+            assert_eq!(root.canonicalize().unwrap(), root);
+            let mut unique = [0_u8; 16];
+            getrandom::fill(&mut unique).unwrap();
+            let path = root.join(format!("{name}-{:032x}", u128::from_be_bytes(unique)));
+            ads_private_dir::create_dir(&path, &ads_private_dir::Identity::current().unwrap())
+                .unwrap();
+            let directories = subdirs.iter().map(|subdir| path.join(subdir)).collect();
+            Self { path, directories }
+        }
+
+        fn track_staging(&mut self, report: &ads_adapter_fs::Report) {
+            let directories = report
+                .staging
+                .iter()
+                .rev()
+                .filter(|entry| {
+                    entry.what == ads_adapter_fs::Scaffold::Folder
+                        && matches!(
+                            entry.status,
+                            ads_adapter_fs::Laid::Made | ads_adapter_fs::Laid::Unconfirmed { .. }
+                        )
+                })
+                .filter_map(|entry| Path::new(&entry.path).canonicalize().ok())
+                .filter(|path| path != &self.path && path.starts_with(&self.path));
+            self.directories.splice(..0, directories);
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            if self.path.canonicalize().as_ref().ok() != Some(&self.path) {
+                return;
+            }
+            for dir in self.directories.iter().chain([&self.path]) {
+                if dir.canonicalize().as_ref().ok() != Some(dir) {
+                    continue;
+                }
+                if let Ok(entries) = fs::read_dir(dir) {
+                    for entry in entries.flatten() {
+                        if let Ok(kind) = entry.file_type() {
+                            if kind.is_file() {
+                                let _ = fs::remove_file(entry.path());
+                            } else if kind.is_symlink() {
+                                #[cfg(windows)]
+                                {
+                                    use std::os::windows::fs::FileTypeExt;
+                                    if kind.is_symlink_dir() {
+                                        let _ = fs::remove_dir(entry.path());
+                                        continue;
+                                    }
+                                }
+                                let _ = fs::remove_file(entry.path());
+                            }
+                        }
+                    }
+                }
+                let _ = fs::remove_dir(dir);
+            }
+        }
+    }
+
+    impl std::ops::Deref for Fixture {
+        type Target = Path;
+
+        fn deref(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    fn fixture() -> Fixture {
+        Fixture::new(
+            "audit-anchor",
+            &[
+                "ads",
+                "custom",
+                "first",
+                "moved",
+                "old",
+                "private",
+                "profile/ads",
+                "profile",
+                "second",
+                "work/private",
+                "work",
+            ],
+        )
+    }
+
+    #[test]
+    fn a_poisoned_audit_connection_refuses_both_gate_access_and_queue_writes() {
+        use crate::api::ApiError;
+        use crate::auth::Token;
+        use crate::queue::{LoggedQueue, QueueControl, QueueOwner};
+        use ads_contracts::{CommonIdV1, RecordTaskQueueV1State};
+
+        let root = Fixture::new("poisoned-audit", &["audit", "vault"]);
+        let log = test_product_log(&root, "", &TestVault::default());
+        let token = Token::generate().unwrap();
+        let bootstrap = token.desktop_bootstrap(0);
+        let session = token
+            .open_session(bootstrap.split_once(' ').unwrap().1)
+            .unwrap();
+        let id = CommonIdV1::new("poisoned-log-queue").unwrap();
+        let shared = log.shared_log();
+        let queue = LoggedQueue::open(
+            &session,
+            shared.clone(),
+            id.clone(),
+            QueueOwner {
+                owner_id: CommonIdV1::new("owner").unwrap(),
+                device_id: CommonIdV1::new("device").unwrap(),
+            },
+        )
+        .unwrap();
+        let cause = crate::events::new_id().unwrap();
+        queue.start(&session, &id, &cause).unwrap();
+
+        assert!(
+            std::thread::spawn(move || {
+                let _guard = shared.lock().unwrap();
+                panic!("poison the audit connection");
+            })
+            .join()
+            .is_err()
+        );
+
+        assert_eq!(log.log().unwrap_err(), StorageError::Unavailable);
+        assert_eq!(queue.stop(&session, &id, &cause), Err(ApiError::Storage));
+        assert_eq!(
+            queue.state(&session, &id),
+            Ok(RecordTaskQueueV1State::Stopped)
+        );
+    }
+
+    #[test]
+    fn audit_fixture_removes_its_listed_directories() {
+        let sibling = fixture();
+        let keep = sibling.join("keep");
+        fs::write(&keep, b"keep").unwrap();
+        let folder = fixture();
+        let path = folder.to_path_buf();
+        let database = folder.join("private").join("audit.db");
+        drop(
+            open_configured(
+                &database,
+                &configured_for(&database),
+                &MemoryVault::default(),
+            )
+            .unwrap(),
+        );
+        drop(folder);
+        assert!(!path.exists(), "fixture remained at {path:?}");
+        assert_eq!(fs::read(keep).unwrap(), b"keep");
     }
 
     fn open_with(
@@ -557,7 +748,7 @@ mod tests {
 
     #[test]
     fn file_execution_uses_the_anchored_gate() {
-        use std::{fs, num::NonZeroU64, path::PathBuf};
+        use std::num::NonZeroU64;
 
         use crate::api::Launcher;
         use crate::tool_launcher::ToolLauncher;
@@ -584,12 +775,17 @@ mod tests {
             }
         }
 
-        let mut unique = [0_u8; 16];
-        getrandom::fill(&mut unique).unwrap();
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../.test-tmp")
-            .join(format!("file-gate-{:032x}", u128::from_be_bytes(unique)));
-        fs::create_dir_all(&root).unwrap();
+        let mut root = Fixture::new(
+            "file-gate",
+            &[
+                "audit",
+                "vault",
+                "fence/work/pack/project",
+                "fence/work/pack",
+                "fence/work",
+                "fence",
+            ],
+        );
         let fence = root.join("fence");
         let work = fence.join("work");
         fs::create_dir(&fence).unwrap();
@@ -626,12 +822,16 @@ mod tests {
                 .unwrap(),
             )
             .unwrap();
-        let real_root = fs::canonicalize(&root).unwrap();
+        let real_root = root.to_path_buf();
         let database = real_root.join("audit").join("events.db");
         let mut log = open_product_in(
             &real_root.join("vault"),
             &database,
-            &configured_for(&database),
+            &StorageConfig::from_toml_str(&format!(
+                "audit_database_path = '{}'\nbusy_timeout_ms = 50",
+                database.display()
+            ))
+            .unwrap(),
             Box::new(FixtureKey),
             MemoryVault::default(),
             None,
@@ -690,6 +890,7 @@ mod tests {
         gate.plan(&mut log, id.clone(), request, meta(1)).unwrap();
         assert_eq!(
             log.log()
+                .unwrap()
                 .load(&id)
                 .unwrap()
                 .plan
@@ -715,18 +916,69 @@ mod tests {
             Err(JournalError::Missing)
         ));
         assert!(file.is_file());
-        assert_eq!(log.log().verify_chain(), Ok(1));
+        assert_eq!(log.log().unwrap().verify_chain(), Ok(1));
+        use crate::auth::Token;
+        use crate::queue::{LoggedQueue, QueueControl, QueueOwner};
+        use ads_contracts::CommonIdV1;
+
+        let token = Token::generate().unwrap();
+        let bootstrap = token.desktop_bootstrap(0);
+        let session = token
+            .open_session(bootstrap.split_once(' ').unwrap().1)
+            .unwrap();
+        let queue_id = CommonIdV1::new("file-gate-queue").unwrap();
+        let log_handle = log.shared_log();
+        let queue = LoggedQueue::open(
+            &session,
+            Arc::clone(&log_handle),
+            queue_id.clone(),
+            QueueOwner {
+                owner_id: CommonIdV1::new("owner").unwrap(),
+                device_id: CommonIdV1::new("device").unwrap(),
+            },
+        )
+        .unwrap();
+        let cause = crate::events::new_id().unwrap();
+        queue.start(&session, &queue_id, &cause).unwrap();
+
+        let (entered, waiting) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        gate.before_execute = Some(Box::new(move || {
+            entered.send(()).unwrap();
+            let _ = released.recv_timeout(Duration::from_secs(10));
+        }));
         let start = meta(2);
         let mut finish = meta(3);
         finish.ts = Timestamp::new("2030-01-02T03:04:04.999999Z").unwrap();
-        let result = gate.execute(&mut log, &id, start.clone(), finish).unwrap();
+        let result = std::thread::scope(|scope| {
+            let executing = scope.spawn(|| gate.execute(&mut log, &id, start.clone(), finish));
+            waiting.recv_timeout(Duration::from_secs(10)).unwrap();
+            let (done, stopped) = std::sync::mpsc::channel();
+            let (queue, session, queue_id, cause) = (&queue, &session, &queue_id, &cause);
+            scope.spawn(move || done.send(queue.stop(session, queue_id, cause)).unwrap());
+            let outcome = stopped.recv_timeout(Duration::from_secs(2));
+            let _ = release.send(());
+            assert_eq!(outcome.unwrap(), Err(crate::api::ApiError::StorageBusy));
+            assert_eq!(
+                queue.state(session, queue_id),
+                Ok(ads_contracts::RecordTaskQueueV1State::Stopped)
+            );
+            executing.join().unwrap().unwrap()
+        });
+        root.track_staging(match &result.operation {
+            Ok(report) => report,
+            Err(failure) => &failure.report,
+        });
         assert!(result.operation.is_ok(), "{:?}", result.operation);
         assert!(!file.exists());
         assert_eq!(result.recorded.unwrap().state, State::Executed);
         assert_eq!(gate.inspect(&mut log, &id).unwrap().state, State::Executed);
-        assert_eq!(log.log().load(&id).unwrap().events[2].ts(), &start.ts);
+        assert_eq!(
+            log.log().unwrap().load(&id).unwrap().events[2].ts(),
+            &start.ts
+        );
 
-        assert_eq!(log.log().verify_chain(), Ok(3));
+        assert_eq!(log.log().unwrap().verify_chain(), Ok(5));
         assert!(matches!(
             gate.execute(&mut log, &id, meta(4), meta(5)),
             Err(JournalError::Transition)
@@ -754,7 +1006,7 @@ mod tests {
                 .state,
             State::Denied
         );
-        let history = log.log().load(&denied_id).unwrap();
+        let history = log.log().unwrap().load(&denied_id).unwrap();
         let repo = format!("{pack}{}project", std::path::MAIN_SEPARATOR);
         assert!(
             history
@@ -775,6 +1027,21 @@ mod tests {
             Err(JournalError::Transition)
         ));
         assert!(project.join(".git").is_file());
+
+        assert!(!queue.stop(&session, &queue_id, &cause).unwrap());
+        let queue_events = log.log().unwrap().read_queue(&queue_id).unwrap();
+        assert_eq!(queue_events.len(), 3);
+        assert_eq!(log.log().unwrap().verify_chain(), Ok(7));
+        assert_eq!(gate.inspect(&mut log, &id).unwrap().state, State::Executed);
+
+        drop(other);
+        drop(gate);
+        drop(queue);
+        drop(log_handle);
+        drop(log);
+        let path = root.to_path_buf();
+        drop(root);
+        assert!(!path.exists(), "fixture remained at {path:?}");
     }
 
     /// Creates a link at `link` to the folder `target`: a junction on Windows.
@@ -820,13 +1087,20 @@ mod tests {
         };
         use ads_core::tool_launch::{DiskProbe, HostRules};
 
-        let mut unique = [0_u8; 16];
-        getrandom::fill(&mut unique).unwrap();
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../.test-tmp")
-            .join(format!("product-gate-{:032x}", u128::from_be_bytes(unique)));
-        fs::create_dir_all(root.join("fence").join("work")).unwrap();
-        let resolved = fs::canonicalize(&root).unwrap();
+        let fixture = Fixture::new(
+            "product-gate",
+            &[
+                "fence/work/other",
+                "fence/work/data",
+                "fence/work/vault",
+                "fence/work/control",
+                "fence/work",
+                "fence",
+                "gone",
+            ],
+        );
+        fs::create_dir_all(fixture.join("fence").join("work")).unwrap();
+        let resolved = fixture.to_path_buf();
         let resolved = resolved.to_str().unwrap();
         let root = PathBuf::from(resolved.strip_prefix(r"\\?\").unwrap_or(resolved));
         let fence = root.join("fence");
@@ -935,13 +1209,13 @@ mod tests {
             .unwrap();
         planned += 1;
         let id = Id::new(format!("product-{planned}")).unwrap();
-        let snapshot = JournalGate::new(&blind, log.log())
+        let snapshot = JournalGate::new(&blind, &mut *log.log().unwrap())
             .for_work_root(&work_root)
             .plan(id.clone(), &observed, meta(planned, 1))
             .unwrap();
         assert_eq!(snapshot.state, State::Planned);
         planned += 1;
-        let started = JournalGate::new(&blind, log.log())
+        let started = JournalGate::new(&blind, &mut *log.log().unwrap())
             .for_work_root(&work_root)
             .authorize(&id, meta(planned, 2))
             .unwrap();
@@ -985,7 +1259,7 @@ mod tests {
                     )
                     .unwrap();
                 assert_eq!(snapshot.state, State::Denied, "{overrides:?} {target}");
-                let plan = log.log().load(&id).unwrap().plan;
+                let plan = log.log().unwrap().load(&id).unwrap().plan;
                 let reasons = &plan.fields().verdict.reasons;
                 assert!(
                     reasons
@@ -1056,7 +1330,7 @@ mod tests {
     }
 
     #[test]
-    fn binding_lock_contends_on_the_same_lock_file() {
+    fn binding_lock_refuses_a_second_holder_until_release() {
         let directory = fixture();
         let first = lock_binding(&directory).unwrap();
         assert_eq!(lock_binding(&directory).unwrap_err(), StorageError::Busy);
@@ -1709,7 +1983,8 @@ mod tests {
 
     #[test]
     fn interrupted_legacy_adoption_finishes_binding_on_reopen() {
-        let path = fixture().join("audit.db");
+        let root = fixture();
+        let path = root.join("audit.db");
         let config = configured_for(&path);
         let vault = MemoryVault::default();
         let log = open_with(&path, &vault, false).unwrap();

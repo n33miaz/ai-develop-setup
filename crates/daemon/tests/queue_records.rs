@@ -270,7 +270,7 @@ fn a_rebound_queue_replays_the_policy_of_its_creation() {
     let anchor = Anchor::default();
     let bind_queue = || {
         LoggedQueue::bind(
-            open(&fixture.db(), &anchor),
+            Arc::new(Mutex::new(open(&fixture.db(), &anchor))),
             id("queue-01"),
             QueueOwner {
                 owner_id: id("owner-01"),

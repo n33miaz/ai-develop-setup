@@ -5,6 +5,7 @@ use std::{
     fs,
     io::ErrorKind,
     path::{Component, Path, PathBuf},
+    sync::MutexGuard,
 };
 
 use ads_adapter_fs::{Executor, Failure, Report, Stop};
@@ -181,6 +182,8 @@ pub struct SessionGate {
     policy: GatePolicy,
     product: ProductState,
     executor: Executor,
+    #[cfg(test)]
+    pub(crate) before_execute: Option<Box<dyn FnOnce() + Send>>,
 }
 
 impl SessionGate {
@@ -204,6 +207,8 @@ impl SessionGate {
             policy,
             product,
             executor,
+            #[cfg(test)]
+            before_execute: None,
         })
     }
 
@@ -218,11 +223,14 @@ impl SessionGate {
         &mut self.executor
     }
 
-    fn bound<'a>(&self, log: &'a mut ProductLog) -> Result<&'a mut EventLog, JournalError> {
+    fn bound<'a>(&self, log: &'a ProductLog) -> Result<MutexGuard<'a, EventLog>, JournalError> {
         if log.state() != &self.product {
             return Err(JournalError::PolicyChanged);
         }
-        Ok(log.log())
+        log.log().map_err(|error| match error {
+            ads_storage::StorageError::Busy => JournalError::Busy,
+            _ => JournalError::Unavailable,
+        })
     }
 
     pub fn plan(
@@ -232,14 +240,14 @@ impl SessionGate {
         mut request: PlanRequest,
         meta: EventMeta,
     ) -> Result<ActionSnapshot, PlanActionError> {
-        let log = self.bound(log).map_err(PlanActionError::Journal)?;
+        let mut log = self.bound(log).map_err(PlanActionError::Journal)?;
         request.work_root = self.root.to_string();
         let plan = ActionPlan::normalize(&request).map_err(PlanActionError::Invalid)?;
         let observed = self
             .executor
             .observe_plan(&plan)
             .map_err(PlanActionError::Inspect)?;
-        self.journal(log)
+        self.journal(&mut log)
             .plan(action_id, &observed, meta)
             .map_err(PlanActionError::Journal)
     }
@@ -249,8 +257,8 @@ impl SessionGate {
         log: &mut ProductLog,
         action_id: &Id,
     ) -> Result<ActionSnapshot, JournalError> {
-        let log = self.bound(log)?;
-        self.journal(log).inspect(action_id)
+        let mut log = self.bound(log)?;
+        self.journal(&mut log).inspect(action_id)
     }
 
     pub fn apply(
@@ -260,8 +268,8 @@ impl SessionGate {
         command: Command,
         meta: EventMeta,
     ) -> Result<ActionSnapshot, JournalError> {
-        let log = self.bound(log)?;
-        self.journal(log).apply(action_id, command, meta)
+        let mut log = self.bound(log)?;
+        self.journal(&mut log).apply(action_id, command, meta)
     }
 
     fn journal<'a>(&'a self, log: &'a mut EventLog) -> JournalGate<'a> {
@@ -277,12 +285,16 @@ impl SessionGate {
         start: EventMeta,
         mut finish: EventMeta,
     ) -> Result<ExecutionOutcome, JournalError> {
-        let log = self.bound(log)?;
-        let mut gate = JournalGate::new(&self.policy, log).for_work_root(&self.root);
+        let mut log = self.bound(log)?;
+        let mut gate = JournalGate::new(&self.policy, &mut *log).for_work_root(&self.root);
         if finish.ts.is_before(&start.ts) {
             finish.ts = start.ts.clone();
         }
         let started = gate.authorize(action_id, start)?;
+        #[cfg(test)]
+        if let Some(before_execute) = self.before_execute.take() {
+            before_execute();
+        }
         match self.executor.execute_recorded(started) {
             Ok(completed) => {
                 let (recorded, report) = completed.record(&mut gate, action_id, finish);

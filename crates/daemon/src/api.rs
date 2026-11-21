@@ -67,6 +67,7 @@ pub enum ApiError {
     QueueAlreadyEnabled,
     /// The audit log refused a queue or gate record; unlike `Unavailable`, the service keeps running.
     Storage,
+    StorageBusy,
     /// No gate bound to the audit log.
     ApprovalNotConfigured,
     /// No action of a gate served here with that id, or no approval asked for it.
@@ -83,6 +84,13 @@ pub enum ApiError {
     ApprovalNotApprovable,
 }
 impl ApiError {
+    pub(crate) fn from_storage(error: ads_storage::StorageError) -> Self {
+        match error {
+            ads_storage::StorageError::Busy => Self::StorageBusy,
+            _ => Self::Storage,
+        }
+    }
+
     pub fn code(self) -> i64 {
         match self {
             Self::Invalid => InvalidParams::VALUE,
@@ -94,7 +102,9 @@ impl ApiError {
             Self::Replay => SubscriptionReplayUnavailable::VALUE,
             Self::ClosePending => SessionClosePending::VALUE,
             Self::SetupFailed => SessionSetupFailed::VALUE,
-            Self::Unavailable | Self::HostTimeout | Self::Storage => InternalError::VALUE,
+            Self::Unavailable | Self::HostTimeout | Self::Storage | Self::StorageBusy => {
+                InternalError::VALUE
+            }
             Self::QueueNotConfigured => QueueNotConfigured::VALUE,
             Self::QueueAlreadyEnabled => QueueAlreadyEnabled::VALUE,
             Self::ApprovalNotConfigured => ApprovalNotConfigured::VALUE,
@@ -124,6 +134,7 @@ impl ApiError {
             Self::QueueNotConfigured => "queue not configured",
             Self::QueueAlreadyEnabled => "queue already enabled",
             Self::Storage => "service unavailable",
+            Self::StorageBusy => "audit log busy",
             Self::ApprovalNotConfigured => "approvals not configured",
             Self::ApprovalNotFound => "approval not found",
             Self::ApprovalAlreadyAnswered => "approval already answered",
@@ -291,6 +302,24 @@ struct Request {
     session: Arc<LocalSession>,
     reply: oneshot::Sender<Result<Reply, ApiError>>,
 }
+struct PendingMutation {
+    job: tokio::task::JoinHandle<Result<bool, ApiError>>,
+    entry: Option<Entry>,
+    reply: oneshot::Sender<Result<Reply, ApiError>>,
+}
+
+impl PendingMutation {
+    // Preserve mutation order and hold requests that depend on the pending result or audit lock.
+    fn defers(&self, command: &Value) -> bool {
+        matches!(
+            command["method"].as_str(),
+            Some("queue.start" | "queue.stop" | "approval.answer")
+        ) || self.entry.as_ref().is_some_and(|entry| {
+            command["params"]["_meta"]["idempotency_key"] == entry.key.as_str()
+        })
+    }
+}
+
 struct Reply {
     replayed: bool,
     /// Encarnação do stream assinado; a conexão só entrega eventos dela.
@@ -341,27 +370,7 @@ struct Service {
     generations: u64,
 }
 impl Service {
-    async fn command(
-        &mut self,
-        command: &Value,
-        session: &LocalSession,
-        deadline: Instant,
-    ) -> Result<Reply, ApiError> {
-        let method = command["method"].as_str().ok_or(ApiError::Invalid)?;
-        let params = &command["params"];
-        if params["_meta"]["origin"] != "local" {
-            return Err(ApiError::Remote);
-        }
-        if method == "queue.stop" {
-            // Parar expressa o estado desejado: uma chave já vista não pode devolver aceite com a fila ligada.
-            let queue_id = queue_id(params)?;
-            let cause = command["id"].as_str().ok_or(ApiError::Invalid)?;
-            let stopped_now = self.queue.stop(session, &queue_id, cause)?;
-            return Ok(Reply {
-                replayed: !stopped_now,
-                stream: None,
-            });
-        }
+    fn idempotency(&self, method: &str, params: &Value) -> Result<Option<Entry>, ApiError> {
         let key = params["_meta"]["idempotency_key"]
             .as_str()
             .ok_or(ApiError::Invalid)?;
@@ -369,34 +378,90 @@ impl Service {
             serde_json::to_vec(&json!([method, params])).map_err(|_| ApiError::Invalid)?,
         )
         .into();
-        let mut replayed = match self.keys.iter().find(|e| e.key == key) {
-            Some(entry) if entry.digest == digest => true,
-            Some(_) => return Err(ApiError::Conflict),
-            None => false,
-        };
-        let mut stream = None;
-        if !replayed {
-            if method == "queue.start" {
-                let cause = command["id"].as_str().ok_or(ApiError::Invalid)?;
-                self.queue.start(session, &queue_id(params)?, cause)?;
-            } else if method == "approval.answer" {
-                let cause = command["id"].as_str().ok_or(ApiError::Invalid)?;
-                let answer: CommandApprovalAnswerV1Params =
-                    serde_json::from_value(params.clone()).map_err(|_| ApiError::Invalid)?;
-                // A key this cache no longer holds may still be in the log.
-                replayed = self.approvals.answer(session, &answer, cause)?;
-            } else {
-                stream = self
-                    .execute(method, params, command["id"].as_str(), deadline)
-                    .await?;
-            }
-            self.keys.push_back(Entry {
+        match self.keys.iter().find(|entry| entry.key == key) {
+            Some(entry) if entry.digest == digest => Ok(None),
+            Some(_) => Err(ApiError::Conflict),
+            None => Ok(Some(Entry {
                 key: key.to_owned(),
                 digest,
-            });
-            while self.keys.len() > self.config.idempotency_keys {
-                self.keys.pop_front();
+            })),
+        }
+    }
+
+    fn remember(&mut self, entry: Entry) {
+        self.keys.push_back(entry);
+        while self.keys.len() > self.config.idempotency_keys {
+            self.keys.pop_front();
+        }
+    }
+
+    fn dispatch_mutation(&self, request: Request) -> Option<PendingMutation> {
+        let Request {
+            command,
+            session,
+            reply,
+        } = request;
+        let params = &command["params"];
+        let method = command["method"].as_str().expect("audit mutation");
+        let stop = method == "queue.stop";
+        let prepare = || {
+            if params["_meta"]["origin"] != "local" {
+                return Err(ApiError::Remote);
             }
+            // Repeating a stop must still stop a queue that has started again.
+            let entry = if stop {
+                None
+            } else if let Some(entry) = self.idempotency(method, params)? {
+                Some(entry)
+            } else {
+                return Ok(None);
+            };
+            let cause = command["id"].as_str().ok_or(ApiError::Invalid)?.to_owned();
+            let job = if method == "approval.answer" {
+                // A key this cache no longer holds may still be in the log.
+                let answer: CommandApprovalAnswerV1Params =
+                    serde_json::from_value(params.clone()).map_err(|_| ApiError::Invalid)?;
+                let approvals = self.approvals.clone();
+                tokio::task::spawn_blocking(move || approvals.answer(&session, &answer, &cause))
+            } else {
+                let id = queue_id(params)?;
+                let queue = self.queue.clone();
+                tokio::task::spawn_blocking(move || {
+                    if stop {
+                        queue.stop(&session, &id, &cause).map(|stopped| !stopped)
+                    } else {
+                        queue.start(&session, &id, &cause).map(|()| false)
+                    }
+                })
+            };
+            Ok(Some((entry, job)))
+        };
+        match prepare() {
+            Ok(Some((entry, job))) => Some(PendingMutation { job, entry, reply }),
+            outcome => {
+                let _ = reply.send(outcome.map(|_| Reply {
+                    replayed: true,
+                    stream: None,
+                }));
+                None
+            }
+        }
+    }
+
+    async fn command(&mut self, command: &Value, deadline: Instant) -> Result<Reply, ApiError> {
+        let method = command["method"].as_str().ok_or(ApiError::Invalid)?;
+        let params = &command["params"];
+        if params["_meta"]["origin"] != "local" {
+            return Err(ApiError::Remote);
+        }
+        let entry = self.idempotency(method, params)?;
+        let replayed = entry.is_none();
+        let mut stream = None;
+        if let Some(entry) = entry {
+            stream = self
+                .execute(method, params, command["id"].as_str(), deadline)
+                .await?;
+            self.remember(entry);
         } else if method == "events.subscribe" {
             // Assinar não tem efeito; a repetição confere o stream atual como uma assinatura nova.
             stream = self.execute(method, params, None, deadline).await?;
@@ -1124,8 +1189,11 @@ impl LocalApi {
         let (commands, mut incoming) = mpsc::channel::<Request>(config.command_queue);
         let mut connections = tokio::task::JoinSet::new();
         let mut accepting = Box::pin(admitter.admit());
+        let mut pending_mutation: Option<PendingMutation> = None;
+        let mut deferred = VecDeque::new();
         loop {
             let retry_due = service.retries.iter().map(|r| r.due).min();
+            let mutation_idle = pending_mutation.is_none();
             tokio::select! {
                 _ = async {
                     tokio::time::sleep_until(retry_due.unwrap_or_else(Instant::now)).await;
@@ -1136,9 +1204,36 @@ impl LocalApi {
                 event = service.host.next() => {
                     if service.event(event.map_err(host_error)?).await == Err(ApiError::Unavailable) { return Err(ApiError::Unavailable); }
                 },
-                Some(request) = incoming.recv() => {
+                replayed = async {
+                    let pending = pending_mutation.as_mut().expect("audit mutation is pending");
+                    (&mut pending.job).await.unwrap_or(Err(ApiError::Storage))
+                }, if !mutation_idle => {
+                    let pending = pending_mutation.take().expect("audit mutation completed");
+                    if matches!(replayed, Err(ApiError::Unavailable | ApiError::HostTimeout)) {
+                        let _ = pending.reply.send(Err(ApiError::Unavailable));
+                        return Err(ApiError::Unavailable);
+                    }
+                    if replayed.is_ok() && let Some(entry) = pending.entry {
+                        service.remember(entry);
+                    }
+                    let _ = pending.reply.send(replayed.map(|replayed| Reply { replayed, stream: None }));
+                }
+                Some(request) = async {
+                    if mutation_idle && let Some(request) = deferred.pop_front() {
+                        return Some(request);
+                    }
+                    incoming.recv().await
+                }, if deferred.len() < config.command_queue || mutation_idle => {
+                    if let Some(pending) = &pending_mutation && pending.defers(&request.command) {
+                        deferred.push_back(request);
+                        continue;
+                    }
+                    if matches!(request.command["method"].as_str(), Some("queue.start" | "queue.stop" | "approval.answer")) {
+                        pending_mutation = service.dispatch_mutation(request);
+                        continue;
+                    }
                     let deadline = Instant::now() + Duration::from_millis(config.host_timeout_ms);
-                    let result = service.command(&request.command, &request.session, deadline).await;
+                    let result = service.command(&request.command, deadline).await;
                     // Um comando sem resposta do host pode ter executado; encerrar impede repetir efeito incerto.
                     if let Err(ApiError::Unavailable | ApiError::HostTimeout) = result {
                         let _ = request.reply.send(Err(ApiError::Unavailable));
@@ -1414,9 +1509,15 @@ async fn connection(
                         // Só leitura, como harness.list; a origem é conferida aqui porque não passa pelo serviço.
                         let queue_id = command["params"]["queue_id"].clone();
                         let state = if command["params"]["_meta"]["origin"] == "local" {
-                            serde_json::from_value(queue_id.clone())
-                                .map_err(|_| ApiError::Invalid)
-                                .and_then(|id| queue.state(&session, &id))
+                            match serde_json::from_value(queue_id.clone()) {
+                                Ok(id) => {
+                                    let (queue, session) = (queue.clone(), session.clone());
+                                    tokio::task::spawn_blocking(move || queue.state(&session, &id))
+                                        .await
+                                        .unwrap_or(Err(ApiError::Storage))
+                                }
+                                Err(_) => Err(ApiError::Invalid),
+                            }
                         } else {
                             Err(ApiError::Remote)
                         };
@@ -1432,7 +1533,10 @@ async fn connection(
                     if command["method"] == "approval.list" {
                         // Só leitura, como queue.get: fora da cache de idempotência, origem conferida aqui.
                         let pending = if command["params"]["_meta"]["origin"] == "local" {
-                            approvals.pending(&session)
+                            let (approvals, session) = (approvals.clone(), session.clone());
+                            tokio::task::spawn_blocking(move || approvals.pending(&session))
+                                .await
+                                .unwrap_or(Err(ApiError::Storage))
                         } else {
                             Err(ApiError::Remote)
                         };

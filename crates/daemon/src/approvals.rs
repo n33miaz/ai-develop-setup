@@ -15,7 +15,7 @@ use ads_core::gate::{
 use serde_json::{Value, json};
 
 use crate::api::{ApiError, checked};
-use crate::audit::ProductLog;
+use crate::audit::{ProductLog, lock_with_timeout};
 use crate::auth::LocalSession;
 use crate::events::{new_id, now_ts};
 use crate::gate::SessionGate;
@@ -103,6 +103,7 @@ pub fn not_approvable(plan: &ActionPlanFields) -> Vec<&'static str> {
 /// go through [`Self::with_gates`], under the same lock as the answers.
 pub struct ApprovalDesk {
     inner: Mutex<Desk>,
+    busy_timeout: std::time::Duration,
 }
 struct Desk {
     log: ProductLog,
@@ -113,18 +114,22 @@ struct Desk {
 impl ApprovalDesk {
     pub fn new(log: ProductLog, gates: Vec<SessionGate>, owner: ApprovalOwner) -> Self {
         Self {
+            busy_timeout: log.busy_timeout(),
             inner: Mutex::new(Desk { log, gates, owner }),
         }
     }
 
-    pub fn with_gates<R>(&self, act: impl FnOnce(&mut ProductLog, &mut [SessionGate]) -> R) -> R {
-        let mut desk = self.lock();
+    pub fn with_gates<R>(
+        &self,
+        act: impl FnOnce(&mut ProductLog, &mut [SessionGate]) -> R,
+    ) -> Result<R, ApiError> {
+        let mut desk = self.lock()?;
         let Desk { log, gates, .. } = &mut *desk;
-        act(log, gates)
+        Ok(act(log, gates))
     }
 
-    fn lock(&self) -> MutexGuard<'_, Desk> {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    fn lock(&self) -> Result<MutexGuard<'_, Desk>, ApiError> {
+        lock_with_timeout(&self.inner, self.busy_timeout).map_err(ApiError::from_storage)
     }
 }
 
@@ -151,8 +156,8 @@ impl Desk {
         cause: &str,
     ) -> Result<String, ApiError> {
         let stream = answer_stream(&answer.approval_id)?;
-        let log = self.log.log();
-        let seq = log.head(&stream).map_err(|_| ApiError::Storage)? + 1;
+        let mut log = self.log.log().map_err(ApiError::from_storage)?;
+        let seq = log.head(&stream).map_err(ApiError::from_storage)? + 1;
         let id = new_id()?;
         let value = json!({
             "id": id, "type": ANSWER, "ts": ts, "stream": stream, "seq": seq,
@@ -168,7 +173,7 @@ impl Desk {
         let value = checked(ANSWER, value).map_err(|_| ApiError::Storage)?;
         let event: EventEnvelopeV1 =
             serde_json::from_value(value).map_err(|_| ApiError::Storage)?;
-        log.append(&event).map_err(|_| ApiError::Storage)?;
+        log.append(&event).map_err(ApiError::from_storage)?;
         Ok(id)
     }
 
@@ -179,12 +184,12 @@ impl Desk {
         key: &str,
     ) -> Result<Option<Value>, ApiError> {
         let stream = answer_stream(approval_id)?;
-        let log = self.log.log();
+        let log = self.log.log().map_err(ApiError::from_storage)?;
         let mut next = 1;
         loop {
             let page = log
                 .read_stream(&stream, next, u32::MAX)
-                .map_err(|_| ApiError::Storage)?;
+                .map_err(ApiError::from_storage)?;
             let Some(last) = page.last() else {
                 return Ok(None);
             };
@@ -223,7 +228,7 @@ fn decided_by(history: &GateHistory, answer_id: &Value) -> Option<Result<(), Api
 
 impl ApprovalControl for ApprovalDesk {
     fn pending(&self, _: &LocalSession) -> Result<Vec<Value>, ApiError> {
-        let mut desk = self.lock();
+        let desk = self.lock()?;
         let roots: Vec<AbsPath> = desk
             .gates
             .iter()
@@ -236,8 +241,9 @@ impl ApprovalControl for ApprovalDesk {
         let histories = desk
             .log
             .log()
+            .map_err(ApiError::from_storage)?
             .pending_approvals(MAX_LISTED, &mut served)
-            .map_err(|_| ApiError::Storage)?;
+            .map_err(ApiError::from_storage)?;
         let mut items = Vec::new();
         for history in &histories {
             let Some(Event::ApprovalRequested(requested)) = history.events.last() else {
@@ -265,14 +271,20 @@ impl ApprovalControl for ApprovalDesk {
         answer: &CommandApprovalAnswerV1Params,
         cause: &str,
     ) -> Result<bool, ApiError> {
-        let mut guard = self.lock();
+        let mut guard = self.lock()?;
         let desk = &mut *guard;
         let action_id: Id = answer.action_id.clone();
         let approval_id: Id = answer.approval_id.clone();
         let plan_hash = PlanHash::new(answer.plan_hash.as_str()).map_err(|_| ApiError::Invalid)?;
-        let history = match desk.log.log().load(&action_id) {
+        let history = match desk
+            .log
+            .log()
+            .map_err(ApiError::from_storage)?
+            .load(&action_id)
+        {
             Ok(history) => history,
             Err(JournalError::Missing) => return Err(ApiError::ApprovalNotFound),
+            Err(JournalError::Busy) => return Err(ApiError::StorageBusy),
             Err(_) => return Err(ApiError::Storage),
         };
         let index = desk.gate_for(&history).ok_or(ApiError::ApprovalNotFound)?;
@@ -388,6 +400,7 @@ impl ApprovalControl for ApprovalDesk {
 
 fn gate_error(error: JournalError) -> ApiError {
     match error {
+        JournalError::Busy => ApiError::StorageBusy,
         JournalError::Missing => ApiError::ApprovalNotFound,
         JournalError::Conflict => ApiError::ApprovalAlreadyAnswered,
         JournalError::PolicyChanged
@@ -646,6 +659,7 @@ mod tests {
         let stream: EventEnvelopeV1Stream = serde_json::from_value(json!(name)).unwrap();
         desk.with_gates(|log, _| {
             log.log()
+                .unwrap()
                 .read_stream(&stream, 1, 100)
                 .unwrap()
                 .into_iter()
@@ -657,6 +671,54 @@ mod tests {
                 })
                 .collect()
         })
+        .unwrap()
+    }
+
+    #[test]
+    fn an_answer_times_out_while_the_gate_owns_the_desk_or_log() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let mut bench = Bench::with_storage("busy_timeout_ms = 50");
+        let gate = bench.gate(OVER_LIMIT);
+        let (action, approval, hash) = bench.waiting(&gate, "act-busy");
+        let shared = bench.log.as_ref().unwrap().shared_log();
+        let desk = bench.desk(vec![gate]);
+        let answer = params(&action, &approval, &hash, "approve");
+        let cause = new_id().unwrap();
+
+        for hold_desk in [true, false] {
+            let (entered, waiting) = mpsc::channel();
+            let (release, released) = mpsc::channel();
+            std::thread::scope(|scope| {
+                let desk = &desk;
+                let shared = &shared;
+                scope.spawn(move || {
+                    let pause = || {
+                        entered.send(()).unwrap();
+                        let _ = released.recv_timeout(Duration::from_secs(10));
+                    };
+                    if hold_desk {
+                        desk.with_gates(|_, _| pause()).unwrap();
+                    } else {
+                        let _guard = shared.lock().unwrap();
+                        pause();
+                    }
+                });
+                waiting.recv_timeout(Duration::from_secs(10)).unwrap();
+                let (done, result) = mpsc::channel();
+                let answer = &answer;
+                let cause = &cause;
+                scope.spawn(move || {
+                    done.send(desk.answer(&session(), answer, cause)).unwrap();
+                });
+                let outcome = result.recv_timeout(Duration::from_secs(2));
+                let _ = release.send(());
+                assert_eq!(outcome.unwrap(), Err(ApiError::StorageBusy));
+            });
+        }
+
+        assert_eq!(desk.answer(&session(), &answer, &cause), Ok(false));
     }
 
     const OVER_LIMIT: &str = "approval_item_limit = 5";
@@ -676,7 +738,9 @@ mod tests {
         let [item] = &pending[..] else {
             panic!("expected one pending approval: {pending:?}");
         };
-        let plan = desk.with_gates(|log, _| log.log().load(&action).unwrap().plan.to_json());
+        let plan = desk
+            .with_gates(|log, _| log.log().unwrap().load(&action).unwrap().plan.to_json())
+            .unwrap();
         assert_eq!(item["plan"], plan);
         assert_eq!(item["plan"]["quarantined"], true);
         assert!(item["plan"]["destination"].is_string());
@@ -710,7 +774,9 @@ mod tests {
         assert_eq!(granted["cause"], record["id"]);
         assert!(answered_at < granted_at, "the answer is recorded first");
         assert!(desk.pending(&session).unwrap().is_empty());
-        let state = desk.with_gates(|log, gates| gates[0].inspect(log, &action).unwrap().state);
+        let state = desk
+            .with_gates(|log, gates| gates[0].inspect(log, &action).unwrap().state)
+            .unwrap();
         assert!(matches!(state, State::Approved { .. }), "{state:?}");
     }
 
@@ -848,7 +914,9 @@ mod tests {
         assert_eq!(denied["type"], "urn:ads:event:approval.denied:2");
         assert_eq!(denied["data"]["reason"], "E_POLICY_CHANGED");
         assert!(answered_at < denied_at);
-        let state = desk.with_gates(|log, gates| gates[0].inspect(log, &action).unwrap().state);
+        let state = desk
+            .with_gates(|log, gates| gates[0].inspect(log, &action).unwrap().state)
+            .unwrap();
         assert_eq!(state, State::ApprovalDenied);
     }
 
@@ -879,10 +947,12 @@ mod tests {
                 .execute(log, action, daemon_meta(1, &now), daemon_meta(1, &now))
                 .map(|_| ())
         })
+        .unwrap()
     }
 
     fn state(desk: &ApprovalDesk, action: &Id) -> State {
         desk.with_gates(|log, gates| gates[0].inspect(log, action).unwrap().state)
+            .unwrap()
     }
 
     #[test]
