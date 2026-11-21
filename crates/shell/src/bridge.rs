@@ -4,7 +4,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
-use ads_contracts::desktop_proof;
+use ads_contracts::{CommandHarnessListResponseV1, desktop_proof};
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
 use serde_json::Value;
@@ -165,16 +165,14 @@ async fn connect_socket(
     result
 }
 
+/// A reply to the window's own `harness.list` that the interface accepts: valid by
+/// `command.harness.list.response:1` and with the id of the request.
 fn is_smoke_reply(text: &str, request_id: Option<&str>) -> bool {
     let Some(request_id) = request_id else {
         return false;
     };
-    serde_json::from_str::<Value>(text).is_ok_and(|reply| {
-        reply["jsonrpc"] == "2.0"
-            && reply["id"] == request_id
-            && reply["result"]["harnesses"].is_array()
-            && reply["result"]["workdir_aliases"].is_array()
-    })
+    serde_json::from_str::<CommandHarnessListResponseV1>(text)
+        .is_ok_and(|reply| reply.id.as_str() == request_id)
 }
 
 async fn relay(
@@ -299,30 +297,33 @@ mod tests {
 
     #[test]
     fn smoke_requires_a_successful_reply_to_the_window_request() {
-        let reply = r#"{"jsonrpc":"2.0","id":"window","result":{"harnesses":["claude"],"workdir_aliases":[]}}"#;
-        assert!(!is_smoke_reply(reply, None));
-        assert!(!is_smoke_reply(reply, Some("other")));
+        const ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAD";
+        let reply = |rest: &str| format!(r#"{{"jsonrpc":"2.0","id":"{ID}",{rest}}}"#);
+        let valid = reply(r#""result":{"harnesses":["claude"],"workdir_aliases":[]}"#);
+        assert!(is_smoke_reply(&valid, Some(ID)));
+        assert!(!is_smoke_reply(&valid, None));
+        assert!(!is_smoke_reply(&valid, Some("01ARZ3NDEKTSV4RRFFQ69G5FAE")));
         assert!(!is_smoke_reply(
             r#"{"jsonrpc":"2.0","method":"event","params":{}}"#,
-            Some("window")
+            Some(ID)
         ));
-        assert!(!is_smoke_reply(
-            r#"{"jsonrpc":"2.0","id":"window","error":{"code":-32603}}"#,
-            Some("window")
-        ));
-        assert!(!is_smoke_reply(
-            r#"{"jsonrpc":"2.0","id":"window","result":null}"#,
-            Some("window")
-        ));
-        assert!(!is_smoke_reply(
-            r#"{"jsonrpc":"2.0","id":"window","result":{}}"#,
-            Some("window")
-        ));
-        assert!(!is_smoke_reply(
-            r#"{"jsonrpc":"2.0","id":"window","result":[]}"#,
-            Some("window")
-        ));
-        assert!(is_smoke_reply(reply, Some("window")));
+        for refused in [
+            r#""error":{"code":-32603}"#,
+            r#""result":null"#,
+            r#""result":{}"#,
+            r#""result":[]"#,
+            r#""result":{"workdir_aliases":[]}"#,
+            r#""result":{"harnesses":[]}"#,
+            r#""result":{"harnesses":[1],"workdir_aliases":[]}"#,
+            r#""result":{"harnesses":["claude","claude"],"workdir_aliases":[]}"#,
+            r#""result":{"harnesses":[],"workdir_aliases":["a","a"]}"#,
+            r#""result":{"harnesses":[],"workdir_aliases":[]},"error":{"code":-32603}"#,
+        ] {
+            assert!(!is_smoke_reply(&reply(refused), Some(ID)), "{refused}");
+        }
+        let window =
+            r#"{"jsonrpc":"2.0","id":"window","result":{"harnesses":[],"workdir_aliases":[]}}"#;
+        assert!(!is_smoke_reply(window, Some("window")), "the id is a ULID");
     }
 
     fn bootstrap(listener: &TcpListener) -> Bootstrap {

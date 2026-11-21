@@ -31,5 +31,5 @@ mantém as sessões existentes. Os parâmetros da janela ficam na
 [configuração do lançador](../launcher/README.md).
 
 O job `shell-check` empacota a interface e abre a janela real. A opção interna
-`--smoke-test` exige a feature `desktop-smoke` e encerra a casca após encaminhar pelo IPC a resposta bem-sucedida, com a lista de ferramentas, à consulta `harness.list` enviada pela janela.
+`--smoke-test` exige a feature `desktop-smoke` e encerra a casca após encaminhar pelo IPC a resposta à consulta `harness.list` enviada pela janela, com o mesmo id e válida por `command.harness.list.response:1`.
 O teste verifica que daemon e host continuam ativos.
