@@ -29,5 +29,7 @@ clock_rewind_seconds = 300
 
 # Depois de o núcleo reiniciar, quanto tempo, em segundos, uma tarefa em `running` espera o host de
 # terminal confirmar a sessão dela. Enquanto espera, a tarefa fica parada em `running`; vencido o
-# prazo, passa para `failed` sem gastar tentativa, e a sessão é encerrada se o host a listar depois.
+# prazo, passa para `cancelled` sem gastar tentativa, com o motivo `host_unconfirmed`. O
+# cancelamento é terminal, inclusive após replay e nova ativação da fila, e a sessão anterior pode
+# continuar viva.
 host_confirm_seconds = 60
