@@ -166,13 +166,17 @@ async fn connect_socket(
 }
 
 /// A reply to the window's own `harness.list` that the interface accepts: valid by
-/// `command.harness.list.response:1` and with the id of the request.
+/// `command.harness.list.response:1` and with the id of the request. The reply and its
+/// `result` have to be JSON objects: serde would also read either struct from an array.
 fn is_smoke_reply(text: &str, request_id: Option<&str>) -> bool {
     let Some(request_id) = request_id else {
         return false;
     };
-    serde_json::from_str::<CommandHarnessListResponseV1>(text)
-        .is_ok_and(|reply| reply.id.as_str() == request_id)
+    let objects = serde_json::from_str::<Value>(text)
+        .is_ok_and(|reply| reply.is_object() && reply["result"].is_object());
+    objects
+        && serde_json::from_str::<CommandHarnessListResponseV1>(text)
+            .is_ok_and(|reply| reply.id.as_str() == request_id)
 }
 
 async fn relay(
@@ -320,6 +324,12 @@ mod tests {
             r#""result":{"harnesses":[],"workdir_aliases":[]},"error":{"code":-32603}"#,
         ] {
             assert!(!is_smoke_reply(&reply(refused), Some(ID)), "{refused}");
+        }
+        for positional in [
+            format!(r#"["2.0","{ID}",{{"harnesses":["claude"],"workdir_aliases":[]}}]"#),
+            reply(r#""result":[["claude"],[]]"#),
+        ] {
+            assert!(!is_smoke_reply(&positional, Some(ID)), "{positional}");
         }
         let window =
             r#"{"jsonrpc":"2.0","id":"window","result":{"harnesses":[],"workdir_aliases":[]}}"#;
