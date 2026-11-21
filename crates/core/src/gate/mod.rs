@@ -9,6 +9,7 @@
 
 mod classify;
 mod event;
+mod journal;
 mod machine;
 mod path;
 mod plan;
@@ -25,6 +26,7 @@ pub use event::{
     PlanTarget, PlanVerdict, Risk, RuleCode, RuleList, ShortText, SubjectText, Timestamp, Ulid,
     Verb, Via,
 };
+pub use journal::{GateHistory, GateJournal, JournalError, JournalGate, StartedExecution};
 pub use machine::{
     Action, ActionSnapshot, Command, ExecutionPermit, Refused, ReplayError, State, TransitionError,
     replay,
