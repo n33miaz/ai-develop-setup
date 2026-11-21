@@ -4,7 +4,7 @@ Executa no sistema de arquivos, dentro de uma cerca, as ações que o portão do
 
 O [portão](../../core/README.md#portão-de-ações-destrutivas-srcgate) decide com texto e não toca o disco. Este crate é onde o texto encontra o disco: é o único do workspace que move ou apaga arquivos do usuário, e só faz isso com a licença de execução do portão na mão.
 
-**Estado: não ligado a nenhum executor real.** Nada no workspace chama este crate. O que ele garante, e contra quem, está em [Modelo de ameaça](#modelo-de-ameaça); o que ele não garante está em [Deliberadamente fora](#deliberadamente-fora).
+O daemon compõe este executor em biblioteca. A [licença da composição local](../../core/README.md#pré-requisitos-de-execução-da-composição-local) acrescenta as provas de aprovação exigidas pelo daemon. O que ele garante, e contra quem, está em [Modelo de ameaça](#modelo-de-ameaça); o que ele não garante está em [Deliberadamente fora](#deliberadamente-fora).
 
 | Arquivo | O que faz |
 |---|---|

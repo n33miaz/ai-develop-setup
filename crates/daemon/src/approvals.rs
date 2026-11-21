@@ -1807,6 +1807,46 @@ mod tests {
     }
 
     #[test]
+    fn a_fixed_plan_granted_without_a_local_answer_is_refused_before_the_disk() {
+        let mut bench = Bench::new();
+        let gate = bench.gate(OVER_LIMIT);
+        let seen = bench.at(&bench.work.clone(), "build.log");
+        bench.file(&seen);
+        fs::write(&seen, "log").unwrap();
+        let (action, approval, hash) = bench.waiting_since(&gate, "act-unanswered", 0);
+        let now = now_ts().unwrap();
+        let mut meta = daemon_meta(2, &now);
+        meta.actor = Actor {
+            kind: ActorKind::Device,
+            id: Id::new("device-01").unwrap(),
+        };
+        gate.apply(
+            bench.log.as_mut().unwrap(),
+            &action,
+            Command::Grant {
+                action_id: action.clone(),
+                approval_id: approval,
+                plan_hash: PlanHash::new(hash).unwrap(),
+                via: Via::Tray,
+            },
+            meta,
+        )
+        .unwrap();
+        let desk = bench.desk(vec![gate]);
+        let outcome = run(&desk, &action);
+        let failure = outcome.operation.unwrap_err();
+        assert_eq!(failure.reason, ads_adapter_fs::Reason::EffectsChanged);
+        assert_eq!(outcome.recorded.unwrap().state, State::Failed);
+        assert!(Path::new(&seen).is_file());
+        let events = stream(&desk, &format!("action/{}", action.as_str()));
+        assert!(
+            events
+                .iter()
+                .all(|(_, event)| event["type"] != "urn:ads:event:action.started:1")
+        );
+    }
+
+    #[test]
     fn the_reasons_not_to_approve_follow_the_record() {
         let golden = |name: &str| {
             let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

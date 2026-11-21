@@ -337,22 +337,17 @@ recebe `REMOTE_ORIGIN_REFUSED`. O dono e o aparelho vêm do daemon
   log do processo; a listagem das outras ações segue) ou `effects_not_listed`.
   Aprovar uma dessas grava a resposta e volta `APPROVAL_NOT_APPROVABLE`, com a
   ação ainda aguardando; negar continua permitido e nunca lê os efeitos.
-- Na execução, `SessionGate::execute` confere os efeitos **antes de pedir a
-  licença ao portão**: com a ação aprovada, lê o `effects_hash` da resposta que
-  causou a concessão, exige que seja o do registro gravado, refaz o ensaio e
-  exige o mesmo registro. O executor confere de novo antes da primeira
-  alteração (`Executor::execute_approved`). Diferença, registro ausente ou
-  aprovação sem registro para um plano que precisa dele: o disco não é tocado, a
-  ação termina em `action.failed` com `E_FS_EFFECTS_CHANGED` e só um plano novo,
-  com aprovação nova, volta a executar. Política ou tolerância do relógio
-  mudada desde a aprovação é recusada antes dessa conferência, pelo portão,
-  como `E_POLICY_CHANGED` ou `E_CLOCK_POLICY_CHANGED`.
-- Isso deixa a execução aprovada mais estrita do que antes: toda ação aprovada
-  pela API com efeitos gravados, inclusive um apagar com estimativa que vai para
-  a quarentena, é recusada a qualquer diferença no disco desde o plano (numa
-  pasta em que uma ferramenta continua escrevendo, por exemplo), e uma
-  concessão vinda de fora da API (bandeja) para um plano que precisa de efeitos
-  falha fechada.
+- Para executar uma ação aprovada, `SessionGate::execute` exige a resposta
+  local gravada que causou a concessão. Confere o ator, o canal e o
+  `effects_hash`, refaz o ensaio e exige os mesmos efeitos. A licença local
+  leva esses efeitos ao executor para nova conferência antes da primeira
+  alteração. Ausência de resposta ou de efeitos, ou divergência dos efeitos,
+  encerra a ação em `action.failed` com `E_FS_EFFECTS_CHANGED`. Uma ação
+  precisa de novo plano e nova aprovação para executar depois dessa falha.
+  A API de aprovação ainda pode registrar uma concessão sem efeitos quando
+  o plano já fixa o que mudaria. Essa concessão fica no histórico e não
+  libera a execução. Os [pré-requisitos do portão](../core/README.md#pré-requisitos-de-execução-da-composição-local)
+  descrevem o alcance da licença.
 - `approval.answer` leva `action_id`, `approval_id`, `plan_hash` (o que o dono
   viu) e `decision` (`approve` ou `deny`). Antes de gravar qualquer coisa, o
   daemon confere que a ação existe e que a aprovação é a pedida no histórico
