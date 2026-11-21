@@ -289,6 +289,30 @@ fn u16_at(words: &[u64], offset: usize) -> Option<u16> {
     Some((word >> ((offset % 8) * 8)) as u16)
 }
 
+fn file_of(low: u64, high: u64) -> u128 {
+    (u128::from(high) << 64) | u128::from(low)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::file_of;
+
+    #[test]
+    fn ntfs_sequence_distinguishes_objects_with_the_same_record_number() {
+        let record = 42;
+        assert_ne!(
+            file_of((1 << 48) | record, 0),
+            file_of((2 << 48) | record, 0)
+        );
+    }
+
+    #[test]
+    fn the_high_word_is_part_of_the_file_id() {
+        assert_eq!(file_of(42, 1), (1 << 64) | 42);
+        assert_ne!(file_of(42, 1), file_of(42, 2));
+    }
+}
+
 fn meta_of(file: &File) -> io::Result<Meta> {
     // FILE_ATTRIBUTE_TAG_INFO: attributes, reparse tag.
     let mut tag = [0u64; 1];
@@ -311,7 +335,7 @@ fn meta_of(file: &File) -> io::Result<Meta> {
         kind: Some(kind),
         id: Identity {
             volume: id[0],
-            file: (u128::from(id[2]) << 64) | u128::from(id[1]),
+            file: file_of(id[1], id[2]),
         },
         size: standard[1],
         // A volume mounted in a folder is a reparse point here: seen as a link, never entered.

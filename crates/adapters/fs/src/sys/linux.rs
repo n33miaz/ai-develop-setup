@@ -41,12 +41,26 @@ const WANTED: StatxFlags = StatxFlags::BASIC_STATS
 /// at once to a new object (ext4, xfs, tmpfs) comes back with another birth time. The birth
 /// time is never changed by a rename, a write or a change of links, so the executor's own moves
 /// keep the identity. Seconds take 34 bits up to the year 2514, nanoseconds 30.
-fn file_of(stat: &rustix::fs::Statx, told: StatxFlags) -> u128 {
-    let birth = match told.contains(StatxFlags::BTIME) {
-        true => ((stat.stx_btime.tv_sec as u64) << 30) | u64::from(stat.stx_btime.tv_nsec),
-        false => 0,
-    };
-    (u128::from(birth) << 64) | u128::from(stat.stx_ino)
+fn file_of(inode: u64, birth: Option<(i64, u32)>) -> u128 {
+    let birth = birth.map_or(0, |(seconds, nanos)| {
+        ((seconds as u64) << 30) | u64::from(nanos)
+    });
+    (u128::from(birth) << 64) | u128::from(inode)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::file_of;
+
+    #[test]
+    fn birth_time_distinguishes_objects_with_the_same_inode() {
+        let inode = 42;
+        let file = file_of(inode, Some((1, 7)));
+        assert_ne!(file, file_of(inode, Some((1, 8))));
+        assert_ne!(file, file_of(inode, Some((2, 7))));
+        assert_ne!(file, file_of(inode, None));
+        assert_eq!(file_of(inode, None), u128::from(inode));
+    }
 }
 
 fn meta_of(stat: &rustix::fs::Statx) -> Meta {
@@ -61,7 +75,11 @@ fn meta_of(stat: &rustix::fs::Statx) -> Meta {
         kind,
         id: Identity {
             volume: (u64::from(stat.stx_dev_major) << 32) | u64::from(stat.stx_dev_minor),
-            file: file_of(stat, told),
+            file: file_of(
+                stat.stx_ino,
+                told.contains(StatxFlags::BTIME)
+                    .then_some((stat.stx_btime.tv_sec, stat.stx_btime.tv_nsec)),
+            ),
         },
         size: stat.stx_size,
         mount: Mount {

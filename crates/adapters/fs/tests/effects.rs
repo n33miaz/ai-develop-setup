@@ -215,9 +215,14 @@ fn an_existing_link_moved_over_the_approved_one_stops_the_purge() {
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "linux",
+    ignore = "requires a volume that immediately reuses the deleted inode"
+)]
 fn a_file_deleted_and_made_again_with_the_same_size_stops_the_purge() {
     let sandbox = Sandbox::new("effects-recreate");
     let seen = sandbox.file("work/cache/seen.txt", "seen");
+    #[cfg(target_os = "linux")]
     let before = inode(&seen);
     let again = seen.clone();
     let recreate = move || {
@@ -225,25 +230,17 @@ fn a_file_deleted_and_made_again_with_the_same_size_stops_the_purge() {
         std::thread::sleep(std::time::Duration::from_millis(50));
         fs::remove_file(&again).unwrap();
         fs::write(&again, "SEEN").unwrap();
+        #[cfg(target_os = "linux")]
+        assert_eq!(inode(&again), before, "the volume did not reuse the inode");
     };
     changed_after_the_approval(&sandbox, recreate, std::slice::from_ref(&seen));
     assert_eq!(fs::read_to_string(&seen).unwrap(), "SEEN");
-    // On Linux this is the case of a freed inode handed at once to the new file; when the
-    // file system gave another one, the test proved only what the one above proves.
-    if before.is_some() && inode(&seen) != before {
-        eprintln!("SKIPPED: the inode was not reused here; nothing more is proved");
-    }
 }
 
-#[cfg(unix)]
-fn inode(path: &std::path::Path) -> Option<u64> {
+#[cfg(target_os = "linux")]
+fn inode(path: &std::path::Path) -> u64 {
     use std::os::unix::fs::MetadataExt;
-    Some(fs::metadata(path).unwrap().ino())
-}
-
-#[cfg(not(unix))]
-fn inode(_path: &std::path::Path) -> Option<u64> {
-    None
+    fs::metadata(path).unwrap().ino()
 }
 
 #[test]
@@ -257,8 +254,20 @@ fn a_volume_that_cannot_be_classified_refuses_the_purge_before_the_disk() {
         .rehearse_effects(&id("act-1"), flow.permit.plan())
         .unwrap_err();
     assert_eq!(refused.reason, Reason::IdentityUnstable, "{refused}");
+    assert!(refused.detail.contains("volume classification unavailable"));
     let failure = run(&mut executor, flow).unwrap_err();
     assert_eq!(failure.reason, Reason::IdentityUnstable, "{failure}");
+    for error in [
+        &refused as &dyn std::error::Error,
+        failure.as_ref() as &dyn std::error::Error,
+    ] {
+        let cause = error
+            .source()
+            .unwrap()
+            .downcast_ref::<std::io::Error>()
+            .unwrap();
+        assert_eq!(cause.kind(), std::io::ErrorKind::Unsupported);
+    }
     assert_eq!(failure.stage, Stage::Checks);
     assert!(failure.report.untouched());
     assert!(seen.is_file());
