@@ -251,12 +251,25 @@ fila, do dono e do aparelho a `queue::LocalQueue::bind_or_pending` e entrega o
 controle a `LocalApi::with_queue`. Apenas `NotCreated` deixa a fila aguardando
 `queue.create`. Outras falhas de abertura são devolvidas à composição.
 
-O executável serve `queue::DisabledQueue` e responde `QUEUE_NOT_CONFIGURED`.
-Para ligar essa composição no Windows, a inicialização precisa obter ou
-provisionar com segurança a chave de cifra por coluna no cofre, resolver
-as chaves do banco pelos identificadores gravados e fornecer os identificadores
-estáveis da fila, do dono e do aparelho. `audit::open_product` já usa
-`OsVault` para a âncora e recebe o `KeyProvider` de quem o chama.
+No Windows, a partida abre o log de auditoria antes de anunciar a API. A
+configuração opcional `[storage]` no TOML do daemon aceita as chaves de
+[defaults/storage.toml](../../defaults/storage.toml). A pasta privada
+`%LOCALAPPDATA%/ads` mantém `local-identities.toml` com os IDs da fila, do dono
+e do aparelho. Use `queue_id` desse arquivo nos comandos e mantenha uma cópia
+do arquivo junto ao plano de recuperação da auditoria.
+
+A primeira partida gera as identidades se não houver banco, arquivos
+auxiliares ou fixação de auditoria no cofre. O arquivo inválido é preservado.
+Se ele faltar com histórico existente, restaure a cópia correspondente e
+reinicie. A fila existente volta parada. A fila nova aguarda uma chamada
+autenticada a `queue.create`.
+
+A trava do lançador continua valendo. A trava privada `local-runtime.lock`
+mantém um único daemon com controles persistentes por usuário. Se a
+composição falhar, o diagnóstico de uma linha sai em stderr e a API responde
+`QUEUE_NOT_CONFIGURED` e `APPROVAL_NOT_CONFIGURED` nesses comandos.
+O acesso ao terminal continua disponível. Uma plataforma sem cofre entra
+nesse mesmo estado.
 
 ## Aprovações do portão
 
@@ -382,10 +395,12 @@ pela trava da mesa ou da conexão usa `busy_timeout_ms`. Ao fim do prazo,
 a API responde `INTERNAL_ERROR` com a mensagem `audit log busy`. Se um pânico
 invalidar a trava da conexão, a fila e o portão recusam novos acessos ao log.
 A lista vem de `EventLog::pending_approvals`, que confere a âncora e
-a cadeia uma vez antes de ler e aplica o filtro da mesa antes do limite. `LocalApi::with_approvals` entrega o controle à API. O
-executável ainda não monta o portão, porque falta o provedor de chaves do
-cofre; até lá ele serve `approvals::DisabledApprovals`, que recusa os dois
-comandos com `APPROVAL_NOT_CONFIGURED`.
+a cadeia uma vez antes de ler e aplica o filtro da mesa antes do limite. O
+executável entrega a mesa à API. As raízes de `[workdirs]` delimitam os portões
+com a política padrão de arquivos. Cada portão restringe a observação à sua
+raiz, protege também os demais espaços configurados e o estado do produto.
+Sem raízes configuradas, a lista fica vazia. A criação de pedidos depende de
+um produtor que use o portão.
 
 Padrões em [defaults/daemon.toml](../../defaults/daemon.toml), aplicados ao iniciar:
 

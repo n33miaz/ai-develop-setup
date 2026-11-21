@@ -27,7 +27,7 @@ Estado da mitigação, em cada risco:
 | [Outra conta ocupa a porta do daemon após a saída](#outra-conta-ocupa-a-porta-do-daemon-após-a-saída) | casca e daemon | implementada e testada; janela indisponível até o reinício do daemon |
 | [Outra conta ocupa vagas de autenticação pendente](#outra-conta-ocupa-vagas-de-autenticação-pendente) | daemon (API local) | parcial: teto e expulsão testados; sem limite por conta |
 | [Outra conta comanda o lançador pela pasta de controle](#outra-conta-comanda-o-lançador-pela-pasta-de-controle) | lançador e pasta privada | implementada e testada; outra conta simulada nos testes |
-| [Dado sensível em claro no disco](#dado-sensível-em-claro-no-disco) | armazenamento | parcial: `data` dos eventos cifrado no banco e testado; chave ainda fora do cofre |
+| [Dado sensível em claro no disco](#dado-sensível-em-claro-no-disco) | armazenamento | parcial: `data` dos eventos cifrado no banco e testado; chave no cofre do Windows |
 | [Perda do estado local](#perda-do-estado-local) | armazenamento | parcial: abertura recusa arquivo corrompido sem alterá-lo; backup ausente |
 | [Atualização ruim instalada](#atualização-ruim-instalada) | lançador | decidida, não implementada |
 | [Elevação de privilégio](#elevação-de-privilégio) | auxiliar de elevação | decidida, não implementada |
@@ -199,9 +199,9 @@ Estado da mitigação, em cada risco:
 - **Impacto.** Quem lê o disco lê o trabalho do usuário.
 - **Dono.** Armazenamento ([`crates/storage`](../crates/storage/README.md)) e cofre ([`crates/adapters/vault`](../crates/adapters/vault/README.md)).
 - **Teto.** Não se aplica.
-- **Mitigação existente.** [ADR 0005](adr/0005-column-level-encryption.md): cifra autenticada por coluna, chave no cofre do sistema. A cifra (XChaCha20-Poly1305, com dados associados autenticados) está implementada e testada em `crates/storage/src/cipher.rs`, inclusive recusa de chave e de dados associados trocados e diagnóstico sem chave nem texto ([ADR 0021](adr/0021-storage-atomic-file-and-cipher.md), proposta). O log de eventos (`crates/storage/src/log.rs`) grava o `data` de todo evento cifrado, com as colunas em claro da linha como dados associados; o teste da ADR 0005 procura uma frase sentinela no banco, no `-wal` e no `-shm`, reabre e recusa chave errada (`crates/storage/src/event_log_tests.rs`). Na biblioteca do daemon, o diário do portão e a fila gravam no log, com o `data` cifrado. O executável ainda não abre o log, o anel de replay fica só em memória e o cliente do daemon não persiste saída nem tem telemetria ([daemon](../crates/daemon/README.md)).
+- **Mitigação existente.** [ADR 0005](adr/0005-column-level-encryption.md): cifra autenticada por coluna, chave no cofre do sistema. A cifra (XChaCha20-Poly1305, com dados associados autenticados) está implementada e testada em `crates/storage/src/cipher.rs`, inclusive recusa de chave e de dados associados trocados e diagnóstico sem chave nem texto ([ADR 0021](adr/0021-storage-atomic-file-and-cipher.md), proposta). O log de eventos (`crates/storage/src/log.rs`) grava o `data` de todo evento cifrado, com as colunas em claro da linha como dados associados; o teste da ADR 0005 procura uma frase sentinela no banco, no `-wal` e no `-shm`, reabre e recusa chave errada (`crates/storage/src/event_log_tests.rs`). O executável no Windows abre o log para o diário do portão e a fila, com a chave no cofre. O anel de replay fica só em memória e o cliente do daemon não persiste saída nem tem telemetria ([daemon](../crates/daemon/README.md)).
 - **Plano B.** Banco inteiro cifrado (condição de reversão da ADR 0005).
-- **O que falta.** A integração da chave com o cofre ainda falta. A composição deve recusar a persistência sensível se o cofre estiver indisponível ou se a plataforma não for Windows. O limite por entrada e a execução do teste local estão no [README do cofre](../crates/adapters/vault/README.md). Ficam em claro, por decisão da ADR 0005, `id`, `type`, `ts`, `stream`, `seq`, autor, `cause`, classe do dado, `action_id` e `approval_id` (os dois só nos eventos do portão, e o primeiro já está no nome do stream): revelam o ritmo de uso e os nomes dos streams.
+- **O que falta.** A composição recusa fila e aprovações se o cofre estiver indisponível ou se a plataforma não tiver suporte. A perda da chave ou das identidades bloqueia os controles de auditoria. O mantenedor do armazenamento restaura a chave e as identidades correspondentes e confere a abertura pelo diagnóstico de partida. O impacto fica restrito aos controles persistentes. O limite por entrada e a execução do teste local estão no [README do cofre](../crates/adapters/vault/README.md). Ficam em claro, por decisão da ADR 0005, `id`, `type`, `ts`, `stream`, `seq`, autor, `cause`, classe do dado, `action_id` e `approval_id` (os dois só nos eventos do portão, e o primeiro já está no nome do stream): revelam o ritmo de uso e os nomes dos streams.
 
 ### Perda do estado local
 
@@ -436,7 +436,7 @@ Riscos da fila de tarefas ([fila contínua no núcleo](../crates/core/README.md#
 - **Teto.** `queue_max_events` x `max_event_bytes` ([storage.toml](../defaults/storage.toml)), mais a expansão dos eventos interpretados: no padrão, 100000 x 1 MiB (cerca de 98 GiB no pior caso teórico); no máximo aceito, 10000000 x 1 MiB. Com eventos de algumas centenas de bytes, a estimativa (ainda não medida) é de dezenas de MiB no padrão.
 - **Mitigação existente.** Padrão de `queue_max_events` em 100000; eventos da fila pequenos por contrato; páginas da leitura limitadas.
 - **Plano B.** Replay incremental, página a página, sem guardar o stream; ou instantâneo autenticado do estado do replay para ler só a cauda.
-- **O que falta.** Medir a memória da leitura com uma fila no teto padrão antes de o daemon ligar a fila.
+- **O que falta.** Medir a memória da leitura na partida com uma fila no teto padrão.
 
 ### Carimbo adiantado aceito no replay da fila
 
@@ -446,4 +446,4 @@ Riscos da fila de tarefas ([fila contínua no núcleo](../crates/core/README.md#
 - **Teto.** `admission_limit` da política gravada, que independe de horário, e o teto de tentativas de cada tarefa.
 - **Mitigação existente (implementada e testada).** A admissão ao vivo recusa com `AheadOfClock` o `ts` mais de `clock_skew_seconds` adiante do `now` informado pelo produtor. O replay confere a ordem dos carimbos entre si e a âncora. A âncora do dono (`reanchor_admission_clock`) faz as criações cobertas que estão adiante do relógio contarem no instante da âncora. Ver o [README do núcleo](../crates/core/README.md#fila-contínua).
 - **Plano B.** O dono reancora a fila para retomar a admissão. Se o histórico estiver adulterado, manter a fila parada e recuperar o stream do backup íntegro antes de repetir o replay.
-- **O que falta.** O daemon ainda não chama a admissão ao vivo nem o replay da fila. O replay não detecta o carimbo adiantado sozinho; a detecção vem de `BehindLastAdmission` na admissão seguinte.
+- **O que falta.** O replay da partida verifica a ordem, e a detecção do carimbo adiantado depende de `BehindLastAdmission` na admissão seguinte.

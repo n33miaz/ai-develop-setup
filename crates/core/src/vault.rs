@@ -118,6 +118,20 @@ pub trait Vault {
     fn remove(&self, name: SecretName) -> Result<(), VaultError>;
 }
 
+impl<V: Vault> Vault for std::sync::Arc<V> {
+    fn store(&self, name: SecretName, secret: &Secret) -> Result<(), VaultError> {
+        (**self).store(name, secret)
+    }
+
+    fn read(&self, name: SecretName) -> Result<Option<Secret>, VaultError> {
+        (**self).read(name)
+    }
+
+    fn remove(&self, name: SecretName) -> Result<(), VaultError> {
+        (**self).remove(name)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

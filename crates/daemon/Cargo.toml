@@ -34,6 +34,7 @@ ads-ptyhost = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 
 [dev-dependencies]
+ads-adapter-vault = { path = "../adapters/vault", features = ["test-support"] }
 rusqlite = { workspace = true }
 ads-private-dir = { workspace = true, features = ["test-support"] }
 ads-testkit = { workspace = true }

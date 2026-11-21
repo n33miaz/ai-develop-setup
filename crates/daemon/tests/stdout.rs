@@ -30,6 +30,7 @@ async fn binary_stdout_contains_only_the_launch_url() {
             .arg(&lock)
             .arg("--host-config")
             .arg(&path)
+            .env("LOCALAPPDATA", path.with_extension("missing-profile"))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
