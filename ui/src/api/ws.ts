@@ -11,13 +11,13 @@ import { newCommand } from './command'
 import {
   METHOD_NOT_FOUND,
   SUBSCRIPTION_REPLAY_UNAVAILABLE,
-  type CommandHarnessListResponseV1,
+  type CommandHarnessListResponseV2,
   type CommandRequestV1,
   type EventEnvelopeV1,
 } from './contracts'
 import { isApprovalList, isHarnessList, isLocalCommand, isQueueGet, isServerMessage } from './wire'
 
-type Reply = LocalCommandReply | CommandHarnessListResponseV1
+type Reply = LocalCommandReply | CommandHarnessListResponseV2
 
 export type CoreSocket = Pick<WebSocket, 'send' | 'close' | 'addEventListener'>
 

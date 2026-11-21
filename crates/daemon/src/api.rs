@@ -297,6 +297,7 @@ fn host_error(error: ClientError) -> ApiError {
 pub struct HarnessCatalog {
     pub harnesses: Vec<String>,
     pub workdir_aliases: Vec<String>,
+    pub missing_workdir_aliases: Vec<String>,
 }
 
 pub trait Launcher: Send + Sync + 'static {
@@ -1124,8 +1125,11 @@ impl LocalApi {
         let token = Token::generate()?;
         let hooks = Arc::new(TestHooks::default());
         let catalog = launcher.catalog();
-        let catalog =
+        let mut result =
             json!({"harnesses": catalog.harnesses, "workdir_aliases": catalog.workdir_aliases});
+        if !catalog.missing_workdir_aliases.is_empty() {
+            result["missing_workdir_aliases"] = json!(catalog.missing_workdir_aliases);
+        }
         let log = Arc::new(Mutex::new(EventLog::new(
             config.events_per_stream,
             config.retired_sessions,
@@ -1154,7 +1158,7 @@ impl LocalApi {
             token,
             pending: Arc::new(Semaphore::new(config.max_pending_auth)),
             config,
-            catalog,
+            catalog: result,
             service,
             hooks,
         })
@@ -1714,7 +1718,7 @@ async fn send<S>(ws: &mut S, value: Value, config: &ApiConfig) -> Result<(), Api
 where
     S: futures_util::Sink<Message> + Unpin,
 {
-    let value = checked("urn:ads:contract:local-api.server-message:7", value)?;
+    let value = checked("urn:ads:contract:local-api.server-message:8", value)?;
     timeout(
         Duration::from_millis(config.send_timeout_ms),
         ws.send(Message::Text(value.to_string().into())),

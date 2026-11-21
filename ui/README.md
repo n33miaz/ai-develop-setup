@@ -26,8 +26,9 @@ daemon informa em `harness.list`. Enquanto a consulta não volta, um aviso diz q
 ela está em andamento. Sem botões, cada caso tem o seu aviso: lista vazia;
 falta de resposta em 10 segundos (reabra a URL da execução); daemon anterior ao
 comando, que responde `METHOD_NOT_FOUND` (atualize o daemon; reabrir a URL não resolve);
-e outra recusa do daemon, com aviso neutro. Sem apelido de pasta anunciado
-pelo daemon, os botões ficam desativados e um aviso explica o motivo. Cada
+e outra recusa do daemon, com aviso neutro. Os botões ficam desativados quando
+nenhum apelido está disponível. A interface mostra os apelidos das pastas ausentes
+na partida e mantém a fila e as aprovações visíveis. Cada
 conexão autenticada tem uma geração própria: a lista, o apelido e os botões
 valem só para a geração que os recebeu, então uma reconexão volta ao aviso de
 consulta em andamento mesmo que a tela não chegue a mostrar a queda. A resposta

@@ -86,6 +86,15 @@ impl ProductState {
 /// entry is accepted (a file not created yet) and ends the walk; a link whose target is
 /// missing or written with `..` is refused, as is a chain longer than [`MAX_LINKS`].
 pub(crate) fn spellings(path: &Path) -> Result<Vec<AbsPath>, String> {
+    resolve_spellings(path, false)
+}
+
+/// Work folders may be offline. Keep the link and its target protected even while absent.
+pub(crate) fn workdir_spellings(path: &Path) -> Result<Vec<AbsPath>, String> {
+    resolve_spellings(path, true)
+}
+
+fn resolve_spellings(path: &Path, allow_missing_target: bool) -> Result<Vec<AbsPath>, String> {
     let failed = |at: &Path, error: std::io::Error| format!("{}: {error}", at.display());
     let mut found = Vec::new();
     let mut push = |path: AbsPath| {
@@ -145,6 +154,7 @@ pub(crate) fn spellings(path: &Path) -> Result<Vec<AbsPath>, String> {
             let target = real_parent.join(target);
             match fs::symlink_metadata(&target) {
                 Ok(_) => {}
+                Err(error) if allow_missing_target && error.kind() == ErrorKind::NotFound => {}
                 Err(error) if error.kind() == ErrorKind::NotFound => {
                     return Err(format!("link target is missing: {}", walked.display()));
                 }

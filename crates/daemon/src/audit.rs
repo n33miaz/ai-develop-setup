@@ -268,7 +268,8 @@ fn check_audit_location(path: &Path, workdirs: &[PathBuf]) -> Result<(), Storage
     if !workdirs.is_empty() {
         let paths = crate::gate::spellings(directory).map_err(|_| StorageError::CantOpen)?;
         for workdir in workdirs {
-            let roots = crate::gate::spellings(workdir).map_err(|_| StorageError::Configuration)?;
+            let roots =
+                crate::gate::workdir_spellings(workdir).map_err(|_| StorageError::Configuration)?;
             if paths
                 .iter()
                 .any(|path| roots.iter().any(|root| path.matches_denied_root(root)))
@@ -988,6 +989,251 @@ mod tests {
         assert!(approvals.pending(&local).unwrap().approvals.is_empty());
     }
 
+    #[tokio::test]
+    async fn missing_workdir_keeps_queue_and_other_approvals_available() {
+        use crate::api::{ApiConfig, ApiError, LocalApi};
+        use crate::events::{new_id, now_ts};
+        use crate::gate::SessionGate;
+        use crate::pty_client::{ClientConfig, PtyClient};
+        use crate::startup::attach_controls;
+        use crate::tool_launcher::ToolLauncher;
+        use ads_core::gate::{
+            AbsPath, Actor, ActorKind, Command, DataClass, EventMeta, GatePolicy, HostFacts, Id,
+            OperationRequest, PlanRequest, ShortText, TargetRequest, Timestamp, Ulid,
+        };
+        use ads_core::tool_launch::{DiskProbe, HostRules};
+        use ads_ptyhost::{FakeBackend, HostConfig, PtyHost, server};
+        use futures_util::{SinkExt, StreamExt};
+        use serde_json::{Value, json};
+        use std::num::NonZeroU64;
+        use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest};
+
+        let mut fixture = LocalFixture::new();
+        fixture.root.directories.extend(
+            [
+                "online/cache",
+                "online",
+                "offline/cache",
+                "offline",
+                "parked/cache",
+                "parked",
+            ]
+            .map(|name| fixture.root.path.join(name)),
+        );
+        let online = fixture.root.join("online");
+        let offline = fixture.root.join("offline");
+        fs::create_dir_all(online.join("cache")).unwrap();
+        fs::create_dir_all(offline.join("cache")).unwrap();
+        let local_path = |path: &Path| {
+            let text = path.to_str().unwrap();
+            text.strip_prefix(r"\\?\").unwrap_or(text).to_owned()
+        };
+        let program = online.join("fixture.exe");
+        fs::write(&program, b"not executed by the fake host").unwrap();
+        let harness = ads_adapter_claude::HARNESS_ID;
+        let mut launcher = ToolLauncher::from_toml_str(
+            &format!(
+                "[workdirs]\nonline = {:?}\noffline = {:?}\n[tools.{harness}]\nprogram = {:?}",
+                local_path(&online),
+                local_path(&offline),
+                local_path(&program)
+            ),
+            HostRules::host(),
+            std::iter::empty::<(&str, &str)>(),
+            DiskProbe,
+            DiskProbe,
+        )
+        .unwrap();
+        let (mut product, ids) = fixture.open().unwrap();
+        let queue_id = ids.queue_id;
+        let roots = [&online, &offline].map(|path| AbsPath::parse(&local_path(path)).unwrap());
+        let home = local_path(&fixture.root.join("fake-home"));
+        let policy = GatePolicy::from_toml_str(
+            "quarantine_enabled = false",
+            &HostFacts { user_home: &home },
+        )
+        .unwrap();
+        let meta = || EventMeta {
+            id: Ulid::new(new_id().unwrap()).unwrap(),
+            ts: Timestamp::new(now_ts().unwrap()).unwrap(),
+            seq: NonZeroU64::MIN,
+            actor: Actor {
+                kind: ActorKind::Daemon,
+                id: Id::new("core").unwrap(),
+            },
+            cause: None,
+            data_class: DataClass::Internal,
+        };
+        let mut answers = Vec::new();
+        for ((alias, path), root) in [("online", &online), ("offline", &offline)]
+            .into_iter()
+            .zip(&roots)
+        {
+            let gate =
+                SessionGate::new(root.clone(), roots.to_vec(), policy.clone(), &product, path)
+                    .unwrap();
+            let action_id = Id::new(format!("action-{alias}")).unwrap();
+            let approval_id = Id::new(format!("approval-{alias}")).unwrap();
+            gate.plan(
+                &mut product,
+                action_id.clone(),
+                PlanRequest {
+                    operation: OperationRequest::DeleteRecursive,
+                    work_root: root.to_string(),
+                    targets: vec![TargetRequest {
+                        path: local_path(&path.join("cache")),
+                        repo_root: false,
+                    }],
+                    estimate: None,
+                },
+                meta(),
+            )
+            .unwrap();
+            let asked = gate
+                .apply(
+                    &mut product,
+                    &action_id,
+                    Command::RequestApproval {
+                        approval_id: approval_id.clone(),
+                        summary: ShortText::new("Remove cache").unwrap(),
+                        expires_at: Timestamp::new("2099-01-01T00:00:00Z").unwrap(),
+                    },
+                    meta(),
+                )
+                .unwrap();
+            answers.push(json!({"action_id": action_id, "approval_id": approval_id, "plan_hash": asked.plan_hash, "decision": "deny"}));
+        }
+        drop(product);
+        fs::rename(&offline, fixture.root.join("parked")).unwrap();
+
+        let mut warnings = Vec::new();
+        let workdirs = launcher.check_workdirs(|warning| warnings.push(warning.to_owned()));
+        assert_eq!(
+            warnings,
+            ["ads-daemon: work folder unavailable at startup: offline"]
+        );
+        assert_eq!(
+            check_audit_location(&offline.join("private/audit.db"), &launcher.workdirs()),
+            Err(StorageError::AuditDatabaseInWorkdir)
+        );
+        let host = Arc::new(
+            PtyHost::new(Arc::new(FakeBackend::with_echo()), HostConfig::defaults()).unwrap(),
+        );
+        let (near, far) = tokio::io::duplex(262_144);
+        let peer = tokio::spawn(server::connection(host.clone(), far));
+        let client = PtyClient::over(near, ClientConfig::recommended(host.config()))
+            .await
+            .unwrap();
+        let config = ApiConfig::from_toml_str("").unwrap();
+        let max_list_bytes = config.approval_list_max_bytes;
+        let api = LocalApi::bind(config, client, Arc::new(launcher))
+            .await
+            .unwrap();
+        let api = attach_controls(api, &workdirs, max_list_bytes, |paths| {
+            open_local_product_in(
+                &fixture.root.join("vault"),
+                &fixture.storage,
+                fixture.vault.clone(),
+                None,
+                paths,
+            )
+        });
+        let port = api.port().unwrap();
+        let bootstrap = zeroize::Zeroizing::new(api.desktop_bootstrap().unwrap());
+        let token = bootstrap.split_once(' ').unwrap().1;
+        let daemon = tokio::spawn(api.run());
+        let mut request = format!("ws://127.0.0.1:{port}/")
+            .into_client_request()
+            .unwrap();
+        request
+            .headers_mut()
+            .insert("Origin", "http://127.0.0.1:5173".parse().unwrap());
+        let stream = tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port))
+            .await
+            .unwrap();
+        let (mut socket, _) = tokio_tungstenite::client_async(request, stream)
+            .await
+            .unwrap();
+        let mut call = async |method: &str, mut params: Value| {
+            params["_meta"] = json!({"origin": "local", "idempotency_key": new_id().unwrap()});
+            let id = new_id().unwrap();
+            let request = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+            socket
+                .send(Message::Text(request.to_string().into()))
+                .await
+                .unwrap();
+            let response = tokio::time::timeout(Duration::from_secs(10), socket.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap_or_else(|error| panic!("{method}: {error}"));
+            let reply: Value = serde_json::from_str(response.to_text().unwrap()).unwrap();
+            assert_eq!(reply["id"], id);
+            reply
+        };
+        assert_eq!(
+            call("auth.hello", json!({"token": token})).await["result"]["accepted"],
+            true
+        );
+        assert_eq!(
+            call("harness.list", json!({})).await["result"],
+            json!({
+                "harnesses": [harness], "workdir_aliases": ["online"], "missing_workdir_aliases": ["offline"]
+            })
+        );
+        let queue = json!({"queue_id": queue_id});
+        for method in ["queue.create", "queue.start"] {
+            let reply = call(method, queue.clone()).await;
+            assert_eq!(reply["result"]["accepted"], true, "{method}: {reply}");
+        }
+        assert_eq!(call("queue.get", queue).await["result"]["state"], "enabled");
+        let listed = call("approval.list", json!({})).await;
+        let approvals = listed["result"]["approvals"].as_array().unwrap();
+        assert_eq!(approvals.len(), 1);
+        assert_eq!(approvals[0]["action_id"], "action-online");
+        assert_eq!(
+            call("approval.answer", answers[1].clone()).await["error"]["code"],
+            ApiError::ApprovalNotFound.code()
+        );
+        assert_eq!(
+            call("approval.answer", answers[0].clone()).await["result"]["accepted"],
+            true
+        );
+        assert_eq!(
+            call("approval.list", json!({})).await["result"]["approvals"],
+            json!([])
+        );
+        for (alias, available) in [("offline", false), ("online", true)] {
+            let reply = call(
+                "session.open",
+                json!({
+                    "harness": harness, "workdir_alias": alias,
+                    "session_id": format!("session-{alias}"), "cols": 80, "rows": 24
+                }),
+            )
+            .await;
+            if available {
+                assert_eq!(reply["result"]["accepted"], true, "{reply}");
+            } else {
+                assert_eq!(reply["error"]["code"], ApiError::Invalid.code(), "{reply}");
+            }
+        }
+        fs::rename(fixture.root.join("parked"), &offline).unwrap();
+        let reply = call(
+            "session.open",
+            json!({
+                "harness": harness, "workdir_alias": "offline", "session_id": "session-restored",
+                "cols": 80, "rows": 24
+            }),
+        )
+        .await;
+        assert_eq!(reply["error"]["code"], ApiError::Invalid.code(), "{reply}");
+        daemon.abort();
+        peer.abort();
+        let _ = daemon.await;
+        let _ = peer.await;
+    }
+
     #[test]
     fn local_product_refuses_to_replace_a_missing_key() {
         let fixture = LocalFixture::new();
@@ -1605,6 +1851,10 @@ mod tests {
         assert!(
             ProductState::resolve(&root.join("dangling").join("audit.db"), &vault_dir, None)
                 .is_err()
+        );
+        assert_eq!(
+            check_audit_location(&gone.join("audit.db"), &[root.join("dangling")]),
+            Err(StorageError::AuditDatabaseInWorkdir)
         );
         for link in [
             root.join("dangling"),

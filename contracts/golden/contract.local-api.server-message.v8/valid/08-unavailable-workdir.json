@@ -1,0 +1,16 @@
+{
+  "jsonrpc": "2.0",
+  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAD",
+  "result": {
+    "harnesses": [
+      "claude",
+      "codex"
+    ],
+    "workdir_aliases": [
+      "default"
+    ],
+    "missing_workdir_aliases": [
+      "offline"
+    ]
+  }
+}

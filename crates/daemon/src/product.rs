@@ -1,9 +1,4 @@
-use std::{
-    fs,
-    io::Read,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{fs, io::Read, path::Path, sync::Arc};
 
 use ads_contracts::CommonIdV1;
 use ads_core::vault::{Secret, SecretName, Vault};
@@ -18,8 +13,9 @@ use zeroize::Zeroizing;
 use crate::{
     approvals::{ApprovalDesk, ApprovalOwner},
     audit::{ProductLog, ProductLogError},
-    gate::{SessionGate, spellings},
+    gate::{SessionGate, workdir_spellings},
     queue::{LocalQueue, QueueOpenError, QueueOwner},
+    tool_launcher::Workdir,
 };
 
 const IDENTITIES: &str = "local-identities.toml";
@@ -186,7 +182,7 @@ impl From<StorageError> for StartupError {
 pub(crate) fn controls(
     log: ProductLog,
     ids: LocalIdentities,
-    workdirs: &[PathBuf],
+    workdirs: &[Workdir],
     max_list_bytes: usize,
 ) -> Result<(Arc<LocalQueue>, Arc<ApprovalDesk>), StartupError> {
     let gates = gates(&log, workdirs)?;
@@ -211,7 +207,7 @@ pub(crate) fn controls(
     Ok((Arc::new(queue), Arc::new(approvals)))
 }
 
-fn gates(log: &ProductLog, workdirs: &[PathBuf]) -> Result<Vec<SessionGate>, StartupError> {
+fn gates(log: &ProductLog, workdirs: &[Workdir]) -> Result<Vec<SessionGate>, StartupError> {
     use ads_core::gate::{GatePolicy, HostFacts};
 
     if workdirs.is_empty() {
@@ -223,11 +219,14 @@ fn gates(log: &ProductLog, workdirs: &[PathBuf]) -> Result<Vec<SessionGate>, Sta
     let policy = GatePolicy::defaults(&HostFacts { user_home }).map_err(invalid)?;
     let mut roots = Vec::new();
     let mut gates = Vec::new();
-    for path in workdirs {
-        for root in spellings(path).map_err(|_| StartupError::GateConfiguration)? {
+    for dir in workdirs {
+        for root in workdir_spellings(&dir.path).map_err(|_| StartupError::GateConfiguration)? {
+            // Available gates still protect the quarantines of missing work roots.
             if !roots.contains(&root) {
                 roots.push(root.clone());
-                gates.push((root, path));
+            }
+            if !dir.missing && !gates.iter().any(|(served, _)| served == &root) {
+                gates.push((root, &dir.path));
             }
         }
     }

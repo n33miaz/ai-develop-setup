@@ -1,0 +1,43 @@
+{
+  "01-program-in-result.json": {
+    "rule": "result é fechado: só nomes, nunca programa, ambiente nem caminho.",
+    "keyword": "additionalProperties",
+    "instancePath": "/result",
+    "params": {
+      "additionalProperty": "program"
+    }
+  },
+  "02-path-as-alias.json": {
+    "rule": "Apelido é identificador opaco, não caminho.",
+    "keyword": "pattern",
+    "instancePath": "/result/workdir_aliases/0"
+  },
+  "03-repeated-harness.json": {
+    "rule": "Cada ferramenta aparece uma vez.",
+    "keyword": "uniqueItems",
+    "instancePath": "/result/harnesses"
+  },
+  "04-missing-aliases.json": {
+    "rule": "A lista de apelidos é obrigatória, mesmo vazia.",
+    "keyword": "required",
+    "instancePath": "/result",
+    "params": {
+      "missingProperty": "workdir_aliases"
+    }
+  },
+  "05-path-as-missing-alias.json": {
+    "rule": "O aviso leva apenas apelidos distintos e é omitido se não há pasta ausente.",
+    "keyword": "pattern",
+    "instancePath": "/result/missing_workdir_aliases/0"
+  },
+  "06-repeated-missing-alias.json": {
+    "rule": "O aviso leva apenas apelidos distintos e é omitido se não há pasta ausente.",
+    "keyword": "uniqueItems",
+    "instancePath": "/result/missing_workdir_aliases"
+  },
+  "07-empty-missing-aliases.json": {
+    "rule": "O aviso leva apenas apelidos distintos e é omitido se não há pasta ausente.",
+    "keyword": "minItems",
+    "instancePath": "/result/missing_workdir_aliases"
+  }
+}

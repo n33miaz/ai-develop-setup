@@ -4,6 +4,8 @@ Formato: uma seção por data. Contrato novo, campo opcional acrescentado, vers�
 
 ## 2026-11-21
 
+- `harness.list.response:2` e `local-api.server-message:8` informam os apelidos das pastas ausentes na partida, quando houver. Sem pastas ausentes, a resposta mantém a forma da versão anterior.
+
 Contagem dos pedidos de aprovação com histórico ilegível.
 
 - Versões novas:

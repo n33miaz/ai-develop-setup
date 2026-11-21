@@ -4,7 +4,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
-use ads_contracts::{CommandHarnessListResponseV1, desktop_proof};
+use ads_contracts::{CommandHarnessListResponseV2, desktop_proof};
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
 use serde_json::Value;
@@ -166,7 +166,7 @@ async fn connect_socket(
 }
 
 /// A reply to the window's own `harness.list` that the interface accepts: valid by
-/// `command.harness.list.response:1` and with the id of the request. The reply and its
+/// `command.harness.list.response:2` and with the id of the request. The reply and its
 /// `result` have to be JSON objects: serde would also read either struct from an array.
 fn is_smoke_reply(text: &str, request_id: Option<&str>) -> bool {
     let Some(request_id) = request_id else {
@@ -175,7 +175,7 @@ fn is_smoke_reply(text: &str, request_id: Option<&str>) -> bool {
     let objects = serde_json::from_str::<Value>(text)
         .is_ok_and(|reply| reply.is_object() && reply["result"].is_object());
     objects
-        && serde_json::from_str::<CommandHarnessListResponseV1>(text)
+        && serde_json::from_str::<CommandHarnessListResponseV2>(text)
             .is_ok_and(|reply| reply.id.as_str() == request_id)
 }
 
@@ -305,6 +305,10 @@ mod tests {
         let reply = |rest: &str| format!(r#"{{"jsonrpc":"2.0","id":"{ID}",{rest}}}"#);
         let valid = reply(r#""result":{"harnesses":["claude"],"workdir_aliases":[]}"#);
         assert!(is_smoke_reply(&valid, Some(ID)));
+        let missing = reply(
+            r#""result":{"harnesses":["claude"],"workdir_aliases":[],"missing_workdir_aliases":["offline"]}"#,
+        );
+        assert!(is_smoke_reply(&missing, Some(ID)));
         assert!(!is_smoke_reply(&valid, None));
         assert!(!is_smoke_reply(&valid, Some("01ARZ3NDEKTSV4RRFFQ69G5FAE")));
         assert!(!is_smoke_reply(
@@ -321,6 +325,7 @@ mod tests {
             r#""result":{"harnesses":[1],"workdir_aliases":[]}"#,
             r#""result":{"harnesses":["claude","claude"],"workdir_aliases":[]}"#,
             r#""result":{"harnesses":[],"workdir_aliases":["a","a"]}"#,
+            r#""result":{"harnesses":[],"workdir_aliases":[],"missing_workdir_aliases":["/work"]}"#,
             r#""result":{"harnesses":[],"workdir_aliases":[]},"error":{"code":-32603}"#,
         ] {
             assert!(!is_smoke_reply(&reply(refused), Some(ID)), "{refused}");

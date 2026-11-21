@@ -1,6 +1,7 @@
 //! Leitura dos argumentos e dos arquivos de configuração na partida do daemon.
 
 use crate::api::ApiConfig;
+use crate::tool_launcher::Workdir;
 use ads_core::gate::AbsPath;
 use ads_ptyhost::HostConfig;
 use std::fs::{File, OpenOptions, TryLockError};
@@ -148,11 +149,28 @@ pub fn attach_product_controls(
     api: crate::api::LocalApi,
     storage: StorageSettings,
     instance: Option<&InstanceLock>,
-    workdirs: &[PathBuf],
+    workdirs: &[Workdir],
     max_list_bytes: usize,
 ) -> crate::api::LocalApi {
+    attach_controls(api, workdirs, max_list_bytes, |paths| {
+        crate::audit::open_local_product(&storage?, instance, paths)
+    })
+}
+
+pub(crate) fn attach_controls(
+    api: crate::api::LocalApi,
+    workdirs: &[Workdir],
+    max_list_bytes: usize,
+    open: impl FnOnce(
+        &[PathBuf],
+    ) -> Result<
+        (crate::audit::ProductLog, crate::product::LocalIdentities),
+        crate::product::StartupError,
+    >,
+) -> crate::api::LocalApi {
     let controls = (|| {
-        let (log, ids) = crate::audit::open_local_product(&storage?, instance, workdirs)?;
+        let paths: Vec<_> = workdirs.iter().map(|dir| dir.path.clone()).collect();
+        let (log, ids) = open(&paths)?;
         crate::product::controls(log, ids, workdirs, max_list_bytes)
     })();
     match controls {
