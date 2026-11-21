@@ -34,10 +34,10 @@ encerre o daemon anterior e peça um reinício pelo sinal `restart`.
 
 O lançador inicia o host destacado e o daemon. No Windows, coloque também
 `ads-shell.exe` ao lado do lançador. O modo desktop liga a saída de inicialização
-do daemon diretamente à entrada da casca por um pipe anônimo. O lançador passa
-o identificador do pipe e a casca entrega a credencial à janela em memória.
-A API permite somente a origem da janela nesse modo. Se a casca falhar, daemon
-e host continuam sob supervisão. Para usar o navegador, configure
+do daemon diretamente à entrada padrão da casca por um pipe anônimo. O Rust
+da casca autentica a conexão e encaminha mensagens à janela por IPC. Se a casca
+sair pela bandeja ou falhar, o daemon e o host continuam sob supervisão. Use o
+sinal `restart` para abrir outra janela com a nova credencial. Para usar o navegador, configure
 `shell_autostart = false` e reinicie a instalação. Nesse modo a URL autenticada
 volta a aparecer na saída padrão do daemon.
 
@@ -54,7 +54,7 @@ e `ptyhost_config` passam `--config` ao processo correspondente. O arquivo do
 host também é passado ao daemon via `--host-config`, para que ambos usem o
 mesmo canal. `child_env_allow` define quais variáveis os filhos herdam do
 lançador, com o padrão em `defaults/launcher.toml` e as proibições de
-`defaults/harnesses.toml`. Para uma variável herdada chegar a uma ferramenta
+`defaults/harnesses.toml`. Variáveis `WEBVIEW2_*` ficam fora do ambiente da casca. Para uma variável herdada chegar a uma ferramenta
 iniciada pelo daemon, inclua seu nome nas duas listas, `child_env_allow` e
 `[env] allow`. As atribuições de `[env.set]` são definidas pelo daemon.
 

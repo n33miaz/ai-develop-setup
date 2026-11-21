@@ -59,14 +59,8 @@ export function createWsCoreClient({
   url,
   token,
   socketFactory = (url) => new WebSocket(url),
-  listTimeoutMs = 10000,
-  replayEvents: configuredEvents,
-  replayBytes: configuredBytes,
+  ...settings
 }: WsClientOptions): CoreClient {
-  // Com 0 nada ficaria guardado: um terminal remontado ficaria vazio e uma nova assinatura depois de
-  // reconectar daria por encerrada uma sessão viva.
-  const replayEvents = replayLimit(configuredEvents, DEFAULT_REPLAY_EVENTS)
-  const replayBytes = replayLimit(configuredBytes, DEFAULT_REPLAY_BYTES)
   let endpoint: URL
   try {
     endpoint = new URL(url)
@@ -83,6 +77,22 @@ export function createWsCoreClient({
   ) {
     throw new Error('invalid local endpoint')
   }
+  return createCoreClient(() => socketFactory(endpoint.href), settings, token)
+}
+
+export function createCoreClient(
+  socketFactory: () => CoreSocket,
+  {
+    listTimeoutMs = 10000,
+    replayEvents: configuredEvents,
+    replayBytes: configuredBytes,
+  }: Omit<WsClientOptions, 'url' | 'token' | 'socketFactory'>,
+  token?: string,
+): CoreClient {
+  // Com 0 nada ficaria guardado: um terminal remontado ficaria vazio e uma nova assinatura depois de
+  // reconectar daria por encerrada uma sessão viva.
+  const replayEvents = replayLimit(configuredEvents, DEFAULT_REPLAY_EVENTS)
+  const replayBytes = replayLimit(configuredBytes, DEFAULT_REPLAY_BYTES)
   let state: ConnectionState = 'disconnected'
   let socket: CoreSocket | null = null
   let connecting: Promise<void> | null = null
@@ -202,7 +212,7 @@ export function createWsCoreClient({
         rejectConnection = reject
         let current: CoreSocket
         try {
-          current = socketFactory(endpoint.href)
+          current = socketFactory()
           socket = current
         } catch {
           disconnect()
@@ -218,23 +228,22 @@ export function createWsCoreClient({
         current.addEventListener('error', fail)
         current.addEventListener('open', () => {
           if (socket !== current) return
-          void transmit(newCommand('auth.hello', { token })).then(
-            (response) => {
-              if (socket !== current) return
-              if (!accepted(response)) {
-                fail()
-                return
-              }
-              connecting = null
-              rejectConnection = null
-              generation += 1
-              setState('connected')
-              resolve()
-            },
-            () => {
-              fail()
-            },
-          )
+          const connected = () => {
+            if (socket !== current) return
+            connecting = null
+            rejectConnection = null
+            generation += 1
+            setState('connected')
+            resolve()
+          }
+          if (token === undefined) {
+            connected()
+            return
+          }
+          void transmit(newCommand('auth.hello', { token })).then((response) => {
+            if (accepted(response)) connected()
+            else fail()
+          }, fail)
         })
         current.addEventListener('message', (message) => {
           if (socket !== current) return

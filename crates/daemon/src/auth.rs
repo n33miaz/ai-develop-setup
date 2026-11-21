@@ -9,8 +9,6 @@ use zeroize::Zeroize;
 
 use crate::api::ApiError;
 
-pub const DESKTOP_ORIGIN: &str = "http://tauri.localhost";
-
 pub struct Token(String);
 
 impl Drop for Token {
@@ -49,7 +47,7 @@ impl Token {
     }
 }
 
-pub fn permits_upgrade(request: &Request, port: u16, origins: &[String]) -> bool {
+pub fn permits_upgrade(request: &Request, port: u16, browser_origins: Option<&[String]>) -> bool {
     let headers = request.headers();
     let one = |key: &str| {
         let mut values = headers.get_all(key).iter();
@@ -65,5 +63,10 @@ pub fn permits_upgrade(request: &Request, port: u16, origins: &[String]) -> bool
         && one("host").is_some_and(|host| {
             host == format!("127.0.0.1:{port}") || host == format!("localhost:{port}")
         })
-        && one("origin").is_some_and(|origin| origins.iter().any(|allowed| allowed == origin))
+        && match browser_origins {
+            Some(origins) => {
+                one("origin").is_some_and(|origin| origins.iter().any(|allowed| allowed == origin))
+            }
+            None => !headers.contains_key("origin"),
+        }
 }

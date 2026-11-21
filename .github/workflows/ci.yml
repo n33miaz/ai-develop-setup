@@ -351,7 +351,7 @@ jobs:
       - name: Testar a casca
         run: cargo test --locked -j 2 -p ads-shell
       - name: Compilar os processos do teste de conexão
-        run: cargo build --locked -j 2 -p ads-shell -p ads-daemon -p ads-ptyhost
+        run: cargo build --locked -j 2 -p ads-shell -p ads-daemon -p ads-ptyhost --features ads-shell/desktop-smoke
       - name: Abrir a janela e autenticar na API local
         run: python -B tools/smoke_desktop.py
 

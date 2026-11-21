@@ -82,9 +82,9 @@ desenvolvimento, sem compilação dinâmica no navegador nem alteração de CSP.
 Replay desde zero aceita o início do histórico ainda retido; depois disso,
 uma lacuna na sequência encerra a conexão. Eventos repetidos são ignorados.
 
-Na casca Tauri, o cliente recebe a porta e o token por IPC, autentica na API
-local e mantém a credencial em memória. O service worker fica desativado nessa
-janela. O bundle é o mesmo da interface web.
+Na casca Tauri, o cliente envia comandos e recebe mensagens por IPC com o
+processo Rust, que autentica no daemon. A credencial fica no Rust. O service
+worker fica desativado nessa janela. O bundle é o mesmo da interface web.
 
 ## Instalar a interface como aplicativo
 

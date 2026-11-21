@@ -135,7 +135,16 @@ Estado da mitigação, em cada risco:
 - **Teto.** Um token por execução; o alcance fica nas sessões dessa execução. Não há teto de dano dentro de um terminal autorizado, portanto não abrir a URL sem verificar a propriedade da porta.
 - **Mitigação existente.** `ui_base_url` parametrizável em `defaults/daemon.toml`; `allowed_origins` vazio deriva somente a origem dessa URL. O Vite usa porta fixa e `strictPort` no desenvolvimento e na prévia, escutando em `127.0.0.1`; o `ui_base_url` padrão usa o mesmo endereço, e não `localhost`, para o navegador não tentar `[::1]:5173`, que outra conta pode ocupar sem colidir com o `strictPort`. Um teste compara os dois endereços. Só abrir depois de conferir que o processo que escuta é do próprio usuário. Configuração e igualdade exata das origens têm testes; a propriedade da porta da interface ainda depende da conferência manual.
 - **Plano B.** Não abrir a URL quando a propriedade não puder ser confirmada; parar o daemon para invalidar o token e reiniciá-lo depois de resolver a ocupação da porta.
-- **O que falta.** O daemon servir a interface na sua porta efêmera ou a casca Tauri entregar o token por canal do usuário, conforme o [limite conhecido da ADR 0020](adr/0020-local-api-authentication.md#limite-conhecido). O teste com duas contas no Windows ainda falta.
+- **O que falta.** No desktop, a casca carrega o bundle local e recebe a credencial pelo pipe, sem usar a porta da interface. Servir a interface no navegador pela porta efêmera do daemon e o teste com duas contas no Windows continuam pendentes. Veja o [limite conhecido da ADR 0020](adr/0020-local-api-authentication.md#limite-conhecido).
+
+### Origem da WebView compartilhada no Windows
+
+- **Descrição.** Outros aplicativos Tauri e páginas locais podem usar `http://tauri.localhost`.
+- **Impacto.** Usar essa origem como identidade da janela permitiria upgrades WebSocket de outras páginas.
+- **Dono.** Casca e daemon.
+- **Teto.** O listener desktop recusa qualquer `Origin`. Um cliente nativo ainda alcança o loopback e precisa do token da execução para comandar sessões.
+- **Mitigação existente.** O Rust autentica pelo WebSocket, mantém o token fora do JavaScript e encaminha mensagens por IPC somente à janela principal. Um teste confere a recusa de `http://tauri.localhost`.
+- **Plano B.** Invalidar a credencial reiniciando o daemon. Se a restrição por janela falhar, suspender o modo desktop até corrigir a fronteira IPC.
 
 ### Outra conta ocupa vagas de autenticação pendente
 
@@ -145,7 +154,7 @@ Estado da mitigação, em cada risco:
 - **Teto.** O padrão de `max_pending_auth` é 32 vagas, com o prazo de `auth_timeout_ms` por conexão, incluindo o handshake.
 - **Mitigação existente.** O padrão de 32 exige mais sockets simultâneos para ocupar toda a fila. O limite conta tarefas, inclusive as que estão sendo expulsas, até terminarem. Com a fila cheia, a conexão mais antiga que ainda não concluiu o upgrade é expulsa e a nova entra quando a vaga volta: segurar as vagas com sockets crus exige abri-los sem parar. A espera entre falhas de aceitação permite que o serviço continue atendendo as conexões já autenticadas. Uma conexão que já fez upgrade conserva a vaga até autenticar ou vencer `auth_timeout_ms`, então a interface não é expulsa entre o upgrade e o `auth.hello`; se todas as vagas estiverem nessa fase, a conexão nova é recusada. Testes em `crates/daemon/tests/local_api.rs` (33ª conexão, conexão em autenticação preservada, recusa com todas em autenticação) e em `crates/daemon/src/api.rs` (teto que inclui as expulsas).
 - **Plano B.** Ajustar `max_pending_auth` em `defaults/daemon.toml` ou na configuração local e reiniciar o daemon.
-- **O que falta.** Quem renova sockets mais rápido do que a interface conclui o upgrade ainda pode expulsá-la antes dele; quem faz upgrade em todas as vagas e não manda `auth.hello` bloqueia conexões novas até `auth_timeout_ms` vencer, e precisa repetir isso a cada prazo. Não há limite por endereço nem por conta, porque em loopback todas as contas chegam de `127.0.0.1`. A saída é a mesma do risco anterior: o daemon servir a interface ou a casca Tauri entregar o token por canal só do usuário.
+- **O que falta.** Quem renova sockets mais rápido do que a interface conclui o upgrade ainda pode expulsá-la antes dele; quem faz upgrade em todas as vagas e não manda `auth.hello` bloqueia conexões novas até `auth_timeout_ms` vencer, e precisa repetir isso a cada prazo. Não há limite por endereço nem por conta, porque em loopback todas as contas chegam de `127.0.0.1`. Um transporte restrito à conta do usuário permitiria separar as vagas no desktop. A entrega do token pelo pipe protege a credencial e a API ainda usa TCP em loopback.
 
 ## Estado local
 

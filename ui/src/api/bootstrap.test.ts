@@ -68,22 +68,44 @@ describe('client selection', () => {
 })
 
 describe('desktop client selection', () => {
-  it('uses the inherited credentials without changing the URL or storage', async () => {
-    const credentials = { url: 'ws://127.0.0.1:12345', token: 'a'.repeat(43) }
-    async function invoke<T>(command: string): Promise<T> {
-      expect(command).toBe('desktop_bootstrap')
-      return credentials as T
+  it('uses scoped IPC for commands and reconnects without exchanging credentials', async () => {
+    type Frame = { kind: 'message'; text: string } | { kind: 'closed' }
+    class Channel {
+      onmessage: (frame: Frame) => void = () => undefined
     }
-    const client = createFakeCoreClient()
-    const real = vi.fn(() => client)
-    expect(await selectDesktopClient({ core: { invoke } }, {}, real)).toEqual({
-      client,
-      live: true,
+    let frames: Channel
+    const invoke = vi.fn((command: string, args: Record<string, unknown>) => {
+      if (command === 'desktop_connect') frames = args.frames as Channel
+      if (command === 'desktop_send') {
+        const request = JSON.parse(String(args.text)) as { id: string; method: string }
+        expect(request.method).toBe('harness.list')
+        frames.onmessage({
+          kind: 'message',
+          text: JSON.stringify({
+            jsonrpc: '2.0',
+            id: request.id,
+            result: { harnesses: [], workdir_aliases: [] },
+          }),
+        })
+      }
+      return Promise.resolve()
     })
-    expect(real).toHaveBeenCalledWith(credentials)
-    expect(window.location.hash).toBe('')
+    window.history.replaceState(null, '', '/#untouched')
+    const { client } = selectDesktopClient({ core: { invoke, Channel } }, {})
+    await client.connect()
+    const first = invoke.mock.calls[0]?.[1]
+    expect(Object.keys(first ?? {}).sort()).toEqual(['frames', 'id'])
+    await expect(client.listHarnesses()).resolves.toEqual({ harnesses: [], workdir_aliases: [] })
+
+    const firstChannel = first?.frames as Channel
+    firstChannel.onmessage({ kind: 'closed' })
+    expect(client.getState()).toBe('disconnected')
+    await client.connect()
+    expect(client.getGeneration()).toBe(2)
+    expect(window.location.hash).toBe('#untouched')
     expect(window.sessionStorage.length).toBe(0)
     expect(window.localStorage.getItem('ads.local-api')).toBeNull()
+    client.disconnect()
   })
 })
 

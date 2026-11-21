@@ -1,12 +1,13 @@
 import type { CoreClient } from './client'
+import { desktopSocketFactory, type DesktopBridge } from './desktop'
 import { createFakeCoreClient } from './fake'
-import { createWsCoreClient, type WsClientOptions } from './ws'
+import { createCoreClient, createWsCoreClient, type WsClientOptions } from './ws'
 
 const STORAGE_KEY = 'ads.local-api'
 
 type ReplaySettings = Pick<WsClientOptions, 'replayEvents' | 'replayBytes'>
 
-/** Inteiro de 1 em diante da configuraÃ§Ã£o, ou `undefined` para o padrÃ£o do cliente. */
+/** Inteiro de 1 em diante da configuração, ou `undefined` para o padrão do cliente. */
 function positive(value: unknown): number | undefined {
   const parsed = Number(value)
   return value !== undefined && value !== '' && Number.isSafeInteger(parsed) && parsed >= 1
@@ -14,7 +15,7 @@ function positive(value: unknown): number | undefined {
     : undefined
 }
 
-/** Limites de replay da configuraÃ§Ã£o da interface; ausentes ou abaixo de 1 ficam no padrÃ£o. */
+/** Limites de replay da configuração da interface; ausentes ou abaixo de 1 ficam no padrão. */
 export function replaySettings(events: unknown, bytes: unknown): ReplaySettings {
   const replayEvents = positive(events)
   const replayBytes = positive(bytes)
@@ -41,7 +42,7 @@ export function selectCoreClient(
     try {
       browser.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(credentials))
     } catch {
-      /* A conexÃ£o tambÃ©m funciona sem armazenamento. */
+      /* A conexão também funciona sem armazenamento. */
     }
   } else {
     try {
@@ -64,24 +65,13 @@ export function selectCoreClient(
   return { client: createFakeCoreClient(), live: false }
 }
 
-type DesktopBridge = { core: { invoke: <T>(command: string) => Promise<T> } }
-
 export function desktopBridge(browser: Window): DesktopBridge | undefined {
   return (browser as Window & { __TAURI__?: DesktopBridge }).__TAURI__
 }
 
-export async function selectDesktopClient(
-  bridge: DesktopBridge,
+export function selectDesktopClient(
+  { core }: DesktopBridge,
   replay: ReplaySettings,
-  createReal: (options: WsClientOptions) => CoreClient = createWsCoreClient,
-): Promise<{ client: CoreClient; live: true }> {
-  const credentials = await bridge.core.invoke<{ url: string; token: string }>('desktop_bootstrap')
-  const client = createReal({ ...credentials, ...replay })
-  const unsubscribe = client.onStateChange((state) => {
-    if (state === 'connected') {
-      unsubscribe()
-      void bridge.core.invoke('desktop_connected').catch(() => undefined)
-    }
-  })
-  return { client, live: true }
+): { client: CoreClient; live: true } {
+  return { client: createCoreClient(desktopSocketFactory(core), replay), live: true }
 }

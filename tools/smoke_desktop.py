@@ -26,7 +26,7 @@ def main():
                 )
             try:
                 if shell.wait(timeout=60) != 0:
-                    raise SystemExit("desktop window failed to authenticate")
+                    raise SystemExit("desktop window failed to relay an authenticated reply")
                 if daemon.poll() is not None or host.poll() is not None:
                     raise SystemExit("a background process exited with the window")
             finally:

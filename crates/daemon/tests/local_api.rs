@@ -106,19 +106,28 @@ async fn fixture_with_config(
     }
 }
 #[tokio::test]
-async fn desktop_listener_accepts_only_the_window_origin() {
-    let origin = ads_daemon::auth::DESKTOP_ORIGIN;
+async fn desktop_listener_requires_native_upgrade_and_token() {
     let config = ApiConfig::from_toml_str("allowed_origins = ['http://127.0.0.1:5173']")
         .unwrap()
         .for_desktop();
     let f = fixture_with_config(config, Arc::new(DisabledLauncher), HostConfig::defaults()).await;
-    assert!(connect(&f, Some(origin), None).await.is_ok());
+    let mut socket = connect(&f, None, None).await.unwrap();
+    transmit(
+        &mut socket,
+        &command("auth.hello", json!({"token": &f.token})),
+    )
+    .await;
+    assert!(receive(&mut socket).await.get("result").is_some());
+    let mut unauthenticated = connect(&f, None, None).await.unwrap();
+    transmit(&mut unauthenticated, &command("harness.list", json!({}))).await;
+    closed(&mut unauthenticated).await;
     for wrong in [
-        None,
-        Some("http://127.0.0.1:5173"),
-        Some("https://tauri.localhost"),
+        "http://tauri.localhost",
+        "http://127.0.0.1:5173",
+        "null",
+        "",
     ] {
-        let error = connect(&f, wrong, None).await.unwrap_err();
+        let error = connect(&f, Some(wrong), None).await.unwrap_err();
         assert!(matches!(
             error,
             tokio_tungstenite::tungstenite::Error::Http(response)

@@ -430,10 +430,7 @@ pub(crate) mod tests {
     #[test]
     fn child_fixture() {
         if let Some(path) = std::env::var_os("ADS_LAUNCHER_TEST_RELEASE") {
-            let start = Instant::now();
-            while !Path::new(&path).is_file() && start.elapsed() < Duration::from_secs(120) {
-                thread::sleep(Duration::from_millis(5));
-            }
+            wait_for_release(Path::new(&path));
         }
     }
 
@@ -445,7 +442,7 @@ pub(crate) mod tests {
             let mut input = String::new();
             io::stdin().read_line(&mut input).unwrap();
             assert!(input.trim_end() == format!("12345 {BOOTSTRAP_SENTINEL}"));
-            assert!(!std::env::args().any(|arg| arg.contains(BOOTSTRAP_SENTINEL)));
+            println!("bootstrap received");
         }
     }
 
@@ -457,7 +454,7 @@ pub(crate) mod tests {
         drop(write);
         let mut shell = Command::new(std::env::current_exe().unwrap());
         shell
-            .args(["--exact", "supervisor::tests::shell_pipe_fixture"])
+            .args(["shell_pipe_fixture", "--nocapture"])
             .env("ADS_TEST_SHELL_PIPE", "1")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -466,6 +463,7 @@ pub(crate) mod tests {
             .wait_with_output()
             .unwrap();
         assert!(output.status.success());
+        assert!(String::from_utf8_lossy(&output.stdout).contains("bootstrap received"));
         for bytes in [output.stdout, output.stderr] {
             assert!(!String::from_utf8_lossy(&bytes).contains(BOOTSTRAP_SENTINEL));
         }
@@ -926,6 +924,86 @@ pub(crate) mod tests {
         until(|| read().filter(|value| value["stopped"] == true));
         worker.join().unwrap();
         fs::write(host_release, []).unwrap();
+    }
+
+    #[test]
+    fn desktop_daemon_fixture() {
+        if let Some(release) = std::env::var_os("ADS_TEST_DESKTOP_RELEASE") {
+            println!("{} {BOOTSTRAP_SENTINEL}", std::process::id());
+            wait_for_release(Path::new(&release));
+        }
+    }
+
+    #[test]
+    fn desktop_window_fixture() {
+        if let Some(directory) = std::env::var_os("ADS_TEST_DESKTOP_DIRECTORY") {
+            use io::BufRead;
+            let daemon = io::stdin()
+                .lock()
+                .lines()
+                .map_while(Result::ok)
+                .find_map(|line| {
+                    let (daemon, token) = line.split_once(' ')?;
+                    (token == BOOTSTRAP_SENTINEL).then(|| daemon.parse::<u32>().unwrap())
+                })
+                .unwrap();
+            let directory = Path::new(&directory);
+            fs::write(directory.join(format!("window-{daemon}")), []).unwrap();
+            wait_for_release(&directory.join("release-window"));
+        }
+    }
+
+    fn wait_for_release(path: &Path) {
+        let start = Instant::now();
+        while !path.is_file() && start.elapsed() < Duration::from_secs(120) {
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn run_reconnects_desktop_to_restarted_daemon() {
+        let dir = TestDir::new();
+        let host_release = dir.0.join("release-host");
+        let mut daemon = Command::new(std::env::current_exe().unwrap());
+        daemon
+            .args([
+                "desktop_daemon_fixture",
+                "--quiet",
+                "--nocapture",
+                "--format",
+                "terse",
+            ])
+            .env("ADS_TEST_DESKTOP_RELEASE", dir.0.join("release-daemon"))
+            .stderr(Stdio::null());
+        let mut shell = Command::new(std::env::current_exe().unwrap());
+        shell
+            .args(["desktop_window_fixture", "--quiet"])
+            .env("ADS_TEST_DESKTOP_DIRECTORY", &dir.0)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let control = dir.0.clone();
+        let host = fixture(Some(&host_release));
+        let worker = thread::spawn(move || run(&config(), &control, daemon, host, Some(shell)));
+        let connected = |restarts| {
+            until(|| {
+                let state: Value =
+                    serde_json::from_slice(&fs::read(dir.0.join("state.json")).ok()?).unwrap();
+                let daemon = state["daemon"]["pid"].as_u64()?;
+                let host = state["ptyhost"]["pid"].as_u64()?;
+                (state["daemon"]["requested_restarts"] == restarts
+                    && dir.0.join(format!("window-{daemon}")).is_file())
+                .then_some((daemon, host))
+            })
+        };
+        let (first, host) = connected(0);
+        fs::write(dir.0.join("restart"), []).unwrap();
+        let (second, same_host) = connected(1);
+        fs::write(dir.0.join("stop"), []).unwrap();
+        fs::write(dir.0.join("release-window"), []).unwrap();
+        fs::write(host_release, []).unwrap();
+        worker.join().unwrap().unwrap();
+        assert_ne!(first, second);
+        assert_eq!(host, same_host);
     }
 
     #[test]

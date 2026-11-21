@@ -4,22 +4,23 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::{
-    io::{self, BufRead},
+    io::{self, Read},
     process::ExitCode,
-    sync::Mutex,
 };
 
-use serde::Serialize;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use zeroize::{Zeroize, Zeroizing};
 
-const DESKTOP_ORIGIN: &str = "http://tauri.localhost";
+mod bridge;
+#[cfg(windows)]
+mod stdin;
+
+const WINDOW_ORIGIN: &str = "http://tauri.localhost";
 const MENU_SHOW: &str = "show";
 const MENU_QUIT: &str = "quit";
 
-#[derive(Serialize)]
 struct Bootstrap {
     url: String,
     token: String,
@@ -31,12 +32,20 @@ impl Drop for Bootstrap {
     }
 }
 
-fn read_bootstrap(input: impl BufRead) -> io::Result<Bootstrap> {
+fn read_bootstrap(mut input: impl Read) -> io::Result<Bootstrap> {
     // Five port digits, a space, 43 token characters and a newline.
-    let mut line = Zeroizing::new(String::new());
-    input.take(50).read_line(&mut line)?;
-    let (port, token) = line
-        .strip_suffix('\n')
+    let mut bytes = Zeroizing::new([0; 50]);
+    let mut end = 0;
+    for byte in bytes.iter_mut() {
+        input.read_exact(std::slice::from_mut(byte))?;
+        end += 1;
+        if *byte == b'\n' {
+            break;
+        }
+    }
+    let (port, token) = std::str::from_utf8(&bytes[..end])
+        .ok()
+        .and_then(|line| line.strip_suffix('\n'))
         .and_then(|line| line.split_once(' '))
         .ok_or_else(invalid_bootstrap)?;
     let port: u16 = port.parse().map_err(|_| invalid_bootstrap())?;
@@ -62,31 +71,7 @@ fn trusted_window(window: &WebviewWindow) -> bool {
     window.label() == "main"
         && window
             .url()
-            .is_ok_and(|url| url.origin().ascii_serialization() == DESKTOP_ORIGIN)
-}
-
-#[tauri::command]
-fn desktop_bootstrap(
-    window: WebviewWindow,
-    bootstrap: tauri::State<'_, Mutex<Option<Bootstrap>>>,
-) -> Result<Bootstrap, &'static str> {
-    if !trusted_window(&window) {
-        return Err("desktop bootstrap unavailable");
-    }
-    bootstrap
-        .lock()
-        .ok()
-        .and_then(|mut value| value.take())
-        .ok_or("desktop bootstrap unavailable")
-}
-
-struct SmokeTest(bool);
-
-#[tauri::command]
-fn desktop_connected(window: WebviewWindow, smoke: tauri::State<'_, SmokeTest>) {
-    if smoke.0 && trusted_window(&window) {
-        window.app_handle().exit(0);
-    }
+            .is_ok_and(|url| url.origin().ascii_serialization() == WINDOW_ORIGIN)
 }
 
 fn dimension(arg: &str) -> Option<f64> {
@@ -104,14 +89,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let width = dimension(width).ok_or("invalid shell width")?;
     let height = dimension(height).ok_or("invalid shell height")?;
     let minimized = flags.iter().any(|arg| arg == "--minimized");
-    let smoke = flags.iter().any(|arg| arg == "--smoke-test");
+    let smoke = cfg!(feature = "desktop-smoke") && flags.iter().any(|arg| arg == "--smoke-test");
+    #[cfg(windows)]
+    let bootstrap = read_bootstrap(stdin::private_input()?)?;
+    #[cfg(not(windows))]
     let bootstrap = read_bootstrap(io::stdin().lock())?;
     tauri::Builder::default()
-        .manage(Mutex::new(Some(bootstrap)))
-        .manage(SmokeTest(smoke))
+        .manage(bridge::Bridge::new(bootstrap, smoke))
         .invoke_handler(tauri::generate_handler![
-            desktop_bootstrap,
-            desktop_connected
+            bridge::desktop_connect,
+            bridge::desktop_send,
+            bridge::desktop_disconnect
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -125,7 +113,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             window_config.height = height;
             window_config.url = WebviewUrl::App("index.html".into());
             let window = WebviewWindowBuilder::from_config(app, &window_config)?
-                .on_navigation(|url| url.origin().ascii_serialization() == DESKTOP_ORIGIN)
+                .on_navigation(|url| url.origin().ascii_serialization() == WINDOW_ORIGIN)
                 .build()?;
             if minimized {
                 window.minimize()?;

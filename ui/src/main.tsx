@@ -42,7 +42,7 @@ const configuredDebounce = Number(import.meta.env.VITE_CORE_RESIZE_DEBOUNCE_MS ?
 const resizeDebounceMs =
   Number.isFinite(configuredDebounce) && configuredDebounce >= 0 ? configuredDebounce : 150
 
-async function render(root: HTMLElement) {
+function render(root: HTMLElement) {
   const replay = replaySettings(
     import.meta.env.VITE_CORE_REPLAY_EVENTS,
     import.meta.env.VITE_CORE_REPLAY_BYTES,
@@ -52,7 +52,7 @@ async function render(root: HTMLElement) {
   const react = createRoot(root)
   try {
     const { client, live } = bridge
-      ? await selectDesktopClient(bridge, replay)
+      ? selectDesktopClient(bridge, replay)
       : selectCoreClient(window, undefined, replay)
     react.render(
       <StrictMode>
@@ -73,4 +73,4 @@ async function render(root: HTMLElement) {
   }
 }
 
-void render(root)
+render(root)

@@ -11,9 +11,9 @@ inexistente e apelido de pasta fora da configuração recebem `INVALID_PARAMS`.
 
 O lançador seleciona `--desktop` antes das opções de configuração e conecta
 a saída padrão do daemon ao pipe privado da casca. Nesse modo o daemon envia
-porta e token somente nesse canal e usa uma lista de origens com uma única
-entrada, `http://tauri.localhost`. A casca envia `auth.hello` pela interface
-empacotada, com as mesmas regras de autenticação do navegador.
+porta e token somente nesse canal. A API exige um upgrade sem cabeçalho
+`Origin` e mantém a conferência de `Host` e do token. O processo Rust da casca
+envia `auth.hello` antes de encaminhar mensagens da janela.
 
 ## Abrir Claude ou Codex no navegador
 

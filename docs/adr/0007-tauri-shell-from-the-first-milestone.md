@@ -10,7 +10,7 @@ A interface funciona no navegador servida pelo núcleo. A casca de desktop acres
 
 ## Consequências
 - A casca existe desde o marco inicial, ainda vazia, para o custo de build aparecer cedo.
-- Ela é cliente fino: carrega o mesmo bundle da PWA e fala com o núcleo pelo mesmo contrato WebSocket em loopback. Não contém política, banco nem PTY, e a regra de dependência impede que passe a conter.
+- Ela é cliente fino: carrega o mesmo bundle da PWA e usa o mesmo contrato da API local. O Rust autentica o WebSocket em loopback e encaminha as mensagens pelo IPC da janela principal (ADR 0020). Não contém política, banco nem PTY, e a regra de dependência impede que passe a conter.
 - Fechar, travar ou atualizar a casca não encerra sessão (ADR 0003).
 - A casca compila no CI; no PC do mantenedor a interface é desenvolvida no navegador.
 - Job próprio em runner Windows, que só roda quando a casca muda.

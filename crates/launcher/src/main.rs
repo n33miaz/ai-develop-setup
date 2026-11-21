@@ -219,6 +219,11 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             &install.join(&config.shell_program),
             &config.child_env_allow,
         );
+        for name in &config.child_env_allow {
+            if name.to_ascii_uppercase().starts_with("WEBVIEW2_") {
+                shell.env_remove(name);
+            }
+        }
         shell.args([
             config.shell_width.to_string(),
             config.shell_height.to_string(),
