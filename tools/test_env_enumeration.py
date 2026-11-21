@@ -19,6 +19,12 @@ FORBIDDEN = (
     re.compile(r"\buse\s+std\s*::\s*env\s*::\s*\{[^}]*\b(vars|vars_os|Vars|VarsOs)\b"),
     re.compile(r"\buse\s+std\s*::\s*env\s+as\s+\w+"),
     re.compile(r"\buse\s+std\s*::\s*env\s*::\s*(?:\*|\{[^}]*\*)"),
+    re.compile(r"\buse\s+(?:::\s*)?std\s*::\s*env\s*::\s*\{[^}]*\bself\s+as\b"),
+    # The same through a braced group of `std` (`use std::{fs, env as e}`, `use std::{env::*}`).
+    re.compile(
+        r"\buse\s+(?:::\s*)?std\s*::\s*\{[^;]*?\benv\s*(?:as\b|::\s*(?:\*|\{[^}]*(?:\*|\bself\s+as\b|"
+        r"\b(?:vars|vars_os|Vars|VarsOs)\b)|(?:vars|vars_os|Vars|VarsOs)\b))"
+    ),
     re.compile(r"\bGetEnvironmentStrings\w*"),
     re.compile(r"\benviron\b"),
 )
@@ -181,6 +187,22 @@ class EnvEnumerationTests(unittest.TestCase):
                      "use std::env::{var, *}; vars_os()"):
             with self.subTest(code=code):
                 self.assertTrue(any(pattern.search(code) for pattern in FORBIDDEN))
+
+    def test_detector_reads_braced_std_imports(self):
+        for code in ("use std::{env as e}; e::vars()", "use std::{fs, env as e};",
+                     "use std::{\n    env as e,\n};", "use ::std::{env as e};",
+                     "use std::{env::*};", "use std::{env::{var, *}};", "use std::{env::{vars_os}};",
+                     "use std::{fs, env::vars};", "use std::{env::{self as e}};",
+                     "use std::env::{self as e};"):
+            with self.subTest(code=code):
+                code = blank_comments_and_literals(code)
+                self.assertTrue(any(pattern.search(code) for pattern in FORBIDDEN))
+        for code in ("use std::{env, fs};", "use std::{env::{var, var_os}};",
+                     "use std::{env::var, fs::*};", "use std::{fs::*, env::var};",
+                     "use std::{env::{self}, fs};", "use std::{environment as e};"):
+            with self.subTest(code=code):
+                code = blank_comments_and_literals(code)
+                self.assertFalse(any(pattern.search(code) for pattern in FORBIDDEN))
 
     def test_out_of_line_test_modules_are_skipped(self):
         launch_mod = ROOT / "crates/core/src/tool_launch/mod.rs"
