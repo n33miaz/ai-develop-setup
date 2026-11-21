@@ -167,8 +167,7 @@ impl AbsPath {
 }
 
 /// Whether two names could be the same folder on some file system: equal after either Unicode
-/// lowercase or uppercase mapping (no title case or full case folding). Wider than any real
-/// file system on purpose, so it only ever serves to deny.
+/// lowercase or uppercase mapping. This deny-only comparison does not normalize Unicode.
 pub(crate) fn same_name_loosely(a: &str, b: &str) -> bool {
     a.to_lowercase() == b.to_lowercase() || a.to_uppercase() == b.to_uppercase()
 }
