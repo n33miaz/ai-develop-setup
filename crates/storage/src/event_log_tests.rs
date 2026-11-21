@@ -2870,6 +2870,22 @@ mod gate_journal {
     }
 
     #[test]
+    fn pending_candidates_are_visited_once_per_action_in_request_order() {
+        let path = fixture();
+        let anchor = MemoryAnchor::default();
+        let mut log = anchored(&path, &anchor).unwrap();
+        let first = ask(&mut log, "first", 10);
+        let second = ask(&mut log, "second", 20);
+        let mut json = log.load(&first).unwrap().events[1].to_json();
+        json["id"] = serde_json::json!("01J00000000000000000000030");
+        json["stream"] = serde_json::json!("approval/another");
+        json["data"]["approval_id"] = serde_json::json!("another");
+        GateJournal::append(&mut log, &first, 2, &Event::from_json(json).unwrap()).unwrap();
+
+        assert_eq!(pending_ids(&log), [first, second]);
+    }
+
+    #[test]
     fn an_unreadable_gate_history_is_reported_once_and_the_walk_goes_on() {
         let path = fixture();
         let anchor = MemoryAnchor::default();

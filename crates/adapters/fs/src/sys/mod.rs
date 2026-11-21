@@ -16,7 +16,7 @@ pub use linux::{Claim, HOLDS, Node};
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
-pub use windows::{Claim, HOLDS, Node};
+pub use windows::{Claim, HOLDS, Node, NtStatusError};
 
 #[cfg(not(any(target_os = "linux", windows)))]
 mod unsupported;

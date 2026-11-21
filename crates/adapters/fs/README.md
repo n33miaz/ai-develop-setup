@@ -80,7 +80,7 @@ O executor descobre uma vez, ao abrir a cerca, o sistema de arquivos dela (no Wi
 |---|---|---|---|
 | Windows, NTFS local | detectado | detectado: o identificador traz o número de sequência do registro da MFT, que sobe quando o registro é reaproveitado | permitidos |
 | Windows, ReFS local (Dev Drive) | detectado | detectado: o identificador de 128 bits não é reaproveitado | permitidos |
-| Linux, ext2/3/4, xfs, btrfs, tmpfs, f2fs ou zfs, com instante de criação no `statx` | detectado | detectado pelo instante de criação, que entra na identidade junto com o inode: um inode liberado e entregue na hora a um objeto novo volta com outro instante | permitidos (apagar de verdade conforme `definitive_delete`) |
+| Linux, ext2/3/4, xfs, btrfs, tmpfs, f2fs ou zfs, com instante de criação no `statx` | detectado | detectado se o inode ou o instante de criação mudar | permitidos (apagar de verdade conforme `definitive_delete`) |
 | FAT, exFAT (os dois sistemas) | não garantido: no Windows o identificador vem da posição da entrada na pasta, e um nome recriado ou renomeado para a entrada liberada herda o identificador; no Linux o número de inode do vfat e do exfat também não é guardado no disco | não garantido | recusados (`E_FS_IDENTITY_UNSTABLE`) |
 | Compartilhamento de rede ou sistema de arquivos remoto | não garantido | não garantido | recusados |
 | Qualquer outro, inclusive Linux sem instante de criação, overlay, FUSE, 9p (`/mnt/c` do WSL), ntfs3, ou volume que não respondeu | não garantido | não garantido | recusados |
@@ -89,7 +89,7 @@ No Windows, a classificação usa o nome informado pelo sistema de arquivos. Um 
 
 O que continua sem detecção mesmo onde a identidade é estável:
 
-- **Linux:** um objeto recriado no mesmo inode e no mesmo tique do relógio do núcleo que carimbou o objeto aprovado (o instante de criação tem a resolução do relógio grosso do núcleo, de alguns milissegundos). O objeto aprovado existia antes do ensaio e a troca acontece depois da aprovação, então isso pede o relógio voltar (privilégio de administrador). O tempo de mudança de metadados (`ctime`) e a contagem de links (`nlink`) não entram: o próprio executor muda os dois (renomear muda o `ctime` no ext4; esvaziar uma pasta muda o `nlink` dela), e a conferência depois de cada movimento passaria a falhar. O número de geração do inode (`FS_IOC_GETVERSION`) não é lido: pede `ioctl` num descritor que o executor abre sem acesso (`O_PATH`).
+- **Linux:** um objeto recriado no mesmo inode e no mesmo tique do relógio do núcleo que carimbou o objeto aprovado (o instante de criação tem a resolução do relógio grosso do núcleo, de alguns milissegundos). Se o inode for reutilizado dentro desse mesmo tique, o instante de criação pode ser igual e a troca passa despercebida, mesmo sem recuo do relógio ou privilégio de administrador. O tempo de mudança de metadados (`ctime`) e a contagem de links (`nlink`) não entram: o próprio executor muda os dois (renomear muda o `ctime` no ext4; esvaziar uma pasta muda o `nlink` dela), e a conferência depois de cada movimento passaria a falhar. O número de geração do inode (`FS_IOC_GETVERSION`) não é lido: pede `ioctl` num descritor que o executor abre sem acesso (`O_PATH`).
 - **NTFS:** em tese, um registro da MFT que dê a volta nos 65 536 valores da sequência. Só troca o objeto aprovado por um objeto recém-criado, o que equivale a conteúdo reescrito no mesmo objeto, que já fica fora.
 - **Nos dois:** conteúdo reescrito no mesmo objeto com o mesmo tamanho, e datas (item 11).
 
