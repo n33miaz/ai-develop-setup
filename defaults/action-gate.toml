@@ -64,6 +64,11 @@ posix_user_parents = ["/home", "/Users"]
 approval_item_limit = 500
 approval_byte_limit = 104857600
 
+# Teto de passos para comparar alvos de um movimento, incluindo a reescrita para quarentena.
+# Zero recusa movimentos com alvos. O padrão comporta lotes grandes de nomes literais curtos
+# e interrompe a busca de curingas que precisa testar muitas combinações.
+classification_match_steps = 1000000
+
 # Recuo máximo entre eventos consecutivos da ação, em segundos.
 # Zero preserva a ordem estrita. Aumente só para acomodar ajustes do relógio.
 # Esta tolerância é independente da configuração da fila.

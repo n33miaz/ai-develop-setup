@@ -104,7 +104,7 @@ fn the_fence_and_the_work_root_are_never_targets() {
     })
     .unwrap();
     assert_eq!(
-        classify(&plan, &sandbox.policy("")).decision(),
+        classify(&plan, &sandbox.policy("")).unwrap().decision(),
         Decision::Denied
     );
 }

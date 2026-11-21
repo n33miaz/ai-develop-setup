@@ -93,7 +93,8 @@ fn user_home_is_denied_even_as_work_root_or_allowed_root_content() {
             &["C:\\Users\\user-a\\Documents"],
         ),
         &policy(WIN_HOME, ""),
-    );
+    )
+    .unwrap();
     denied_by(&verdict, Rule::WorkRootProtected(Protection::UserHome));
 }
 
@@ -111,7 +112,8 @@ fn user_home_spelled_in_the_other_path_style_is_denied() {
         let verdict = classify(
             &plan(op, "/c/Users/user-a", &["/c/Users/user-a/Documents"]),
             &policy,
-        );
+        )
+        .unwrap();
         denied_by(
             &verdict,
             Rule::WorkRootProtected(Protection::OtherPathStyle),
@@ -168,7 +170,8 @@ fn target_that_is_an_ancestor_of_the_user_home_is_denied() {
         let verdict = classify(
             &plan(Op::DeleteRecursive, "/data/people/user-a/proj", &[target]),
             &policy(home, ""),
-        );
+        )
+        .unwrap();
         denied_by(&verdict, Rule::Protected(Protection::UserHomeAncestor));
     }
 }
@@ -293,7 +296,7 @@ fn drive_root_and_slash_are_denied() {
     for target in ["/", "/*", "//./"] {
         match ActionPlan::normalize(&request(Op::DeleteRecursive, POSIX_ROOT, &[target])) {
             Ok(plan) => denied_by(
-                &classify(&plan, &policy(POSIX_HOME, "")),
+                &classify(&plan, &policy(POSIX_HOME, "")).unwrap(),
                 Rule::Protected(Protection::FilesystemRoot),
             ),
             Err(error) => assert_eq!(
@@ -343,7 +346,8 @@ fn system_folder_is_denied_even_inside_an_allowed_root() {
     let verdict = classify(
         &plan(Op::Delete, "/var/work/proj", &["/var/work/proj/build"]),
         &policy(POSIX_HOME, ""),
-    );
+    )
+    .unwrap();
     denied_by(&verdict, Rule::WorkRootProtected(Protection::SystemDir));
     assert!(verdict.has(Rule::Protected(Protection::SystemDir)));
 }
@@ -419,12 +423,14 @@ fn allowed_root_itself_is_denied() {
     let verdict = classify(
         &plan(Op::DeleteRecursive, WIN_ROOT, &["D:\\cache"]),
         &policy,
-    );
+    )
+    .unwrap();
     denied_by(&verdict, Rule::OutsideAllowedRoots);
     let verdict = classify(
         &plan(Op::DeleteRecursive, WIN_ROOT, &["D:\\cache\\*"]),
         &policy,
-    );
+    )
+    .unwrap();
     denied_by(&verdict, Rule::OutsideAllowedRoots);
 }
 
@@ -436,7 +442,7 @@ fn repository_root_is_denied() {
         &["C:\\Users\\user-a\\work\\proj\\vendor\\lib"],
     );
     let policy = policy(WIN_HOME, "");
-    let verdict = classify(&ActionPlan::normalize(&request).unwrap(), &policy);
+    let verdict = classify(&ActionPlan::normalize(&request).unwrap(), &policy).unwrap();
     assert_eq!(verdict.decision(), Decision::Allowed);
 
     request.targets[0].repo_root = true;
@@ -447,7 +453,7 @@ fn repository_root_is_denied() {
         Op::Overwrite,
     ] {
         request.operation = op;
-        let verdict = classify(&ActionPlan::normalize(&request).unwrap(), &policy);
+        let verdict = classify(&ActionPlan::normalize(&request).unwrap(), &policy).unwrap();
         denied_by(&verdict, Rule::RepositoryRoot);
     }
 }
@@ -470,7 +476,8 @@ fn quarantine_folder_itself_is_denied() {
             &["C:\\Users\\user-a\\work\\proj\\.ads"],
         ),
         &policy(WIN_HOME, "quarantine_enabled = false"),
-    );
+    )
+    .unwrap();
     assert_eq!(verdict.decision(), Decision::Allowed);
 }
 
@@ -514,7 +521,7 @@ fn move_destination_is_judged_too() {
     );
 
     let policy = policy(WIN_HOME, "allowed_roots = ['D:\\cache']");
-    let verdict = classify(&plan(move_to("D:\\cache"), WIN_ROOT, &target), &policy);
+    let verdict = classify(&plan(move_to("D:\\cache"), WIN_ROOT, &target), &policy).unwrap();
     needs_approval_by(&verdict, Rule::DestinationOutsideWorkRoot);
 }
 
@@ -536,19 +543,22 @@ fn entry_a_move_creates_in_its_destination_is_judged_too() {
     let verdict = classify(
         &plan(move_to("/work"), "/work/proj", &["/work/other/proj"]),
         &policy,
-    );
+    )
+    .unwrap();
     entry(&verdict, Rule::DestinationEntryReserved, "/work/proj");
     // The same with another case, and onto a folder that holds the work root.
     let verdict = classify(
         &plan(move_to("/work"), "/work/proj", &["/work/other/PROJ"]),
         &policy,
-    );
+    )
+    .unwrap();
     entry(&verdict, Rule::DestinationEntryReserved, "/work/PROJ");
     let nested = common::policy(POSIX_HOME, "allowed_roots = ['/data']");
     let verdict = classify(
         &plan(move_to("/data"), "/data/work/proj", &["/data/tmp/work"]),
         &nested,
-    );
+    )
+    .unwrap();
     entry(&verdict, Rule::DestinationEntryReserved, "/data/work");
 
     // Onto an allowed root, and onto the quarantine folder or a folder that holds it.
@@ -560,7 +570,8 @@ fn entry_a_move_creates_in_its_destination_is_judged_too() {
             &["/work/proj/data"],
         ),
         &roots,
-    );
+    )
+    .unwrap();
     entry(
         &verdict,
         Rule::DestinationEntryReserved,
@@ -632,7 +643,10 @@ fn entry_a_move_creates_in_its_destination_is_judged_too() {
         POSIX_ROOT,
         &["/home/user-a/work/proj/tmp/.a*"],
     );
-    assert_eq!(classify(&asked, &off).decision(), Decision::Allowed);
+    assert_eq!(
+        classify(&asked, &off).unwrap().decision(),
+        Decision::Allowed
+    );
     // With quarantine off, `tmp/*` into the parent of `tmp` is still held back: the wildcard
     // may name `tmp` itself, the very folder it ranges over.
     let asked = plan(
@@ -641,7 +655,7 @@ fn entry_a_move_creates_in_its_destination_is_judged_too() {
         &["/home/user-a/work/proj/tmp/*"],
     );
     entry(
-        &classify(&asked, &off),
+        &classify(&asked, &off).unwrap(),
         Rule::DestinationInsideTarget,
         "/home/user-a/work/proj/tmp",
     );
@@ -673,6 +687,7 @@ fn wildcard_that_may_create_the_folder_of_another_target_is_denied() {
             &plan(move_to(destination), "/work/proj", targets),
             &policy(POSIX_HOME, ""),
         )
+        .unwrap()
     };
 
     // The example of the review: `tmp/*` may create `out/a`, which `out/a/*` ranges over.
@@ -733,7 +748,7 @@ fn wildcard_that_may_create_the_folder_of_another_target_is_denied() {
         );
     }
     // Judged again, a denied plan stays denied for the same reason.
-    let again = classify(verdict.plan(), &policy(POSIX_HOME, ""));
+    let again = classify(verdict.plan(), &policy(POSIX_HOME, "")).unwrap();
     assert_eq!(again.findings(), verdict.findings());
 }
 
@@ -747,6 +762,7 @@ fn wildcard_that_may_create_the_folder_of_another_target_is_denied_on_windows() 
             &plan(move_to(destination), root, targets),
             &policy(WIN_HOME, ""),
         )
+        .unwrap()
     };
     let on = |verdict: &Verdict, subject: &str| {
         denied_by(verdict, Rule::DestinationInsideTarget);
@@ -834,7 +850,7 @@ fn recursive_delete_above_a_limit_requires_approval() {
     let with = |operation: Op, estimate: Option<Estimate>| {
         let mut request = request(operation, WIN_ROOT, &target);
         request.estimate = estimate;
-        classify(&ActionPlan::normalize(&request).unwrap(), &policy)
+        classify(&ActionPlan::normalize(&request).unwrap(), &policy).unwrap()
     };
     let estimate = |items, bytes| Some(Estimate { items, bytes });
 
@@ -868,7 +884,7 @@ fn recursive_delete_above_a_limit_requires_approval() {
     let off = common::policy(WIN_HOME, "quarantine_enabled = false");
     let mut request = request(Op::Delete, WIN_ROOT, &target);
     request.estimate = None;
-    let verdict = classify(&ActionPlan::normalize(&request).unwrap(), &off);
+    let verdict = classify(&ActionPlan::normalize(&request).unwrap(), &off).unwrap();
     assert_eq!(verdict.decision(), Decision::Allowed);
 }
 
@@ -880,7 +896,7 @@ fn unconfigured_work_roots_are_denied() {
     })
     .unwrap();
     for policy in [policy.clone(), policy.with_work_roots(Vec::new())] {
-        denied_by(&classify(&plan, &policy), Rule::WorkRootUnknown);
+        denied_by(&classify(&plan, &policy).unwrap(), Rule::WorkRootUnknown);
     }
 }
 
@@ -889,9 +905,9 @@ fn limits_come_from_the_policy() {
     let target = ["/home/user-a/work/proj/build"];
     let plan = plan(Op::DeleteRecursive, POSIX_ROOT, &target);
     let strict = policy(POSIX_HOME, "approval_item_limit = 2");
-    needs_approval_by(&classify(&plan, &strict), Rule::ItemLimitExceeded);
+    needs_approval_by(&classify(&plan, &strict).unwrap(), Rule::ItemLimitExceeded);
     let strict = policy(POSIX_HOME, "approval_byte_limit = 0");
-    needs_approval_by(&classify(&plan, &strict), Rule::ByteLimitExceeded);
+    needs_approval_by(&classify(&plan, &strict).unwrap(), Rule::ByteLimitExceeded);
 }
 
 #[test]
@@ -903,7 +919,7 @@ fn anything_in_an_allowed_root_outside_the_work_root_requires_approval() {
         Op::DeleteRecursive,
         Op::CleanUntracked,
     ] {
-        let verdict = classify(&plan(op, WIN_ROOT, &["D:\\cache\\tool\\index"]), &policy);
+        let verdict = classify(&plan(op, WIN_ROOT, &["D:\\cache\\tool\\index"]), &policy).unwrap();
         needs_approval_by(&verdict, Rule::OutsideWorkRoot);
     }
     // Overwriting inside the work root needs nothing; outside every root it is denied.
@@ -912,9 +928,15 @@ fn anything_in_an_allowed_root_outside_the_work_root_requires_approval() {
         WIN_ROOT,
         &["C:\\Users\\user-a\\work\\proj\\out.txt"],
     );
-    assert_eq!(classify(&inside, &policy).decision(), Decision::Allowed);
+    assert_eq!(
+        classify(&inside, &policy).unwrap().decision(),
+        Decision::Allowed
+    );
     let outside = plan(Op::Overwrite, WIN_ROOT, &["F:\\other\\out.txt"]);
-    denied_by(&classify(&outside, &policy), Rule::OutsideAllowedRoots);
+    denied_by(
+        &classify(&outside, &policy).unwrap(),
+        Rule::OutsideAllowedRoots,
+    );
 }
 
 #[test]
@@ -980,7 +1002,7 @@ fn delete_is_rewritten_as_a_move_to_quarantine() {
     ];
     for op in [Op::Delete, Op::DeleteRecursive] {
         let asked = plan(op, WIN_ROOT, &targets);
-        let verdict = classify(&asked, &policy(WIN_HOME, ""));
+        let verdict = classify(&asked, &policy(WIN_HOME, "")).unwrap();
         assert_eq!(verdict.decision(), Decision::Allowed);
         assert!(verdict.is_quarantined());
 
@@ -999,7 +1021,7 @@ fn delete_is_rewritten_as_a_move_to_quarantine() {
         // The plan to approve and execute is the rewritten one.
         assert_ne!(verdict.plan().hash(), asked.hash());
         // And it passes the gate as it is: a move inside the work root.
-        let again = classify(verdict.plan(), &policy(WIN_HOME, ""));
+        let again = classify(verdict.plan(), &policy(WIN_HOME, "")).unwrap();
         assert_eq!(again.decision(), Decision::Allowed);
         assert!(!again.is_quarantined());
     }
@@ -1019,7 +1041,8 @@ fn rewrite_keeps_the_approval_requirement() {
     let verdict = classify(
         &ActionPlan::normalize(&request).unwrap(),
         &policy(POSIX_HOME, ""),
-    );
+    )
+    .unwrap();
     needs_approval_by(&verdict, Rule::ItemLimitExceeded);
     assert!(verdict.has(Rule::ByteLimitExceeded));
     assert!(verdict.is_quarantined());
@@ -1033,12 +1056,12 @@ fn quarantine_can_be_turned_off_or_moved_by_the_policy() {
         POSIX_ROOT,
         &["/home/user-a/work/proj/build"],
     );
-    let off = classify(&asked, &policy(POSIX_HOME, "quarantine_enabled = false"));
+    let off = classify(&asked, &policy(POSIX_HOME, "quarantine_enabled = false")).unwrap();
     assert_eq!(off.decision(), Decision::Allowed);
     assert!(!off.is_quarantined());
     assert_eq!(off.plan(), &asked);
 
-    let moved = classify(&asked, &policy(POSIX_HOME, "quarantine_dir = 'trash'"));
+    let moved = classify(&asked, &policy(POSIX_HOME, "quarantine_dir = 'trash'")).unwrap();
     let Operation::Move { destination } = moved.plan().operation() else {
         panic!("not a move");
     };
@@ -1058,7 +1081,7 @@ fn only_deletes_are_rewritten() {
         move_to("/home/user-a/work/proj/old"),
     ] {
         let asked = plan(op, POSIX_ROOT, &target);
-        let verdict = classify(&asked, &policy(POSIX_HOME, ""));
+        let verdict = classify(&asked, &policy(POSIX_HOME, "")).unwrap();
         assert!(!verdict.is_quarantined());
         assert_eq!(verdict.plan(), &asked);
     }
@@ -1072,7 +1095,10 @@ fn classification_is_deterministic() {
         &["C:\\Users\\user-a\\work\\proj\\build", "D:\\elsewhere"],
     );
     let policy = policy(WIN_HOME, "");
-    assert_eq!(classify(&asked, &policy), classify(&asked, &policy));
+    assert_eq!(
+        classify(&asked, &policy).unwrap(),
+        classify(&asked, &policy).unwrap()
+    );
 }
 
 #[test]
@@ -1092,7 +1118,7 @@ fn a_declared_root_cannot_reclassify_another_quarantine() {
         (outer, "/work/nested"),
         ("/work/nested/.ads", "/work/nested/.ads/quarantine/batch"),
     ] {
-        let verdict = classify(&plan(Op::DeleteRecursive, root, &[target]), &policy);
+        let verdict = classify(&plan(Op::DeleteRecursive, root, &[target]), &policy).unwrap();
         denied_by(&verdict, Rule::QuarantineOfOtherRoot);
         assert_eq!(verdict.has(Rule::WorkRootUnknown), root != outer);
     }
@@ -1103,7 +1129,8 @@ fn a_declared_root_cannot_reclassify_another_quarantine() {
             &["/work/nested/.ads/quarantine/batch"],
         ),
         &policy,
-    );
+    )
+    .unwrap();
     needs_approval_by(&purge, Rule::QuarantinePurge);
 }
 
@@ -1207,4 +1234,44 @@ fn every_rule_code_is_documented() {
             assert!(listed, "{code} is not in {readme}");
         }
     }
+}
+
+#[test]
+fn wildcard_matching_stops_at_the_default_work_budget() {
+    let destination = format!("{POSIX_ROOT}/destination");
+    let pattern = format!("*{}b", "a".repeat(200));
+    let paths: Vec<_> = (0..4)
+        .map(|index| format!("{destination}/{}{index}/{pattern}", "a".repeat(1500)))
+        .collect();
+    let targets: Vec<_> = paths.iter().map(String::as_str).collect();
+    let plan = plan(move_to(&destination), POSIX_ROOT, &targets);
+
+    assert_eq!(
+        classify(&plan, &policy(POSIX_HOME, "")),
+        Err(ads_core::gate::ClassificationBudgetExceeded)
+    );
+    let expanded = policy(POSIX_HOME, "classification_match_steps = 4000000");
+    assert_eq!(
+        classify(&plan, &expanded).unwrap().decision(),
+        Decision::Allowed
+    );
+}
+
+#[test]
+fn quarantine_classifies_ten_thousand_literal_targets_with_default_budget() {
+    let paths: Vec<_> = (0..10_000)
+        .map(|index| format!("{POSIX_ROOT}/data/f{index:05}"))
+        .collect();
+    let targets: Vec<_> = paths.iter().map(String::as_str).collect();
+    let mut request = request(Op::DeleteRecursive, POSIX_ROOT, &targets);
+    request.estimate = Some(Estimate {
+        items: 10_000,
+        bytes: 10_000,
+    });
+    let plan = ActionPlan::normalize(&request).unwrap();
+
+    let verdict = classify(&plan, &policy(POSIX_HOME, "")).unwrap();
+    assert!(verdict.is_quarantined());
+    needs_approval_by(&verdict, Rule::ItemLimitExceeded);
+    assert_eq!(verdict.plan().targets().len(), 10_000);
 }

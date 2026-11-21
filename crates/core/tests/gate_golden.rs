@@ -256,7 +256,8 @@ fn approval_needed() -> Verdict {
     let verdict = classify(
         &ActionPlan::normalize(&request).unwrap(),
         &policy(WIN_HOME, ""),
-    );
+    )
+    .unwrap();
     assert_eq!(verdict.decision(), Decision::RequiresApproval);
     verdict
 }
@@ -553,7 +554,7 @@ fn request_of(golden: &Value) -> PlanRequest {
 fn rebuilt(golden: &Value, home: &str, quarantine: bool) -> (Value, Value) {
     let plan = ActionPlan::normalize(&request_of(golden)).unwrap();
     let overrides = format!("quarantine_enabled = {quarantine}");
-    let verdict = classify(&plan, &policy(home, &overrides));
+    let verdict = classify(&plan, &policy(home, &overrides)).unwrap();
     let action_id: Id = serde_json::from_value(golden["action_id"].clone()).unwrap();
     let (_, event, record) = Action::plan(action_id, &verdict, earlier()).unwrap();
     (record.to_json(), event.to_json())
@@ -595,7 +596,7 @@ fn first_golden_action_plan_is_rebuilt_by_the_core() {
     );
     assert_eq!(plan.hash().as_str(), hash);
 
-    let verdict = classify(&plan, &policy(POSIX_HOME, "quarantine_enabled = false"));
+    let verdict = classify(&plan, &policy(POSIX_HOME, "quarantine_enabled = false")).unwrap();
     let (action, event, record) = Action::plan(act("act-01"), &verdict, earlier()).unwrap();
     assert_eq!(record.to_json(), golden);
     assert_eq!(record.canonical(), plan.canonical());
@@ -778,7 +779,8 @@ fn estimate_of_the_record_has_the_same_range_for_every_reader() {
         let verdict = classify(
             &ActionPlan::normalize(&asked).unwrap(),
             &policy(WIN_HOME, ""),
-        );
+        )
+        .unwrap();
         assert!(verdict.record(act("act-01")).is_err());
         assert!(Action::plan(act("act-01"), &verdict, earlier()).is_err());
     }
@@ -790,7 +792,8 @@ fn estimate_of_the_record_has_the_same_range_for_every_reader() {
     let verdict = classify(
         &ActionPlan::normalize(&asked).unwrap(),
         &policy(WIN_HOME, ""),
-    );
+    )
+    .unwrap();
     let record = verdict.record(act("act-01")).unwrap().to_json();
     assert_eq!(record["version"], 2);
     assert_eq!(record["estimate"]["items"], ESTIMATE_MAX);

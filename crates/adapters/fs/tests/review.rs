@@ -566,7 +566,7 @@ fn wildcard_observation_protects_metadata_and_child_repositories() {
     })
     .unwrap();
     let observed = executor.observe_plan(&plan).unwrap();
-    let verdict = classify(&observed, &policy);
+    let verdict = classify(&observed, &policy).unwrap();
     assert_eq!(verdict.decision(), Decision::Denied);
     assert!(verdict.has(Rule::RepositoryMetadata));
     assert!(verdict.has(Rule::RepositoryRoot));

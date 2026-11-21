@@ -107,6 +107,7 @@ pub struct GatePolicy {
     windows_user_parents: Vec<String>,
     posix_user_parents: Vec<AbsPath>,
     approval_item_limit: u64,
+    classification_match_steps: u64,
     approval_byte_limit: u64,
     gate_clock_rewind_seconds: u64,
     quarantine_enabled: bool,
@@ -122,6 +123,7 @@ struct Layer {
     windows_user_parents: Option<Vec<String>>,
     posix_user_parents: Option<Vec<String>>,
     approval_item_limit: Option<u64>,
+    classification_match_steps: Option<u64>,
     approval_byte_limit: Option<u64>,
     #[serde(alias = "clock_rewind_seconds")]
     gate_clock_rewind_seconds: Option<u64>,
@@ -238,6 +240,11 @@ impl GatePolicy {
                     base.posix_user_parents,
                 )?,
             )?,
+            classification_match_steps: pick(
+                "classification_match_steps",
+                over.classification_match_steps,
+                base.classification_match_steps,
+            )?,
             approval_item_limit: pick(
                 "approval_item_limit",
                 over.approval_item_limit,
@@ -329,6 +336,10 @@ impl GatePolicy {
 
     pub fn allowed_roots(&self) -> &[AbsPath] {
         &self.allowed_roots
+    }
+
+    pub fn classification_match_steps(&self) -> u64 {
+        self.classification_match_steps
     }
 
     pub fn approval_item_limit(&self) -> u64 {
@@ -482,6 +493,7 @@ mod tests {
         for bad in [
             "unknown_key = 1",
             "approval_item_limit = -1",
+            "classification_match_steps = -1",
             "quarantine_dir = '../outside'",
             "quarantine_dir = '/abs'",
             "quarantine_dir = ''",

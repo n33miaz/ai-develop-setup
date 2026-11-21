@@ -330,7 +330,7 @@ pub fn through_gate(policy: &GatePolicy, request: Request<'_>) -> Flow {
         estimate: request.estimate,
     })
     .unwrap();
-    let verdict = classify(&plan, policy);
+    let verdict = classify(&plan, policy).unwrap();
     let codes: Vec<String> = verdict
         .findings()
         .iter()

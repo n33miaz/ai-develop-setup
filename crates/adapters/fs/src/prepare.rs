@@ -194,7 +194,8 @@ pub(crate) fn prepare(
     let plan = permit.plan();
 
     // The permit proves the plan passed a gate; this is the gate of the trusted policy again.
-    let declared = classify(plan, policy);
+    let declared =
+        classify(plan, policy).map_err(|error| Stop::caused_by(Reason::PolicyDenies, error))?;
     if declared.decision() == Decision::Denied {
         let codes: Vec<String> = declared
             .findings()
@@ -287,7 +288,8 @@ fn build_job(
 ) -> Result<Job, Stop> {
     let plan = permit.plan();
     let work_root = plan.work_root();
-    let declared = classify(plan, policy);
+    let declared =
+        classify(plan, policy).map_err(|error| Stop::caused_by(Reason::PolicyDenies, error))?;
     match plan.operation() {
         Operation::Overwrite | Operation::CleanUntracked => Err(Stop::new(
             Reason::Unsupported,
@@ -480,7 +482,11 @@ pub(crate) fn observe_plan(
     limits: &Limits,
     plan: &ActionPlan,
 ) -> Result<ActionPlan, Stop> {
-    if classify(plan, policy).decision() == Decision::Denied {
+    if classify(plan, policy)
+        .map_err(|error| Stop::caused_by(Reason::PolicyDenies, error))?
+        .decision()
+        == Decision::Denied
+    {
         return Ok(plan.clone());
     }
     let work = fence.relative(plan.work_root())?;
@@ -500,7 +506,8 @@ fn check_facts(
     let (items, bytes) = total(targets.iter().map(|target| &target.facts))?;
     let real = Estimate { items, bytes };
     let real_plan = with_repository_targets(fence, plan, targets, Some(real))?;
-    let judged = classify(&real_plan, policy);
+    let judged = classify(&real_plan, policy)
+        .map_err(|error| Stop::caused_by(Reason::PolicyDenies, error))?;
     if judged.decision() > declared {
         let codes: Vec<String> = judged
             .findings()
@@ -675,7 +682,8 @@ fn judge_restore_place(
     let plan = ActionPlan::normalize(&request).map_err(|error| {
         Stop::new(Reason::PolicyDenies, format!("{place}: {error}")).with_cause(error)
     })?;
-    let verdict = classify(&plan, policy);
+    let verdict =
+        classify(&plan, policy).map_err(|error| Stop::caused_by(Reason::PolicyDenies, error))?;
     if verdict.decision() == Decision::Denied {
         let codes: Vec<String> = verdict
             .findings()

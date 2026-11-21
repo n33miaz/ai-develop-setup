@@ -204,7 +204,7 @@ Nenhuma ação sobre o sistema de arquivos é executada sem passar por aqui. O p
 | `path.rs` | Normalização de caminhos absolutos, Windows e POSIX, só por texto (sem `std::path`, para julgar igual em qualquer sistema). |
 | `plan.rs` | Plano de ação (operação, alvos na ordem canônica, raiz de trabalho, estimativa) e o `plan_hash`. |
 | `policy.rs` | Parâmetros do portão e as pastas protegidas. Os padrões ficam só em [`defaults/action-gate.toml`](../../defaults/action-gate.toml). |
-| `classify.rs` | As regras e os seus códigos: `plano + política -> veredito` (permitido, exige aprovação, negado), a reescrita de apagar como mover para a quarentena e o registro do plano julgado. |
+| `classify.rs` | As regras e os seus códigos, o veredito ou erro de orçamento, a reescrita de apagar como mover para a quarentena e o registro do plano julgado. |
 | `machine.rs` | Máquina de estados da ação, a licença de execução e a reconstrução do estado a partir dos eventos (`replay`). Cada transição devolve o evento do contrato. |
 | `event.rs` | Valores de domínio, vínculo entre stream e entidade e serialização canônica do plano; a leitura e a escrita usam os contratos gerados. |
 | `conversion.rs` | Conversões explícitas, campo a campo, entre os contratos de `ads-contracts` e os valores do portão, com as conferências que o Schema não exprime. |
@@ -287,6 +287,15 @@ O destino de "mover" é a pasta que recebe os alvos. O que o mover cria ou subst
 **O veredito é fechado depois de julgar a reescrita.** Quando o apagar vira mover para a quarentena, o plano reescrito, com o destino gerado, passa por todas as regras de um "mover" pedido, antes de o veredito sair; o veredito guarda os motivos dos dois (cada um uma vez) e fica com o nível mais restritivo. Se o destino gerado for negado, o plano inteiro é negado e não é reescrito. Daí a propriedade que um teste cobra: reclassificar `veredito.plan()` dá o mesmo nível e não acha nada que o veredito já não traga.
 
 O registro do plano cita toda regra que disparou, com o caminho, uma entrada por alvo. O evento `action.denied` cita só os códigos das regras que negam, cada um uma vez, na ordem em que dispararam; as que só pedem aprovação ficam no registro.
+
+A chave `classification_match_steps` de [`defaults/action-gate.toml`](../../defaults/action-gate.toml)
+limita a comparação de alvos de um movimento, inclusive o movimento gerado para quarentena.
+Ela conta o trabalho de indexação dos nomes, as consultas e os passos do casamento de curingas.
+O padrão comporta uma ida à quarentena com 10 mil alvos de nomes curtos. Ao esgotar o orçamento,
+`classify` devolve `ClassificationBudgetExceeded` antes de emitir um veredito. A admissão
+recusa o plano sem gravar a ação ou emitir licença. Divida o lote ou use alvos literais quando
+o plano exceder o limite. A redução do teto também afeta a reclassificação no diário.
+Restaure a configuração anterior se precisar reabrir um plano salvo que exceda o novo teto.
 
 Quarentena por padrão: apagar e apagar recursivo saem do veredito reescritos como "mover para `<raiz de trabalho>/<quarantine_dir>/<16 primeiros hexadecimais do hash do plano pedido>`". É o plano reescrito que recebe o `plan_hash`, a aprovação e a execução.
 

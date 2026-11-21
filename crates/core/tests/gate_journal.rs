@@ -156,3 +156,26 @@ fn journal_replays_with_configured_tolerance() {
     );
     assert_eq!(journal.history.as_ref().unwrap().events.len(), 2);
 }
+
+#[test]
+fn classification_budget_refusal_leaves_the_journal_empty() {
+    let plan = plan(
+        OperationRequest::Delete,
+        POSIX_ROOT,
+        &["/home/user-a/work/proj/build"],
+    );
+    let mut journal = MemoryJournal::default();
+    let restricted = policy(POSIX_HOME, "classification_match_steps = 0");
+    assert_eq!(
+        JournalGate::new(&restricted, &mut journal).plan(id("action-1"), &plan, meta(NOW, 1)),
+        Err(JournalError::ClassificationBudgetExceeded(
+            ads_core::gate::ClassificationBudgetExceeded,
+        ))
+    );
+    assert!(journal.history.is_none());
+
+    let defaults = policy(POSIX_HOME, "");
+    JournalGate::new(&defaults, &mut journal)
+        .plan(id("action-1"), &plan, meta(NOW, 1))
+        .unwrap();
+}
