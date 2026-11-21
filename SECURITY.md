@@ -21,6 +21,8 @@ Vale para o código e a configuração deste repositório. Falhas em ferramentas
 O modelo considera páginas no navegador, programas locais sem o token por execução, outras contas na máquina e adulteração do banco local.
 A API em loopback verifica `Host`, `Origin` e o token por execução.
 No Windows, o pipe é restrito ao usuário e o cliente confere quem serve o canal.
+Na janela desktop, a porta e o token chegam à casca por um pipe anônimo herdado do lançador; a casca exige que o daemon prove conhecer o token antes de enviá-lo e repassa mensagens por IPC só à janela principal ([arquitetura](docs/architecture.md)).
+A pasta de controle do lançador e a pasta da auditoria são privadas da conta, e sinais de outra conta são ignorados.
 A abertura de ferramentas filtra o ambiente do processo filho.
 O log de eventos usa cifra autenticada e encadeamento por HMAC. A chave ainda não vem do cofre.
 O administrador da máquina fica fora do modelo. O que já existe e o que falta contra programas da mesma conta do usuário está nos riscos.

@@ -130,6 +130,8 @@ Proposta, aguardando ratificação do mantenedor. Mudanças nos módulos abaixo 
 | Autenticação da API local ([ADR 0020](docs/adr/0020-local-api-authentication.md)) | Decide quem comanda os terminais do usuário |
 | Ambiente do processo filho e entrada de comandos (adaptadores de ferramenta, `session.open` e `session.write` no núcleo) | Decide o que roda, com que ambiente e com que entrada; é onde credencial de CLI de IA poderia vazar (C1) |
 | Canal do `ptyhost` (pipe do usuário) | Separa as sessões de um usuário das de outro (P3) |
+| Ponte da casca (`crates/shell/src/bridge.rs`, `crates/shell/src/stdin.rs`) | Recebe o token pelo pipe herdado, exige a prova do daemon antes de enviá-lo e decide o que chega à janela pelo IPC |
+| Pastas privadas e sinais do lançador (`crates/private-dir`, sinais em `crates/launcher/src/supervisor.rs`) | Decidem quem para ou reinicia a instalação e quem alcança a pasta de controle e a pasta da auditoria |
 
 Documentação de proposta (como uma ADR ainda não ratificada) não é mudança no módulo e pode ser juntada só com o `ci-ok`.
 
