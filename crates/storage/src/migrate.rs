@@ -97,7 +97,7 @@ BEGIN
 END;
 "#;
 
-/// Version 5: the database itself binds a `queue.*` type to a `queue/<id>` stream and back,
+/// Version 6: the database itself binds a `queue.*` type to a `queue/<id>` stream and back,
 /// as the table CHECKs bind the gate families. A trigger, because SQLite adds a table CHECK
 /// only by rebuilding the append-only table. `<id>` is a `common.id:1`, 1 to 64 characters.
 const QUEUE_BINDING_SQL: &str = r#"
@@ -109,7 +109,10 @@ BEGIN
 END;
 "#;
 
-/// Rows a version 4 file may hold that the version 5 binding refuses.
+#[cfg(test)]
+pub(crate) const DROP_QUEUE_BINDING_SQL: &str = "DROP TRIGGER event_queue_binding;";
+
+/// Rows a version 3 to 5 file may hold that the version 6 binding refuses.
 const QUEUE_BINDING_VIOLATIONS: &str = "SELECT EXISTS (
     SELECT 1 FROM event
     WHERE (substr(type, 1, 20) = 'urn:ads:event:queue.') IS NOT (substr(stream, 1, 6) = 'queue/')
@@ -119,12 +122,47 @@ const QUEUE_BINDING_VIOLATIONS: &str = "SELECT EXISTS (
 /// `(version, script)`: each script takes the file from the previous listed
 /// version to `version`. Version 2 (a pre-release event log) is retired: its rows
 /// cannot be re-sealed without the key, which opening never receives.
-const STEPS: [(i64, &str); 4] = [
+const STEPS: [(i64, &str); 5] = [
     (1, META_SQL),
     (3, EVENT_LOG_SQL),
     (4, GENESIS_SQL),
-    (5, QUEUE_BINDING_SQL),
+    (5, GATE_JOURNAL_SQL),
+    (6, QUEUE_BINDING_SQL),
 ];
+
+const GATE_JOURNAL_SQL: &str = r#"
+CREATE INDEX event_action_history ON event(action_id, position) WHERE action_id IS NOT NULL;
+CREATE INDEX event_approval_history ON event(approval_id, position) WHERE approval_id IS NOT NULL;
+CREATE UNIQUE INDEX event_gate_action ON event(action_id)
+WHERE format = 3 AND type IN ('urn:ads:event:action.planned:1', 'urn:ads:event:action.denied:1');
+CREATE UNIQUE INDEX event_gate_start ON event(action_id)
+WHERE format = 3 AND type = 'urn:ads:event:action.started:1';
+CREATE UNIQUE INDEX event_gate_approval ON event(approval_id)
+WHERE format = 3 AND type = 'urn:ads:event:approval.requested:2';
+CREATE TRIGGER event_gate_no_replace BEFORE INSERT ON event
+WHEN NEW.format = 3
+BEGIN
+  SELECT RAISE(ABORT, 'append-only') WHERE EXISTS (
+    SELECT 1 FROM event WHERE format = 3 AND (
+      (action_id = NEW.action_id
+         AND type IN ('urn:ads:event:action.planned:1', 'urn:ads:event:action.denied:1')
+         AND NEW.type IN ('urn:ads:event:action.planned:1', 'urn:ads:event:action.denied:1'))
+      OR (action_id = NEW.action_id AND type = 'urn:ads:event:action.started:1' AND NEW.type = type)
+      OR (approval_id = NEW.approval_id AND type = 'urn:ads:event:approval.requested:2' AND NEW.type = type)
+    )
+  );
+END;
+"#;
+#[cfg(test)]
+pub(crate) const DROP_GATE_JOURNAL_SQL: &str = "
+DROP TRIGGER event_gate_no_replace;
+DROP INDEX event_action_history;
+DROP INDEX event_approval_history;
+DROP INDEX event_gate_action;
+DROP INDEX event_gate_start;
+DROP INDEX event_gate_approval;
+";
+
 pub(crate) const RETIRED: [i64; 1] = [2];
 
 /// Refuses versions this build never reads: negative, newer or retired.
@@ -217,28 +255,27 @@ fn migrate_with(
         }
     }
     // The binding only adds a check: a file holding a row it refuses stays as it was.
-    if matches!(version, 3 | 4) && tx.query_row(QUEUE_BINDING_VIOLATIONS, [], |row| row.get(0))? {
+    if matches!(version, 3..=5) && tx.query_row(QUEUE_BINDING_VIOLATIONS, [], |row| row.get(0))? {
         return Err(StorageError::UnsupportedSchema);
     }
     if version < SCHEMA_VERSION {
         for step in scripts(steps, version, SCHEMA_VERSION) {
             tx.execute_batch(step)?;
         }
+        if version < 4 {
+            let first_link: Option<Vec<u8>> = tx
+                .query_row("SELECT prev_chain FROM event WHERE position = 1", [], |r| {
+                    r.get(0)
+                })
+                .optional()?;
+            let link = match first_link {
+                Some(link) => link,
+                None => random_link()?.to_vec(),
+            };
+            tx.execute("INSERT INTO log_genesis VALUES (1, ?1)", [link])?;
+        }
         tx.pragma_update(None, "application_id", APPLICATION_ID)?;
         tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-    }
-    // The genesis link exists from version 4 on; a later step must not seal it again.
-    if version < 4 {
-        let first_link: Option<Vec<u8>> = tx
-            .query_row("SELECT prev_chain FROM event WHERE position = 1", [], |r| {
-                r.get(0)
-            })
-            .optional()?;
-        let link = match first_link {
-            Some(link) => link,
-            None => random_link()?.to_vec(),
-        };
-        tx.execute("INSERT INTO log_genesis VALUES (1, ?1)", [link])?;
     }
     tx.commit()?;
     Ok(())
@@ -359,6 +396,8 @@ mod tests {
                 .unwrap()
                 .3
                 .unwrap();
+            c.execute_batch(DROP_QUEUE_BINDING_SQL).unwrap();
+            c.execute_batch(DROP_GATE_JOURNAL_SQL).unwrap();
             c.execute_batch("DROP TRIGGER event_append_order; DROP TABLE log_genesis;")
                 .unwrap();
             c.execute_batch(&old_trigger).unwrap();

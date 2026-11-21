@@ -334,14 +334,20 @@ fn over_the_cap_only_one_replayable_stop_enters() {
     assert_eq!(log.head(&queue_stream(&queue_id("queue-01"))), Ok(7));
 }
 
-/// Takes a current file back to version 4, before the database bound queue events.
-fn back_to_version_four(path: &Path) {
+/// Takes a current file back to `version` (5, before the database bound queue events, or 4,
+/// also before the gate journal).
+fn back_to_version(path: &Path, version: i64) {
     let c = rusqlite::Connection::open(path).unwrap();
-    c.execute_batch("DROP TRIGGER event_queue_binding").unwrap();
-    c.pragma_update(None, "user_version", 4).unwrap();
+    c.execute_batch(crate::migrate::DROP_QUEUE_BINDING_SQL)
+        .unwrap();
+    if version == 4 {
+        c.execute_batch(crate::migrate::DROP_GATE_JOURNAL_SQL)
+            .unwrap();
+    }
+    c.pragma_update(None, "user_version", version).unwrap();
     assert_eq!(
         crate::migrate::schema(&c).unwrap(),
-        crate::migrate::expected_schema(4).unwrap()
+        crate::migrate::expected_schema(version).unwrap()
     );
 }
 
@@ -369,7 +375,13 @@ fn user_version(path: &Path) -> i64 {
 }
 
 #[test]
-fn version_four_queue_rows_migrate_and_the_database_binds_new_ones() {
+fn older_queue_rows_migrate_and_the_database_binds_new_ones() {
+    for version in [4, 5] {
+        older_queue_rows_migrate_from(version);
+    }
+}
+
+fn older_queue_rows_migrate_from(version: i64) {
     let fixture = Fixture::new();
     let anchor = MemoryAnchor::default();
     let events = queue_events();
@@ -378,7 +390,7 @@ fn version_four_queue_rows_migrate_and_the_database_binds_new_ones() {
         log.append(event).unwrap();
     }
     drop(log);
-    back_to_version_four(&fixture.db());
+    back_to_version(&fixture.db(), version);
 
     let mut log = open(&fixture.db(), &anchor, "").unwrap();
     assert_eq!(user_version(&fixture.db()), crate::open::SCHEMA_VERSION);
@@ -409,13 +421,19 @@ fn version_four_queue_rows_migrate_and_the_database_binds_new_ones() {
 }
 
 #[test]
-fn a_version_four_file_with_an_unbound_queue_row_is_left_as_it_was() {
+fn an_older_file_with_an_unbound_queue_row_is_left_as_it_was() {
+    for version in [4, 5] {
+        an_unbound_queue_row_is_left_from(version);
+    }
+}
+
+fn an_unbound_queue_row_is_left_from(version: i64) {
     let fixture = Fixture::new();
     let anchor = MemoryAnchor::default();
     let mut log = open(&fixture.db(), &anchor, "").unwrap();
     log.append(&queue_events()[0]).unwrap();
     drop(log);
-    back_to_version_four(&fixture.db());
+    back_to_version(&fixture.db(), version);
     assert_eq!(
         raw_append(&fixture.db(), "urn:ads:event:queue.enabled:1", "task/t1", 1),
         Ok(1)
@@ -429,7 +447,7 @@ fn a_version_four_file_with_an_unbound_queue_row_is_left_as_it_was() {
         open(&fixture.db(), &anchor, ""),
         Err(StorageError::UnsupportedSchema)
     ));
-    assert_eq!(user_version(&fixture.db()), 4);
+    assert_eq!(user_version(&fixture.db()), version);
     let c = rusqlite::Connection::open(fixture.db()).unwrap();
     assert_eq!(crate::migrate::schema(&c).unwrap(), before);
     assert_eq!(

@@ -394,7 +394,7 @@ impl Action {
 
     /// The action after `event`, from the event alone. The only place a state changes: the
     /// commands go through here, and so does [`replay`].
-    fn after(&self, event: &Event) -> Result<Action, ReplayError> {
+    pub(super) fn after(&self, event: &Event) -> Result<Action, ReplayError> {
         let same_action = |action_id: &Id| {
             if action_id == &self.action_id {
                 Ok(())

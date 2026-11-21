@@ -1,4 +1,17 @@
 export const ptBR = {
+  'usage.heading': 'Uso e contas',
+  'usage.picker': 'Perfil da ferramenta {harness}',
+  'usage.next': '{alias} (próxima sessão)',
+  'usage.switchDisabled': 'A troca de conta fica desativada até a habilitação dos perfis.',
+  'usage.fiveHour': 'Janela de 5 horas',
+  'usage.weekly': 'Janela semanal',
+  'usage.quota': '{used} de uso observado · {remaining} de cota restante',
+  'usage.noObservation': 'Sem observação nesta janela.',
+  'usage.taskBudget': 'Orçamento restante da tarefa {task} — {amount}',
+  'usage.noProfile': 'sem perfil',
+  'usage.proposal': 'Sugestão de roteamento (somente observação) — {alias}, {provider}, {model}',
+  'usage.unavailable':
+    'Uso, orçamento, sugestões e perfis de conta ainda não estão disponíveis na API local.',
   'session.open': 'Abrir {harness}',
 
   'session.commandFailed':
@@ -69,6 +82,19 @@ export const ptBR = {
 export type MessageKey = keyof typeof ptBR
 
 export const en: Record<MessageKey, string> = {
+  'usage.heading': 'Usage and accounts',
+  'usage.picker': 'Profile for {harness}',
+  'usage.next': '{alias} (next session)',
+  'usage.switchDisabled': 'Account switching is disabled until profiles are enabled.',
+  'usage.fiveHour': '5-hour window',
+  'usage.weekly': 'Weekly window',
+  'usage.quota': '{used} observed usage · {remaining} quota remaining',
+  'usage.noObservation': 'No observation in this window.',
+  'usage.taskBudget': 'Remaining budget for task {task} — {amount}',
+  'usage.noProfile': 'no profile',
+  'usage.proposal': 'Routing suggestion (observation only) — {alias}, {provider}, {model}',
+  'usage.unavailable':
+    'Usage, budgets, suggestions and account profiles are not yet available from the local API.',
   'session.open': 'Open {harness}',
 
   'session.commandFailed':

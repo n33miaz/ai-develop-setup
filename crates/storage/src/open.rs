@@ -11,7 +11,7 @@ use std::{
 };
 
 pub const APPLICATION_ID: i64 = 0x41445331;
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 /// Owns the connection; raw SQL remains private to storage.
 pub struct AuditStore {
@@ -242,7 +242,7 @@ fn settle(path: &Path, config: &StorageConfig) -> Result<bool, StorageError> {
 }
 
 /// Functions the product's statements, `CHECK`s and triggers call.
-const FUNCTIONS: [&str; 5] = ["coalesce", "length", "max", "substr", "zeroblob"];
+const FUNCTIONS: [&str; 6] = ["coalesce", "count", "length", "max", "substr", "zeroblob"];
 /// Pragmas the product reads back after migration (`verify_pragmas`), plus
 /// `data_version` and `shrink_memory` for the check before an anchored append.
 const PRAGMAS: [&str; 10] = [
@@ -491,7 +491,7 @@ pub(crate) mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(triggers, 9);
+        assert_eq!(triggers, 11);
     }
 
     #[test]
