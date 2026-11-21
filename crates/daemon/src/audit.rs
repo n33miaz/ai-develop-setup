@@ -17,6 +17,8 @@ use ads_storage::{
 };
 use sha2::{Digest, Sha256};
 
+use crate::{gate::ProductState, startup::InstanceLock};
+
 struct VaultAnchor<V> {
     vault: V,
     location: [u8; 32],
@@ -248,6 +250,69 @@ pub fn open(
     EventLog::open(&path, config, keys, Box::new(anchor))
 }
 
+/// The audit log with the product state it was opened with. A session gate is built from it
+/// and only acts on a log with the same state, so what the gate protects is the log it writes.
+pub struct ProductLog {
+    log: EventLog,
+    state: ProductState,
+}
+
+impl ProductLog {
+    pub fn log(&mut self) -> &mut EventLog {
+        &mut self.log
+    }
+
+    pub fn state(&self) -> &ProductState {
+        &self.state
+    }
+}
+
+#[derive(Debug)]
+pub enum ProductLogError {
+    Storage(StorageError),
+    /// A product path that cannot be resolved safely (see `ProductState`).
+    State(String),
+}
+
+impl From<StorageError> for ProductLogError {
+    fn from(error: StorageError) -> Self {
+        Self::Storage(error)
+    }
+}
+
+/// Opens the audit log like [`open`] and binds it to the product state: the database as
+/// configured with its side files, the vault folder and, when the daemon holds the launcher's
+/// instance lock, its folder.
+pub fn open_product(
+    path: &Path,
+    config: &StorageConfig,
+    keys: Box<dyn KeyProvider + Send>,
+    instance: Option<&InstanceLock>,
+) -> Result<ProductLog, ProductLogError> {
+    open_product_in(&vault_directory()?, path, config, keys, OsVault, instance)
+}
+
+fn open_product_in<V: Vault + Send + 'static>(
+    vault_dir: &Path,
+    path: &Path,
+    config: &StorageConfig,
+    keys: Box<dyn KeyProvider + Send>,
+    vault: V,
+    instance: Option<&InstanceLock>,
+) -> Result<ProductLog, ProductLogError> {
+    let _binding = lock_binding(vault_dir)?;
+    let (canonical, anchor) = canonical_anchor(path, config, true, vault)?;
+    let log = EventLog::open(&canonical, config, keys, Box::new(anchor))?;
+    // The configured spelling, so that every link on its way is protected too.
+    let state = ProductState::resolve(
+        &canonical_path(config)?,
+        vault_dir,
+        instance.map(InstanceLock::folder),
+    )
+    .map_err(ProductLogError::State)?;
+    Ok(ProductLog { log, state })
+}
+
 /// Prepares a plan against the OS vault. Review its summary before confirming.
 pub fn plan_reanchor(
     path: &Path,
@@ -441,8 +506,20 @@ mod tests {
                 .unwrap(),
             )
             .unwrap();
+        let real_root = fs::canonicalize(&root).unwrap();
+        let database = real_root.join("events.db");
+        let mut log = open_product_in(
+            &real_root.join("vault"),
+            &database,
+            &configured_for(&database),
+            Box::new(FixtureKey),
+            MemoryVault::default(),
+            None,
+        )
+        .unwrap();
+        let product = &log;
         let mut gate = launcher
-            .session_gate(&opened, policy.clone(), &fence)
+            .session_gate(&opened, policy.clone(), product, &fence)
             .unwrap();
         let open_in = |cwd| {
             let mut params = opened.clone();
@@ -454,6 +531,7 @@ mod tests {
                 .session_gate(
                     &open_in(child("unconfigured").try_into().unwrap()),
                     policy.clone(),
+                    product,
                     &fence
                 )
                 .is_err()
@@ -462,6 +540,7 @@ mod tests {
             .session_gate(
                 &open_in(fence_path.to_owned().try_into().unwrap()),
                 policy,
+                product,
                 &fence,
             )
             .unwrap();
@@ -486,18 +565,16 @@ mod tests {
             data_class: DataClass::Internal,
         };
 
-        let database = root.join("events.db");
-        let mut log = EventLog::open(
-            &database,
-            &StorageConfig::defaults(),
-            Box::new(FixtureKey),
-            Box::new(VaultAnchor::new(MemoryVault::default(), &database, false).unwrap()),
-        )
-        .unwrap();
         let id = Id::new("example").unwrap();
         gate.plan(&mut log, id.clone(), request, meta(1)).unwrap();
         assert_eq!(
-            log.load(&id).unwrap().plan.fields().work_root.as_str(),
+            log.log()
+                .load(&id)
+                .unwrap()
+                .plan
+                .fields()
+                .work_root
+                .as_str(),
             work
         );
         assert_eq!(other.inspect(&mut log, &id), Err(JournalError::Missing));
@@ -517,7 +594,7 @@ mod tests {
             Err(JournalError::Missing)
         ));
         assert!(file.is_file());
-        assert_eq!(log.verify_chain(), Ok(1));
+        assert_eq!(log.log().verify_chain(), Ok(1));
         let start = meta(2);
         let mut finish = meta(3);
         finish.ts = Timestamp::new("2030-01-02T03:04:04.999999Z").unwrap();
@@ -526,9 +603,9 @@ mod tests {
         assert!(!file.exists());
         assert_eq!(result.recorded.unwrap().state, State::Executed);
         assert_eq!(gate.inspect(&mut log, &id).unwrap().state, State::Executed);
-        assert_eq!(log.load(&id).unwrap().events[2].ts(), &start.ts);
+        assert_eq!(log.log().load(&id).unwrap().events[2].ts(), &start.ts);
 
-        assert_eq!(log.verify_chain(), Ok(3));
+        assert_eq!(log.log().verify_chain(), Ok(3));
         assert!(matches!(
             gate.execute(&mut log, &id, meta(4), meta(5)),
             Err(JournalError::Transition)
@@ -556,7 +633,7 @@ mod tests {
                 .state,
             State::Denied
         );
-        let history = log.load(&denied_id).unwrap();
+        let history = log.log().load(&denied_id).unwrap();
         let repo = format!("{pack}{}project", std::path::MAIN_SEPARATOR);
         assert!(
             history
@@ -577,6 +654,282 @@ mod tests {
             Err(JournalError::Transition)
         ));
         assert!(project.join(".git").is_file());
+    }
+
+    /// Creates a link at `link` to the folder `target`: a junction on Windows.
+    fn link_folder(link: &Path, target: &Path) {
+        #[cfg(windows)]
+        {
+            let made = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(link)
+                .arg(target)
+                .output()
+                .unwrap();
+            assert!(made.status.success(), "{made:?}");
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link).unwrap();
+    }
+
+    /// Removes a link made by [`link_folder`], never what it points to.
+    fn unlink_folder(link: &Path) {
+        #[cfg(windows)]
+        fs::remove_dir(link).unwrap();
+        #[cfg(unix)]
+        fs::remove_file(link).unwrap();
+    }
+
+    /// A session whose work root holds the product state (the audit database reached through
+    /// two links, the vault folder and the launcher control folder) never gets a plan that
+    /// removes or moves any of it, and the executor refuses such a permit on its own.
+    #[test]
+    fn session_actions_never_target_the_product_state() {
+        use std::num::NonZeroU64;
+
+        use crate::api::Launcher;
+        use crate::gate::{PlanActionError, ProductState};
+        use crate::startup::InstanceLock;
+        use crate::tool_launcher::ToolLauncher;
+        use ads_adapter_fs::{Executor, Reason};
+        use ads_core::gate::{
+            AbsPath, ActionPlan, Actor, ActorKind, DataClass, Estimate, EventMeta, GateJournal,
+            GatePolicy, HostFacts, Id, JournalError, JournalGate, OperationRequest, PlanRequest,
+            State, TargetRequest, Timestamp, Ulid,
+        };
+        use ads_core::tool_launch::{DiskProbe, HostRules};
+
+        let mut unique = [0_u8; 16];
+        getrandom::fill(&mut unique).unwrap();
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.test-tmp")
+            .join(format!("product-gate-{:032x}", u128::from_be_bytes(unique)));
+        fs::create_dir_all(root.join("fence").join("work")).unwrap();
+        let resolved = fs::canonicalize(&root).unwrap();
+        let resolved = resolved.to_str().unwrap();
+        let root = PathBuf::from(resolved.strip_prefix(r"\\?\").unwrap_or(resolved));
+        let fence = root.join("fence");
+        let work_dir = fence.join("work");
+        let work = work_dir.to_str().unwrap().to_owned();
+        let sep = std::path::MAIN_SEPARATOR;
+        let at = |rest: &str| format!("{work}{sep}{rest}");
+
+        // The configured path reaches the database through two links: `linked-data` (outside
+        // the work root) to `bridge` (inside it) to `data`.
+        let data = work_dir.join("data");
+        fs::create_dir(&data).unwrap();
+        link_folder(&work_dir.join("bridge"), &data);
+        link_folder(&root.join("linked-data"), &work_dir.join("bridge"));
+        let configured = root.join("linked-data").join("audit.db");
+        let database = data.join("audit.db");
+        let vault_dir = work_dir.join("vault");
+        fs::create_dir(work_dir.join("control")).unwrap();
+        let instance =
+            InstanceLock::acquire(&work_dir.join("control").join("daemon.lock")).unwrap();
+        fs::write(work_dir.join("control").join("state.json"), "{}").unwrap();
+        let note = work_dir.join("note.txt");
+        fs::write(&note, "note").unwrap();
+
+        let config = configured_for(&configured);
+        let vault = MemoryVault::default();
+        let open = |instance| {
+            open_product_in(
+                &vault_dir,
+                &configured,
+                &config,
+                Box::new(Keys),
+                vault.clone(),
+                instance,
+            )
+        };
+        let mut log = open(Some(&instance)).unwrap();
+        assert!(database.is_file());
+        // SQLite runs in WAL mode: a side file that does not exist yet is accepted.
+        assert!(!data.join("audit.db-journal").exists());
+
+        let program = ads_adapter_claude::HARNESS_ID;
+        let launcher = ToolLauncher::from_toml_str(
+            &format!(
+                "[workdirs]\nworkspace = '{work}'\n[tools.{program}]\nprogram = '{}'",
+                note.display()
+            ),
+            HostRules::host(),
+            std::iter::empty::<(&str, &str)>(),
+            DiskProbe,
+            DiskProbe,
+        )
+        .unwrap();
+        let opened = launcher
+            .prepare(
+                &serde_json::from_value(serde_json::json!({
+                    "session_id": "example",
+                    "harness": program,
+                    "workdir_alias": "workspace",
+                    "cols": 80,
+                    "rows": 24,
+                    "_meta": {"origin": "local", "idempotency_key": "01ARZ3NDEKTSV4RRFFQ69G5FAB"}
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        let home = format!("{}{sep}fake-home", fence.display());
+        let policy_with = |overrides: &str| {
+            GatePolicy::from_toml_str(overrides, &HostFacts { user_home: &home }).unwrap()
+        };
+        let meta = |event: u64, seq: u64| EventMeta {
+            seq: NonZeroU64::new(seq).unwrap(),
+            id: Ulid::new(format!("01J{event:023}")).unwrap(),
+            ts: Timestamp::new("2030-01-02T03:04:05Z").unwrap(),
+            actor: Actor {
+                kind: ActorKind::Daemon,
+                id: Id::new("daemon").unwrap(),
+            },
+            cause: None,
+            data_class: DataClass::Internal,
+        };
+        let request = |operation, target: &str, bytes| PlanRequest {
+            operation,
+            work_root: work.clone(),
+            targets: vec![TargetRequest {
+                path: target.to_owned(),
+                repo_root: false,
+            }],
+            estimate: Some(Estimate { items: 1, bytes }),
+        };
+        let moved_to = |folder: &str| OperationRequest::Move {
+            destination: at(folder),
+        };
+        let mut planned = 0;
+        // A permit issued under a policy that does not know the product state: the executor
+        // of the session judges it again and refuses before touching anything.
+        let work_root = AbsPath::parse(&work).unwrap();
+        let blind = policy_with("").with_work_roots(vec![work_root.clone()]);
+        let plan =
+            ActionPlan::normalize(&request(OperationRequest::Delete, &at("data/audit.db"), 1))
+                .unwrap();
+        let observed = Executor::new(&fence, blind.clone())
+            .unwrap()
+            .observe_plan(&plan)
+            .unwrap();
+        planned += 1;
+        let id = Id::new(format!("product-{planned}")).unwrap();
+        let snapshot = JournalGate::new(&blind, log.log())
+            .for_work_root(&work_root)
+            .plan(id.clone(), &observed, meta(planned, 1))
+            .unwrap();
+        assert_eq!(snapshot.state, State::Planned);
+        planned += 1;
+        let started = JournalGate::new(&blind, log.log())
+            .for_work_root(&work_root)
+            .authorize(&id, meta(planned, 2))
+            .unwrap();
+        let mut gate = launcher
+            .session_gate(&opened, policy_with(""), &log, &fence)
+            .unwrap();
+        let failure = gate.executor_mut().execute_recorded(started).err().unwrap();
+        assert_eq!(failure.reason, Reason::PolicyDenies, "{}", failure.detail);
+        assert!(
+            failure.detail.contains("protected.product_data"),
+            "{}",
+            failure.detail
+        );
+
+        for overrides in ["", "quarantine_enabled = false"] {
+            let gate = launcher
+                .session_gate(&opened, policy_with(overrides), &log, &fence)
+                .unwrap();
+            for (operation, target) in [
+                (OperationRequest::Delete, at("data/audit.db")),
+                (OperationRequest::Delete, at("data/audit.db-wal")),
+                (OperationRequest::Delete, at("Data/AUDIT.DB")),
+                (OperationRequest::Delete, at("data/*.db")),
+                (OperationRequest::DeleteRecursive, at("data")),
+                (moved_to("moved"), at("data/audit.db")),
+                // The link on the way from the configured path to the database.
+                (OperationRequest::Delete, at("bridge")),
+                (OperationRequest::Delete, at("vault/audit-binding.lock")),
+                (OperationRequest::Delete, at("control/state.json")),
+                (OperationRequest::DeleteRecursive, at("control")),
+                (moved_to("control"), at("note.txt")),
+            ] {
+                planned += 1;
+                let id = Id::new(format!("product-{planned}")).unwrap();
+                let snapshot = gate
+                    .plan(
+                        &mut log,
+                        id.clone(),
+                        request(operation, &target, 1),
+                        meta(planned, 1),
+                    )
+                    .unwrap();
+                assert_eq!(snapshot.state, State::Denied, "{overrides:?} {target}");
+                let plan = log.log().load(&id).unwrap().plan;
+                let reasons = &plan.fields().verdict.reasons;
+                assert!(
+                    reasons
+                        .iter()
+                        .any(|reason| reason.rule.as_str().ends_with(".product_data")),
+                    "{target}: {reasons:?}"
+                );
+            }
+            // What sits beside the product state is still an ordinary target.
+            planned += 1;
+            let id = Id::new(format!("product-{planned}")).unwrap();
+            let beside = request(OperationRequest::Delete, &at("note.txt"), 4);
+            let snapshot = gate.plan(&mut log, id, beside, meta(planned, 1)).unwrap();
+            assert_ne!(snapshot.state, State::Denied, "{overrides:?}");
+        }
+
+        // A gate acts only on the log it was built for.
+        let other_db = work_dir.join("other").join("audit.db");
+        let mut other = open_product_in(
+            &vault_dir,
+            &other_db,
+            &configured_for(&other_db),
+            Box::new(Keys),
+            MemoryVault::default(),
+            Some(&instance),
+        )
+        .unwrap();
+        planned += 1;
+        let id = Id::new(format!("product-{planned}")).unwrap();
+        assert!(matches!(
+            gate.plan(
+                &mut other,
+                id.clone(),
+                request(OperationRequest::Delete, &at("other/audit.db"), 1),
+                meta(planned, 1)
+            ),
+            Err(PlanActionError::Journal(JournalError::PolicyChanged))
+        ));
+        assert_eq!(
+            gate.inspect(&mut other, &id),
+            Err(JournalError::PolicyChanged)
+        );
+        drop(other);
+
+        // Nothing moved: the database and the link are in place and open again.
+        assert!(database.is_file());
+        assert!(fs::symlink_metadata(work_dir.join("bridge")).is_ok());
+        drop(log);
+        drop(open(Some(&instance)).unwrap());
+
+        // A link whose target is gone is refused, not taken for a file to come.
+        let gone = root.join("gone");
+        fs::create_dir(&gone).unwrap();
+        link_folder(&root.join("dangling"), &gone);
+        fs::remove_dir(&gone).unwrap();
+        assert!(
+            ProductState::resolve(&root.join("dangling").join("audit.db"), &vault_dir, None)
+                .is_err()
+        );
+        for link in [
+            root.join("dangling"),
+            root.join("linked-data"),
+            work_dir.join("bridge"),
+        ] {
+            unlink_folder(&link);
+        }
     }
 
     #[test]

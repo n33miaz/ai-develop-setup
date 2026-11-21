@@ -3,7 +3,57 @@
 use crate::api::ApiConfig;
 use ads_core::gate::AbsPath;
 use ads_ptyhost::HostConfig;
-use std::io::Read;
+use std::fs::{File, OpenOptions, TryLockError};
+use std::io::{self, Read};
+use std::path::{Path, PathBuf};
+
+/// The lock of one installation, held while the daemon runs. Its folder is the launcher
+/// control folder, product state that the session gate protects
+/// ([`crate::audit::open_product`]).
+#[derive(Debug)]
+pub struct InstanceLock {
+    _file: File,
+    folder: PathBuf,
+}
+
+impl InstanceLock {
+    /// Opens or creates the lock file at the absolute `path` and takes it, or fails when
+    /// another daemon holds it.
+    pub fn acquire(path: &Path) -> io::Result<Self> {
+        let folder = path
+            .parent()
+            .filter(|_| path.is_absolute())
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "instance lock path must be absolute",
+                )
+            })?
+            .to_path_buf();
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)?;
+        file.try_lock().map_err(|error| match error {
+            TryLockError::WouldBlock => io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "another daemon is already running for this installation",
+            ),
+            TryLockError::Error(error) => error,
+        })?;
+        Ok(Self {
+            _file: file,
+            folder,
+        })
+    }
+
+    /// The folder that holds the lock file.
+    pub fn folder(&self) -> &Path {
+        &self.folder
+    }
+}
 
 /// Largest configuration file read. Fixed because it guards the reading of the file that would
 /// hold the setting; real files are a few kilobytes.

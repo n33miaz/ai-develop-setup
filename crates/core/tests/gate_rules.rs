@@ -3,8 +3,9 @@
 mod common;
 
 use ads_core::gate::{
-    ActionPlan, Decision, Estimate, GatePolicy, HostFacts, Operation, OperationRequest as Op,
-    PathError, PlanError, PolicyError, Protection, Risk, Rule, Verdict, classify,
+    AbsPath, ActionPlan, Decision, Estimate, GatePolicy, HostFacts, Operation,
+    OperationRequest as Op, PathError, PlanError, PolicyError, Protection, Risk, Rule, Verdict,
+    classify,
 };
 use common::{POSIX_HOME, POSIX_ROOT, WIN_HOME, WIN_ROOT, plan, policy, posix, request, win};
 
@@ -81,6 +82,88 @@ fn target_that_is_the_user_home_is_denied() {
         &posix(Op::DeleteRecursive, &["/home/user-a/*"]),
         Rule::Protected(Protection::UserHome),
     );
+}
+
+/// The state of the product (here, an audit database folder inside the work root) is never a
+/// target, whatever the spelling or the wildcard, even where the user home rules allow.
+#[test]
+fn product_state_inside_the_work_root_is_denied() {
+    let data = r"C:\Users\user-a\work\proj\data";
+    let guarded = |overrides: &str| {
+        policy(WIN_HOME, overrides).with_product_paths([AbsPath::parse(data).unwrap()])
+    };
+    let judge = |op: Op, targets: &[&str], overrides: &str| {
+        classify(&plan(op, WIN_ROOT, targets), &guarded(overrides))
+    };
+    let product = Rule::Protected(Protection::ProductData);
+    for overrides in ["", "quarantine_enabled = false"] {
+        for target in [
+            r"C:\Users\user-a\work\proj\data\audit.db",
+            r"c:/users/USER-A/work/proj/./DATA/Audit.db-wal",
+            r"C:\Users\user-a\work\proj\data\*.db",
+            r"C:\Users\user-a\work\proj\data",
+            r"C:\Users\user-a\work\proj\*",
+        ] {
+            for op in [Op::Delete, Op::DeleteRecursive, Op::Overwrite] {
+                denied_by(&judge(op, &[target], overrides), product);
+            }
+        }
+        // Moved away, or something moved into it.
+        denied_by(
+            &judge(
+                move_to(r"C:\Users\user-a\work\proj\out"),
+                &[r"C:\Users\user-a\work\proj\data\audit.db"],
+                overrides,
+            ),
+            product,
+        );
+        denied_by(
+            &judge(
+                move_to(data),
+                &[r"C:\Users\user-a\work\proj\notes.txt"],
+                overrides,
+            ),
+            Rule::DestinationProtected(Protection::ProductData),
+        );
+    }
+
+    // A folder that only holds the product state is still a work root and a destination.
+    let sibling = judge(Op::Delete, &[r"C:\Users\user-a\work\proj\notes.txt"], "");
+    assert_eq!(
+        sibling.decision(),
+        Decision::Allowed,
+        "{:?}",
+        sibling.findings()
+    );
+    let into_root = judge(
+        move_to(WIN_ROOT),
+        &[r"C:\Users\user-a\work\proj\out\notes.txt"],
+        "",
+    );
+    assert_eq!(
+        into_root.decision(),
+        Decision::Allowed,
+        "{:?}",
+        into_root.findings()
+    );
+    // A wildcard whose names may land on the product folder.
+    denied_by(
+        &judge(
+            move_to(WIN_ROOT),
+            &[r"C:\Users\user-a\work\proj\out\d*"],
+            "",
+        ),
+        Rule::DestinationProtected(Protection::ProductData),
+    );
+    // A work root inside the product state denies the whole plan.
+    let inside = classify(
+        &plan(Op::Delete, data, &[r"C:\Users\user-a\work\proj\data\x"]),
+        &guarded("").with_work_roots(vec![AbsPath::parse(data).unwrap()]),
+    );
+    denied_by(&inside, Rule::WorkRootProtected(Protection::ProductData));
+    // The list only grows.
+    let grown = guarded("").with_product_paths([AbsPath::parse(r"D:\other").unwrap()]);
+    assert_eq!(grown.product_paths().len(), 2);
 }
 
 #[test]
@@ -1135,6 +1218,7 @@ fn every_rule_has_its_stable_code() {
         "user_profile",
         "system_dir",
         "other_path_style",
+        "product_data",
     ];
     let mut denied: Vec<String> = Vec::new();
     for rule in ["protected", "work_root_protected", "destination_protected"] {
@@ -1174,7 +1258,7 @@ fn every_rule_has_its_stable_code() {
     assert_eq!(codes_of(Decision::Denied), denied);
     assert_eq!(codes_of(Decision::RequiresApproval), approval);
     assert!(codes_of(Decision::Allowed).is_empty());
-    assert_eq!(Rule::all().len(), 35);
+    assert_eq!(Rule::all().len(), 38);
 
     assert_eq!(
         Rule::Protected(Protection::UserHome).code().as_str(),
