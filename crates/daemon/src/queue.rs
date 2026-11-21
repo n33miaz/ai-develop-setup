@@ -24,6 +24,9 @@ use RecordTaskQueueV1State::{Enabled, Stopped};
 /// What the local API asks of the queue. Each call takes the proof that the connection passed
 /// the token check; the owner and the device come from the implementation, never the request.
 pub trait QueueControl: Send + Sync + 'static {
+    fn create(&self, _: &LocalSession, _: &CommonIdV1, _: &str) -> Result<(), ApiError> {
+        Err(ApiError::QueueNotConfigured)
+    }
     fn state(
         &self,
         session: &LocalSession,
@@ -80,6 +83,7 @@ pub enum QueueOpenError {
     Contract,
     /// This process already holds the queue; share that handle instead.
     AlreadyOpen,
+    AlreadyCreated,
     /// The stream is empty and the caller gave no session proof to create the queue.
     NotCreated,
 }
@@ -119,6 +123,16 @@ impl Drop for LoggedQueue {
     }
 }
 
+enum Opening<'a> {
+    Bind,
+    Open(&'a QueuePolicy),
+    Create {
+        policy: &'a QueuePolicy,
+        cause: &'a str,
+        timeout: std::time::Duration,
+    },
+}
+
 impl LoggedQueue {
     /// Binds a queue whose stream already exists, restoring it stopped and recording the restart
     /// when the log last said enabled. An empty stream is refused with `NotCreated` and nothing is
@@ -128,7 +142,7 @@ impl LoggedQueue {
         queue_id: CommonIdV1,
         owner: QueueOwner,
     ) -> Result<Self, QueueOpenError> {
-        Self::acquire(log, queue_id, owner, None)
+        Self::acquire(log, queue_id, owner, Opening::Bind)
     }
 
     /// Like [`Self::open_with_policy`], with the bundled policy for a new queue.
@@ -196,14 +210,14 @@ impl LoggedQueue {
         owner: QueueOwner,
         initial_policy: &QueuePolicy,
     ) -> Result<Self, QueueOpenError> {
-        Self::acquire(log, queue_id, owner, Some(initial_policy))
+        Self::acquire(log, queue_id, owner, Opening::Open(initial_policy))
     }
 
     fn acquire(
         log: Arc<Mutex<EventLog>>,
         queue_id: CommonIdV1,
         owner: QueueOwner,
-        create: Option<&QueuePolicy>,
+        opening: Opening<'_>,
     ) -> Result<Self, QueueOpenError> {
         if !held().insert(queue_id.as_str().to_owned()) {
             return Err(QueueOpenError::AlreadyOpen);
@@ -224,29 +238,41 @@ impl LoggedQueue {
             owner,
             pending_stop: None,
         };
-        let inner = Self::restore(inner, create).map_err(release)?;
+        let inner = Self::restore(inner, opening).map_err(release)?;
         Ok(Self {
             inner: Mutex::new(inner),
         })
     }
 
-    fn restore(mut inner: Inner, create: Option<&QueuePolicy>) -> Result<Inner, QueueOpenError> {
+    fn restore(mut inner: Inner, opening: Opening<'_>) -> Result<Inner, QueueOpenError> {
         let stored = {
-            let log = inner.log.lock().map_err(|_| StorageError::Unavailable)?;
+            let log = match opening {
+                Opening::Create { timeout, .. } => {
+                    crate::audit::lock_with_timeout(&inner.log, timeout)?
+                }
+                _ => inner.log.lock().map_err(|_| StorageError::Unavailable)?,
+            };
             inner.busy_timeout = std::time::Duration::from_millis(log.busy_timeout_ms().into());
             log.read_queue(&inner.record.id)?
         };
         if stored.is_empty() {
-            let initial_policy = create.ok_or(QueueOpenError::NotCreated)?;
+            let (initial_policy, cause) = match opening {
+                Opening::Bind => return Err(QueueOpenError::NotCreated),
+                Opening::Open(policy) => (policy, None),
+                Opening::Create { policy, cause, .. } => (policy, Some(cause)),
+            };
             let (record, created) = new_local_stopped(
                 inner.record.id.clone(),
                 &inner.owner.owner_id,
                 initial_policy,
             );
             let data = serde_json::to_value(created).map_err(|_| QueueOpenError::Contract)?;
-            inner.append_at(Some(1), "created:2", true, data, None)?;
+            inner.append_at(Some(1), "created:2", true, data, cause)?;
             inner.record = record;
             return Ok(inner);
+        }
+        if matches!(opening, Opening::Create { .. }) {
+            return Err(QueueOpenError::AlreadyCreated);
         }
         let mut last = None;
         for (index, stored) in stored.iter().enumerate() {
@@ -368,7 +394,107 @@ impl Inner {
     }
 }
 
+/// One configured queue, bound on startup or awaiting an authenticated create command.
+pub struct LocalQueue {
+    log: Arc<Mutex<EventLog>>,
+    id: CommonIdV1,
+    owner: QueueOwner,
+    bound: Mutex<Option<LoggedQueue>>,
+    busy_timeout: std::time::Duration,
+}
+
+impl LocalQueue {
+    pub fn bind_or_pending(
+        log: Arc<Mutex<EventLog>>,
+        id: CommonIdV1,
+        owner: QueueOwner,
+    ) -> Result<Self, QueueOpenError> {
+        let busy_timeout = std::time::Duration::from_millis(
+            log.lock()
+                .map_err(|_| StorageError::Unavailable)?
+                .busy_timeout_ms()
+                .into(),
+        );
+        let bound = match LoggedQueue::bind(log.clone(), id.clone(), owner.clone()) {
+            Ok(queue) => Some(queue),
+            Err(QueueOpenError::NotCreated) => None,
+            Err(error) => return Err(error),
+        };
+        Ok(Self {
+            log,
+            id,
+            owner,
+            bound: Mutex::new(bound),
+            busy_timeout,
+        })
+    }
+
+    fn lock(&self, id: &CommonIdV1) -> Result<MutexGuard<'_, Option<LoggedQueue>>, ApiError> {
+        if self.id != *id {
+            return Err(ApiError::QueueNotConfigured);
+        }
+        self.bound.lock().map_err(|_| ApiError::Storage)
+    }
+}
+
+impl QueueControl for LocalQueue {
+    fn create(&self, _: &LocalSession, id: &CommonIdV1, cause: &str) -> Result<(), ApiError> {
+        let mut bound = self.lock(id)?;
+        if bound.is_some() {
+            return Err(ApiError::QueueAlreadyCreated);
+        }
+        let policy = toml::from_str(DEFAULT_POLICY).expect("bundled queue policy is valid");
+        let queue = LoggedQueue::acquire(
+            self.log.clone(),
+            id.clone(),
+            self.owner.clone(),
+            Opening::Create {
+                policy: &policy,
+                cause,
+                timeout: self.busy_timeout,
+            },
+        )
+        .map_err(|error| match error {
+            QueueOpenError::AlreadyCreated => ApiError::QueueAlreadyCreated,
+            QueueOpenError::Storage(error) => ApiError::from_storage(error),
+            _ => ApiError::Storage,
+        })?;
+        *bound = Some(queue);
+        Ok(())
+    }
+
+    fn state(
+        &self,
+        session: &LocalSession,
+        id: &CommonIdV1,
+    ) -> Result<RecordTaskQueueV1State, ApiError> {
+        self.lock(id)?
+            .as_ref()
+            .ok_or(ApiError::QueueNotConfigured)?
+            .state(session, id)
+    }
+
+    fn start(&self, session: &LocalSession, id: &CommonIdV1, cause: &str) -> Result<(), ApiError> {
+        self.lock(id)?
+            .as_ref()
+            .ok_or(ApiError::QueueNotConfigured)?
+            .start(session, id, cause)
+    }
+
+    fn stop(&self, session: &LocalSession, id: &CommonIdV1, cause: &str) -> Result<bool, ApiError> {
+        self.lock(id)?
+            .as_ref()
+            .ok_or(ApiError::QueueNotConfigured)?
+            .stop(session, id, cause)
+    }
+}
+
 impl QueueControl for LoggedQueue {
+    fn create(&self, _: &LocalSession, id: &CommonIdV1, _: &str) -> Result<(), ApiError> {
+        drop(self.lock(id)?);
+        Err(ApiError::QueueAlreadyCreated)
+    }
+
     fn state(
         &self,
         _: &LocalSession,

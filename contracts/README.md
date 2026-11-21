@@ -399,7 +399,7 @@ O manifesto (`urn:ads:record:update-manifest:1`) é assinado no CI. A assinatura
 
 ### API local
 
-Os dez comandos estendem `urn:ads:command:request:1` com `allOf`, fixam `method` e fecham `params` (o `_meta` continua o do envelope).
+Os comandos estendem `urn:ads:command:request:1` com `allOf`, fixam `method` e fecham `params` (o `_meta` continua o do envelope).
 
 | Schema | O que descreve |
 |---|---|
@@ -415,6 +415,7 @@ Os dez comandos estendem `urn:ads:command:request:1` com `allOf`, fixam `method`
 | `urn:ads:contract:local-api.server-message:2` | A `:1` mais a resposta de `harness.list`. Versão anterior à `:3`, sem alteração. |
 | `urn:ads:command:queue.get:1` | Pede, só para leitura, o estado de uma fila de tarefas (`stopped` ou `enabled`). |
 | `urn:ads:command:queue.get.response:1` | Resposta aceita de `queue.get`: o id da fila e o estado. |
+| `urn:ads:command:queue.create:1` | O dono cria a fila parada com a política padrão pela interface local. A resposta usa `command.response:2`. Um novo pedido para uma fila existente recebe `QUEUE_ALREADY_CREATED`. |
 | `urn:ads:command:queue.start:1` | O dono liga a fila pela interface local; o núcleo registra `queue.enabled` antes de admitir tarefas. |
 | `urn:ads:command:queue.stop:1` | O dono para a fila; sempre aceito, e a fila já parada não ganha evento. |
 | `urn:ads:contract:local-api.server-message:3` | A `:2` mais a resposta de `queue.get`. É a que o núcleo escreve; a `:1` e a `:2` não são alteradas. |
@@ -426,7 +427,8 @@ Os dez comandos estendem `urn:ads:command:request:1` com `allOf`, fixam `method`
 | `urn:ads:command:approval.answer:1` | O dono aprova ou nega uma ação pendente pelo id da ação e da aprovação e pelo hash do plano que viu. |
 | `urn:ads:contract:local-api.server-message:4` | A `:3` mais a resposta de `approval.list`. Versão anterior à `:5`, sem alteração. |
 | `urn:ads:contract:local-api.server-message:5` | A `:4` com a resposta de `approval.list` na `:2`. É a que o núcleo escreve; da `:1` à `:4` não são alteradas. |
-| `urn:ads:contract:local-api.error-code:3` | [Códigos emitidos pela API local](schemas/contract.local-api.error-code.v3.schema.json): os da `:2` mais os das aprovações, de `APPROVAL_NOT_CONFIGURED` a `APPROVAL_NOT_APPROVABLE`. É a que o núcleo emite; a `:1` e a `:2` não são alteradas. |
+| `urn:ads:contract:local-api.error-code:3` | [Catálogo anterior](schemas/contract.local-api.error-code.v3.schema.json). Acrescenta à `:2` os códigos das aprovações, de `APPROVAL_NOT_CONFIGURED` a `APPROVAL_NOT_APPROVABLE`. |
+| `urn:ads:contract:local-api.error-code:4` | [Códigos emitidos pela API local](schemas/contract.local-api.error-code.v4.schema.json). Acrescenta `QUEUE_ALREADY_CREATED` à `:3`. |
 
 ### Eventos de sessão
 

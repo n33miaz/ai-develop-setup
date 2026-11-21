@@ -126,7 +126,7 @@ política `[env]`; o daemon guarda só o resultado, sem as variáveis negadas.
 ## Comandos, limites e recuperação
 
 Os nomes, valores e significados dos erros emitidos pela API local estão no
-[contrato de códigos de erro](../../contracts/schemas/contract.local-api.error-code.v3.schema.json).
+[contrato de códigos de erro](../../contracts/schemas/contract.local-api.error-code.v4.schema.json).
 
 | Nome | Código na resposta |
 |---|---|
@@ -141,6 +141,7 @@ Os nomes, valores e significados dos erros emitidos pela API local estão no
 | `SESSION_CLOSE_PENDING` | `-32013` |
 | `SESSION_SETUP_FAILED` | `-32014` |
 | `QUEUE_NOT_CONFIGURED` | `-32015` |
+| `QUEUE_ALREADY_CREATED` | `-32024` |
 | `QUEUE_ALREADY_ENABLED` | `-32016` |
 | `APPROVAL_NOT_CONFIGURED` | `-32017` |
 | `APPROVAL_NOT_FOUND` | `-32018` |
@@ -180,12 +181,17 @@ com `METHOD_NOT_FOUND`, e a interface mostra que o daemon precisa ser atualizado
 
 ## Fila de tarefas
 
-A fila nasce parada e só o dono a liga. `queue.get`, `queue.start` e
+A fila nasce parada e só o dono a liga. `queue.create`, `queue.get`, `queue.start` e
 `queue.stop` nomeiam a fila em `params.queue_id` e não aceitam mais nenhum
 campo: o dono e o aparelho vêm do daemon, nunca do pedido. Valem as mesmas
 conferências dos outros comandos: só depois de `auth.hello`, e origem remota
 recebe `REMOTE_ORIGIN_REFUSED`.
 
+- `queue.create` grava `queue.created:2` com a política de `defaults/queue.toml`,
+  o aparelho do dono como ator e o id do comando em `cause`. A fila fica
+  disponível parada após a gravação. A cache de idempotência permite repetir o
+  pedido confirmado. Um novo pedido para uma fila existente recebe
+  `QUEUE_ALREADY_CREATED`.
 - `queue.get` responde `{"queue_id": ..., "state": "stopped" | "enabled"}`
   ([`command.queue.get.response:1`](../../contracts/README.md#api-local)). Só lê
   e, como `harness.list`, fica fora da cache de idempotência.
@@ -236,9 +242,17 @@ em produção o único emissor é o laço de conexão, ao conferir o token do
 abaixo dessa camada, e o replay confere a coerência dos atores, não a
 autenticidade deles (ver o README do núcleo). A transição usa
 `ads_core::queue::change_local_queue_state`, sem fabricar `AuthenticatedDevice`.
-`LocalApi::with_queue` entrega a fila à API. O executável ainda não abre o log
-ancorado, porque falta o provedor de chaves do cofre; até lá ele serve
-`queue::DisabledQueue`, que recusa os três comandos com `QUEUE_NOT_CONFIGURED`.
+Na partida, a composição passa o log aberto e os identificadores estáveis da
+fila, do dono e do aparelho a `queue::LocalQueue::bind_or_pending` e entrega o
+controle a `LocalApi::with_queue`. Apenas `NotCreated` deixa a fila aguardando
+`queue.create`. Outras falhas de abertura são devolvidas à composição.
+
+O executável serve `queue::DisabledQueue` e responde `QUEUE_NOT_CONFIGURED`.
+Para ligar essa composição no Windows, a inicialização precisa obter ou
+provisionar com segurança a chave de cifra por coluna no cofre, resolver
+as chaves do banco pelos identificadores gravados e fornecer os identificadores
+estáveis da fila, do dono e do aparelho. `audit::open_product` já usa
+`OsVault` para a âncora e recebe o `KeyProvider` de quem o chama.
 
 ## Aprovações do portão
 
