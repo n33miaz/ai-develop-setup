@@ -1,7 +1,9 @@
 //! A queue written to the anchored log, read back after reopening and replayed into task records.
 
 use ads_contracts::{CommonIdV1, CommonQueueTaskStateV1, CommonTimestampV1, EventEnvelopeV1};
-use ads_core::queue::{QueuePolicy, QueueStreamEvent, replay_queue, replay_task};
+use ads_core::queue::{
+    QueuePolicy, QueueStreamEvent, new_local_stopped, replay_queue, replay_task,
+};
 use ads_daemon::queue::{LoggedQueue, QueueOwner};
 use ads_storage::{
     EventLog, StorageConfig, StorageError,
@@ -259,40 +261,38 @@ fn queue_records_are_rebuilt_from_the_log_after_reopening() {
     }
 }
 
+/// Lowering the policy on reopening is covered with a session in the unit tests of `queue.rs`.
 #[test]
-fn lowering_queue_toml_keeps_the_stored_queue_readable() {
+fn a_rebound_queue_replays_the_policy_of_its_creation() {
     let fixture = Fixture::new("queue-initial-policy");
-    let config_path = fixture.dir.join("queue.toml");
-    let load_policy = || -> QueuePolicy {
-        toml::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap()
-    };
-    std::fs::write(&config_path, "attempt_limit = 3\nadmission_limit = 1000\n").unwrap();
-    let initial = load_policy();
+    let initial: QueuePolicy =
+        toml::from_str("attempt_limit = 3\nadmission_limit = 1000\n").unwrap();
     let anchor = Anchor::default();
-    let open_queue = |policy: &QueuePolicy| {
-        LoggedQueue::open_with_policy(
+    let bind_queue = || {
+        LoggedQueue::bind(
             open(&fixture.db(), &anchor),
             id("queue-01"),
             QueueOwner {
                 owner_id: id("owner-01"),
                 device_id: id("device-01"),
             },
-            policy,
         )
         .unwrap()
     };
-    drop(open_queue(&initial));
+    let mut log = open(&fixture.db(), &anchor);
+    let (_, created) = new_local_stopped(id("queue-01"), &id("owner-01"), &initial);
+    let created = serde_json::to_value(created).unwrap();
+    log.append(&envelope(1, "created:2", DEVICE, created))
+        .unwrap();
+    drop(log);
+    drop(bind_queue());
     let mut log = open(&fixture.db(), &anchor);
     let mut task = creation("task-01", 1, None);
     task["attempt_limit"] = initial.attempt_limit.get().into();
     log.append(&envelope(2, "task_created:1", DEVICE, task))
         .unwrap();
     drop(log);
-
-    std::fs::write(&config_path, "attempt_limit = 2\nadmission_limit = 1000\n").unwrap();
-    let lowered = load_policy();
-    assert!(lowered.attempt_limit.get() < initial.attempt_limit.get());
-    drop(open_queue(&lowered));
+    drop(bind_queue());
     let log = open(&fixture.db(), &anchor);
     let stored: Vec<_> = log
         .read_queue(&id("queue-01"))
