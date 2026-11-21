@@ -4,6 +4,12 @@ Formato: uma seção por data. Contrato novo, campo opcional acrescentado, vers�
 
 ## 2026-11-21
 
+Contagem dos pedidos de aprovação com histórico ilegível.
+
+- Versões novas:
+  - `approval.list.response:3`, convivendo com a `:1` e a `:2`: o `result` traz `unreadable`, quantos pedidos pendentes com histórico ilegível a listagem deixou de fora. O núcleo passa a responder a `:3`.
+  - `local-api.server-message:7`, convivendo com a `:1` à `:6`: a resposta de `approval.list` na `:3`. O núcleo passa a escrever a `:7`; para quem envia `approval.list`, a resposta muda de forma, sem negociação.
+
 Fechamento de pedidos de aprovação com histórico ilegível.
 
 - Contratos novos (`:1`):

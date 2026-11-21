@@ -45,7 +45,7 @@ const UNREADABLE_REASON: &str = "E_HISTORY_UNREADABLE";
 /// the token check; the owner and the device come from the implementation, never the request.
 pub trait ApprovalControl: Send + Sync + 'static {
     /// The actions waiting for the owner, oldest first, as the `result` of
-    /// `command.approval.list.response:2`.
+    /// `command.approval.list.response:3`.
     fn pending(&self, session: &LocalSession) -> Result<Pending, ApiError>;
     /// Records the answer, then lets the gate act on it. `cause` is the command id. Returns
     /// whether the outcome is the one of an earlier answer with the same idempotency key.
@@ -66,12 +66,14 @@ pub trait ApprovalControl: Send + Sync + 'static {
     ) -> Result<bool, ApiError>;
 }
 
-/// One page of `approval.list`: the actions that fit, oldest first, and whether the ceiling of
-/// bytes left others out.
+/// One page of `approval.list`: the actions that fit, oldest first, whether the ceiling of
+/// bytes left others out, and how many pending requests with an unreadable history the walk
+/// passed over (all of them when `more` is false).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Pending {
     pub approvals: Vec<Value>,
     pub more: bool,
+    pub unreadable: u64,
 }
 
 /// No gate bound to the audit log: every approval command is refused.
@@ -493,8 +495,9 @@ impl ApprovalControl for ApprovalDesk {
         let mut page = Pending {
             approvals: Vec::new(),
             more: false,
+            unreadable: 0,
         };
-        // The envelope of the response and `"more":false`.
+        // The envelope of the response, `"more":false` and the count of unreadable requests.
         let mut used = 128;
         let mut failed = None;
         let visited = desk
@@ -506,6 +509,7 @@ impl ApprovalControl for ApprovalDesk {
                     StoredPending::History(history) => history,
                     StoredPending::Unreadable(action_id) => {
                         log::warn!("pending approval of {action_id} not readable; not listed");
+                        page.unreadable += 1;
                         return Visit::Skip;
                     }
                 };
@@ -1147,9 +1151,9 @@ mod tests {
         let pending = desk.pending(&session).unwrap().approvals;
         let reply = json!({
             "jsonrpc": "2.0", "id": new_id().unwrap(),
-            "result": {"approvals": pending, "more": false}
+            "result": {"approvals": pending, "more": false, "unreadable": 0}
         });
-        checked("urn:ads:command:approval.list.response:2", reply).unwrap();
+        checked("urn:ads:command:approval.list.response:3", reply).unwrap();
         let [item] = &pending[..] else {
             panic!("expected one pending approval: {pending:?}");
         };
@@ -1637,7 +1641,7 @@ mod tests {
         };
         assert_eq!(item["action_id"], actions[0].as_str());
         assert!(item["effects"].is_object());
-        let reply = json!({"approvals": page.approvals, "more": page.more});
+        let reply = json!({"approvals": page.approvals, "more": page.more, "unreadable": u64::MAX});
         assert!(serde_json::to_vec(&reply).unwrap().len() <= max);
     }
 
@@ -2408,6 +2412,8 @@ mod tests {
         let page = desk.pending(&session()).unwrap();
         assert_eq!(only(&page.approvals)["action_id"], fine.as_str());
         assert!(!page.more);
+        // Left out, but counted, so the owner learns it is there.
+        assert_eq!(page.unreadable, 1);
         let deny = params(&fine, &approval, &hash, "deny");
         assert_eq!(
             desk.answer(&session(), &deny, &new_id().unwrap()),

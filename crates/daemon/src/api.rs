@@ -1573,7 +1573,7 @@ async fn connection(
                         };
                         let reply = match pending {
                             Ok(page) => {
-                                json!({"jsonrpc": "2.0", "id": id, "result": {"approvals": page.approvals, "more": page.more}})
+                                json!({"jsonrpc": "2.0", "id": id, "result": {"approvals": page.approvals, "more": page.more, "unreadable": page.unreadable}})
                             }
                             Err(error) => response(&id, Err(error)),
                         };
@@ -1714,7 +1714,7 @@ async fn send<S>(ws: &mut S, value: Value, config: &ApiConfig) -> Result<(), Api
 where
     S: futures_util::Sink<Message> + Unpin,
 {
-    let value = checked("urn:ads:contract:local-api.server-message:6", value)?;
+    let value = checked("urn:ads:contract:local-api.server-message:7", value)?;
     timeout(
         Duration::from_millis(config.send_timeout_ms),
         ws.send(Message::Text(value.to_string().into())),

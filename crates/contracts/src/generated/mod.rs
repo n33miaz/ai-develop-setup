@@ -8,6 +8,7 @@ pub mod command_approval_answer_v1;
 pub mod command_approval_close_v1;
 pub mod command_approval_list_response_v1;
 pub mod command_approval_list_response_v2;
+pub mod command_approval_list_response_v3;
 pub mod command_approval_list_v1;
 pub mod command_auth_hello_v1;
 pub mod command_events_subscribe_v1;
@@ -55,6 +56,7 @@ pub mod contract_local_api_server_message_v3;
 pub mod contract_local_api_server_message_v4;
 pub mod contract_local_api_server_message_v5;
 pub mod contract_local_api_server_message_v6;
+pub mod contract_local_api_server_message_v7;
 pub mod contract_pty_host_frame_v1;
 pub mod contract_pty_host_notification_v1;
 pub mod contract_pty_host_request_v1;
@@ -145,6 +147,7 @@ pub use command_approval_answer_v1::*;
 pub use command_approval_close_v1::*;
 pub use command_approval_list_response_v1::*;
 pub use command_approval_list_response_v2::*;
+pub use command_approval_list_response_v3::*;
 pub use command_approval_list_v1::*;
 pub use command_auth_hello_v1::*;
 pub use command_events_subscribe_v1::*;
@@ -192,6 +195,7 @@ pub use contract_local_api_server_message_v3::*;
 pub use contract_local_api_server_message_v4::*;
 pub use contract_local_api_server_message_v5::*;
 pub use contract_local_api_server_message_v6::*;
+pub use contract_local_api_server_message_v7::*;
 pub use contract_pty_host_frame_v1::*;
 pub use contract_pty_host_notification_v1::*;
 pub use contract_pty_host_request_v1::*;
@@ -295,6 +299,10 @@ pub const SCHEMAS: &[(&str, &str)] = &[
     (
         "command.approval.list.response.v2",
         "urn:ads:command:approval.list.response:2",
+    ),
+    (
+        "command.approval.list.response.v3",
+        "urn:ads:command:approval.list.response:3",
     ),
     (
         "command.approval.list.v1",
@@ -411,6 +419,10 @@ pub const SCHEMAS: &[(&str, &str)] = &[
     (
         "contract.local-api.server-message.v6",
         "urn:ads:contract:local-api.server-message:6",
+    ),
+    (
+        "contract.local-api.server-message.v7",
+        "urn:ads:contract:local-api.server-message:7",
     ),
     (
         "contract.pty-host.frame.v1",
@@ -724,6 +736,9 @@ pub fn reencode(id: &str, value: Value) -> Option<Result<Value, serde_json::Erro
         "urn:ads:command:approval.list.response:2" => {
             support::reencode::<CommandApprovalListResponseV2>(value)
         }
+        "urn:ads:command:approval.list.response:3" => {
+            support::reencode::<CommandApprovalListResponseV3>(value)
+        }
         "urn:ads:command:approval.list:1" => support::reencode::<CommandApprovalListV1>(value),
         "urn:ads:command:auth.hello:1" => support::reencode::<CommandAuthHelloV1>(value),
         "urn:ads:command:events.subscribe:1" => {
@@ -802,6 +817,9 @@ pub fn reencode(id: &str, value: Value) -> Option<Result<Value, serde_json::Erro
         }
         "urn:ads:contract:local-api.server-message:6" => {
             support::reencode::<ContractLocalApiServerMessageV6>(value)
+        }
+        "urn:ads:contract:local-api.server-message:7" => {
+            support::reencode::<ContractLocalApiServerMessageV7>(value)
         }
         "urn:ads:contract:pty-host.frame:1" => support::reencode::<ContractPtyHostFrameV1>(value),
         "urn:ads:contract:pty-host.notification:1" => {
