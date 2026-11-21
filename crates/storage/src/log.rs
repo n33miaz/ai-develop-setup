@@ -778,6 +778,21 @@ impl EventLog {
         Ok(events)
     }
 
+    /// The ciphertext size of each row of `stream` from `from_seq` on, at most `limit`
+    /// (capped by `read_page_limit`): what a reader can weigh before asking for the rows.
+    pub fn stream_sizes(
+        &self,
+        stream: &EventEnvelopeV1Stream,
+        from_seq: u64,
+        limit: u32,
+    ) -> Result<Vec<usize>, StorageError> {
+        let tx = self.store.connection.unchecked_transaction()?;
+        let limit = limit.min(self.config.read_page_limit);
+        let sizes = stream_sizes_in(&tx, stream, from_seq, limit)?;
+        tx.finish()?;
+        Ok(sizes)
+    }
+
     /// Runs `read` under the write lock, after the anchor, the schema and the whole chain
     /// were checked in the same transaction, so it never sees a cut tail or a broken chain.
     /// The lock keeps an append from publishing its anchor between the check and the read.
@@ -1139,26 +1154,126 @@ fn journal_error(error: StorageError) -> JournalError {
     }
 }
 
+/// One pending approval as [`EventLog::visit_pending_approvals`] hands it over.
+pub enum Pending {
+    History(GateHistory),
+    /// A gate request whose history does not read (a row this core does not know, or more
+    /// rows than a history holds); its `action_id` as stored.
+    Unreadable(String),
+}
+
+/// What the visitor of [`EventLog::visit_pending_approvals`] does with an entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Visit {
+    /// Counts toward the limit.
+    Take,
+    Skip,
+    Stop,
+}
+
+/// Reads in the transaction of [`EventLog::visit_pending_approvals`].
+pub struct PendingReads<'a> {
+    log: &'a EventLog,
+    tx: &'a Transaction<'a>,
+}
+
+impl PendingReads<'_> {
+    /// [`EventLog::read_stream`] in the listing's transaction.
+    pub fn read_stream(
+        &self,
+        stream: &EventEnvelopeV1Stream,
+        from_seq: u64,
+        limit: u32,
+    ) -> Result<Vec<StoredEvent>, StorageError> {
+        self.log.read_stream_in(self.tx, stream, from_seq, limit)
+    }
+
+    /// [`EventLog::stream_sizes`] in the listing's transaction.
+    pub fn stream_sizes(
+        &self,
+        stream: &EventEnvelopeV1Stream,
+        from_seq: u64,
+        limit: u32,
+    ) -> Result<Vec<usize>, StorageError> {
+        let limit = limit.min(self.log.config.read_page_limit);
+        stream_sizes_in(self.tx, stream, from_seq, limit)
+    }
+}
+
+/// Errors of `read_gate` that belong to the one history, not to the log.
+fn unreadable_history(error: &StorageError) -> bool {
+    matches!(
+        error,
+        StorageError::Corrupt | StorageError::InvalidEvent | StorageError::UnsupportedSchema
+    )
+}
+
+/// The ciphertext size of each row from `from_seq` on, in `seq` order, without copying or
+/// decrypting any of them.
+fn stream_sizes_in(
+    tx: &rusqlite::Connection,
+    stream: &EventEnvelopeV1Stream,
+    from_seq: u64,
+    limit: u32,
+) -> Result<Vec<usize>, StorageError> {
+    let from = i64::try_from(from_seq).unwrap_or(i64::MAX);
+    let mut statement = tx.prepare(
+        "SELECT length(data_ct) FROM event WHERE stream = ?1 AND seq >= ?2 ORDER BY seq LIMIT ?3",
+    )?;
+    let mut rows = statement.query(params![stream.as_str(), from, limit])?;
+    let mut sizes = Vec::new();
+    while let Some(row) = rows.next()? {
+        let size: i64 = row.get(0)?;
+        sizes.push(usize::try_from(size).map_err(|_| StorageError::Corrupt)?);
+    }
+    Ok(sizes)
+}
+
 impl EventLog {
     /// The histories of the actions whose approval was requested and has no decision yet
     /// (granted, denied or expired) and that `keep` accepts, oldest request first, at most
-    /// `limit` (capped by `read_page_limit`). The limit counts kept histories only, so requests
-    /// the caller does not serve never fill the page; the work is one read per undecided
-    /// request until the page is full. Like `read_queue`, it runs under the write lock after the
-    /// anchor and the whole chain were checked once. A validity that is over without an
-    /// `approval.expired` still counts as waiting: the caller judges the clock.
+    /// `limit` (capped by `read_page_limit`). Collects [`Self::visit_pending_approvals`]; an
+    /// unreadable history is left out.
     pub fn pending_approvals(
         &self,
         limit: u32,
         keep: &mut dyn FnMut(&GateHistory) -> bool,
     ) -> Result<Vec<GateHistory>, StorageError> {
+        let mut kept = Vec::new();
+        self.visit_pending_approvals(limit, &mut |entry, _, full| match entry {
+            _ if full => Visit::Stop,
+            Pending::History(history) if keep(&history) => {
+                kept.push(history);
+                Visit::Take
+            }
+            _ => Visit::Skip,
+        })?;
+        Ok(kept)
+    }
+
+    /// Hands the pending approvals to `visit` one at a time, oldest request first, until it
+    /// answers [`Visit::Stop`]. After `limit` entries are taken (capped by `read_page_limit`),
+    /// the visitor receives `full = true` and can look for another eligible entry. Only gate
+    /// rows count: a request or a decision of another row format neither lists nor hides an
+    /// action. Each history is read only when its turn comes. Skipped histories do not count
+    /// toward the page limit. `reads` serves other streams in the same transaction. A gate history that
+    /// does not read comes as [`Pending::Unreadable`], once per action, and the walk goes on.
+    /// Like `read_queue`, it runs under the write lock after the anchor and the whole chain were
+    /// checked once. A validity that is over without an `approval.expired` still counts as
+    /// waiting: the caller judges the clock.
+    pub fn visit_pending_approvals(
+        &self,
+        limit: u32,
+        visit: &mut dyn FnMut(Pending, &PendingReads<'_>, bool) -> Visit,
+    ) -> Result<(), StorageError> {
         let limit = usize::try_from(limit.min(self.config.read_page_limit)).unwrap_or(usize::MAX);
         self.read_anchored(|log, tx| {
             let mut statement = tx.prepare(
                 "SELECT action_id FROM event AS asked
-                 WHERE asked.type = ?1 AND asked.action_id IS NOT NULL
+                 WHERE asked.type = ?1 AND asked.format = ?5 AND asked.action_id IS NOT NULL
                    AND NOT EXISTS (SELECT 1 FROM event AS decided
                                    WHERE decided.approval_id = asked.approval_id
+                                     AND decided.format = ?5
                                      AND decided.type IN (?2, ?3, ?4))
                  ORDER BY asked.position",
             )?;
@@ -1167,19 +1282,37 @@ impl EventLog {
                 "urn:ads:event:approval.granted:2",
                 "urn:ads:event:approval.denied:2",
                 "urn:ads:event:approval.expired:2",
+                GATE_ROW_FORMAT,
             ])?;
-            let mut kept = Vec::new();
-            while kept.len() < limit {
-                let Some(row) = rows.next()? else {
-                    break;
+            let reads = PendingReads { log, tx };
+            let mut unreadable = HashSet::new();
+            let mut taken = 0;
+            while let Some(row) = rows.next()? {
+                let id: String = row.get(0)?;
+                if unreadable.contains(&id) {
+                    continue;
+                }
+                let entry = match Id::new(id.as_str()) {
+                    Ok(action_id) => match read_gate(tx, &*log.keys, &action_id) {
+                        Ok(Some(history)) => Pending::History(history),
+                        Ok(None) => Pending::Unreadable(id),
+                        Err(error) if unreadable_history(&error) => Pending::Unreadable(id),
+                        Err(error) => return Err(error),
+                    },
+                    Err(_) => Pending::Unreadable(id),
                 };
-                let id = Id::new(row.get::<_, String>(0)?).map_err(|_| StorageError::Corrupt)?;
-                let history = read_gate(tx, &*log.keys, &id)?.ok_or(StorageError::Corrupt)?;
-                if keep(&history) {
-                    kept.push(history);
+                if let Pending::Unreadable(id) = &entry {
+                    unreadable.insert(id.clone());
+                }
+                let full = taken == limit;
+                match visit(entry, &reads, full) {
+                    Visit::Take if full => break,
+                    Visit::Take => taken += 1,
+                    Visit::Skip => {}
+                    Visit::Stop => break,
                 }
             }
-            Ok(kept)
+            Ok(())
         })
     }
 

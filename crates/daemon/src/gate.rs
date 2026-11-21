@@ -15,7 +15,7 @@ use ads_core::gate::{
     EventMeta, GateHistory, GateJournal, GatePolicy, Id, JournalError, JournalGate,
     OperationRequest, PlanError, PlanOperation, PlanRequest, State, TargetRequest, classify,
 };
-use ads_storage::EventLog;
+use ads_storage::{EventLog, PendingReads, StorageError, StoredEvent};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -575,17 +575,98 @@ pub(crate) enum Recorded {
     Refused(String),
 }
 
+/// Where a record of effects is read: the log, or the transaction of a listing.
+pub(crate) trait EffectsSource {
+    fn read(
+        &self,
+        stream: &EventEnvelopeV1Stream,
+        from_seq: u64,
+        limit: u32,
+    ) -> Result<Vec<StoredEvent>, StorageError>;
+    /// The stored size of each row, without copying or decrypting it.
+    fn sizes(
+        &self,
+        stream: &EventEnvelopeV1Stream,
+        from_seq: u64,
+        limit: u32,
+    ) -> Result<Vec<usize>, StorageError>;
+}
+
+impl EffectsSource for EventLog {
+    fn read(
+        &self,
+        stream: &EventEnvelopeV1Stream,
+        from_seq: u64,
+        limit: u32,
+    ) -> Result<Vec<StoredEvent>, StorageError> {
+        self.read_stream(stream, from_seq, limit)
+    }
+    fn sizes(
+        &self,
+        stream: &EventEnvelopeV1Stream,
+        from_seq: u64,
+        limit: u32,
+    ) -> Result<Vec<usize>, StorageError> {
+        self.stream_sizes(stream, from_seq, limit)
+    }
+}
+
+impl EffectsSource for PendingReads<'_> {
+    fn read(
+        &self,
+        stream: &EventEnvelopeV1Stream,
+        from_seq: u64,
+        limit: u32,
+    ) -> Result<Vec<StoredEvent>, StorageError> {
+        self.read_stream(stream, from_seq, limit)
+    }
+    fn sizes(
+        &self,
+        stream: &EventEnvelopeV1Stream,
+        from_seq: u64,
+        limit: u32,
+    ) -> Result<Vec<usize>, StorageError> {
+        self.stream_sizes(stream, from_seq, limit)
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times this thread asked the log for a record of effects.
+    pub(crate) static RECORDS_READ: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The stored size of the record of effects of the plan `record`, read before the record
+/// itself; `None` when there is none. A second event is an integrity error, as in
+/// [`recorded_effects`].
+pub(crate) fn effects_size(
+    log: &(impl EffectsSource + ?Sized),
+    record: &ActionPlanRecord,
+) -> Result<Option<usize>, JournalError> {
+    let stream = effects_stream(record.fields().action_id.as_str())?;
+    match log
+        .sizes(&stream, 1, 2)
+        .map_err(|_| JournalError::Unavailable)?[..]
+    {
+        [] => Ok(None),
+        [size] => Ok(Some(size)),
+        _ => Err(JournalError::Integrity),
+    }
+}
+
 /// What the rehearsal of the plan `record` left. A second event, one of another plan, a
 /// record this core does not read (another version, an unknown field) or one whose hash does
 /// not match is an integrity error.
 pub(crate) fn recorded_effects(
-    log: &mut EventLog,
+    log: &(impl EffectsSource + ?Sized),
     record: &ActionPlanRecord,
 ) -> Result<Recorded, JournalError> {
     let fields = record.fields();
     let stream = effects_stream(fields.action_id.as_str())?;
+    #[cfg(test)]
+    RECORDS_READ.with(|read| read.set(read.get() + 1));
     let page = log
-        .read_stream(&stream, 1, 2)
+        .read(&stream, 1, 2)
         .map_err(|_| JournalError::Unavailable)?;
     let stored = match &page[..] {
         [] => return Ok(Recorded::Nothing),

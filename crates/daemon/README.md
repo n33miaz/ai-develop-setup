@@ -259,13 +259,23 @@ recebe `REMOTE_ORIGIN_REFUSED`. O dono e o aparelho vêm do daemon
   sessão servida aqui: o filtro vem antes do limite, então pedidos de outras
   pastas nunca ocupam a página. No máximo `read_page_limit` da configuração do
   armazenamento por pedido, e nunca mais de 1000 (o limite do contrato da
-  resposta). A resposta inteira cabe em `approval_list_max_bytes`: as ações
-  entram da mais antiga à mais nova enquanto couberem, a mais antiga sempre, e
-  `more: true` diz que outras ficaram de fora; elas aparecem quando as primeiras
-  forem respondidas. Um registro de efeitos maior que metade desse teto não é
-  mostrado e a ação fica com `effects_not_listed`. Sob a trava da mesa só se lê
-  o log; a resposta é montada e medida depois. Só lê e fica fora da cache de
-  idempotência.
+  resposta). As ações entram da mais antiga à mais nova enquanto couberem em
+  `approval_list_max_bytes`. A mais antiga sempre entra, mesmo acima desse teto.
+  `more: true` indica que uma ação da lista ficou para depois pelo limite de
+  itens ou de bytes. Um registro de efeitos maior que metade desse teto não é
+  mostrado e a ação fica com `effects_not_listed`. A listagem e a resposta
+  conferem o tamanho cifrado descontando o invólucro e a tag antes de ler os efeitos.
+  A leitura é feita sob a trava da mesa, uma ação por vez e na ordem do pedido:
+  cada item é montado e medido assim que lido. Se o tamanho cifrado já mostra
+  que os efeitos listáveis excedem o espaço restante, a leitura do registro
+  fica para a próxima página. O teto limita a montagem da página e a leitura
+  dos efeitos. O tempo sob a trava também inclui a autenticação da cadeia
+  inteira e a leitura dos históricos de outras pastas ou ilegíveis, inclusive
+  ao procurar mais um pedido listável após atingir o limite de itens. O daemon
+  omite pedidos cujo histórico é ilegível, registra o `action_id` no log e
+  segue a listagem. O portão precisa de um histórico legível para negar ou
+  expirar um pedido. Pedido ou decisão gravados fora do formato do
+  portão são ignorados. Só lê e fica fora da cache de idempotência.
 - O que o registro do plano garante: a operação, os alvos como foram pedidos
   (caminho e curinga), o destino, se há quarentena, a estimativa e as regras.
   Ele não lista o conteúdo de uma pasta alvo nem os itens do manifesto de uma
@@ -372,7 +382,7 @@ Padrões em [defaults/daemon.toml](../../defaults/daemon.toml), aplicados ao ini
 | `accept_retry_ms` | 50 | Espera após erro de aceitação TCP; reduz tentativas sob falta de recursos. |
 | `max_message_bytes` | 131072 | Limite de mensagem e quadro WebSocket recebido; reduzir pode impedir escritas grandes. |
 | `send_timeout_ms` | 5000 | Prazo por envio; cliente lento é desconectado. |
-| `approval_list_max_bytes` | 4194304 | Teto de uma resposta de `approval.list`, de 1 MiB a 256 MiB. Ações além dele ficam para a próxima listagem (`more`); registro de efeitos maior que a metade não é mostrado nem aprovável pela API. |
+| `approval_list_max_bytes` | 4194304 | Teto de uma resposta de `approval.list`, de 1 MiB a 8 MiB: metade do quadro de 16 MiB que a casca desktop aceita, para caber também a ação mais antiga, listada mesmo quando passa do teto. Ações além dele ficam para a próxima listagem (`more`); registro de efeitos maior que a metade não é mostrado nem aprovável pela API. |
 | `host_timeout_ms` | 10000 | Prazo único por comando no host e na conexão inicial. Cada chamada ao host começa dentro do prazo, e uma resposta já recebida vale mesmo se o prazo vencer enquanto o daemon trata um evento do host. Falha encerra o serviço para evitar repetir efeito incerto. Duas exceções não encerram: no fechamento automático o prazo esgotado conta como tentativa falha, e na preparação depois de um `session.open` confirmado ele responde `SESSION_SETUP_FAILED`, como qualquer outra falha dessa etapa (ver abaixo). |
 | `retired_sessions` | 1024 | Ids de sessões podadas que não podem ser reabertos nesta execução (acima do limite, o mais antigo volta a ser aceito) e, em separado, streams assinados antes do `session.open` (acima do limite, a espera mais antiga termina com `SUBSCRIPTION_REPLAY_UNAVAILABLE` no id da assinatura, mesmo se a conexão estiver ociosa). |
 | `subscription_ids_per_stream` | 2 | Ids de assinatura por conexão: este valor vezes `max_sessions`. Reassinar a mesma encarnação na mesma conexão soma um id, que só sai quando o stream termina; ids de encarnação já terminada não contam. A interface mantém uma assinatura por stream e conexão, então raramente passa de um id por stream; aumente para clientes que reassinam muito. |
