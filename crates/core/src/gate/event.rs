@@ -147,6 +147,27 @@ fn timestamp_key(text: &str) -> Option<(&str, u32)> {
 }
 
 impl Timestamp {
+    pub(super) fn precedes_by_more_than(&self, other: &Self, seconds: u64) -> bool {
+        let (earlier, earlier_micros) = timestamp_key(&self.0).expect("validated timestamp");
+        let (later, later_micros) = timestamp_key(&other.0).expect("validated timestamp");
+        if (earlier, earlier_micros) >= (later, later_micros) {
+            return false;
+        }
+        if seconds == 0 {
+            return true;
+        }
+
+        let epoch_seconds =
+            |text| crate::timestamp::epoch_seconds(text).expect("validated timestamp");
+        let elapsed = epoch_seconds(later) - epoch_seconds(earlier);
+        // The civil conversion maps 23:59:60 to midnight. Include that second when
+        // measuring from an explicit leap second to a stamp on a subsequent day.
+        let leap_second = i64::from(earlier.ends_with(":60") && earlier[..10] != later[..10]);
+        let elapsed_micros = (elapsed + leap_second) * 1_000_000 + i64::from(later_micros)
+            - i64::from(earlier_micros);
+        i128::from(elapsed_micros) > i128::from(seconds) * 1_000_000
+    }
+
     /// Compared as instants: `05Z` and `05.000Z` are the same one, and neither is before.
     pub fn is_before(&self, other: &Timestamp) -> bool {
         timestamp_key(&self.0) < timestamp_key(&other.0)

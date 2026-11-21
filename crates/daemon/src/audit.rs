@@ -518,10 +518,16 @@ mod tests {
         ));
         assert!(file.is_file());
         assert_eq!(log.verify_chain(), Ok(1));
-        let result = gate.execute(&mut log, &id, meta(2), meta(3)).unwrap();
+        let start = meta(2);
+        let mut finish = meta(3);
+        finish.ts = Timestamp::new("2030-01-02T03:04:04.999999Z").unwrap();
+        let result = gate.execute(&mut log, &id, start.clone(), finish).unwrap();
         assert!(result.operation.is_ok(), "{:?}", result.operation);
-        assert_eq!(result.recorded.unwrap().state, State::Executed);
         assert!(!file.exists());
+        assert_eq!(result.recorded.unwrap().state, State::Executed);
+        assert_eq!(gate.inspect(&mut log, &id).unwrap().state, State::Executed);
+        assert_eq!(log.load(&id).unwrap().events[2].ts(), &start.ts);
+
         assert_eq!(log.verify_chain(), Ok(3));
         assert!(matches!(
             gate.execute(&mut log, &id, meta(4), meta(5)),

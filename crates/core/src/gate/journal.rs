@@ -3,8 +3,8 @@ use std::fmt;
 
 use super::{
     AbsPath, Action, ActionPlan, ActionPlanRecord, ActionSnapshot, Command, Event, EventMeta,
-    ExecutionPermit, GatePolicy, Id, OperationRequest, PlanOperation, PlanRequest, TargetRequest,
-    Verdict, classify,
+    ExecutionPermit, GatePolicy, Id, OperationRequest, PlanOperation, PlanRequest, ReplayError,
+    TargetRequest, TransitionError, Verdict, classify,
 };
 
 /// A complete, authenticated action history in commit order.
@@ -20,6 +20,10 @@ pub enum JournalError {
     Integrity,
     PolicyChanged,
     Transition,
+    /// The incoming timestamp is too early. Retry with a current timestamp.
+    OutOfOrder,
+    /// A recorded timestamp exceeds the configured rewind limit.
+    HistoryOutOfOrder,
     Unavailable,
 }
 
@@ -137,9 +141,13 @@ impl<'a> JournalGate<'a> {
         self.journal.transition(action_id, &mut |history| {
             let (command, meta) = input.take().ok_or(JournalError::Transition)?;
             let (action, _) = load_action(policy, work_root, action_id, history)?;
-            let (action, event) = action
-                .apply(command, meta)
-                .map_err(|_| JournalError::Transition)?;
+            let (action, event) =
+                action
+                    .apply(command, meta)
+                    .map_err(|refused| match refused.error {
+                        TransitionError::OutOfOrder => JournalError::OutOfOrder,
+                        _ => JournalError::Transition,
+                    })?;
             validate_next(history, &event)?;
             next = Some(action.snapshot());
             Ok(event)
@@ -159,9 +167,13 @@ impl<'a> JournalGate<'a> {
         self.journal.transition(action_id, &mut |history| {
             let meta = input.take().ok_or(JournalError::Transition)?;
             let (action, verdict) = load_action(policy, work_root, action_id, history)?;
-            let (_, permit, event) = action
-                .authorize(verdict.plan(), meta)
-                .map_err(|_| JournalError::Transition)?;
+            let (_, permit, event) =
+                action
+                    .authorize(verdict.plan(), meta)
+                    .map_err(|refused| match refused.error {
+                        TransitionError::OutOfOrder => JournalError::OutOfOrder,
+                        _ => JournalError::Transition,
+                    })?;
             validate_next(history, &event)?;
             started = Some(StartedExecution {
                 permit,
@@ -258,7 +270,10 @@ fn load_action(
         return Err(JournalError::Integrity);
     }
     for event in rest {
-        action = action.after(event).map_err(|_| JournalError::Integrity)?;
+        action = action.after(event).map_err(|error| match error {
+            ReplayError::OutOfOrder => JournalError::HistoryOutOfOrder,
+            _ => JournalError::Integrity,
+        })?;
     }
     Ok((action, verdict))
 }

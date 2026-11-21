@@ -777,3 +777,84 @@ fn approval_decided_and_used_before_it_was_asked_yields_no_permit() {
         Some(&refusal.error)
     );
 }
+
+#[test]
+fn request_cannot_precede_plan() {
+    let verdict = approval_needed(&[BUILD]);
+    let action = planned(&verdict);
+    let snapshot = action.snapshot();
+    let action = refused(
+        action.apply(ask("appr-01"), meta("2030-01-02T03:04:04.999999Z", 1)),
+        TransitionError::OutOfOrder,
+    );
+    assert_eq!(action.snapshot(), snapshot);
+    assert!(action.apply(ask("appr-01"), meta(T0, 1)).is_ok());
+}
+
+#[test]
+fn execution_without_approval_cannot_precede_plan() {
+    let verdict = allowed();
+    let action = planned(&verdict);
+    let snapshot = action.snapshot();
+    let action = refused(
+        action.authorize(verdict.plan(), meta("2030-01-02T03:04:04.999999Z", 2)),
+        TransitionError::OutOfOrder,
+    );
+    assert_eq!(action.snapshot(), snapshot);
+    assert!(action.authorize(verdict.plan(), meta(T0, 2)).is_ok());
+}
+
+#[test]
+fn success_cannot_precede_start() {
+    let (action, permit) = executing(&approval_needed(&[BUILD]));
+    let snapshot = action.snapshot();
+    let refusal = action
+        .apply(Command::Executed { permit }, meta(T0, 3))
+        .unwrap_err();
+    assert_eq!(refusal.error, TransitionError::OutOfOrder);
+    assert_eq!(refusal.action.snapshot(), snapshot);
+}
+
+#[test]
+fn failure_cannot_precede_previous_event() {
+    let verdict = approval_needed(&[BUILD]);
+    for action in [approved(&verdict), executing(&verdict).0] {
+        let snapshot = action.snapshot();
+        let action = refused(
+            action.apply(fail(), meta(T0, 3)),
+            TransitionError::OutOfOrder,
+        );
+        assert_eq!(action.snapshot(), snapshot);
+        assert!(action.apply(fail(), meta(T1, 3)).is_ok());
+    }
+}
+
+#[test]
+fn rewind_at_exact_limit_is_accepted() {
+    let plan = plan(Op::Delete, WIN_ROOT, &[BUILD]);
+    let verdict = classify(&plan, &policy(WIN_HOME, "gate_clock_rewind_seconds = 5"));
+    let action = Action::plan(id("act-01"), &verdict, meta("2030-01-02T00:00:02.1Z", 1))
+        .unwrap()
+        .0;
+    assert!(
+        action
+            .authorize(verdict.plan(), meta("2030-01-01T23:59:57.100000Z", 2))
+            .is_ok()
+    );
+}
+
+#[test]
+fn rewind_one_microsecond_over_limit_is_refused() {
+    let plan = plan(Op::Delete, WIN_ROOT, &[BUILD]);
+    let verdict = classify(&plan, &policy(WIN_HOME, "gate_clock_rewind_seconds = 5"));
+    let action = Action::plan(id("act-01"), &verdict, meta("2030-01-02T00:00:02.1Z", 1))
+        .unwrap()
+        .0;
+    assert_eq!(
+        action
+            .authorize(verdict.plan(), meta("2030-01-01T23:59:57.099999Z", 2))
+            .unwrap_err()
+            .error,
+        TransitionError::OutOfOrder
+    );
+}
