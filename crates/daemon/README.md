@@ -607,13 +607,21 @@ cargo build -p ads-ptyhost -j 2
 cargo test -p ads-daemon -j 2
 ```
 
-O teste cria a configuração sob a pasta de artefatos do Cargo e usa um pipe exclusivo.
+O teste de eco cria a configuração sob `.test-tmp/` e usa um pipe exclusivo.
 Configura `claude` e `codex` com o programa `cmd.exe` e argumentos fixos
 `/d /c echo <ferramenta>-ok [%<chave>%] [%SystemRoot%]`, e o daemon recebe
 `ANTHROPIC_API_KEY` e `OPENAI_API_KEY` com um valor de teste. Pela API WebSocket,
 confere que a chave chega literal ao filho (`%...%` não expandido, ou seja, a
 variável não existe nele) e que `SystemRoot`, permitida, chega com o valor do
-pai; depois encerra o host de teste. Não abre agentes nem shells interativos. Só no Windows,
+pai; depois encerra o host de teste. Não abre agentes nem shells interativos.
+
+O alvo de integração `controls_binary` executa a inicialização definida em `src/main.rs`
+em um processo filho, com configuração e banco temporários sob `.test-tmp/` e um
+cofre em memória compilado apenas no teste. Pela API WebSocket local, autentica
+com `auth.hello`, cria e consulta uma fila e lista as aprovações. O executável
+distribuído usa o cofre do sistema operacional.
+
+Só no Windows,
 `ended_session_leaves_no_child_behind_on_windows` (`tests/local_api.rs`) roda o host no próprio
 processo de teste com ConPTY: um `cmd.exe` abre outro, minimizado num console próprio, que espera
 60 s com `timeout.exe`, e sai depois de 3 s. O teste acha esse filho pelo processo pai, não pela lista

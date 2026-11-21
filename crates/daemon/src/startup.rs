@@ -2,6 +2,7 @@
 
 use crate::api::ApiConfig;
 use ads_core::gate::AbsPath;
+use ads_core::vault::Vault;
 use ads_ptyhost::HostConfig;
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{self, Read};
@@ -147,12 +148,13 @@ fn split_config(overrides: &str) -> Result<SplitConfig, String> {
 pub fn attach_product_controls(
     api: crate::api::LocalApi,
     storage: StorageSettings,
+    vault: impl Vault + Send + Sync + 'static,
     instance: Option<&InstanceLock>,
     workdirs: &[PathBuf],
     max_list_bytes: usize,
 ) -> crate::api::LocalApi {
     let controls = (|| {
-        let (log, ids) = crate::audit::open_local_product(&storage?, instance, workdirs)?;
+        let (log, ids) = crate::audit::open_local_product(&storage?, vault, instance, workdirs)?;
         crate::product::controls(log, ids, workdirs, max_list_bytes)
     })();
     match controls {
