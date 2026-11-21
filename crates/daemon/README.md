@@ -211,8 +211,9 @@ processo mantém no máximo um handle por fila (a segunda abertura recebe
 `AlreadyOpen`); a composição compartilha esse handle com todos os consumidores.
 O carregamento de um arquivo do usuário está pendente. Dono e aparelho
 (`QueueOwner`) são dados da configuração do núcleo; criar e agir na fila exigem
-essa prova, que só o laço de conexão emite, dentro do crate, ao conferir o token
-do `auth.hello`. A prova sela a API da fila; quem tem o próprio `EventLog` grava
+essa prova. Só este crate a emite (`Token::open_session` é restrita ao crate), e
+em produção o único emissor é o laço de conexão, ao conferir o token do
+`auth.hello`. A prova sela a API da fila; quem tem o próprio `EventLog` grava
 abaixo dessa camada, e o replay confere a coerência dos atores, não a
 autenticidade deles (ver o README do núcleo). A transição usa
 `ads_core::queue::change_local_queue_state`, sem fabricar `AuthenticatedDevice`.
