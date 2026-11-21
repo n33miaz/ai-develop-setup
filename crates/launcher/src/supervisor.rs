@@ -487,12 +487,13 @@ fn run_with_interrupt(
         .checked_sub(STALE_SIGNAL_MARGIN)
         .unwrap_or(SystemTime::UNIX_EPOCH);
     let mut publication = Publication::default();
-    publication.stop_pending_at_startup = publication.record_signal(
-        "discard stale stop signal",
-        &control,
-        stop,
-        control.dated_signal(stop, stale_before, true),
-    ) == Some(true);
+    let startup_stop = control.dated_signal(stop, stale_before, true);
+    // Only a leftover that could not be handled here keeps the date rule while running;
+    // any other request that appears later is honored, whatever its date.
+    let mut leftover_stop = startup_stop.is_err();
+    publication.stop_pending_at_startup =
+        publication.record_signal("discard stale stop signal", &control, stop, startup_stop)
+            == Some(true);
     // Publish before starting children so an unusable state path fails early.
     let desktop = shell.is_some();
     if let Err(error) = write_state(
@@ -512,10 +513,21 @@ fn run_with_interrupt(
     loop {
         if !stopping {
             let console_stop = interrupted();
-            let file_stop = control.dated_signal(stop, stale_before, false);
+            let file_stop = if leftover_stop {
+                control.dated_signal(stop, stale_before, false)
+            } else {
+                control.signal(stop, true)
+            };
+            leftover_stop &= file_stop.is_err();
             let stale = matches!(file_stop, Ok(Signal::Stale));
             let consumed =
                 publication.record_signal("consume stop signal", &control, stop, file_stop);
+            if stale {
+                publication.report(format!(
+                    "discard stale stop signal: removed {}, left from before this run",
+                    control.path().join(stop).display()
+                ));
+            }
             stopping = console_stop || (!stale && consumed == Some(true));
         }
         let stopped = if stopping {
@@ -943,12 +955,13 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn removes_stale_stop_found_while_running_without_stopping() {
+    fn honors_stop_dated_before_start_found_while_running() {
+        // A clock stepped back after the start, or a file moved into the folder, dates a new
+        // request before this run.
         let dir = TestDir::new();
         let settings = config();
         let stop = dir.0.join(&settings.stop_file);
         let state = dir.0.join(&settings.state_file);
-        // Any file written now is dated before this start.
         let started = SystemTime::now() + STALE_SIGNAL_MARGIN + Duration::from_secs(60);
         let host_release = dir.0.join("release-host");
         let daemon = fixture(Some(&dir.0.join("release-daemon")));
@@ -964,16 +977,76 @@ pub(crate) mod tests {
                 .filter(|state| state["daemon"]["pid"].is_u64() && state["ptyhost"]["pid"].is_u64())
         });
         fs::write(&stop, []).unwrap();
-        until(|| (!stop.exists()).then_some(()));
-        thread::sleep(Duration::from_millis(200));
-        assert!(
-            !worker.is_finished(),
-            "a stale stop must not stop the launcher"
-        );
-        assert_eq!(state_value(&state).unwrap()["stopped"], false);
-        interrupt.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !worker.is_finished() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        let honored = worker.is_finished();
+        // Release everything before asserting so a failure leaves no process behind.
+        let _ = interrupt.send(());
         worker.join().unwrap().unwrap();
         fs::write(host_release, []).unwrap();
+        assert!(honored, "a stop found while running must stop the launcher");
+        assert_eq!(state_value(&state).unwrap()["stopped"], true);
+        assert!(!stop.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn reports_leftover_stop_removed_while_running_then_honors_new_one() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = TestDir::new();
+        let settings = config();
+        let stop = dir.0.join(&settings.stop_file);
+        let state = dir.0.join(&settings.state_file);
+        // Without delete sharing the leftover cannot be removed at startup.
+        let blocked_signal = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .share_mode(3)
+            .open(&stop)
+            .unwrap();
+        let started = SystemTime::now() + STALE_SIGNAL_MARGIN + Duration::from_secs(60);
+        let host_release = dir.0.join("release-host");
+        let daemon = fixture(Some(&dir.0.join("release-daemon")));
+        let host = fixture(Some(&host_release));
+        let (interrupt, interrupted) = std::sync::mpsc::channel();
+        let worker = thread::spawn(move || {
+            run_with_interrupt(&settings, &dir.0, daemon, host, None, started, || {
+                interrupted.try_recv().is_ok()
+            })
+        });
+        until(|| {
+            state_value(&state)
+                .filter(|state| state["daemon"]["pid"].is_u64() && state["ptyhost"]["pid"].is_u64())
+        });
+        drop(blocked_signal);
+        let discarded = until(|| {
+            state_value(&state).filter(|state| {
+                state["last_error"]
+                    .as_str()
+                    .is_some_and(|error| error.starts_with("discard stale stop signal: removed"))
+            })
+        });
+        let still_running = !worker.is_finished();
+        fs::write(&stop, []).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !worker.is_finished() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        let honored = worker.is_finished();
+        let _ = interrupt.send(());
+        worker.join().unwrap().unwrap();
+        fs::write(host_release, []).unwrap();
+        assert!(
+            still_running,
+            "the leftover stop must not stop the launcher"
+        );
+        assert_eq!(discarded["stopped"], false);
+        assert!(honored, "a new stop must stop the launcher");
+        assert_eq!(state_value(&state).unwrap()["stopped"], true);
+        assert!(!stop.exists());
     }
 
     #[test]
