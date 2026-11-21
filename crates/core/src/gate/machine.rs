@@ -259,6 +259,8 @@ impl ExecutionPermit {
 /// What the log says about one action. Read only: it shows the state and hands out no permit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActionSnapshot {
+    /// A policy comparison made by the journal when inspecting this action.
+    pub policy_warning: Option<super::JournalError>,
     pub action_id: Id,
     pub plan_hash: PlanHash,
     pub risk: Risk,
@@ -319,7 +321,10 @@ impl Action {
     }
 
     /// The action right after its first event.
-    fn begin(event: &Event, gate_clock_rewind_seconds: u64) -> Result<Action, ReplayError> {
+    pub(super) fn begin(
+        event: &Event,
+        gate_clock_rewind_seconds: u64,
+    ) -> Result<Action, ReplayError> {
         match event {
             Event::ActionPlanned(event) => {
                 let data = event.data();
@@ -384,6 +389,7 @@ impl Action {
     /// What [`replay`] must give back for the events of this action so far.
     pub fn snapshot(&self) -> ActionSnapshot {
         ActionSnapshot {
+            policy_warning: None,
             action_id: self.action_id.clone(),
             plan_hash: self.plan_hash.clone(),
             risk: self.risk,
@@ -672,7 +678,7 @@ impl Action {
         }
     }
 
-    fn try_apply(
+    pub(super) fn try_apply(
         &self,
         command: Command,
         meta: EventMeta,

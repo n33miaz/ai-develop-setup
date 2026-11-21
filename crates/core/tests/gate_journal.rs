@@ -1,10 +1,10 @@
 mod common;
 
 use ads_core::gate::{
-    ActionPlanRecord, Event, GateHistory, GateJournal, Id, JournalError, JournalGate,
-    OperationRequest, State, Ulid,
+    ActionPlanRecord, Command, ErrorCode, Event, GateHistory, GateJournal, Id, JournalError,
+    JournalGate, OperationRequest, ShortText, State, Ulid, Via,
 };
-use common::{POSIX_HOME, POSIX_ROOT, id, meta, plan, policy};
+use common::{POSIX_HOME, POSIX_ROOT, at, id, meta, plan, policy};
 
 const NOW: &str = "2030-01-02T03:04:05Z";
 
@@ -98,16 +98,10 @@ fn a_permit_requires_confirmed_append_and_is_never_restored() {
 }
 
 #[test]
-fn recovery_checks_sequences_and_reapplies_policy() {
+fn recovery_checks_sequences() {
     let original_policy = policy(POSIX_HOME, "");
-    let changed_policy = policy(POSIX_HOME, "quarantine_enabled = false");
     let mut journal = planned_journal();
     let action_id = id("action-1");
-    assert_eq!(
-        JournalGate::new(&changed_policy, &mut journal).inspect(&action_id),
-        Err(JournalError::PolicyChanged)
-    );
-
     let first = &mut journal.history.as_mut().unwrap().events[0];
     let mut json = first.to_json();
     json["seq"] = 2.into();
@@ -178,4 +172,141 @@ fn classification_budget_refusal_leaves_the_journal_empty() {
     JournalGate::new(&defaults, &mut journal)
         .plan(id("action-1"), &plan, meta(NOW, 1))
         .unwrap();
+}
+
+fn event_meta(seq: u64, suffix: char) -> ads_core::gate::EventMeta {
+    let mut event = meta(NOW, seq);
+    event.id = Ulid::new(format!("01ARZ3NDEKTSV4RRFFQ69G5FA{suffix}")).unwrap();
+    event
+}
+
+#[test]
+fn changed_policy_keeps_the_recorded_verdict_readable() {
+    let mut journal = planned_journal();
+    let action_id = id("action-1");
+    let original = policy(POSIX_HOME, "");
+    let expected = JournalGate::new(&original, &mut journal)
+        .inspect(&action_id)
+        .unwrap();
+    let changed = policy(POSIX_HOME, "quarantine_enabled = false");
+    let snapshot = JournalGate::new(&changed, &mut journal)
+        .inspect(&action_id)
+        .unwrap();
+    assert_eq!(snapshot.state, expected.state);
+    assert_eq!(snapshot.risk, expected.risk);
+    assert_eq!(snapshot.plan_hash, expected.plan_hash);
+    assert_eq!(snapshot.policy_warning, Some(JournalError::PolicyChanged));
+}
+
+#[test]
+fn started_actions_finish_under_a_changed_policy() {
+    let original = policy(POSIX_HOME, "");
+    let changed = policy(POSIX_HOME, "quarantine_enabled = false");
+    let action_id = id("action-1");
+    for succeeded in [false, true] {
+        let mut journal = planned_journal();
+        let (permit, _) = JournalGate::new(&original, &mut journal)
+            .authorize(&action_id, event_meta(2, 'C'))
+            .unwrap()
+            .into_parts();
+        let (command, expected) = if succeeded {
+            (Command::Executed { permit }, State::Executed)
+        } else {
+            (
+                Command::Fail {
+                    error_code: ErrorCode::new("E_INTERRUPTED").unwrap(),
+                },
+                State::Failed,
+            )
+        };
+        let mut gate = JournalGate::new(&changed, &mut journal);
+        assert_eq!(
+            gate.apply(&action_id, command, event_meta(3, 'D'))
+                .unwrap()
+                .state,
+            expected
+        );
+        assert_eq!(gate.inspect(&action_id).unwrap().state, expected);
+    }
+}
+
+fn pending_journal(original: &ads_core::gate::GatePolicy) -> (MemoryJournal, Command) {
+    let action_id = id("action-1");
+    let approval_id = id("approval-1");
+    let plan = plan(
+        OperationRequest::Delete,
+        POSIX_ROOT,
+        &["/home/user-a/work/proj/build"],
+    );
+    let mut journal = MemoryJournal::default();
+    let mut gate = JournalGate::new(original, &mut journal);
+    let snapshot = gate.plan(action_id.clone(), &plan, meta(NOW, 1)).unwrap();
+    gate.apply(
+        &action_id,
+        Command::RequestApproval {
+            approval_id: approval_id.clone(),
+            summary: ShortText::new("Remove build output").unwrap(),
+            expires_at: at("2030-01-02T03:05:05Z"),
+        },
+        event_meta(1, 'C'),
+    )
+    .unwrap();
+    let grant = Command::Grant {
+        action_id,
+        approval_id,
+        plan_hash: snapshot.plan_hash,
+        via: Via::LocalUi,
+    };
+    (journal, grant)
+}
+
+#[test]
+fn changed_policy_refuses_and_denies_a_pending_approval() {
+    let original = policy(POSIX_HOME, "approval_item_limit = 1");
+    let changed = policy(
+        POSIX_HOME,
+        "approval_item_limit = 1\nquarantine_enabled = false",
+    );
+    let action_id = id("action-1");
+    let (mut journal, grant) = pending_journal(&original);
+
+    let mut gate = JournalGate::new(&changed, &mut journal);
+    assert_eq!(
+        gate.apply(&action_id, grant, event_meta(2, 'D')),
+        Err(JournalError::PolicyChanged)
+    );
+    assert_eq!(
+        gate.inspect(&action_id).unwrap().state,
+        State::ApprovalDenied
+    );
+    let last = journal.history.as_ref().unwrap().events.last().unwrap();
+    assert_eq!(last.to_json()["data"]["reason"], "E_POLICY_CHANGED");
+}
+
+#[test]
+fn changed_policy_refuses_and_closes_an_approved_action() {
+    let original = policy(POSIX_HOME, "approval_item_limit = 1");
+    let changed = policy(
+        POSIX_HOME,
+        "approval_item_limit = 1\nquarantine_enabled = false",
+    );
+    let action_id = id("action-1");
+    let (mut journal, grant) = pending_journal(&original);
+    JournalGate::new(&original, &mut journal)
+        .apply(&action_id, grant, event_meta(2, 'D'))
+        .unwrap();
+
+    let mut gate = JournalGate::new(&changed, &mut journal);
+    assert_eq!(
+        gate.authorize(&action_id, event_meta(2, 'E')),
+        Err(JournalError::PolicyChanged)
+    );
+    assert_eq!(gate.inspect(&action_id).unwrap().state, State::Failed);
+    let last = journal.history.as_ref().unwrap().events.last().unwrap();
+    assert_eq!(last.to_json()["data"]["error_code"], "E_POLICY_CHANGED");
+    let mut gate = JournalGate::new(&original, &mut journal);
+    assert_eq!(
+        gate.authorize(&action_id, event_meta(3, 'F')),
+        Err(JournalError::Transition)
+    );
 }

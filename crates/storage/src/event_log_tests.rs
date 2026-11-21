@@ -2420,7 +2420,16 @@ mod gate_journal {
                 .unwrap();
         }
         let mut log = anchored(&path, &anchor).unwrap();
-        let policy = policy();
+        let policy = GatePolicy::from_toml_str(
+            "quarantine_enabled = false",
+            &HostFacts {
+                user_home: "/home/test",
+            },
+        )
+        .unwrap()
+        .with_work_roots(vec![
+            ads_core::gate::AbsPath::parse("/home/test/work").unwrap(),
+        ]);
         let mut gate = JournalGate::new(&policy, &mut log);
         assert!(matches!(
             gate.inspect(&action_id).unwrap().state,
@@ -2430,6 +2439,22 @@ mod gate_journal {
             gate.authorize(&action_id, meta(3, 5)),
             Err(JournalError::Transition)
         );
+        gate.apply(
+            &action_id,
+            Command::Fail {
+                error_code: ads_core::gate::ErrorCode::new("E_INTERRUPTED").unwrap(),
+            },
+            meta(3, 6),
+        )
+        .unwrap();
+        drop(log);
+
+        let mut log = anchored(&path, &anchor).unwrap();
+        let snapshot = JournalGate::new(&policy, &mut log)
+            .inspect(&action_id)
+            .unwrap();
+        assert_eq!(snapshot.state, State::Failed);
+        assert_eq!(snapshot.policy_warning, Some(JournalError::PolicyChanged));
     }
 
     #[test]
