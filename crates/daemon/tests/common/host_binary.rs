@@ -16,6 +16,12 @@ pub const TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct Process(Child);
 
+pub fn isolate_host_environment(command: &mut Command) -> &mut Command {
+    command
+        .env_clear()
+        .env("SystemRoot", std::env::var_os("SystemRoot").unwrap())
+}
+
 impl Process {
     pub fn start(command: &mut Command) -> Self {
         Self(
@@ -39,7 +45,12 @@ impl Process {
             binary.is_file(),
             "build the host first: cargo build -p ads-ptyhost -j 2"
         );
-        let mut host = Self::start(Command::new(binary).arg("--config").arg(config));
+        let mut command = Command::new(binary);
+        let mut host = Self::start(
+            isolate_host_environment(&mut command)
+                .arg("--config")
+                .arg(config),
+        );
         assert!(host.read_ready().contains("listening on"));
         host
     }

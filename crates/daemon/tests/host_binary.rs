@@ -6,10 +6,27 @@ mod host_binary;
 mod temp;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use host_binary::{Process, Socket, TIMEOUT, authenticate, exchange, receive};
+use host_binary::{
+    Process, Socket, TIMEOUT, authenticate, exchange, isolate_host_environment, receive,
+};
 use serde_json::{Value, json};
 use std::path::Path;
 use std::process::Command;
+
+#[test]
+fn host_command_keeps_only_the_system_root() {
+    let mut command = Command::new("unused");
+    command
+        .env("OPENAI_API_KEY", "synthetic")
+        .env("ANTHROPIC_API_KEY", "synthetic");
+    isolate_host_environment(&mut command);
+    let vars: Vec<_> = command.get_envs().collect();
+    let root = std::env::var_os("SystemRoot").unwrap();
+    assert_eq!(
+        vars,
+        vec![(std::ffi::OsStr::new("SystemRoot"), Some(root.as_os_str()))]
+    );
+}
 
 fn test_config(name: &str, contents: &str) -> std::path::PathBuf {
     let path = temp::directory().join(format!("{name}-{}.toml", std::process::id()));
