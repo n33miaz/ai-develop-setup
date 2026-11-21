@@ -7,25 +7,26 @@ use crate::pty_client::{ClientError, ErrorCode, Event, PtyClient};
 use crate::queue::{DisabledQueue, QueueControl};
 use ads_contracts::{
     CommandApprovalAnswerV1Params, CommandSessionOpenV1Params,
-    ContractLocalApiErrorCodeV3ApprovalAlreadyAnswered as ApprovalAlreadyAnswered,
-    ContractLocalApiErrorCodeV3ApprovalNotApprovable as ApprovalNotApprovable,
-    ContractLocalApiErrorCodeV3ApprovalNotConfigured as ApprovalNotConfigured,
-    ContractLocalApiErrorCodeV3ApprovalNotFound as ApprovalNotFound,
-    ContractLocalApiErrorCodeV3ApprovalOutOfOrder as ApprovalOutOfOrder,
-    ContractLocalApiErrorCodeV3ApprovalPolicyChanged as ApprovalPolicyChanged,
-    ContractLocalApiErrorCodeV3ApprovalStale as ApprovalStale,
-    ContractLocalApiErrorCodeV3CapacityExceeded as CapacityExceeded,
-    ContractLocalApiErrorCodeV3Conflict as Conflict,
-    ContractLocalApiErrorCodeV3HarnessNotConfigured as HarnessNotConfigured,
-    ContractLocalApiErrorCodeV3InternalError as InternalError,
-    ContractLocalApiErrorCodeV3InvalidParams as InvalidParams,
-    ContractLocalApiErrorCodeV3MethodNotFound as MethodNotFound,
-    ContractLocalApiErrorCodeV3QueueAlreadyEnabled as QueueAlreadyEnabled,
-    ContractLocalApiErrorCodeV3QueueNotConfigured as QueueNotConfigured,
-    ContractLocalApiErrorCodeV3RemoteOriginRefused as RemoteOriginRefused,
-    ContractLocalApiErrorCodeV3SessionClosePending as SessionClosePending,
-    ContractLocalApiErrorCodeV3SessionSetupFailed as SessionSetupFailed,
-    ContractLocalApiErrorCodeV3SubscriptionReplayUnavailable as SubscriptionReplayUnavailable,
+    ContractLocalApiErrorCodeV4ApprovalAlreadyAnswered as ApprovalAlreadyAnswered,
+    ContractLocalApiErrorCodeV4ApprovalNotApprovable as ApprovalNotApprovable,
+    ContractLocalApiErrorCodeV4ApprovalNotConfigured as ApprovalNotConfigured,
+    ContractLocalApiErrorCodeV4ApprovalNotFound as ApprovalNotFound,
+    ContractLocalApiErrorCodeV4ApprovalOutOfOrder as ApprovalOutOfOrder,
+    ContractLocalApiErrorCodeV4ApprovalPolicyChanged as ApprovalPolicyChanged,
+    ContractLocalApiErrorCodeV4ApprovalStale as ApprovalStale,
+    ContractLocalApiErrorCodeV4CapacityExceeded as CapacityExceeded,
+    ContractLocalApiErrorCodeV4Conflict as Conflict,
+    ContractLocalApiErrorCodeV4HarnessNotConfigured as HarnessNotConfigured,
+    ContractLocalApiErrorCodeV4InternalError as InternalError,
+    ContractLocalApiErrorCodeV4InvalidParams as InvalidParams,
+    ContractLocalApiErrorCodeV4MethodNotFound as MethodNotFound,
+    ContractLocalApiErrorCodeV4QueueAlreadyCreated as QueueAlreadyCreated,
+    ContractLocalApiErrorCodeV4QueueAlreadyEnabled as QueueAlreadyEnabled,
+    ContractLocalApiErrorCodeV4QueueNotConfigured as QueueNotConfigured,
+    ContractLocalApiErrorCodeV4RemoteOriginRefused as RemoteOriginRefused,
+    ContractLocalApiErrorCodeV4SessionClosePending as SessionClosePending,
+    ContractLocalApiErrorCodeV4SessionSetupFailed as SessionSetupFailed,
+    ContractLocalApiErrorCodeV4SubscriptionReplayUnavailable as SubscriptionReplayUnavailable,
 };
 use ads_ptyhost::wire::{
     Notification, OpenParams, ResizeParams, SessionId, SessionParams, WriteParams,
@@ -65,6 +66,7 @@ pub enum ApiError {
     /// No queue bound to the audit log, or a queue id it does not serve.
     QueueNotConfigured,
     QueueAlreadyEnabled,
+    QueueAlreadyCreated,
     /// The audit log refused a queue or gate record; unlike `Unavailable`, the service keeps running.
     Storage,
     StorageBusy,
@@ -99,6 +101,7 @@ impl ApiError {
             Self::HarnessNotConfigured => HarnessNotConfigured::VALUE,
             Self::Capacity => CapacityExceeded::VALUE,
             Self::Conflict => Conflict::VALUE,
+            Self::QueueAlreadyCreated => QueueAlreadyCreated::VALUE,
             Self::Replay => SubscriptionReplayUnavailable::VALUE,
             Self::ClosePending => SessionClosePending::VALUE,
             Self::SetupFailed => SessionSetupFailed::VALUE,
@@ -125,6 +128,7 @@ impl ApiError {
             Self::HarnessNotConfigured => "harness not configured",
             Self::Capacity => "capacity exceeded",
             Self::Conflict => "idempotency key conflict",
+            Self::QueueAlreadyCreated => "queue already created",
             Self::Replay => "replay unavailable",
             Self::Unavailable => "service unavailable",
             Self::ClosePending => "session close pending",
@@ -185,6 +189,10 @@ pub struct ApiConfig {
     /// The ceiling, in bytes, of one `approval.list` response.
     pub approval_list_max_bytes: usize,
 }
+
+/// The highest `approval_list_max_bytes`: half of the 16 MiB frame the desktop client takes,
+/// so that a page, and the oldest action listed even when it passes the ceiling, still reach it.
+const MAX_APPROVAL_LIST_BYTES: usize = 8_388_608;
 impl ApiConfig {
     pub fn for_desktop(mut self) -> Self {
         self.desktop = true;
@@ -224,7 +232,7 @@ impl ApiConfig {
         if positive.iter().any(|n| *n == 0 || *n > 1_048_576)
             || self.max_write_bytes > 65536
             || self.max_message_bytes < 1024
-            || !(1_048_576..=268_435_456).contains(&self.approval_list_max_bytes)
+            || !(1_048_576..=MAX_APPROVAL_LIST_BYTES).contains(&self.approval_list_max_bytes)
             || [
                 self.accept_retry_ms,
                 self.auth_timeout_ms,
@@ -316,7 +324,7 @@ impl PendingMutation {
     fn defers(&self, command: &Value) -> bool {
         matches!(
             command["method"].as_str(),
-            Some("queue.start" | "queue.stop" | "approval.answer")
+            Some("queue.create" | "queue.start" | "queue.stop" | "approval.answer")
         ) || self.entry.as_ref().is_some_and(|entry| {
             command["params"]["_meta"]["idempotency_key"] == entry.key.as_str()
         })
@@ -407,6 +415,7 @@ impl Service {
         let params = &command["params"];
         let method = command["method"].as_str().expect("audit mutation");
         let stop = method == "queue.stop";
+        let create = method == "queue.create";
         let prepare = || {
             if params["_meta"]["origin"] != "local" {
                 return Err(ApiError::Remote);
@@ -432,6 +441,8 @@ impl Service {
                 tokio::task::spawn_blocking(move || {
                     if stop {
                         queue.stop(&session, &id, &cause).map(|stopped| !stopped)
+                    } else if create {
+                        queue.create(&session, &id, &cause).map(|()| false)
                     } else {
                         queue.start(&session, &id, &cause).map(|()| false)
                     }
@@ -1131,7 +1142,7 @@ impl LocalApi {
             hooks,
         })
     }
-    /// Serves `queue.get`, `queue.start` and `queue.stop` from `queue`; without it they answer
+    /// Serves the queue commands from `queue`; without it they answer
     /// `QUEUE_NOT_CONFIGURED`.
     pub fn with_queue(mut self, queue: Arc<dyn QueueControl>) -> Self {
         self.service.queue = queue;
@@ -1231,7 +1242,7 @@ impl LocalApi {
                         deferred.push_back(request);
                         continue;
                     }
-                    if matches!(request.command["method"].as_str(), Some("queue.start" | "queue.stop" | "approval.answer")) {
+                    if matches!(request.command["method"].as_str(), Some("queue.create" | "queue.start" | "queue.stop" | "approval.answer")) {
                         pending_mutation = service.dispatch_mutation(request);
                         continue;
                     }
@@ -1322,6 +1333,7 @@ fn validate_command(value: Value) -> Result<Value, ApiError> {
             | "events.subscribe"
             | "harness.list"
             | "queue.get"
+            | "queue.create"
             | "queue.start"
             | "queue.stop"
             | "approval.list"
@@ -1699,6 +1711,23 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_approval_list_ceiling_stays_within_the_desktop_frame() {
+        let ceiling = |bytes: usize| {
+            ApiConfig::from_toml_str(&format!("approval_list_max_bytes = {bytes}"))
+                .map(|config| config.approval_list_max_bytes)
+        };
+        assert_eq!(ceiling(8_388_608), Ok(8_388_608));
+        assert_eq!(ceiling(1_048_576), Ok(1_048_576));
+        assert!(ceiling(8_388_609).is_err());
+        assert!(ceiling(268_435_456).is_err());
+        assert!(ceiling(1_048_575).is_err());
+        let default = ApiConfig::from_toml_str("")
+            .unwrap()
+            .approval_list_max_bytes;
+        assert!(default <= MAX_APPROVAL_LIST_BYTES);
+    }
 
     #[test]
     fn malformed_credentials_never_escape_validation_errors() {

@@ -126,7 +126,7 @@ política `[env]`; o daemon guarda só o resultado, sem as variáveis negadas.
 ## Comandos, limites e recuperação
 
 Os nomes, valores e significados dos erros emitidos pela API local estão no
-[contrato de códigos de erro](../../contracts/schemas/contract.local-api.error-code.v3.schema.json).
+[contrato de códigos de erro](../../contracts/schemas/contract.local-api.error-code.v4.schema.json).
 
 | Nome | Código na resposta |
 |---|---|
@@ -141,6 +141,7 @@ Os nomes, valores e significados dos erros emitidos pela API local estão no
 | `SESSION_CLOSE_PENDING` | `-32013` |
 | `SESSION_SETUP_FAILED` | `-32014` |
 | `QUEUE_NOT_CONFIGURED` | `-32015` |
+| `QUEUE_ALREADY_CREATED` | `-32024` |
 | `QUEUE_ALREADY_ENABLED` | `-32016` |
 | `APPROVAL_NOT_CONFIGURED` | `-32017` |
 | `APPROVAL_NOT_FOUND` | `-32018` |
@@ -180,12 +181,17 @@ com `METHOD_NOT_FOUND`, e a interface mostra que o daemon precisa ser atualizado
 
 ## Fila de tarefas
 
-A fila nasce parada e só o dono a liga. `queue.get`, `queue.start` e
+A fila nasce parada e só o dono a liga. `queue.create`, `queue.get`, `queue.start` e
 `queue.stop` nomeiam a fila em `params.queue_id` e não aceitam mais nenhum
 campo: o dono e o aparelho vêm do daemon, nunca do pedido. Valem as mesmas
 conferências dos outros comandos: só depois de `auth.hello`, e origem remota
 recebe `REMOTE_ORIGIN_REFUSED`.
 
+- `queue.create` grava `queue.created:2` com a política de `defaults/queue.toml`,
+  o aparelho do dono como ator e o id do comando em `cause`. A fila fica
+  disponível parada após a gravação. A cache de idempotência permite repetir o
+  pedido confirmado. Um novo pedido para uma fila existente recebe
+  `QUEUE_ALREADY_CREATED`.
 - `queue.get` responde `{"queue_id": ..., "state": "stopped" | "enabled"}`
   ([`command.queue.get.response:1`](../../contracts/README.md#api-local)). Só lê
   e, como `harness.list`, fica fora da cache de idempotência.
@@ -237,9 +243,17 @@ em produção o único emissor é o laço de conexão, ao conferir o token do
 abaixo dessa camada, e o replay confere a coerência dos atores, não a
 autenticidade deles (ver o README do núcleo). A transição usa
 `ads_core::queue::change_local_queue_state`, sem fabricar `AuthenticatedDevice`.
-`LocalApi::with_queue` entrega a fila à API. O executável ainda não abre o log
-ancorado, porque falta o provedor de chaves do cofre; até lá ele serve
-`queue::DisabledQueue`, que recusa os três comandos com `QUEUE_NOT_CONFIGURED`.
+Na partida, a composição passa o log aberto e os identificadores estáveis da
+fila, do dono e do aparelho a `queue::LocalQueue::bind_or_pending` e entrega o
+controle a `LocalApi::with_queue`. Apenas `NotCreated` deixa a fila aguardando
+`queue.create`. Outras falhas de abertura são devolvidas à composição.
+
+O executável serve `queue::DisabledQueue` e responde `QUEUE_NOT_CONFIGURED`.
+Para ligar essa composição no Windows, a inicialização precisa obter ou
+provisionar com segurança a chave de cifra por coluna no cofre, resolver
+as chaves do banco pelos identificadores gravados e fornecer os identificadores
+estáveis da fila, do dono e do aparelho. `audit::open_product` já usa
+`OsVault` para a âncora e recebe o `KeyProvider` de quem o chama.
 
 ## Aprovações do portão
 
@@ -260,13 +274,23 @@ recebe `REMOTE_ORIGIN_REFUSED`. O dono e o aparelho vêm do daemon
   sessão servida aqui: o filtro vem antes do limite, então pedidos de outras
   pastas nunca ocupam a página. No máximo `read_page_limit` da configuração do
   armazenamento por pedido, e nunca mais de 1000 (o limite do contrato da
-  resposta). A resposta inteira cabe em `approval_list_max_bytes`: as ações
-  entram da mais antiga à mais nova enquanto couberem, a mais antiga sempre, e
-  `more: true` diz que outras ficaram de fora; elas aparecem quando as primeiras
-  forem respondidas. Um registro de efeitos maior que metade desse teto não é
-  mostrado e a ação fica com `effects_not_listed`. Sob a trava da mesa só se lê
-  o log; a resposta é montada e medida depois. Só lê e fica fora da cache de
-  idempotência.
+  resposta). As ações entram da mais antiga à mais nova enquanto couberem em
+  `approval_list_max_bytes`. A mais antiga sempre entra, mesmo acima desse teto.
+  `more: true` indica que uma ação da lista ficou para depois pelo limite de
+  itens ou de bytes. Um registro de efeitos maior que metade desse teto não é
+  mostrado e a ação fica com `effects_not_listed`. A listagem e a resposta
+  conferem o tamanho cifrado descontando o invólucro e a tag antes de ler os efeitos.
+  A leitura é feita sob a trava da mesa, uma ação por vez e na ordem do pedido:
+  cada item é montado e medido assim que lido. Se o tamanho cifrado já mostra
+  que os efeitos listáveis excedem o espaço restante, a leitura do registro
+  fica para a próxima página. O teto limita a montagem da página e a leitura
+  dos efeitos. O tempo sob a trava também inclui a autenticação da cadeia
+  inteira e a leitura dos históricos de outras pastas ou ilegíveis, inclusive
+  ao procurar mais um pedido listável após atingir o limite de itens. O daemon
+  omite pedidos cujo histórico é ilegível, registra o `action_id` no log e
+  segue a listagem. O portão precisa de um histórico legível para negar ou
+  expirar um pedido. Pedido ou decisão gravados fora do formato do
+  portão são ignorados. Só lê e fica fora da cache de idempotência.
 - O que o registro do plano garante: a operação, os alvos como foram pedidos
   (caminho e curinga), o destino, se há quarentena, a estimativa e as regras.
   Ele não lista o conteúdo de uma pasta alvo nem os itens do manifesto de uma
@@ -280,7 +304,11 @@ recebe `REMOTE_ORIGIN_REFUSED`. O dono e o aparelho vêm do daemon
   `E_EFFECTS_UNRECORDABLE`; se nem isso for gravado, fica um aviso no log do
   processo. O que o executor compara é nome, tipo, identidade no volume e, de
   arquivo, tamanho: conteúdo reescrito no mesmo objeto, com o mesmo tamanho, e
-  datas não entram.
+  datas não entram. Objeto apagado e recriado sob o mesmo nome só é visto onde a
+  identidade do volume é estável; nos outros volumes (FAT, exFAT, rede, não
+  classificado) o ensaio de apagar de verdade e de restaurar é recusado com
+  `E_FS_IDENTITY_UNSTABLE` ([identidade por sistema de
+  arquivos](../adapters/fs/README.md#identidade-por-sistema-de-arquivos)).
 - A API só aprova ação cujo efeito concreto está fixado. `not_approvable`
   (`approvals::not_approvable`) lista por que não: `estimate_unknown` (sem
   estimativa e sem efeitos gravados), `wildcard_target` (alvo com curinga, que o
@@ -373,7 +401,7 @@ Padrões em [defaults/daemon.toml](../../defaults/daemon.toml), aplicados ao ini
 | `accept_retry_ms` | 50 | Espera após erro de aceitação TCP; reduz tentativas sob falta de recursos. |
 | `max_message_bytes` | 131072 | Limite de mensagem e quadro WebSocket recebido; reduzir pode impedir escritas grandes. |
 | `send_timeout_ms` | 5000 | Prazo por envio; cliente lento é desconectado. |
-| `approval_list_max_bytes` | 4194304 | Teto de uma resposta de `approval.list`, de 1 MiB a 256 MiB. Ações além dele ficam para a próxima listagem (`more`); registro de efeitos maior que a metade não é mostrado nem aprovável pela API. |
+| `approval_list_max_bytes` | 4194304 | Teto de uma resposta de `approval.list`, de 1 MiB a 8 MiB: metade do quadro de 16 MiB que a casca desktop aceita, para caber também a ação mais antiga, listada mesmo quando passa do teto. Ações além dele ficam para a próxima listagem (`more`); registro de efeitos maior que a metade não é mostrado nem aprovável pela API. |
 | `host_timeout_ms` | 10000 | Prazo único por comando no host e na conexão inicial. Cada chamada ao host começa dentro do prazo, e uma resposta já recebida vale mesmo se o prazo vencer enquanto o daemon trata um evento do host. Falha encerra o serviço para evitar repetir efeito incerto. Duas exceções não encerram: no fechamento automático o prazo esgotado conta como tentativa falha, e na preparação depois de um `session.open` confirmado ele responde `SESSION_SETUP_FAILED`, como qualquer outra falha dessa etapa (ver abaixo). |
 | `retired_sessions` | 1024 | Ids de sessões podadas que não podem ser reabertos nesta execução (acima do limite, o mais antigo volta a ser aceito) e, em separado, streams assinados antes do `session.open` (acima do limite, a espera mais antiga termina com `SUBSCRIPTION_REPLAY_UNAVAILABLE` no id da assinatura, mesmo se a conexão estiver ociosa). |
 | `subscription_ids_per_stream` | 2 | Ids de assinatura por conexão: este valor vezes `max_sessions`. Reassinar a mesma encarnação na mesma conexão soma um id, que só sai quando o stream termina; ids de encarnação já terminada não contam. A interface mantém uma assinatura por stream e conexão, então raramente passa de um id por stream; aumente para clientes que reassinam muito. |

@@ -65,6 +65,15 @@ impl Executor {
         })
     }
 
+    /// Treats the volume of the fence as one this executor cannot classify: definitive
+    /// deletes and restores are refused (`E_FS_IDENTITY_UNSTABLE`). Never the other way
+    /// round. For tests of that refusal.
+    #[doc(hidden)]
+    pub fn with_unclassified_volume(mut self) -> Self {
+        self.fence.forget_volume();
+        self
+    }
+
     pub fn with_limits(mut self, limits: Limits) -> Self {
         self.limits = limits;
         self

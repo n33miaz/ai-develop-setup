@@ -115,6 +115,7 @@ bash .github/scripts/check-commits.test.sh
 ## Pull requests
 
 - Título descritivo, na mesma regra do título da issue (em geral o mesmo). O padrão de mensagem vale para os commits da branch. Descrição em português: o que mudou, por que, como testar, checklist P1 a P8 e `Closes #n`.
+- Todo PR recebe uma revisão automática (configurada em `.coderabbit.yaml`); apontamentos de severidade alta ou média são resolvidos, com teste, antes da junção.
 - No fluxo de autoria de agente, use merge commit depois do check `ci-ok` verde para preservar os commits e suas identidades. Apague a branch após a junção.
 - Antes de juntar, confira o `ci-ok` da execução mais recente do commit exato.
 

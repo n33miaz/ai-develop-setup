@@ -1,0 +1,58 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# Automated pull request review. Repository rules live in AGENTS.md and CONTRIBUTING.md.
+language: en-US
+reviews:
+  profile: assertive
+  poem: false
+  high_level_summary: false
+  high_level_summary_in_walkthrough: false
+  collapse_walkthrough: true
+  review_status: false
+  # No prompt blocks for coding tools in review comments or in the review body.
+  enable_prompt_for_ai_agents: false
+  # No action checkboxes (fix comments, unit tests, CI fixes, conflict resolution).
+  # The "Explain Change" button has no configuration option.
+  finishing_touches:
+    autofix:
+      enabled: false
+    unit_tests:
+      enabled: false
+    simplify:
+      enabled: false
+    fix_ci:
+      enabled: false
+    resolve_merge_conflict:
+      enabled: false
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - develop
+      - main
+  path_instructions:
+    - path: "crates/core/src/gate/**"
+      instructions: >-
+        Action gate: decides what may delete, move or overwrite files. Apply the AGENTS.md
+        safety rules (R6: dry run, then confirmation). Flag any path that could reach
+        outside the workspace and any change without a regression test.
+    - path: "crates/adapters/fs/**"
+      instructions: >-
+        File executor: must run only what the gate licensed. Flag any deletion or move
+        not backed by a gate decision.
+    - path: "crates/storage/**"
+      instructions: >-
+        Local storage: sensitive fields stay encrypted per column and users stay isolated
+        (AGENTS.md, P3). Flag plaintext secrets, logs of sensitive data or cross-user reads.
+    - path: "crates/daemon/**"
+      instructions: >-
+        Daemon: runs as a regular user, authenticates the local API and never collects or
+        forwards AI CLI credentials (AGENTS.md, C1). Flag leaks into child process environments.
+    - path: "crates/shell/**"
+      instructions: >-
+        Desktop shell: the bridge sends the token only after the daemon proof and limits
+        what reaches the window over IPC. Flag any widening of that surface.
+    - path: "**/*.md"
+      instructions: >-
+        Public text describes the subject and the outcome only: no internal process
+        history, no internal planning codes, no tool branding, no personal data or local
+        machine paths (AGENTS.md, "Produto e nome").

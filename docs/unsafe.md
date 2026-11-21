@@ -7,7 +7,7 @@ A contagem só sobe com justificativa aqui.
 | Crate | Blocos `unsafe` | Motivo |
 |---|---|---|
 | `ads-ptyhost` | 30 | chamadas da API do Windows, listadas abaixo |
-| `ads-adapter-fs` | 4 | chamadas da API do Windows para abrir, mover e apagar por identificador aberto, listadas abaixo; no Linux as mesmas operações vêm do `rustix`, sem `unsafe` |
+| `ads-adapter-fs` | 5 | chamadas da API do Windows para abrir, mover e apagar por identificador aberto e para classificar o volume, listadas abaixo; no Linux as mesmas operações vêm do `rustix`, sem `unsafe` |
 | `ads-testkit` | 7 | só de teste, fora de qualquer binário do produto; listados abaixo |
 | `ads-adapter-vault` | 6 | operações por nome no cofre do Windows e tratamento da memória devolvida |
 | `ads-private-dir` | 21 | chamadas da API do Windows para criar pastas privadas e arquivos de controle só do usuário, conferir dono e lista de acesso e operar relativo à pasta aberta, listadas abaixo (3 delas habilitadas em testes ou com `test-support`); no Unix o mesmo vem da biblioteca padrão e do `rustix`, sem `unsafe` |
@@ -49,6 +49,7 @@ A biblioteca padrão só abre, move e apaga por caminho, e um caminho é resolvi
 | `open_at` | 2 | `NtCreateFile`, `OwnedHandle::from_raw_handle` | abrir ou criar uma entrada por um nome só, relativa a uma pasta aberta, sem seguir ponto de reanálise |
 | `query` | 1 | `GetFileInformationByHandleEx` | ler do identificador aberto os atributos, a identidade (volume e identificador de arquivo), o tamanho e a lista de nomes de uma pasta |
 | `apply` | 1 | `NtSetInformationFile` | mover sem substituir o destino e apagar, os dois sobre o identificador aberto |
+| `query_volume` | 1 | `NtQueryVolumeInformationFile` | ler do identificador aberto da cerca o sistema de arquivos do volume, se ele abre por identificador e se é remoto: só onde a identidade separa um objeto recriado do substituído o executor apaga de verdade e restaura |
 
 ## `ads-testkit` (`crates/testkit/src/win.rs`), só de teste
 

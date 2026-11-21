@@ -87,12 +87,15 @@ pub enum Reason {
     EffectsChanged,
     /// The record of effects of a rehearsal would be larger than `max_effects_bytes`.
     EffectsTooLarge,
+    /// A definitive delete or a restore on a volume whose identities do not tell a recreated
+    /// object from the one it replaced (FAT, exFAT, a network share, or a kind not known).
+    IdentityUnstable,
     /// The operating system refused the operation.
     Io,
 }
 
 impl Reason {
-    pub const ALL: [Reason; 39] = [
+    pub const ALL: [Reason; 40] = [
         Self::StartedMismatch,
         Self::JournalRefused,
         Self::PermitReused,
@@ -131,6 +134,7 @@ impl Reason {
         Self::PlanEntryLimit,
         Self::EffectsChanged,
         Self::EffectsTooLarge,
+        Self::IdentityUnstable,
         Self::Io,
     ];
 
@@ -174,6 +178,7 @@ impl Reason {
             Self::PlanEntryLimit => "E_FS_PLAN_ENTRY_LIMIT",
             Self::EffectsChanged => "E_FS_EFFECTS_CHANGED",
             Self::EffectsTooLarge => "E_FS_EFFECTS_TOO_LARGE",
+            Self::IdentityUnstable => "E_FS_IDENTITY_UNSTABLE",
             Self::Io => "E_FS_IO",
         }
     }
