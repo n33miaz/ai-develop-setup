@@ -460,7 +460,7 @@ jobs:
       - name: Testes do executor (inclui a junção)
         run: cargo test --locked -p ads-adapter-fs -- --nocapture
       - name: Forma canônica dos efeitos com a ordem de inserção do serde_json ligada
-        run: cargo test --locked -p ads-adapter-fs --lib --features serde_json/preserve_order canonical_form
+        run: cargo test --locked -p ads-adapter-fs --lib --features preserve-order canonical_form
 
   storage-windows:
     name: storage-windows
