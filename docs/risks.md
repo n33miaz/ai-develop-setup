@@ -16,12 +16,17 @@ Estado da mitigação, em cada risco:
 |---|---|---|
 | [Ação destrutiva fora do escopo](#ação-destrutiva-fora-do-escopo) | portão de ações e executor de arquivos | implementada e testada; ligada só na biblioteca do daemon, com itens da #26 abertos |
 | [Troca no disco durante a execução](#troca-no-disco-durante-a-execução) | executor de arquivos | implementada e testada, com limites escritos |
-| [Licença de execução usada duas vezes](#licença-de-execução-usada-duas-vezes) | portão, executor e armazenamento | implementada e testada com o `EventLog` ancorado; API local pendente |
+| [Licença de execução usada duas vezes](#licença-de-execução-usada-duas-vezes) | portão, executor e armazenamento | implementada e testada com o `EventLog` ancorado; execução pela API local pendente |
 | [Perda de sessões de terminal](#perda-de-sessões-de-terminal) | host de terminais | implementada e testada; host supervisionado pelo [lançador](../crates/launcher/README.md) |
 | [Outro usuário da máquina alcança as sessões](#outro-usuário-da-máquina-alcança-as-sessões) | host de terminais e daemon | implementada e testada no Windows; teste com duas contas ausente |
 | [Credencial de CLI de IA vaza para o processo filho](#credencial-de-cli-de-ia-vaza-para-o-processo-filho) | adaptadores de ferramenta e host | parcial: filtro do ambiente implementado |
 | [Programa ou pasta configurados por um link](#programa-ou-pasta-configurados-por-um-link) | adaptadores de ferramenta | implementada e testada; a abertura usa o caminho resolvido |
 | [Página ou programa local comanda os terminais](#página-ou-programa-local-comanda-os-terminais) | daemon (API local) | implementada e testada; ADR proposta; conferência manual da porta da interface |
+| [Outro usuário ocupa a porta da interface](#outro-usuário-ocupa-a-porta-da-interface) | daemon e interface | parcial: endereço e origens testados; propriedade da porta conferida à mão |
+| [Origem da WebView compartilhada no Windows](#origem-da-webview-compartilhada-no-windows) | casca e daemon | implementada e testada |
+| [Outra conta ocupa a porta do daemon após a saída](#outra-conta-ocupa-a-porta-do-daemon-após-a-saída) | casca e daemon | implementada e testada; janela indisponível até o reinício do daemon |
+| [Outra conta ocupa vagas de autenticação pendente](#outra-conta-ocupa-vagas-de-autenticação-pendente) | daemon (API local) | parcial: teto e expulsão testados; sem limite por conta |
+| [Outra conta comanda o lançador pela pasta de controle](#outra-conta-comanda-o-lançador-pela-pasta-de-controle) | lançador e pasta privada | implementada e testada; outra conta simulada nos testes |
 | [Dado sensível em claro no disco](#dado-sensível-em-claro-no-disco) | armazenamento | parcial: `data` dos eventos cifrado no banco e testado; chave ainda fora do cofre |
 | [Perda do estado local](#perda-do-estado-local) | armazenamento | parcial: abertura recusa arquivo corrompido sem alterá-lo; backup ausente |
 | [Atualização ruim instalada](#atualização-ruim-instalada) | lançador | decidida, não implementada |
@@ -41,6 +46,11 @@ Estado da mitigação, em cada risco:
 | [Dependência com licença incompatível](#dependência-com-licença-incompatível) | mantenedor e CI | implementada e testada |
 | [Cadeia de suprimento do CI e das dependências](#cadeia-de-suprimento-do-ci-e-das-dependências) | mantenedor e CI | parcial |
 | [Código `unsafe`](#código-unsafe) | crates com exceção | implementada e testada |
+| [Compatibilidade dos contratos da fila contínua](#compatibilidade-dos-contratos-da-fila-contínua) | núcleo e contratos | parcial: leitura das versões preservada; regra das marcas combinantes pendente |
+| [Perda do contexto de admissão da fila](#perda-do-contexto-de-admissão-da-fila) | núcleo e produtor da fila | parcial: filas novas gravam a política; admissão no daemon pendente |
+| [Stream da fila no teto de eventos](#stream-da-fila-no-teto-de-eventos) | armazenamento e produtor da fila | implementada e testada; aviso na interface pendente |
+| [Memória da leitura do stream da fila](#memória-da-leitura-do-stream-da-fila) | armazenamento e produtor da fila | parcial: sem medição |
+| [Carimbo adiantado aceito no replay da fila](#carimbo-adiantado-aceito-no-replay-da-fila) | produtor da fila | implementada e testada na admissão ao vivo; o daemon ainda não a chama |
 
 ## Arquivos e ações destrutivas
 
@@ -79,7 +89,7 @@ Estado da mitigação, em cada risco:
 - **Plano B.** A quarentena deixa marca no disco que recusa a repetição.
 - **Mitigação no log.** O [diário do portão](../crates/storage/README.md#diário-do-portão) verifica a cadeia HMAC antes de confiar em colisões, confirma a gravação antes de entregar a licença e bloqueia a reexecução após reinício. Isso vale para o `EventLog` ancorado: `StartedExecution` prova só que `GateJournal::append` devolveu `Ok`, e a durabilidade é a da implementação do traço, que é público. O caminho `Executor::execute` com um `Journal` fornecido pelo chamador continua com a garantia desse diário. Os testes cobrem corrida entre conexões, abandono de uma licença já gravada, segundo início e aprovação de outra ação com `seq` livre, remoção do início gravado e alteração de um registro com conexão aberta.
 - **Custo.** Uma verificação completa da cadeia por transição do portão, sob o lock de escrita, duas por execução; linear no número de linhas do log ([diário do portão](../crates/storage/README.md#diário-do-portão)).
-- **O que falta.** Medir a latência em históricos grandes, definir um teto para o log e expor a composição sob a API local com o fluxo de confirmação. Uma queda entre a atualização da âncora e o commit pode bloquear o banco até a recuperação. Depois de um início confirmado, o operador confere o disco e prepara outra ação com nova decisão se ainda houver trabalho.
+- **O que falta.** Medir a latência em históricos grandes, definir um teto para o log, abrir o log ancorado no executável do daemon e expor a execução na API local; listar e responder aprovações já existe na biblioteca ([aprovações do portão](../crates/daemon/README.md#aprovações-do-portão)). Uma queda entre a atualização da âncora e o commit pode bloquear o banco até a recuperação. Depois de um início confirmado, o operador confere o disco e prepara outra ação com nova decisão se ainda houver trabalho.
 
 ## Terminais
 
@@ -171,6 +181,16 @@ Estado da mitigação, em cada risco:
 - **Plano B.** Ajustar `max_pending_auth` em `defaults/daemon.toml` ou na configuração local e reiniciar o daemon.
 - **O que falta.** Quem renova sockets mais rápido do que a interface conclui o upgrade ainda pode expulsá-la antes dele; quem faz upgrade em todas as vagas e não manda `auth.hello` bloqueia conexões novas até `auth_timeout_ms` vencer, e precisa repetir isso a cada prazo. Não há limite por endereço nem por conta, porque em loopback todas as contas chegam de `127.0.0.1`. Um transporte restrito à conta do usuário permitiria separar as vagas no desktop. A entrega do token pelo pipe protege a credencial e a API ainda usa TCP em loopback.
 
+### Outra conta comanda o lançador pela pasta de controle
+
+- **Descrição.** Outra conta local cria os sinais `stop` ou `restart` na pasta de controle do lançador, troca a pasta ou um ancestral por um link, ou lê e altera a trava e o `state.json`.
+- **Impacto.** Daemon, janela e lançador encerrados ou reiniciados por quem não é o usuário; estado da instalação lido por outra conta.
+- **Dono.** Lançador ([`crates/launcher`](../crates/launcher/README.md)) e pasta privada (`crates/private-dir`).
+- **Teto.** Um lançador por pasta de controle, pela trava do sistema operacional.
+- **Mitigação existente (implementada e testada).** A pasta, a trava e o estado nascem acessíveis só pela conta atual; pasta ou trava existente com outro dono ou com acesso de outra conta é recusada antes de iniciar qualquer processo. Sinal de outro dono ou que dá acesso a outra conta fica no lugar, é ignorado e aparece em `last_error`; o sinal apagado é o mesmo arquivo conferido. Tudo é aberto relativo à pasta já conferida, sem seguir link ([README do lançador](../crates/launcher/README.md)). Testes `refuses_a_control_folder_other_accounts_can_use`, `refuses_a_lock_file_other_accounts_can_use`, `ignores_a_signal_file_owned_by_another_account`, `ignores_a_signal_file_other_accounts_can_use` e `removes_only_the_signal_it_checked` em `crates/launcher/src/supervisor.rs`, no job `launcher-windows`.
+- **Plano B.** Apagar a pasta ou a trava recusada para o lançador recriá-la, ou restringi-la à conta do usuário.
+- **O que falta.** No Windows, o sistema local e o grupo Administradores são tolerados na lista de acesso. A outra conta dos testes é uma identidade simulada; não há teste com duas contas reais. Programas da mesma conta do usuário criam sinais válidos.
+
 ## Estado local
 
 ### Dado sensível em claro no disco
@@ -179,7 +199,7 @@ Estado da mitigação, em cada risco:
 - **Impacto.** Quem lê o disco lê o trabalho do usuário.
 - **Dono.** Armazenamento ([`crates/storage`](../crates/storage/README.md)) e cofre ([`crates/adapters/vault`](../crates/adapters/vault/README.md)).
 - **Teto.** Não se aplica.
-- **Mitigação existente.** [ADR 0005](adr/0005-column-level-encryption.md): cifra autenticada por coluna, chave no cofre do sistema. A cifra (XChaCha20-Poly1305, com dados associados autenticados) está implementada e testada em `crates/storage/src/cipher.rs`, inclusive recusa de chave e de dados associados trocados e diagnóstico sem chave nem texto ([ADR 0021](adr/0021-storage-atomic-file-and-cipher.md), proposta). O log de eventos (`crates/storage/src/log.rs`) grava o `data` de todo evento cifrado, com as colunas em claro da linha como dados associados; o teste da ADR 0005 procura uma frase sentinela no banco, no `-wal` e no `-shm`, reabre e recusa chave errada (`crates/storage/src/event_log_tests.rs`). Hoje nada sensível chega ao log: nenhum produtor está ligado a ele, o anel de replay fica só em memória e o cliente do daemon não persiste saída nem tem telemetria ([daemon](../crates/daemon/README.md)).
+- **Mitigação existente.** [ADR 0005](adr/0005-column-level-encryption.md): cifra autenticada por coluna, chave no cofre do sistema. A cifra (XChaCha20-Poly1305, com dados associados autenticados) está implementada e testada em `crates/storage/src/cipher.rs`, inclusive recusa de chave e de dados associados trocados e diagnóstico sem chave nem texto ([ADR 0021](adr/0021-storage-atomic-file-and-cipher.md), proposta). O log de eventos (`crates/storage/src/log.rs`) grava o `data` de todo evento cifrado, com as colunas em claro da linha como dados associados; o teste da ADR 0005 procura uma frase sentinela no banco, no `-wal` e no `-shm`, reabre e recusa chave errada (`crates/storage/src/event_log_tests.rs`). Na biblioteca do daemon, o diário do portão e a fila gravam no log, com o `data` cifrado. O executável ainda não abre o log, o anel de replay fica só em memória e o cliente do daemon não persiste saída nem tem telemetria ([daemon](../crates/daemon/README.md)).
 - **Plano B.** Banco inteiro cifrado (condição de reversão da ADR 0005).
 - **O que falta.** A integração da chave com o cofre ainda falta. A composição deve recusar a persistência sensível se o cofre estiver indisponível ou se a plataforma não for Windows. O limite por entrada e a execução do teste local estão no [README do cofre](../crates/adapters/vault/README.md). Ficam em claro, por decisão da ADR 0005, `id`, `type`, `ts`, `stream`, `seq`, autor, `cause`, classe do dado, `action_id` e `approval_id` (os dois só nos eventos do portão, e o primeiro já está no nome do stream): revelam o ritmo de uso e os nomes dos streams.
 
@@ -367,21 +387,28 @@ Riscos da troca de conta por pasta de perfil ([ADR 0022](adr/0022-account-profil
 ### Código `unsafe`
 
 - **Descrição.** Erro de memória em chamada direta ao sistema.
-- **Impacto.** Falha ou brecha no host de terminais, no executor de arquivos ou no cofre.
-- **Dono.** `ads-ptyhost`, `ads-adapter-fs` e `ads-adapter-vault`.
+- **Impacto.** Falha ou brecha no host de terminais, no executor de arquivos, no cofre, nas pastas privadas, no lançador ou na casca.
+- **Dono.** Os crates com exceção listados em [unsafe.md](unsafe.md).
 - **Teto.** Orçamento por crate em [unsafe.md](unsafe.md).
 - **Mitigação existente (implementada e testada).** `unsafe_code = "forbid"` no workspace; exceção só em um módulo Windows de cada crate, com cada bloco listado e comentado; o lint reprova a compilação fora deles.
 - **Plano B.** Não há.
-- **O que falta.** Manter as chamadas nativas do cofre dentro do orçamento documentado em [docs/unsafe.md](unsafe.md).
+- **O que falta.** Manter as chamadas nativas dentro do orçamento documentado em [docs/unsafe.md](unsafe.md).
 
-## Compatibilidade dos contratos da fila contínua
+## Fila contínua
 
+Riscos da fila de tarefas ([fila contínua no núcleo](../crates/core/README.md#fila-contínua), [fila no daemon](../crates/daemon/README.md#fila-de-tarefas)).
+
+### Compatibilidade dos contratos da fila contínua
+
+- **Descrição.** O título da tarefa aceita marca combinante que não segue uma letra ou um número. O apelido e a origem já são os tipos comuns em `queue.task_created:3` e `:4` e em `record.queue-task:2` e `:3`, e o título é o tipo comum em `queue.task_created:4` e `record.queue-task:3`.
+- **Impacto.** Endurecer a regra do título exige versões novas da criação e do registro sem perder a leitura das existentes.
 - **Dono.** Núcleo e contratos.
-- **Limite.** O título da tarefa aceita marca combinante que não segue uma letra ou um número. O apelido e a origem já são os tipos comuns em `queue.task_created:3` e `:4` e em `record.queue-task:2` e `:3`, e o título é o tipo comum em `queue.task_created:4` e `record.queue-task:3`; as versões anteriores repetem as mesmas regras, conferidas contra os tipos comuns por `tools/corpus.test.mjs`.
-- **Plano.** Exigir que marcas combinantes sigam letra ou número em uma versão futura do registro e da criação. Até lá, preservar a leitura das versões existentes.
+- **Teto.** Não se aplica.
+- **Mitigação existente.** As versões anteriores repetem as mesmas regras, conferidas contra os tipos comuns por `contracts/tools/corpus.test.mjs`.
+- **Plano B.** Exigir que marcas combinantes sigam letra ou número em uma versão futura do registro e da criação. Até lá, preservar a leitura das versões existentes.
 - **Tarefas sem título.** Uma tarefa criada pelas versões 1 a 3 de `queue.task_created` não registrou título nem ferramenta, e o registro reconstruído (`record.queue-task:3`) traz `null` nos dois. Não há como recuperar esses valores do log; a interface mostra a ausência em vez de um valor inventado. O daemon ainda não grava tarefas, então nenhum banco real tem uma tarefa assim.
 
-## Perda do contexto de admissão da fila
+### Perda do contexto de admissão da fila
 
 - **Descrição.** Um trecho legado anterior à primeira política gravada pode ter limites históricos desconhecidos.
 - **Impacto.** O replay reconstrói as tarefas desse trecho, mas não valida os limites de admissão que não foram registrados.
@@ -391,7 +418,7 @@ Riscos da troca de conta por pasta de perfil ([ADR 0022](adr/0022-account-profil
 - **Plano B.** Para admitir tarefas numa fila sem política gravada, o dono registra os limites a aplicar dali em diante. Se a cadeia do log falhar, manter a fila parada e recuperar um backup íntegro.
 - **O que falta.** Antes de habilitar a admissão no daemon, disponibilizar a gravação condicional de política pelo dono e recusar novas tarefas enquanto o replay devolver política ausente, conforme o [README do núcleo](../crates/core/README.md#fila-contínua).
 
-## Stream da fila no teto de eventos
+### Stream da fila no teto de eventos
 
 - **Descrição.** Ao atingir `queue_max_events` ([storage.toml](../defaults/storage.toml)), o `append` da fila recusa com `QueueFull` todo evento menos uma única `queue.stopped:1`: nenhuma ativação, admissão nem mudança de estado de tarefa entra, inclusive o fim de uma tarefa em `running`.
 - **Impacto.** A fila para de andar; a tarefa em execução fica em `running` no log até o teto subir. O gasto continua limitado, porque `queued → running` também é recusado.
@@ -401,7 +428,7 @@ Riscos da troca de conta por pasta de perfil ([ADR 0022](adr/0022-account-profil
 - **Plano B.** O dono sobe `queue_max_events` e reabre, ou cria outra fila. Ao subir `admission_limit`, manter `queue_max_events` acima de `admission_limit` x `attempt_limit` x cerca de 4 eventos por tentativa (padrão: 1000 x 2 x 4 = 8000, folga de cerca de 12x).
 - **O que falta.** A interface precisa mostrar a mensagem de `QueueFull` ao dono quando a ligação existir.
 
-## Memória da leitura do stream da fila
+### Memória da leitura do stream da fila
 
 - **Descrição.** `read_queue` lê o stream inteiro da fila num único vetor antes do replay. As páginas de `read_page_limit` e `read_page_max_bytes` limitam cada leitura ao banco, não o total guardado em memória.
 - **Impacto.** Uma fila grande ocupa memória proporcional ao seu histórico na partida do daemon; no extremo, a leitura falha por falta de memória e a fila não volta.
@@ -411,7 +438,7 @@ Riscos da troca de conta por pasta de perfil ([ADR 0022](adr/0022-account-profil
 - **Plano B.** Replay incremental, página a página, sem guardar o stream; ou instantâneo autenticado do estado do replay para ler só a cauda.
 - **O que falta.** Medir a memória da leitura com uma fila no teto padrão antes de o daemon ligar a fila.
 
-## Carimbo adiantado aceito no replay da fila
+### Carimbo adiantado aceito no replay da fila
 
 - **Descrição.** No replay, o relógio de cada criação é o próprio `ts` gravado, então `AheadOfClock` não dispara. Um produtor com a chave da cadeia HMAC, por erro ou de propósito, pode gravar uma criação com carimbo adiantado, e o replay a aceita. A admissão ao vivo recusaria essa criação.
 - **Impacto.** A criação adiantada deixa de contar as admissões anteriores na própria janela e passa a ocupar a janela das seguintes. Se o adiantamento passar de `clock_rewind_seconds`, as admissões ao vivo seguintes são recusadas com `BehindLastAdmission`: a fila trava em vez de abrir.
