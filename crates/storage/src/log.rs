@@ -971,16 +971,7 @@ fn insert_in(
     gate: Option<&GateAppend<'_>>,
     config: &StorageConfig,
 ) -> Result<i64, StorageError> {
-    let Sealing {
-        action_id,
-        approval_id,
-        data,
-        seq,
-        key_id,
-        key,
-    } = sealing;
-    let kind = event.r#type.as_str();
-    let stream = event.stream.as_str();
+    let (action_id, approval_id) = (&sealing.action_id, &sealing.approval_id);
     if let Some(gate) = gate {
         check_gate_append(
             tx,
@@ -999,6 +990,33 @@ fn insert_in(
     {
         return Err(StorageError::InvalidEvent);
     }
+    let format = if gate.is_some() {
+        GATE_ROW_FORMAT
+    } else {
+        ROW_FORMAT
+    };
+    insert_row(tx, event, sealing, format, config)
+}
+
+/// Checks the stream sequence and the queue cap, then inserts the sealed row in `format`
+/// after the current head. The caller checked what the format requires.
+fn insert_row(
+    tx: &Transaction<'_>,
+    event: &EventEnvelopeV1,
+    sealing: Sealing,
+    format: i64,
+    config: &StorageConfig,
+) -> Result<i64, StorageError> {
+    let Sealing {
+        action_id,
+        approval_id,
+        data,
+        seq,
+        key_id,
+        key,
+    } = sealing;
+    let kind = event.r#type.as_str();
+    let stream = event.stream.as_str();
     if seq != head_in(tx, stream)? + 1 {
         return Err(StorageError::Conflict);
     }
@@ -1020,11 +1038,7 @@ fn insert_in(
     };
     let mut row = Row {
         position,
-        format: if gate.is_some() {
-            GATE_ROW_FORMAT
-        } else {
-            ROW_FORMAT
-        },
+        format,
         id: event.id.as_str().to_owned(),
         kind: kind.to_owned(),
         ts: event.ts.as_str().to_owned(),
@@ -1208,6 +1222,124 @@ fn unreadable_history(error: &StorageError) -> bool {
     )
 }
 
+/// The gate history stored under `action_id`, or `None` when it does not read (an id that is
+/// not one, a row this core does not know, or more rows than a history holds). The listing
+/// and the closing of an unreadable request judge with this one predicate.
+fn readable_gate(
+    tx: &Transaction<'_>,
+    keys: &dyn KeyProvider,
+    action_id: &str,
+) -> Result<Option<GateHistory>, StorageError> {
+    let Ok(id) = Id::new(action_id) else {
+        return Ok(None);
+    };
+    match read_gate(tx, keys, &id) {
+        Ok(history) => Ok(history),
+        Err(error) if unreadable_history(&error) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+const REQUESTED: &str = "urn:ads:event:approval.requested:2";
+const GRANTED: &str = "urn:ads:event:approval.granted:2";
+/// The only decisions the closing of an unreadable request writes: it never grants.
+const CLOSING_TYPES: [&str; 2] = [
+    "urn:ads:event:approval.denied:2",
+    "urn:ads:event:approval.expired:2",
+];
+
+/// What [`EventLog::closable_requests`] finds for one action.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Closable {
+    /// No gate request was ever stored for the action.
+    Missing,
+    /// The gate history reads: its requests are answered through the gate, never closed.
+    Readable,
+    /// The history does not read; its gate requests with no decision yet, oldest first.
+    Requests(Vec<OpenRequest>),
+}
+
+/// A gate request with no decision, read from its own row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenRequest {
+    pub approval_id: String,
+    pub plan_hash: String,
+    /// The `seq` the decision takes in `approval/<approval_id>`.
+    pub next_seq: u64,
+}
+
+/// The gate requests of `action_id` with no gate decision, oldest first, at most `limit`.
+fn open_requests(
+    tx: &Transaction<'_>,
+    keys: &dyn KeyProvider,
+    action_id: &str,
+    limit: u32,
+) -> Result<Vec<OpenRequest>, StorageError> {
+    let mut statement = tx.prepare(&format!(
+        "SELECT {ROW_COLUMNS} FROM event AS asked
+         WHERE asked.action_id = ?1 AND asked.type = ?2 AND asked.format = ?3
+           AND asked.approval_id IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM event AS decided
+                           WHERE decided.approval_id = asked.approval_id
+                             AND decided.format = ?3
+                             AND decided.type IN (?4, ?5, ?6))
+         ORDER BY asked.position LIMIT ?7"
+    ))?;
+    let mut rows = statement.query(params![
+        action_id,
+        REQUESTED,
+        GATE_ROW_FORMAT,
+        GRANTED,
+        CLOSING_TYPES[0],
+        CLOSING_TYPES[1],
+        limit,
+    ])?;
+    let mut open = Vec::new();
+    while let Some(record) = rows.next()? {
+        let mut row = Row::from_sql(record)?;
+        let approval_id = row.approval_id.clone().ok_or(StorageError::Corrupt)?;
+        // The request row on its own: the history around it is what does not read.
+        let ciphertext = row.take_ciphertext()?;
+        let data =
+            row.associated(|fields| cipher::decrypt(keys, &AssociatedData(fields), &ciphertext))?;
+        let (event, _) = row.envelope_with_plan(&data)?;
+        let plan_hash = event
+            .data
+            .get("plan_hash")
+            .and_then(Value::as_str)
+            .ok_or(StorageError::Corrupt)?
+            .to_owned();
+        let head = head_in(tx, &format!("approval/{approval_id}"))?;
+        open.push(OpenRequest {
+            approval_id,
+            plan_hash,
+            next_seq: u64::try_from(head + 1).map_err(|_| StorageError::Corrupt)?,
+        });
+    }
+    Ok(open)
+}
+
+fn closable_in(
+    tx: &Transaction<'_>,
+    keys: &dyn KeyProvider,
+    action_id: &str,
+    limit: u32,
+) -> Result<Closable, StorageError> {
+    let asked: bool = tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM event
+                        WHERE action_id = ?1 AND type = ?2 AND format = ?3)",
+        params![action_id, REQUESTED, GATE_ROW_FORMAT],
+        |r| r.get(0),
+    )?;
+    if !asked {
+        return Ok(Closable::Missing);
+    }
+    if readable_gate(tx, keys, action_id)?.is_some() {
+        return Ok(Closable::Readable);
+    }
+    open_requests(tx, keys, action_id, limit).map(Closable::Requests)
+}
+
 /// The ciphertext size of each row from `from_seq` on, in `seq` order, without copying or
 /// decrypting any of them.
 fn stream_sizes_in(
@@ -1296,14 +1428,9 @@ impl EventLog {
             let mut taken = 0;
             while let Some(row) = rows.next()? {
                 let id: String = row.get(0)?;
-                let entry = match Id::new(id.as_str()) {
-                    Ok(action_id) => match read_gate(tx, &*log.keys, &action_id) {
-                        Ok(Some(history)) => Pending::History(history),
-                        Ok(None) => Pending::Unreadable(id),
-                        Err(error) if unreadable_history(&error) => Pending::Unreadable(id),
-                        Err(error) => return Err(error),
-                    },
-                    Err(_) => Pending::Unreadable(id),
+                let entry = match readable_gate(tx, &*log.keys, &id)? {
+                    Some(history) => Pending::History(history),
+                    None => Pending::Unreadable(id),
                 };
                 let full = taken == limit;
                 match visit(entry, &reads, full) {
@@ -1315,6 +1442,70 @@ impl EventLog {
             }
             Ok(())
         })
+    }
+
+    /// What `approval.close` may close for `action_id`, at most `limit` requests, read under
+    /// the write lock after the anchor and the whole chain were checked. Writes nothing.
+    pub fn closable_requests(&self, action_id: &Id, limit: u32) -> Result<Closable, StorageError> {
+        self.read_anchored(|log, tx| closable_in(tx, &*log.keys, action_id.as_str(), limit))
+    }
+
+    /// Writes `decision`, an `approval.denied:2` or `approval.expired:2` of a request of
+    /// `action_id` whose gate history does not read, in the gate format, so that the request
+    /// leaves the pending approvals. In the same transaction as the write it checks again that
+    /// the history does not read and that the request is the action's and still open
+    /// (`Conflict` otherwise); another type, other ids or another plan hash than the request's
+    /// are `InvalidEvent`. Nothing else reads that history, so no license comes out of it.
+    pub fn close_unreadable_request(
+        &mut self,
+        action_id: &Id,
+        decision: &EventEnvelopeV1,
+    ) -> Result<Position, StorageError> {
+        let anchor = self
+            .anchor
+            .as_ref()
+            .ok_or(StorageError::AnchorUnavailable)?;
+        if !CLOSING_TYPES.contains(&decision.r#type.as_str()) {
+            return Err(StorageError::InvalidEvent);
+        }
+        let tx = self
+            .store
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        #[cfg(test)]
+        {
+            self.verifications += 1;
+        }
+        let (database, version) = anchored_in(&tx, &**anchor, &*self.keys)?;
+        self.verified_data_version = version;
+        let gate = GateAppend {
+            action_id,
+            expected_events: 0,
+            plan: None,
+        };
+        let sealed = sealing(&*self.keys, &self.config, decision, Some(&gate))?;
+        let Some(approval_id) = sealed.approval_id.clone() else {
+            return Err(StorageError::InvalidEvent);
+        };
+        if sealed.action_id.as_deref() != Some(action_id.as_str()) {
+            return Err(StorageError::InvalidEvent);
+        }
+        let open = match closable_in(&tx, &*self.keys, action_id.as_str(), u32::MAX)? {
+            Closable::Requests(open) => open,
+            Closable::Missing | Closable::Readable => return Err(StorageError::Conflict),
+        };
+        let Some(request) = open.iter().find(|open| open.approval_id == approval_id) else {
+            return Err(StorageError::Conflict);
+        };
+        if decision.data.get("plan_hash").and_then(Value::as_str)
+            != Some(request.plan_hash.as_str())
+        {
+            return Err(StorageError::InvalidEvent);
+        }
+        let position = insert_row(&tx, decision, sealed, GATE_ROW_FORMAT, &self.config)?;
+        anchor.store(database, &commitment(&tx)?)?;
+        tx.commit()?;
+        Ok(Position(position))
     }
 
     fn load_gate(&mut self, action_id: &Id) -> Result<Option<GateHistory>, StorageError> {

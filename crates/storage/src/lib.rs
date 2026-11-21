@@ -12,7 +12,9 @@ pub mod queue;
 mod snapshot;
 pub use config::{StorageConfig, VerifyOnAppend};
 pub use error::StorageError;
-pub use log::{EventLog, Pending, PendingReads, Position, StoredEvent, Visit};
+pub use log::{
+    Closable, EventLog, OpenRequest, Pending, PendingReads, Position, StoredEvent, Visit,
+};
 pub use open::AuditStore;
 
 #[cfg(test)]

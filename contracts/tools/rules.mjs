@@ -14,6 +14,7 @@ export const STREAM_ID_FIELD = {
   handoff: "handoff_id",
   answer: "approval_id",
   effects: "action_id",
+  closure: "action_id",
 };
 
 // Devolve o texto do problema, ou null quando o stream nomeia a mesma entidade que `data`.

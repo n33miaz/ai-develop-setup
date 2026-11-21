@@ -70,7 +70,7 @@ test("passagem: cada registro aponta para o aceite da própria sessão de origem
 test("stream: família fora da tabela não tem regra", () => {
   assert.equal(streamBindingError({ stream: "host/host-01", data: { event_id: "x" } }), null);
   assert.equal(streamBindingError({ stream: "usage/task-01", data: {} }), null);
-  assert.deepEqual(Object.keys(STREAM_ID_FIELD).sort(), ["action", "answer", "approval", "effects", "handoff", "queue", "review", "routing", "session", "task"]);
+  assert.deepEqual(Object.keys(STREAM_ID_FIELD).sort(), ["action", "answer", "approval", "closure", "effects", "handoff", "queue", "review", "routing", "session", "task"]);
 });
 
 test("stream: a regra vale para os dourados de evento e só para eles", () => {

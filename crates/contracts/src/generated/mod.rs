@@ -5,6 +5,7 @@ use serde_json::Value;
 use crate::support;
 
 pub mod command_approval_answer_v1;
+pub mod command_approval_close_v1;
 pub mod command_approval_list_response_v1;
 pub mod command_approval_list_response_v2;
 pub mod command_approval_list_v1;
@@ -47,6 +48,7 @@ pub mod contract_local_api_error_code_v1;
 pub mod contract_local_api_error_code_v2;
 pub mod contract_local_api_error_code_v3;
 pub mod contract_local_api_error_code_v4;
+pub mod contract_local_api_error_code_v5;
 pub mod contract_local_api_server_message_v1;
 pub mod contract_local_api_server_message_v2;
 pub mod contract_local_api_server_message_v3;
@@ -74,6 +76,7 @@ pub mod event_approval_granted_v1;
 pub mod event_approval_granted_v2;
 pub mod event_approval_requested_v1;
 pub mod event_approval_requested_v2;
+pub mod event_closure_recorded_v1;
 pub mod event_effects_recorded_v1;
 pub mod event_effects_refused_v1;
 pub mod event_envelope_v1;
@@ -139,6 +142,7 @@ pub mod relay_device_v1;
 pub mod relay_envelope_v1;
 
 pub use command_approval_answer_v1::*;
+pub use command_approval_close_v1::*;
 pub use command_approval_list_response_v1::*;
 pub use command_approval_list_response_v2::*;
 pub use command_approval_list_v1::*;
@@ -181,6 +185,7 @@ pub use contract_local_api_error_code_v1::*;
 pub use contract_local_api_error_code_v2::*;
 pub use contract_local_api_error_code_v3::*;
 pub use contract_local_api_error_code_v4::*;
+pub use contract_local_api_error_code_v5::*;
 pub use contract_local_api_server_message_v1::*;
 pub use contract_local_api_server_message_v2::*;
 pub use contract_local_api_server_message_v3::*;
@@ -208,6 +213,7 @@ pub use event_approval_granted_v1::*;
 pub use event_approval_granted_v2::*;
 pub use event_approval_requested_v1::*;
 pub use event_approval_requested_v2::*;
+pub use event_closure_recorded_v1::*;
 pub use event_effects_recorded_v1::*;
 pub use event_effects_refused_v1::*;
 pub use event_envelope_v1::*;
@@ -277,6 +283,10 @@ pub const SCHEMAS: &[(&str, &str)] = &[
     (
         "command.approval.answer.v1",
         "urn:ads:command:approval.answer:1",
+    ),
+    (
+        "command.approval.close.v1",
+        "urn:ads:command:approval.close:1",
     ),
     (
         "command.approval.list.response.v1",
@@ -375,6 +385,10 @@ pub const SCHEMAS: &[(&str, &str)] = &[
         "urn:ads:contract:local-api.error-code:4",
     ),
     (
+        "contract.local-api.error-code.v5",
+        "urn:ads:contract:local-api.error-code:5",
+    ),
+    (
         "contract.local-api.server-message.v1",
         "urn:ads:contract:local-api.server-message:1",
     ),
@@ -469,6 +483,10 @@ pub const SCHEMAS: &[(&str, &str)] = &[
     (
         "event.approval.requested.v2",
         "urn:ads:event:approval.requested:2",
+    ),
+    (
+        "event.closure.recorded.v1",
+        "urn:ads:event:closure.recorded:1",
     ),
     (
         "event.effects.recorded.v1",
@@ -678,6 +696,7 @@ pub const PATTERNS: &[&str] = &[
     r"^action/",
     r"^answer/",
     r"^approval/",
+    r"^closure/",
     r"^dev-[0-9]{8}-[0-9a-f]{7,12}$",
     r"^effects/",
     r"^handoff/",
@@ -698,6 +717,7 @@ pub const PATTERNS: &[&str] = &[
 pub fn reencode(id: &str, value: Value) -> Option<Result<Value, serde_json::Error>> {
     let written = match id {
         "urn:ads:command:approval.answer:1" => support::reencode::<CommandApprovalAnswerV1>(value),
+        "urn:ads:command:approval.close:1" => support::reencode::<CommandApprovalCloseV1>(value),
         "urn:ads:command:approval.list.response:1" => {
             support::reencode::<CommandApprovalListResponseV1>(value)
         }
@@ -762,6 +782,9 @@ pub fn reencode(id: &str, value: Value) -> Option<Result<Value, serde_json::Erro
         "urn:ads:contract:local-api.error-code:4" => {
             support::reencode::<ContractLocalApiErrorCodeV4>(value)
         }
+        "urn:ads:contract:local-api.error-code:5" => {
+            support::reencode::<ContractLocalApiErrorCodeV5>(value)
+        }
         "urn:ads:contract:local-api.server-message:1" => {
             support::reencode::<ContractLocalApiServerMessageV1>(value)
         }
@@ -813,6 +836,7 @@ pub fn reencode(id: &str, value: Value) -> Option<Result<Value, serde_json::Erro
         "urn:ads:event:approval.requested:2" => {
             support::reencode::<EventApprovalRequestedV2>(value)
         }
+        "urn:ads:event:closure.recorded:1" => support::reencode::<EventClosureRecordedV1>(value),
         "urn:ads:event:effects.recorded:1" => support::reencode::<EventEffectsRecordedV1>(value),
         "urn:ads:event:effects.refused:1" => support::reencode::<EventEffectsRefusedV1>(value),
         "urn:ads:event:envelope:1" => support::reencode::<EventEnvelopeV1>(value),

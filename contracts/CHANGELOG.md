@@ -4,6 +4,13 @@ Formato: uma seção por data. Contrato novo, campo opcional acrescentado, vers�
 
 ## 2026-11-21
 
+Fechamento de pedidos de aprovação com histórico ilegível.
+
+- Contratos novos (`:1`):
+  - Comando `approval.close` (`action_id` e `decision`, `deny` ou `expire`): o dono fecha os pedidos pendentes de uma ação cujo histórico o núcleo não lê. Nunca aprova.
+  - Evento `closure.recorded`: o fechamento, com aparelho, dono, decisão, os pedidos fechados e a chave de idempotência, gravado no stream `closure/<action_id>` antes de qualquer efeito. Família de stream nova `closure`, amarrada a `action_id`.
+- Versão nova, convivendo com a `:1` à `:4`: `local-api.error-code:5`, com os códigos da `:4` mais `APPROVAL_READABLE` (`-32025`). O núcleo passa a emitir a `:5`.
+
 Efeitos concretos das ações aprovadas.
 
 - Contratos novos (`:1`):

@@ -1,7 +1,7 @@
 //! Owner answers to the action gate through the authenticated local API: routing, refusals and
 //! the replies, against a control that counts what reaches it.
 
-use ads_contracts::CommandApprovalAnswerV1Params;
+use ads_contracts::{CommandApprovalAnswerV1Params, CommandApprovalCloseV1Params};
 use ads_daemon::api::{ApiConfig, ApiError, DisabledLauncher, LocalApi};
 use ads_daemon::approvals::{ApprovalControl, Pending};
 use ads_daemon::auth::LocalSession;
@@ -66,6 +66,21 @@ impl ApprovalControl for Counting {
         match *self.refusal.lock().unwrap() {
             Some(error) => Err(error),
             None => Ok(self.from_log.load(std::sync::atomic::Ordering::SeqCst)),
+        }
+    }
+    fn close(
+        &self,
+        _: &LocalSession,
+        close: &CommandApprovalCloseV1Params,
+        cause: &str,
+    ) -> Result<bool, ApiError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push((format!("close {}", close.decision.as_str()), cause.into()));
+        match *self.refusal.lock().unwrap() {
+            Some(error) => Err(error),
+            None => Ok(false),
         }
     }
 }
@@ -171,7 +186,7 @@ async fn exchange(ws: &mut Socket, value: &Value) -> Value {
     );
     if let Some(code) = reply["error"].get("code") {
         assert!(
-            valid("urn:ads:contract:local-api.error-code:3", code),
+            valid("urn:ads:contract:local-api.error-code:5", code),
             "{reply}"
         );
     }
@@ -186,6 +201,10 @@ async fn authenticated(f: &Fixture) -> Socket {
     ws
 }
 
+fn close(decision: &str) -> Value {
+    json!({"action_id": "act-03", "decision": decision})
+}
+
 fn answer(decision: &str) -> Value {
     json!({"action_id": "act-03", "approval_id": "appr-03", "plan_hash": HASH, "decision": decision})
 }
@@ -197,6 +216,7 @@ async fn refused_approval_commands_never_reach_the_gate() {
     for (method, params) in [
         ("approval.list", json!({})),
         ("approval.answer", answer("approve")),
+        ("approval.close", close("deny")),
     ] {
         // No session: the first message must be auth.hello, and the connection closes.
         let mut unauthenticated = connect(&f).await;
@@ -214,6 +234,8 @@ async fn refused_approval_commands_never_reach_the_gate() {
         ("approval.list", json!({})),
         ("approval.answer", answer("approve")),
         ("approval.answer", answer("deny")),
+        ("approval.close", close("deny")),
+        ("approval.close", close("expire")),
     ] {
         let reply = exchange(&mut ws, &remote(command(method, params.clone()))).await;
         assert_eq!(reply["error"]["code"], -32010, "{method}");
@@ -305,4 +327,50 @@ async fn without_a_gate_every_approval_command_is_not_configured() {
         let reply = exchange(&mut ws, &command(method, params)).await;
         assert_eq!(reply["error"]["code"], -32017, "{method}");
     }
+}
+
+#[tokio::test]
+async fn a_closing_reaches_the_gate_once_and_keeps_its_refusals() {
+    let counting = Arc::new(Counting::default());
+    let f = fixture(Some(counting.clone())).await;
+    let mut ws = authenticated(&f).await;
+    let expire = command("approval.close", close("expire"));
+    let reply = exchange(&mut ws, &expire).await;
+    assert_eq!(
+        reply["result"],
+        json!({"accepted": true, "replayed": false})
+    );
+    let reply = exchange(&mut ws, &expire).await;
+    assert_eq!(reply["result"], json!({"accepted": true, "replayed": true}));
+    assert_eq!(
+        counting.calls(),
+        [(
+            "close expire".to_owned(),
+            expire["id"].as_str().unwrap().to_owned()
+        )]
+    );
+    // Closing never approves.
+    let reply = exchange(&mut ws, &command("approval.close", close("approve"))).await;
+    assert_eq!(reply["error"]["code"], -32602);
+    for (error, code) in [
+        (ApiError::ApprovalReadable, -32025),
+        (ApiError::ApprovalNotFound, -32018),
+        (ApiError::ApprovalAlreadyAnswered, -32019),
+    ] {
+        *counting.refusal.lock().unwrap() = Some(error);
+        let reply = exchange(&mut ws, &command("approval.close", close("deny"))).await;
+        assert_eq!(reply["error"]["code"], code, "{error:?}");
+    }
+    assert!(!valid(
+        "urn:ads:contract:local-api.error-code:4",
+        &json!(-32025)
+    ));
+}
+
+#[tokio::test]
+async fn without_a_gate_a_closing_is_not_configured() {
+    let f = fixture(None).await;
+    let mut ws = authenticated(&f).await;
+    let reply = exchange(&mut ws, &command("approval.close", close("deny"))).await;
+    assert_eq!(reply["error"]["code"], -32017);
 }
