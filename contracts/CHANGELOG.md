@@ -4,6 +4,9 @@ Formato: uma seção por data. Contrato novo, campo opcional acrescentado, vers�
 
 ## 2026-11-20
 
+- Tipo comum novo `common.queue-task-title:1`: o título da tarefa da fila, com as mesmas regras que os registros `:1` e `:2` repetem por extenso.
+- `queue.task_created:4` registra também o título e a ferramenta da tarefa, obrigatórios, e nunca é `public`. As versões 1 a 3 continuam legíveis.
+- `record.queue-task:3` (`version` 3) é o registro que o replay reconstrói do log: `title` e `tool` são obrigatórios e `null` quando a criação é anterior à `queue.task_created:4`. Os registros `:1` e `:2` continuam legíveis.
 - `session.refusal_detected:1` registra, só com metadados, a recusa de um pedido ou a interrupção por filtro de segurança, com ferramenta, provedor, modelo e tipo. O modelo é um identificador curto do catálogo, nunca texto livre.
 - `session.handoff:3` acrescenta `alternative_id`, a alternativa do catálogo que o aparelho aceitou numa oferta após recusa de modelo. A `:2` continua valendo para os demais gatilhos.
 - `record.session-handoff:1` registra a passagem autorizada e `session.handoff:1` registra proposta, aceite ou recusa.

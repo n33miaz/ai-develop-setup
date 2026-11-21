@@ -1525,6 +1525,9 @@ mod tests {
             .as_deref()
             .unwrap();
         connection
+            .execute_batch(crate::migrate::DROP_QUEUE_BINDING_SQL)
+            .unwrap();
+        connection
             .execute_batch(crate::migrate::DROP_GATE_JOURNAL_SQL)
             .unwrap();
         connection

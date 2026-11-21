@@ -11,7 +11,7 @@ use std::{
 };
 
 pub const APPLICATION_ID: i64 = 0x41445331;
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 /// Owns the connection; raw SQL remains private to storage.
 pub struct AuditStore {
@@ -491,7 +491,7 @@ pub(crate) mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(triggers, 10);
+        assert_eq!(triggers, 11);
     }
 
     #[test]

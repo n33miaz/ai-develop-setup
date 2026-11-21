@@ -7,7 +7,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { createAjv, loadSchemas } from "./lib.mjs";
 import { planHash } from "./rules.mjs";
-import { TITLE_SCHEMA_FILES, readAlphabet, titlePatterns } from "./title-alphabet.mjs";
+import { TITLE_SCHEMAS, readAlphabet, titlePatterns } from "./title-alphabet.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const corpus = JSON.parse(fs.readFileSync(path.join(root, "corpus", "abspath.json"), "utf8"));
@@ -114,11 +114,11 @@ test("todo caminho dos dourados válidos de record.action-plan cabe na abspath:2
 // os dois aceitam o mesmo conjunto em qualquer versão de Unicode do motor.
 test("o Schema do título é montado das faixas do corpus", () => {
   const { pattern, not } = titlePatterns(readAlphabet().classes);
-  for (const file of TITLE_SCHEMA_FILES) {
-    const schema = JSON.parse(fs.readFileSync(file, "utf8"));
+  for (const { file, title } of TITLE_SCHEMAS) {
+    const schema = title(JSON.parse(fs.readFileSync(file, "utf8")));
     const hint = `${path.basename(file)}: rode node tools/title-alphabet.mjs --write`;
-    assert.equal(schema.properties.title.pattern, pattern, hint);
-    assert.deepEqual(schema.properties.title.not, { pattern: not }, hint);
+    assert.equal(schema.pattern, pattern, hint);
+    assert.deepEqual(schema.not, { pattern: not }, hint);
   }
 });
 
@@ -158,9 +158,21 @@ test("o apelido e a origem da tarefa seguem os tipos comuns no registro e em que
   const created = (version) =>
     read(`event.queue.task_created.v${version}.schema.json`).allOf[1].properties.data.properties;
   const inline = [read("record.queue-task.v1.schema.json").properties, created(1), created(2)];
-  const referring = [read("record.queue-task.v2.schema.json").properties, created(3)];
+  const referring = [read("record.queue-task.v2.schema.json").properties, created(3), created(4)];
   for (const [field, { id, rest }] of Object.entries(shared)) {
     for (const properties of inline) assert.deepEqual(properties[field], rest, field);
     for (const properties of referring) assert.deepEqual(properties[field], { $ref: id }, field);
   }
+  const title = body("common.queue-task-title.v1.schema.json");
+  for (const version of [1, 2]) {
+    assert.deepEqual(read(`record.queue-task.v${version}.schema.json`).properties.title, title.rest, `título :${version}`);
+  }
+  assert.deepEqual(created(4).title, { $ref: title.id });
+  // O registro :3 aceita os mesmos tipos comuns, ou null para o que a criação anterior à :4 não registrava.
+  const nullable = (id) => ({ anyOf: [{ $ref: id }, { type: "null" }] });
+  const record3 = read("record.queue-task.v3.schema.json").properties;
+  assert.deepEqual(record3.title, nullable(title.id));
+  assert.deepEqual(record3.tool, nullable("urn:ads:common:id:1"));
+  assert.deepEqual(created(4).tool, { $ref: "urn:ads:common:id:1" });
+  for (const [field, { id }] of Object.entries(shared)) assert.deepEqual(record3[field], { $ref: id }, field);
 });

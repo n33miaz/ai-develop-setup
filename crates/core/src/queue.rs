@@ -1,10 +1,13 @@
 //! Authorization and lifecycle policy for the task queue.
 
+use std::collections::{HashMap, HashSet};
 use std::num::{NonZeroU64, NonZeroUsize};
 
 use ads_contracts::{
-    CommonActorV1, CommonActorV1Kind, CommonIdV1, CommonQueueTaskOriginV1, CommonQueueTaskStateV1,
-    CommonTimestampV1, EventEnvelopeV1, EventQueueClockReanchoredV1,
+    CommonActorV1, CommonActorV1Kind, CommonIdV1, CommonQueueTaskOriginV1,
+    CommonQueueTaskOriginV1BugRule, CommonQueueTaskOriginV1Issue, CommonQueueTaskOriginV1IssueRef,
+    CommonQueueTaskOriginV1Manual, CommonQueueTaskStateV1, CommonQueueTaskTitleV1,
+    CommonTimestampV1, CommonWorkdirAliasV1, EventEnvelopeV1, EventQueueClockReanchoredV1,
     EventQueueClockReanchoredV1Data, EventQueueClockReanchoredV1DataVia, EventQueueCreatedV1,
     EventQueueCreatedV1DataVia, EventQueueEnabledV1, EventQueueEnabledV1Data,
     EventQueueEnabledV1DataVia, EventQueuePolicyChangedV1, EventQueuePolicyChangedV1Data,
@@ -12,11 +15,13 @@ use ads_contracts::{
     EventQueuePolicyChangedV1DataVia, EventQueueStoppedV1, EventQueueStoppedV1Data,
     EventQueueStoppedV1DataReason, EventQueueStoppedV1DataVia, EventQueueTaskCreatedV1,
     EventQueueTaskCreatedV1DataOrigin, EventQueueTaskCreatedV2, EventQueueTaskCreatedV2DataOrigin,
-    EventQueueTaskCreatedV3, EventQueueTaskStateChangedV1, EventQueueTaskStateChangedV2,
-    EventQueueTaskStateChangedV2Data, EventQueueTaskStateChangedV2DataAttempts,
-    EventQueueTaskStateChangedV2DataFields, EventQueueTaskStateChangedV2DataReason,
-    EventQueueTaskStateChangedV2DataVia, RecordQueueTaskV1, RecordQueueTaskV2,
-    RecordQueueTaskV2Attempts, RecordTaskQueueV1, RecordTaskQueueV1State, RecordTaskQueueV1Version,
+    EventQueueTaskCreatedV3, EventQueueTaskCreatedV4, EventQueueTaskStateChangedV1,
+    EventQueueTaskStateChangedV2, EventQueueTaskStateChangedV2Data,
+    EventQueueTaskStateChangedV2DataAttempts, EventQueueTaskStateChangedV2DataFields,
+    EventQueueTaskStateChangedV2DataReason, EventQueueTaskStateChangedV2DataVia, RecordQueueTaskV1,
+    RecordQueueTaskV2, RecordQueueTaskV2Attempts, RecordQueueTaskV3, RecordQueueTaskV3AttemptLimit,
+    RecordQueueTaskV3Attempts, RecordQueueTaskV3Version, RecordTaskQueueV1, RecordTaskQueueV1State,
+    RecordTaskQueueV1Version,
 };
 
 use CommonQueueTaskStateV1::{Cancelled, Done, Failed, Queued, Review, Running};
@@ -303,6 +308,7 @@ macro_rules! task_snapshot {
 
 task_snapshot!(RecordQueueTaskV1);
 task_snapshot!(RecordQueueTaskV2);
+task_snapshot!(RecordQueueTaskV3);
 
 /// Decides, on start, the fate of a task whose last recorded state is `running`. The caller passes
 /// the state and count rebuilt by `replay_task`, so a crash between the log and the record is
@@ -407,6 +413,7 @@ pub enum QueueLogEvent<'a> {
     TaskCreated(&'a EventQueueTaskCreatedV1),
     TaskCreatedV2(&'a EventQueueTaskCreatedV2),
     TaskCreatedV3(&'a EventQueueTaskCreatedV3),
+    TaskCreatedV4(&'a EventQueueTaskCreatedV4),
     TaskStateChanged(&'a EventQueueTaskStateChangedV1),
     TaskStateChangedV2(&'a EventQueueTaskStateChangedV2),
 }
@@ -422,6 +429,7 @@ macro_rules! each_event {
             QueueLogEvent::TaskCreated($name) => $body,
             QueueLogEvent::TaskCreatedV2($name) => $body,
             QueueLogEvent::TaskCreatedV3($name) => $body,
+            QueueLogEvent::TaskCreatedV4($name) => $body,
             QueueLogEvent::TaskStateChanged($name) => $body,
             QueueLogEvent::TaskStateChangedV2($name) => $body,
         }
@@ -454,6 +462,7 @@ impl<'a> QueueLogEvent<'a> {
             Self::TaskCreated(event) => Some(event.into()),
             Self::TaskCreatedV2(event) => Some(event.into()),
             Self::TaskCreatedV3(event) => Some(event.into()),
+            Self::TaskCreatedV4(event) => Some(event.into()),
             _ => None,
         }
     }
@@ -470,6 +479,7 @@ pub enum QueueStreamEvent {
     TaskCreated(EventQueueTaskCreatedV1),
     TaskCreatedV2(EventQueueTaskCreatedV2),
     TaskCreatedV3(EventQueueTaskCreatedV3),
+    TaskCreatedV4(EventQueueTaskCreatedV4),
     TaskStateChanged(EventQueueTaskStateChangedV1),
     TaskStateChangedV2(EventQueueTaskStateChangedV2),
 }
@@ -502,6 +512,7 @@ impl QueueStreamEvent {
             "urn:ads:event:queue.task_created:1" => Self::TaskCreated(typed(envelope)?),
             "urn:ads:event:queue.task_created:2" => Self::TaskCreatedV2(typed(envelope)?),
             "urn:ads:event:queue.task_created:3" => Self::TaskCreatedV3(typed(envelope)?),
+            "urn:ads:event:queue.task_created:4" => Self::TaskCreatedV4(typed(envelope)?),
             "urn:ads:event:queue.task_state_changed:1" => Self::TaskStateChanged(typed(envelope)?),
             "urn:ads:event:queue.task_state_changed:2" => {
                 Self::TaskStateChangedV2(typed(envelope)?)
@@ -510,7 +521,7 @@ impl QueueStreamEvent {
         })
     }
 
-    /// The borrowed form `replay_task` reads.
+    /// The borrowed form `replay_task` and `replay_queue` read.
     pub fn as_log(&self) -> QueueLogEvent<'_> {
         match self {
             Self::Created(event) => QueueLogEvent::Created(event),
@@ -521,6 +532,7 @@ impl QueueStreamEvent {
             Self::TaskCreated(event) => QueueLogEvent::TaskCreated(event),
             Self::TaskCreatedV2(event) => QueueLogEvent::TaskCreatedV2(event),
             Self::TaskCreatedV3(event) => QueueLogEvent::TaskCreatedV3(event),
+            Self::TaskCreatedV4(event) => QueueLogEvent::TaskCreatedV4(event),
             Self::TaskStateChanged(event) => QueueLogEvent::TaskStateChanged(event),
             Self::TaskStateChangedV2(event) => QueueLogEvent::TaskStateChangedV2(event),
         }
@@ -585,6 +597,126 @@ pub fn replay_task<'a>(
     owner_at: impl Fn(&CommonIdV1, &CommonTimestampV1) -> Option<CommonIdV1>,
     initial_policy: Option<&QueuePolicy>,
 ) -> Result<ReplayedTask, ReplayRefusal> {
+    let replayed = replay(Some(task_id), log, owner_at, initial_policy)?;
+    let task = replayed
+        .tasks
+        .into_iter()
+        .next()
+        .ok_or(ReplayRefusal::TaskCreation)?;
+    Ok(ReplayedTask {
+        state: task.state,
+        attempts: task.attempts,
+        anchor: replayed.anchor,
+        policy: replayed.policy,
+    })
+}
+
+/// Every task of a queue rebuilt from its stream, with the anchor and the policy in force.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ReplayedQueue {
+    /// One record per task, in creation order.
+    pub tasks: Vec<RecordQueueTaskV3>,
+    pub anchor: Option<ClockAnchor>,
+    pub policy: QueuePolicy,
+}
+
+/// Rebuilds the record of every task of the queue in one pass over its stream, with the checks of
+/// `replay_task` applied to every task, not only to one. A state change naming a task that was
+/// never created in the stream is refused (`TaskCreation`), where `replay_task` skips the changes
+/// of other tasks. A task created twice is refused (`TaskCreation`) by both, whichever task
+/// `replay_task` follows.
+///
+/// `created_at` is the `ts` of the creation and `updated_at` the `ts` of the last event of the
+/// task, or `created_at` when the clock went back to before the creation. Title and tool come
+/// from `queue.task_created:4`; a task created by versions 1 to 3 did not record them, so its
+/// record carries `null` in both instead of an invented value. No queue event records the branch
+/// or the pull request, so the rebuilt record omits them.
+pub fn replay_queue<'a>(
+    log: impl IntoIterator<Item = QueueLogEvent<'a>>,
+    owner_at: impl Fn(&CommonIdV1, &CommonTimestampV1) -> Option<CommonIdV1>,
+    initial_policy: Option<&QueuePolicy>,
+) -> Result<ReplayedQueue, ReplayRefusal> {
+    let replayed = replay(None, log, owner_at, initial_policy)?;
+    Ok(ReplayedQueue {
+        tasks: replayed.tasks.iter().map(TaskProgress::record).collect(),
+        anchor: replayed.anchor,
+        policy: replayed.policy,
+    })
+}
+
+/// A task as the replay follows it.
+struct TaskProgress<'a> {
+    creation: TaskCreation<'a>,
+    /// Title and tool, recorded only by `queue.task_created:4`.
+    details: Option<(&'a CommonQueueTaskTitleV1, &'a CommonIdV1)>,
+    state: CommonQueueTaskStateV1,
+    attempts: u64,
+    updated_at: &'a CommonTimestampV1,
+}
+
+impl TaskProgress<'_> {
+    fn record(&self) -> RecordQueueTaskV3 {
+        let creation = self.creation;
+        let origin = match creation.origin {
+            TaskOrigin::Manual(request_id) => {
+                CommonQueueTaskOriginV1::Manual(CommonQueueTaskOriginV1Manual {
+                    request_id: request_id.clone(),
+                })
+            }
+            TaskOrigin::Issue(number) => {
+                CommonQueueTaskOriginV1::Issue(CommonQueueTaskOriginV1Issue {
+                    r#ref: CommonQueueTaskOriginV1IssueRef::new(number)
+                        .expect("every creation version keeps the issue positive"),
+                })
+            }
+            TaskOrigin::BugRule(rule_id, target_id) => {
+                CommonQueueTaskOriginV1::BugRule(CommonQueueTaskOriginV1BugRule {
+                    rule_id: rule_id.clone(),
+                    target_id: target_id.clone(),
+                })
+            }
+        };
+        RecordQueueTaskV3 {
+            version: RecordQueueTaskV3Version,
+            id: creation.task_id.clone(),
+            queue_id: creation.queue_id.clone(),
+            origin,
+            title: self.details.map(|(title, _)| title.clone()),
+            // Older versions repeat the rules of the common alias type (`tools/corpus.test.mjs`).
+            workspace_alias: CommonWorkdirAliasV1::new(creation.workspace_alias)
+                .expect("every creation version keeps the alias rules"),
+            tool: self.details.map(|(_, tool)| tool.clone()),
+            state: self.state,
+            attempts: RecordQueueTaskV3Attempts::new(self.attempts)
+                .expect("the replay keeps attempts within the ceiling"),
+            attempt_limit: RecordQueueTaskV3AttemptLimit::new(creation.attempt_limit)
+                .expect("every creation version keeps the ceiling from 1 to 10"),
+            created_at: creation.ts.clone(),
+            // A clock set back after the creation never dates the update before it.
+            updated_at: if instant(self.updated_at) < instant(creation.ts) {
+                creation.ts.clone()
+            } else {
+                self.updated_at.clone()
+            },
+            branch: None,
+            pull_request: None,
+        }
+    }
+}
+
+struct Replayed<'a> {
+    tasks: Vec<TaskProgress<'a>>,
+    anchor: Option<ClockAnchor>,
+    policy: QueuePolicy,
+}
+
+/// The one replay engine: follows `only` when given, else every task of the stream.
+fn replay<'a>(
+    only: Option<&CommonIdV1>,
+    log: impl IntoIterator<Item = QueueLogEvent<'a>>,
+    owner_at: impl Fn(&CommonIdV1, &CommonTimestampV1) -> Option<CommonIdV1>,
+    initial_policy: Option<&QueuePolicy>,
+) -> Result<Replayed<'a>, ReplayRefusal> {
     let mut log = log.into_iter();
     let Some(QueueLogEvent::Created(created)) = log.next() else {
         return Err(ReplayRefusal::NotFromCreation);
@@ -609,8 +741,11 @@ pub fn replay_task<'a>(
     }
     let mut queue_state = Stopped;
     let mut policy = initial_policy.cloned();
-    // (state, attempts, ceiling) once the task is created.
-    let mut task: Option<(CommonQueueTaskStateV1, u64, u64)> = None;
+    let followed = |task_id: &CommonIdV1| only.is_none_or(|only| only == task_id);
+    let mut tasks: Vec<TaskProgress<'a>> = Vec::new();
+    let mut index: HashMap<&'a str, usize> = HashMap::new();
+    // Every task created in the stream, followed or not, so a second creation is refused alike.
+    let mut created_ids: HashSet<&'a str> = HashSet::new();
     let mut admissions = Vec::new();
     let mut anchor = None;
     for (seq, event) in (2..).zip(log) {
@@ -656,12 +791,13 @@ pub fn replay_task<'a>(
             }
             QueueLogEvent::TaskCreated(_)
             | QueueLogEvent::TaskCreatedV2(_)
-            | QueueLogEvent::TaskCreatedV3(_) => {
+            | QueueLogEvent::TaskCreatedV3(_)
+            | QueueLogEvent::TaskCreatedV4(_) => {
                 let admitted = event.task_creation().expect("task creation event");
                 if admitted.origin.is_manual() && !owner_device(event) {
                     return Err(ReplayRefusal::NotOwnerDevice);
                 }
-                if admitted.task_id == task_id && task.is_some() {
+                if !created_ids.insert(admitted.task_id.as_str()) {
                     return Err(ReplayRefusal::TaskCreation);
                 }
                 let policy = policy.as_ref().ok_or(ReplayRefusal::MissingInitialPolicy)?;
@@ -673,10 +809,23 @@ pub fn replay_task<'a>(
                 check_admission(admitted, admissions.iter().copied(), owner, inputs)
                     .map_err(ReplayRefusal::Admission)?;
                 admissions.push(admitted);
-                if admitted.task_id != task_id {
+                if !followed(admitted.task_id) {
                     continue;
                 }
-                task = Some((Queued, 0, admitted.attempt_limit.into()));
+                let details = match event {
+                    QueueLogEvent::TaskCreatedV4(created) => {
+                        Some((&created.data.title, &created.data.tool))
+                    }
+                    _ => None,
+                };
+                index.insert(admitted.task_id.as_str(), tasks.len());
+                tasks.push(TaskProgress {
+                    creation: admitted,
+                    details,
+                    state: Queued,
+                    attempts: 0,
+                    updated_at: admitted.ts,
+                });
             }
             QueueLogEvent::TaskStateChanged(_) | QueueLogEvent::TaskStateChangedV2(_) => {
                 let (changed_task, from, to, recorded_attempts) = match event {
@@ -690,10 +839,15 @@ pub fn replay_task<'a>(
                     }
                     _ => unreachable!("task state change"),
                 };
-                if changed_task != task_id {
+                if !followed(changed_task) {
                     continue;
                 }
-                let (state, attempts, limit) = task.as_mut().ok_or(ReplayRefusal::TaskCreation)?;
+                let position = *index
+                    .get(changed_task.as_str())
+                    .ok_or(ReplayRefusal::TaskCreation)?;
+                let task = &mut tasks[position];
+                let limit = u64::from(task.creation.attempt_limit);
+                let (state, attempts) = (&mut task.state, &mut task.attempts);
                 if from != *state {
                     return Err(ReplayRefusal::InvalidChange);
                 }
@@ -706,23 +860,38 @@ pub fn replay_task<'a>(
                 if (*state, to) == (Review, Done) && !owner_device(event) {
                     return Err(ReplayRefusal::NotOwnerDevice);
                 }
-                if *attempts > *limit
+                if *attempts > limit
                     || recorded_attempts != *attempts
-                    || (*state == Failed && to == Queued && *attempts == *limit)
+                    || (*state == Failed && to == Queued && *attempts == limit)
                 {
                     return Err(ReplayRefusal::InvalidChange);
                 }
                 *state = to;
+                task.updated_at = event.ts();
             }
         }
     }
-    let (state, attempts, _) = task.ok_or(ReplayRefusal::TaskCreation)?;
-    Ok(ReplayedTask {
-        state,
-        attempts,
+    if only.is_some() && tasks.is_empty() {
+        return Err(ReplayRefusal::TaskCreation);
+    }
+    Ok(Replayed {
+        tasks,
         anchor,
         policy: policy.ok_or(ReplayRefusal::MissingInitialPolicy)?,
     })
+}
+
+/// `ts` as (date and time to the second, microseconds), in the order of the instants: the text
+/// alone misorders `...:05Z` after `...:05.5Z`.
+fn instant(ts: &CommonTimestampV1) -> (&str, u32) {
+    let text = ts.as_str().strip_suffix('Z').unwrap_or(ts.as_str());
+    let (seconds, fraction) = text.split_once('.').unwrap_or((text, ""));
+    let micros = fraction
+        .bytes()
+        .chain(std::iter::repeat(b'0'))
+        .take(6)
+        .fold(0, |micros, digit| micros * 10 + u32::from(digit - b'0'));
+    (seconds, micros)
 }
 
 /// Seconds since 1970-01-01T00:00:00Z, ignoring the fraction.
@@ -802,6 +971,7 @@ macro_rules! task_creation_from {
 task_creation_from!(EventQueueTaskCreatedV1, EventQueueTaskCreatedV1DataOrigin);
 task_creation_from!(EventQueueTaskCreatedV2, EventQueueTaskCreatedV2DataOrigin);
 task_creation_from!(EventQueueTaskCreatedV3, CommonQueueTaskOriginV1);
+task_creation_from!(EventQueueTaskCreatedV4, CommonQueueTaskOriginV1);
 
 /// Why the admission refuses a task.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

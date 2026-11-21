@@ -483,6 +483,51 @@ pub(crate) mod tests {
         }
     }
 
+    const ALONE_TEST: &str = "ADS_LAUNCHER_TEST_ALONE";
+    const ALONE_DIR: &str = "ADS_LAUNCHER_TEST_ALONE_DIR";
+
+    /// Runs the test `name` again in a process of its own and returns its folder there. A child
+    /// started by another test thread holds a copy of a released lock until it execs, so a test
+    /// that locks the same folder twice must not share its process. `verify` rechecks the
+    /// folder from here, which also proves the body ran.
+    fn alone(name: &str, verify: impl FnOnce(&Path)) -> Option<TestDir> {
+        if std::env::var_os(ALONE_TEST).is_some_and(|value| value == name) {
+            let dir = std::env::var_os(ALONE_DIR).expect("folder of the test");
+            return Some(TestDir(PathBuf::from(dir)));
+        }
+        let dir = TestDir::new();
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name, "--test-threads", "1"])
+            .env(ALONE_TEST, name)
+            .env(ALONE_DIR, &dir.0)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{name} failed alone:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        verify(&dir.0);
+        None
+    }
+
+    #[test]
+    fn separate_installations_never_share_the_lock() {
+        let settings = config();
+        let local = Identity::current().unwrap();
+        let [first, second] = [TestDir::new(), TestDir::new()].map(|dir| {
+            let (control, _, _) = crate::installation_commands(&settings, &dir.0, &dir.0);
+            ControlDir::open(&control, &local).unwrap()
+        });
+        assert_ne!(first.path(), second.path());
+        let _held = open_lock(&first, &settings.lock_file).unwrap();
+        let again = open_lock(&first, &settings.lock_file).unwrap_err();
+        assert_eq!(again.kind(), io::ErrorKind::AlreadyExists);
+        assert!(open_lock(&second, &settings.lock_file).is_ok());
+    }
+
     #[test]
     fn increases_retry_delay_caps_it_and_stops_after_exits() {
         let config = config();
@@ -656,7 +701,15 @@ pub(crate) mod tests {
 
     #[test]
     fn creates_a_private_control_folder() {
-        let dir = TestDir::new();
+        let Some(dir) = alone(
+            "supervisor::tests::creates_a_private_control_folder",
+            |dir| {
+                let local = Identity::current().unwrap();
+                assert_private(&dir.join("control"), &config(), &local);
+            },
+        ) else {
+            return;
+        };
         let control = dir.0.join("control");
         let settings = config();
         let local = Identity::current().unwrap();
@@ -1008,7 +1061,13 @@ pub(crate) mod tests {
 
     #[test]
     fn publishes_state_consumes_signals_and_keeps_the_same_host() {
-        let dir = TestDir::new();
+        let name = "supervisor::tests::publishes_state_consumes_signals_and_keeps_the_same_host";
+        let Some(dir) = alone(name, |dir| {
+            let state = state_value(&dir.join("state.json")).unwrap();
+            assert_eq!(state["stopped"], true);
+        }) else {
+            return;
+        };
         let daemon_release = dir.0.join("release-daemon");
         let host_release = dir.0.join("release-host");
         let state_path = dir.0.join("state.json");

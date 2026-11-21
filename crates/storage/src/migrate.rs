@@ -97,14 +97,42 @@ BEGIN
 END;
 "#;
 
+/// Version 6: the database itself binds a `queue.*` type to a `queue/<id>` stream and back,
+/// as the table CHECKs bind the gate families. A trigger, because SQLite adds a table CHECK
+/// only by rebuilding the append-only table. `<id>` is a `common.id:1`, 1 to 64 ASCII characters,
+/// so its bytes and characters agree unless a NUL ends the text early for `length()`.
+const QUEUE_BINDING_SQL: &str = r#"
+CREATE TRIGGER event_queue_binding BEFORE INSERT ON event
+BEGIN
+  SELECT RAISE(ABORT, 'queue')
+  WHERE (substr(NEW.type, 1, 20) = 'urn:ads:event:queue.') IS NOT (substr(NEW.stream, 1, 6) = 'queue/')
+     OR (substr(NEW.stream, 1, 6) = 'queue/'
+         AND (length(CAST(NEW.stream AS BLOB)) NOT BETWEEN 7 AND 70
+              OR length(CAST(NEW.stream AS TEXT)) <> length(CAST(NEW.stream AS BLOB))));
+END;
+"#;
+
+#[cfg(test)]
+pub(crate) const DROP_QUEUE_BINDING_SQL: &str = "DROP TRIGGER event_queue_binding;";
+
+/// Rows a version 3 to 5 file may hold that the version 6 binding refuses.
+const QUEUE_BINDING_VIOLATIONS: &str = "SELECT EXISTS (
+    SELECT 1 FROM event
+    WHERE (substr(type, 1, 20) = 'urn:ads:event:queue.') IS NOT (substr(stream, 1, 6) = 'queue/')
+       OR (substr(stream, 1, 6) = 'queue/'
+           AND (length(CAST(stream AS BLOB)) NOT BETWEEN 7 AND 70
+                OR length(CAST(stream AS TEXT)) <> length(CAST(stream AS BLOB))))
+)";
+
 /// `(version, script)`: each script takes the file from the previous listed
 /// version to `version`. Version 2 (a pre-release event log) is retired: its rows
 /// cannot be re-sealed without the key, which opening never receives.
-const STEPS: [(i64, &str); 4] = [
+const STEPS: [(i64, &str); 5] = [
     (1, META_SQL),
     (3, EVENT_LOG_SQL),
     (4, GENESIS_SQL),
     (5, GATE_JOURNAL_SQL),
+    (6, QUEUE_BINDING_SQL),
 ];
 
 const GATE_JOURNAL_SQL: &str = r#"
@@ -230,6 +258,10 @@ fn migrate_with(
         if reused_key {
             return Err(StorageError::LegacyKeyReuse);
         }
+    }
+    // The binding only adds a check: a file holding a row it refuses stays as it was.
+    if matches!(version, 3..=5) && tx.query_row(QUEUE_BINDING_VIOLATIONS, [], |row| row.get(0))? {
+        return Err(StorageError::UnsupportedSchema);
     }
     if version < SCHEMA_VERSION {
         for step in scripts(steps, version, SCHEMA_VERSION) {
@@ -369,6 +401,7 @@ mod tests {
                 .unwrap()
                 .3
                 .unwrap();
+            c.execute_batch(DROP_QUEUE_BINDING_SQL).unwrap();
             c.execute_batch(DROP_GATE_JOURNAL_SQL).unwrap();
             c.execute_batch("DROP TRIGGER event_append_order; DROP TABLE log_genesis;")
                 .unwrap();

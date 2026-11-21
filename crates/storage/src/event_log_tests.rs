@@ -657,7 +657,7 @@ fn tamper_with(path: &Path, change: impl FnOnce(&Connection)) {
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap();
-    assert_eq!(triggers.len(), 10);
+    assert_eq!(triggers.len(), 11);
     for (name, _) in &triggers {
         c.execute_batch(&format!("DROP TRIGGER {name}")).unwrap();
     }
@@ -2443,6 +2443,9 @@ mod gate_journal {
         let old_anchor = anchor.0.lock().unwrap().commitment;
         let connection = Connection::open(&path).unwrap();
         connection
+            .execute_batch(crate::migrate::DROP_QUEUE_BINDING_SQL)
+            .unwrap();
+        connection
             .execute_batch(crate::migrate::DROP_GATE_JOURNAL_SQL)
             .unwrap();
         connection.pragma_update(None, "user_version", 4).unwrap();
@@ -2458,7 +2461,7 @@ mod gate_journal {
             .unwrap()
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 5);
+        assert_eq!(version, SCHEMA_VERSION);
         let (action_id, _) = approved(&mut log);
         JournalGate::new(&policy(), &mut log)
             .authorize(&action_id, meta(2, 4))
