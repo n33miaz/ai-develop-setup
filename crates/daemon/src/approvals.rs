@@ -18,10 +18,10 @@ use crate::api::{ApiError, checked};
 use crate::audit::ProductLog;
 use crate::auth::LocalSession;
 use crate::events::{new_id, now_ts};
-use crate::gate::SessionGate;
+use crate::gate::{SessionGate, recorded_effects};
 
 /// The type of the answer record and the family of its `answer/<approval_id>` stream.
-const ANSWER: &str = "urn:ads:event:answer.recorded:1";
+const ANSWER: &str = "urn:ads:event:answer.recorded:2";
 
 /// The most approvals one `approval.list` answers: the `maxItems` of its response contract.
 const MAX_LISTED: u32 = 1000;
@@ -30,7 +30,7 @@ const MAX_LISTED: u32 = 1000;
 /// the token check; the owner and the device come from the implementation, never the request.
 pub trait ApprovalControl: Send + Sync + 'static {
     /// The actions waiting for the owner, oldest first, each as an item of
-    /// `command.approval.list.response:1`.
+    /// `command.approval.list.response:2`.
     fn pending(&self, session: &LocalSession) -> Result<Vec<Value>, ApiError>;
     /// Records the answer, then lets the gate act on it. `cause` is the command id. Returns
     /// whether the outcome is the one of an earlier answer with the same idempotency key.
@@ -67,23 +67,26 @@ pub struct ApprovalOwner {
 }
 
 /// Why the API does not let the owner approve a plan: its concrete effect is read from the
-/// disk at execution, so the record the owner sees does not fix it. Denying stays allowed.
-pub fn not_approvable(plan: &ActionPlanFields) -> Vec<&'static str> {
+/// disk at execution, and neither the record the owner sees nor a record of the effects a
+/// rehearsal found (`effects`) fixes it. Denying stays allowed.
+pub fn not_approvable(plan: &ActionPlanFields, effects: bool) -> Vec<&'static str> {
     let mut reasons = Vec::new();
     // Without an estimate the executor has no ceiling for what it finds in the targets.
-    if plan.estimate.is_none() {
+    if plan.estimate.is_none() && !effects {
         reasons.push("estimate_unknown");
     }
     // The names a wildcard matches are chosen when the executor reads the folder.
     if plan.targets.iter().any(|target| target.pattern.is_some()) {
         reasons.push("wildcard_target");
     }
-    let recursive = matches!(
-        plan.operation,
-        PlanOperation::DeleteRecursive | PlanOperation::CleanUntracked
-    );
-    // A tree removed for good is enumerated at execution and cannot be brought back.
-    if recursive && !plan.quarantined {
+    // A tree removed for good is enumerated at execution and cannot be brought back; the
+    // executor rehearses a recursive delete, never a clean of untracked files.
+    let unfixed = match plan.operation {
+        PlanOperation::DeleteRecursive => !effects,
+        PlanOperation::CleanUntracked => true,
+        _ => false,
+    };
+    if unfixed && !plan.quarantined {
         reasons.push("definitive_recursive_delete");
     }
     // A move back to the work root is a restore: the pairs come from the batch manifest.
@@ -93,10 +96,44 @@ pub fn not_approvable(plan: &ActionPlanFields) -> Vec<&'static str> {
             .destination
             .as_ref()
             .is_some_and(|destination| destination.as_str() == plan.work_root.as_str());
-    if restore {
+    if restore && !effects {
         reasons.push("restore_from_manifest");
     }
     reasons
+}
+
+/// The answer recorded under `id` in `answer/<approval_id>`, as JSON.
+pub(crate) fn answer_by_id(
+    log: &mut ads_storage::EventLog,
+    approval_id: &str,
+    id: &str,
+) -> Result<Option<Value>, JournalError> {
+    let approval_id = Id::new(approval_id).map_err(|_| JournalError::Integrity)?;
+    let stream = answer_stream(&approval_id).map_err(|_| JournalError::Integrity)?;
+    find_answer(log, &stream, |event| event["id"] == id).map_err(|_| JournalError::Unavailable)
+}
+
+fn find_answer(
+    log: &mut ads_storage::EventLog,
+    stream: &EventEnvelopeV1Stream,
+    mut wanted: impl FnMut(&Value) -> bool,
+) -> Result<Option<Value>, ApiError> {
+    let mut next = 1;
+    loop {
+        let page = log
+            .read_stream(stream, next, u32::MAX)
+            .map_err(|_| ApiError::Storage)?;
+        let Some(last) = page.last() else {
+            return Ok(None);
+        };
+        next = last.event.seq.get() + 1;
+        for stored in page {
+            let event = serde_json::to_value(stored.event).map_err(|_| ApiError::Storage)?;
+            if wanted(&event) {
+                return Ok(Some(event));
+            }
+        }
+    }
 }
 
 /// The audit log and the session gates bound to it. Planning, asking for approval and executing
@@ -147,6 +184,7 @@ impl Desk {
     fn record(
         &mut self,
         answer: &CommandApprovalAnswerV1Params,
+        effects_hash: Option<&str>,
         ts: &str,
         cause: &str,
     ) -> Result<String, ApiError> {
@@ -160,7 +198,8 @@ impl Desk {
             "cause": cause, "data_class": "internal",
             "data": {
                 "approval_id": answer.approval_id, "action_id": answer.action_id,
-                "plan_hash": answer.plan_hash, "decision": answer.decision.as_str(),
+                "plan_hash": answer.plan_hash, "effects_hash": effects_hash,
+                "decision": answer.decision.as_str(),
                 "owner_id": self.owner.owner_id, "via": "local_ui",
                 "idempotency_key": answer.meta.idempotency_key
             }
@@ -179,23 +218,9 @@ impl Desk {
         key: &str,
     ) -> Result<Option<Value>, ApiError> {
         let stream = answer_stream(approval_id)?;
-        let log = self.log.log();
-        let mut next = 1;
-        loop {
-            let page = log
-                .read_stream(&stream, next, u32::MAX)
-                .map_err(|_| ApiError::Storage)?;
-            let Some(last) = page.last() else {
-                return Ok(None);
-            };
-            next = last.event.seq.get() + 1;
-            for stored in page {
-                let event = serde_json::to_value(stored.event).map_err(|_| ApiError::Storage)?;
-                if event["data"]["idempotency_key"] == key {
-                    return Ok(Some(event));
-                }
-            }
-        }
+        find_answer(self.log.log(), &stream, |event| {
+            event["data"]["idempotency_key"] == key
+        })
     }
 }
 
@@ -243,6 +268,8 @@ impl ApprovalControl for ApprovalDesk {
             let Some(Event::ApprovalRequested(requested)) = history.events.last() else {
                 continue;
             };
+            let effects =
+                recorded_effects(desk.log.log(), &history.plan).map_err(|_| ApiError::Storage)?;
             let data = requested.data();
             items.push(json!({
                 "action_id": data.action_id.as_str(),
@@ -252,8 +279,10 @@ impl ApprovalControl for ApprovalDesk {
                 "summary": data.summary.as_str(),
                 "requested_at": requested.ts().as_str(),
                 "expires_at": data.expires_at.as_str(),
-                "not_approvable": not_approvable(history.plan.fields()),
+                "not_approvable": not_approvable(history.plan.fields(), effects.is_some()),
                 "plan": history.plan.to_json(),
+                "effects_hash": effects.as_ref().map(|(_, hash)| hash),
+                "effects": effects.as_ref().map(|(effects, _)| effects),
             }));
         }
         Ok(items)
@@ -303,6 +332,10 @@ impl ApprovalControl for ApprovalDesk {
         let snapshot = desk.gates[index]
             .inspect(&mut desk.log, &action_id)
             .map_err(gate_error)?;
+        // The record of effects the listing showed: the approval commits to its hash.
+        let effects =
+            recorded_effects(desk.log.log(), &history.plan).map_err(|_| ApiError::Storage)?;
+        let effects_hash = effects.as_ref().map(|(_, hash)| hash.as_str());
         let ts = now_ts()?;
         let now = Timestamp::new(ts.as_str()).map_err(|_| ApiError::Storage)?;
         let (lapsed, current_hash) = match &snapshot.state {
@@ -315,7 +348,7 @@ impl ApprovalControl for ApprovalDesk {
         // The answer is durable before the gate acts: a refused write leaves the gate untouched.
         let recorded = match &earlier {
             Some(event) => event["id"].as_str().ok_or(ApiError::Storage)?.to_owned(),
-            None => desk.record(answer, &ts, cause)?,
+            None => desk.record(answer, effects_hash, &ts, cause)?,
         };
         let approval_stream = format!("approval/{}", approval_id.as_str());
         let seq = history
@@ -347,7 +380,7 @@ impl ApprovalControl for ApprovalDesk {
             // The owner answered another plan than the one waiting: recorded, never applied.
             return Err(ApiError::ApprovalStale);
         } else if answer.decision == Decision::Approve
-            && !not_approvable(history.plan.fields()).is_empty()
+            && !not_approvable(history.plan.fields(), effects.is_some()).is_empty()
         {
             // Its concrete effect is not fixed by the record: recorded, the action keeps waiting.
             return Err(ApiError::ApprovalNotApprovable);
@@ -501,6 +534,7 @@ mod tests {
                 &self.fence(),
             )
             .unwrap()
+            .with_limits(limits(""))
         }
 
         /// The log opened again on the same database and vault.
@@ -672,7 +706,7 @@ mod tests {
         let pending = desk.pending(&session).unwrap();
         let reply =
             json!({"jsonrpc": "2.0", "id": new_id().unwrap(), "result": {"approvals": pending}});
-        checked("urn:ads:command:approval.list.response:1", reply).unwrap();
+        checked("urn:ads:command:approval.list.response:2", reply).unwrap();
         let [item] = &pending[..] else {
             panic!("expected one pending approval: {pending:?}");
         };
@@ -885,10 +919,34 @@ mod tests {
         desk.with_gates(|log, gates| gates[0].inspect(log, action).unwrap().state)
     }
 
-    #[test]
-    fn a_purge_whose_tree_is_read_at_execution_is_listed_and_refused_for_approval() {
-        let mut bench = Bench::new();
-        let gate = bench.gate("quarantine_enabled = false");
+    /// The executor parameters of these tests: removing for good on every system, so that a
+    /// purge is rehearsed on Linux too, with `overrides` on top.
+    fn limits(overrides: &str) -> ads_adapter_fs::Limits {
+        ads_adapter_fs::Limits::from_toml_str(&format!(
+            "definitive_delete = \"isolated\"\n{overrides}"
+        ))
+        .unwrap()
+    }
+
+    /// Executes `action`, with the next `seq` of its stream for the start and the outcome.
+    fn run(desk: &ApprovalDesk, action: &Id) -> crate::gate::ExecutionOutcome {
+        let now = now_ts().unwrap();
+        let next = stream(desk, &format!("action/{}", action.as_str())).len() as u64 + 1;
+        desk.with_gates(|log, gates| {
+            gates[0]
+                .execute(
+                    log,
+                    action,
+                    daemon_meta(next, &now),
+                    daemon_meta(next + 1, &now),
+                )
+                .unwrap()
+        })
+    }
+
+    /// A recursive delete for good of the folder `cache` of the work root, with `seen.txt` in
+    /// it, waiting for approval. Returns the action, its approval, its hash and the file.
+    fn purge(bench: &mut Bench, gate: &SessionGate, name: &str) -> (Id, Id, String, String) {
         let cache = bench.at(&bench.work.clone(), "cache");
         fs::create_dir_all(&cache).unwrap();
         let seen = bench.at(&cache, "seen.txt");
@@ -897,39 +955,131 @@ mod tests {
             operation: OperationRequest::DeleteRecursive,
             work_root: bench.work.clone(),
             targets: vec![TargetRequest {
-                path: cache.clone(),
+                path: cache,
                 repo_root: false,
             }],
             estimate: None,
         };
-        let (action, approval, hash) = bench.ask(&gate, "act-purge", request, 0);
+        let (action, approval, hash) = bench.ask(gate, name, request, 0);
+        (action, approval, hash, seen)
+    }
+
+    fn only(pending: &[Value]) -> &Value {
+        let [item] = pending else {
+            panic!("expected one pending approval: {pending:?}");
+        };
+        item
+    }
+
+    #[test]
+    fn an_entry_added_to_an_approved_purge_is_refused_before_the_disk() {
+        let mut bench = Bench::new();
+        let gate = bench.gate("quarantine_enabled = false");
+        let (action, approval, hash, seen) = purge(&mut bench, &gate, "act-purge");
         let desk = bench.desk(vec![gate]);
         let session = session();
 
         let pending = desk.pending(&session).unwrap();
-        let [item] = &pending[..] else {
-            panic!("expected one pending approval: {pending:?}");
+        let item = only(&pending);
+        assert_eq!(item["not_approvable"], json!([]));
+        let steps = item["effects"]["steps"].as_array().unwrap();
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0]["effect"], "delete_recursive");
+        assert_eq!(steps[0]["entries"].as_array().unwrap().len(), 2);
+        let approve = params(&action, &approval, &hash, "approve");
+        assert_eq!(
+            desk.answer(&session, &approve, &new_id().unwrap()),
+            Ok(false)
+        );
+        let answers = stream(&desk, &format!("answer/{}", approval.as_str()));
+        assert_eq!(answers[0].1["type"], ANSWER);
+        assert_eq!(answers[0].1["data"]["effects_hash"], item["effects_hash"]);
+
+        // Something the owner never saw lands in the tree after the approval.
+        let unseen = bench.at(&bench.at(&bench.work.clone(), "cache"), "unseen.txt");
+        bench.file(&unseen);
+        let outcome = run(&desk, &action);
+        let failure = outcome.operation.unwrap_err();
+        assert_eq!(failure.reason, ads_adapter_fs::Reason::EffectsChanged);
+        assert!(failure.report.untouched());
+        assert_eq!(outcome.recorded.unwrap().state, State::Failed);
+        assert!(Path::new(&seen).is_file() && Path::new(&unseen).is_file());
+        let started = stream(&desk, &format!("action/{}", action.as_str()));
+        assert!(
+            started
+                .iter()
+                .all(|(_, event)| event["type"] != "urn:ads:event:action.started:1"),
+            "no license was issued"
+        );
+        let failed = &started.last().unwrap().1;
+        assert_eq!(failed["data"]["error_code"], "E_FS_EFFECTS_CHANGED");
+    }
+
+    #[test]
+    fn the_effects_listed_are_the_ones_the_execution_reports() {
+        let mut bench = Bench::new();
+        let gate = bench.gate("quarantine_enabled = false");
+        let (action, approval, hash, seen) = purge(&mut bench, &gate, "act-same");
+        let desk = bench.desk(vec![gate]);
+        let session = session();
+        let pending = desk.pending(&session).unwrap();
+        let listed = only(&pending).clone();
+        let approve = params(&action, &approval, &hash, "approve");
+        assert_eq!(
+            desk.answer(&session, &approve, &new_id().unwrap()),
+            Ok(false)
+        );
+
+        let outcome = run(&desk, &action);
+        let report = outcome.operation.unwrap();
+        assert_eq!(outcome.recorded.unwrap().state, State::Executed);
+        let steps = listed["effects"]["steps"].as_array().unwrap();
+        assert_eq!(report.steps.len(), steps.len());
+        for (step, listed) in report.steps.iter().zip(steps) {
+            assert_eq!(step.status, ads_adapter_fs::Status::Done);
+            assert_eq!(listed["target"], step.target.as_str());
+            assert_eq!(listed["effect"], "delete_recursive");
+            let entries = listed["entries"].as_array().unwrap();
+            assert_eq!(entries.len() as u64, step.facts.items);
+            let bytes: u64 = entries.iter().map(|e| e["bytes"].as_u64().unwrap()).sum();
+            assert_eq!(bytes, step.facts.bytes);
+        }
+        assert!(!Path::new(&seen).exists());
+        let answers = stream(&desk, &format!("answer/{}", approval.as_str()));
+        assert_eq!(answers[0].1["data"]["effects_hash"], listed["effects_hash"]);
+        let recorded = stream(&desk, &format!("effects/{}", action.as_str()));
+        let [(_, record)] = &recorded[..] else {
+            panic!("expected one record of effects: {recorded:?}");
         };
+        assert_eq!(record["data"]["effects"], listed["effects"]);
+        assert_eq!(record["data"]["effects_hash"], listed["effects_hash"]);
+    }
+
+    #[test]
+    fn a_purge_whose_rehearsal_is_too_large_stays_unapprovable() {
+        let mut bench = Bench::new();
+        let gate = bench
+            .gate("quarantine_enabled = false")
+            .with_limits(limits("max_effects_bytes = 64"));
+        let (action, approval, hash, seen) = purge(&mut bench, &gate, "act-large");
+        let desk = bench.desk(vec![gate]);
+        let session = session();
+        let pending = desk.pending(&session).unwrap();
+        let item = only(&pending);
+        assert_eq!(item["effects"], Value::Null);
+        assert_eq!(item["effects_hash"], Value::Null);
         assert_eq!(
             item["not_approvable"],
             json!(["estimate_unknown", "definitive_recursive_delete"])
         );
-        // Something the owner never saw lands in the tree after the listing.
-        let unseen = bench.at(&cache, "unseen.txt");
-        bench.file(&unseen);
-
         let approve = params(&action, &approval, &hash, "approve");
         assert_eq!(
             desk.answer(&session, &approve, &new_id().unwrap()),
             Err(ApiError::ApprovalNotApprovable)
         );
         let answers = stream(&desk, &format!("answer/{}", approval.as_str()));
-        assert_eq!(answers.len(), 1, "the refused approval is recorded");
-        assert_eq!(answers[0].1["data"]["decision"], "approve");
-        assert_eq!(
-            stream(&desk, &format!("approval/{}", approval.as_str())).len(),
-            1
-        );
+        assert_eq!(answers[0].1["data"]["effects_hash"], Value::Null);
+        assert!(stream(&desk, &format!("effects/{}", action.as_str())).is_empty());
         assert!(matches!(
             state(&desk, &action),
             State::AwaitingApproval { .. }
@@ -938,12 +1088,45 @@ mod tests {
             execute(&desk, &action),
             Err(JournalError::Transition)
         ));
-        assert!(Path::new(&seen).is_file() && Path::new(&unseen).is_file());
-
+        assert!(Path::new(&seen).is_file());
         // Denying stays allowed.
         let deny = params(&action, &approval, &hash, "deny");
         assert_eq!(desk.answer(&session, &deny, &new_id().unwrap()), Ok(false));
         assert_eq!(state(&desk, &action), State::ApprovalDenied);
+    }
+
+    #[test]
+    fn a_purge_granted_without_a_record_of_effects_is_refused_before_the_disk() {
+        let mut bench = Bench::new();
+        let gate = bench
+            .gate("quarantine_enabled = false")
+            .with_limits(limits("max_effects_bytes = 64"));
+        let (action, approval, hash, seen) = purge(&mut bench, &gate, "act-bare");
+        // Granted another way than the API: no answer names a record of effects.
+        let now = now_ts().unwrap();
+        let mut meta = daemon_meta(2, &now);
+        meta.actor = Actor {
+            kind: ActorKind::Device,
+            id: Id::new("device-01").unwrap(),
+        };
+        gate.apply(
+            bench.log.as_mut().unwrap(),
+            &action,
+            Command::Grant {
+                action_id: action.clone(),
+                approval_id: approval,
+                plan_hash: PlanHash::new(hash).unwrap(),
+                via: Via::Tray,
+            },
+            meta,
+        )
+        .unwrap();
+        let desk = bench.desk(vec![gate]);
+        let outcome = run(&desk, &action);
+        let failure = outcome.operation.unwrap_err();
+        assert_eq!(failure.reason, ads_adapter_fs::Reason::EffectsChanged);
+        assert_eq!(outcome.recorded.unwrap().state, State::Failed);
+        assert!(Path::new(&seen).is_file());
     }
 
     #[test]
@@ -959,9 +1142,9 @@ mod tests {
                 .clone()
         };
         // A delete of named targets with an estimate, moved to the quarantine.
-        assert!(not_approvable(&golden("05-quarantined.json")).is_empty());
+        assert!(not_approvable(&golden("05-quarantined.json"), false).is_empty());
         assert_eq!(
-            not_approvable(&golden("02-requires-approval.json")),
+            not_approvable(&golden("02-requires-approval.json"), false),
             [
                 "estimate_unknown",
                 "wildcard_target",
@@ -969,14 +1152,22 @@ mod tests {
             ]
         );
         assert_eq!(
-            not_approvable(&golden("01-base.json")),
+            not_approvable(&golden("01-base.json"), false),
             ["definitive_recursive_delete"]
         );
         let moved = golden("04-move.json");
-        assert!(not_approvable(&moved).is_empty());
+        assert!(not_approvable(&moved, false).is_empty());
         let mut restore = moved;
         restore.destination = Some(restore.work_root.clone());
-        assert_eq!(not_approvable(&restore), ["restore_from_manifest"]);
+        assert_eq!(not_approvable(&restore, false), ["restore_from_manifest"]);
+        // A record of the effects a rehearsal found fixes what the plan leaves to the disk,
+        // except for a wildcard and a clean of untracked files, which are never rehearsed.
+        assert!(not_approvable(&restore, true).is_empty());
+        assert!(not_approvable(&golden("01-base.json"), true).is_empty());
+        assert_eq!(
+            not_approvable(&golden("02-requires-approval.json"), true),
+            ["wildcard_target", "definitive_recursive_delete"]
+        );
     }
 
     #[test]

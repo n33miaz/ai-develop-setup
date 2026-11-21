@@ -1,0 +1,64 @@
+{
+  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAC",
+  "type": "urn:ads:event:effects.recorded:1",
+  "ts": "2030-01-02T03:04:05Z",
+  "stream": "action/act-07",
+  "seq": 1,
+  "actor": {
+    "kind": "daemon",
+    "id": "core"
+  },
+  "cause": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+  "data_class": "internal",
+  "data": {
+    "action_id": "act-07",
+    "plan_hash": "sha256:5486cc58827bffeb2204a994db3d77fe6c8f2c863eb73de6e2a60802784293cb",
+    "effects_hash": "sha256:9f2b1c4e8a7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c5b4a3928170605f4e3",
+    "effects": {
+      "version": 1,
+      "action_id": "act-07",
+      "plan_hash": "sha256:5486cc58827bffeb2204a994db3d77fe6c8f2c863eb73de6e2a60802784293cb",
+      "manifest": null,
+      "steps": [
+        {
+          "target": "C:\\work\\proj\\.ads\\quarantine\\act-01",
+          "effect": "delete_recursive",
+          "stored": null,
+          "entries": [
+            {
+              "path": [],
+              "kind": "dir",
+              "bytes": 0,
+              "id": "2869847911:1125899906842681"
+            },
+            {
+              "path": [
+                "items"
+              ],
+              "kind": "dir",
+              "bytes": 0,
+              "id": "2869847911:1125899906842682"
+            },
+            {
+              "path": [
+                "items",
+                "build.log"
+              ],
+              "kind": "file",
+              "bytes": 2048,
+              "id": "2869847911:1125899906842683"
+            },
+            {
+              "path": [
+                "manifest.json"
+              ],
+              "kind": "file",
+              "bytes": 412,
+              "id": "2869847911:1125899906842684"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

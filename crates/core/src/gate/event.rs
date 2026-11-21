@@ -526,7 +526,7 @@ pub struct PlanTarget {
 
 impl PlanTarget {
     /// The target as one text: the path, or the path, a separator and the wildcard.
-    pub(super) fn text(&self) -> String {
+    pub fn text(&self) -> String {
         let path = self.path.as_str();
         let Some(pattern) = &self.pattern else {
             return path.to_owned();

@@ -241,37 +241,49 @@ recebe `REMOTE_ORIGIN_REFUSED`. O dono e o aparelho vêm do daemon
 `approvals::ApprovalControl` exige a prova `auth::LocalSession`.
 
 - `approval.list` (só `_meta`) responde `{"approvals": [...]}`
-  ([`command.approval.list.response:1`](../../contracts/README.md#api-local)):
+  ([`command.approval.list.response:2`](../../contracts/README.md#api-local)):
   da mais antiga à mais nova, cada ação cuja aprovação foi pedida e ainda não
   foi concedida, negada nem expirada, com `approval_id`, `risk`, `summary`,
-  `requested_at`, `expires_at`, `not_approvable` e o registro do plano
-  (`record.action-plan:2`) como o portão o julgou. Só ações de uma pasta de
+  `requested_at`, `expires_at`, `not_approvable`, o registro do plano
+  (`record.action-plan:2`) como o portão o julgou e os efeitos concretos
+  (`record.action-effects:1`) com o seu `effects_hash`, ou os dois `null`. Só ações de uma pasta de
   sessão servida aqui: o filtro vem antes do limite, então pedidos de outras
   pastas nunca ocupam a página. No máximo `read_page_limit` da configuração do
   armazenamento por pedido, e nunca mais de 1000 (o limite do contrato da
   resposta). Só lê e fica fora da cache de idempotência.
-- O que o registro garante: a operação, os alvos como foram pedidos (caminho e
-  curinga), o destino, se há quarentena, a estimativa e as regras. Ele não lista
-  o conteúdo de uma pasta alvo, os nomes que um curinga vai casar nem os itens
-  do manifesto de uma restauração: o executor os lê no disco na execução. Com
-  estimativa, o executor recusa antes de mudar qualquer coisa se encontrar mais
-  itens ou bytes do que o aprovado.
-- Por isso a API só aprova ação cujo efeito concreto o registro fixa.
-  `not_approvable` (`approvals::not_approvable`) lista por que não:
-  `estimate_unknown` (sem estimativa, sem teto), `wildcard_target` (alvo com
-  curinga), `definitive_recursive_delete` (`fs.delete_recursive` ou
-  `fs.clean_untracked` sem quarentena) e `restore_from_manifest` (mover de volta
-  à raiz de trabalho: os pares origem e destino vêm do manifesto). Aprovar uma
-  dessas grava a resposta e volta `APPROVAL_NOT_APPROVABLE`, com a ação ainda
-  aguardando; negar continua permitido. Ver efeitos concretos antes de aprovar
-  pede registrá-los no ensaio, o que esta versão não faz.
+- O que o registro do plano garante: a operação, os alvos como foram pedidos
+  (caminho e curinga), o destino, se há quarentena, a estimativa e as regras.
+  Ele não lista o conteúdo de uma pasta alvo nem os itens do manifesto de uma
+  restauração. Isso fica nos efeitos concretos: quando o veredito pede
+  aprovação, `SessionGate::plan` ensaia o plano que o portão entrega ao executor
+  (`Executor::rehearse_effects`) e grava o resultado em `effects.recorded:1`, uma
+  vez só, no stream `effects/<action_id>` (o log recusa um segundo `seq` 1).
+  Ensaio recusado, inclusive maior que `max_effects_bytes`, não grava nada.
+- A API só aprova ação cujo efeito concreto está fixado. `not_approvable`
+  (`approvals::not_approvable`) lista por que não: `estimate_unknown` (sem
+  estimativa e sem efeitos gravados), `wildcard_target` (alvo com curinga, que o
+  executor não executa), `definitive_recursive_delete` (`fs.clean_untracked`
+  sem quarentena, ou `fs.delete_recursive` sem quarentena e sem efeitos
+  gravados) e `restore_from_manifest` (mover de volta à raiz de trabalho sem
+  efeitos gravados). Aprovar uma dessas grava a resposta e volta
+  `APPROVAL_NOT_APPROVABLE`, com a ação ainda aguardando; negar continua
+  permitido.
+- Na execução, `SessionGate::execute` confere os efeitos **antes de pedir a
+  licença ao portão**: com a ação aprovada, lê o `effects_hash` da resposta que
+  causou a concessão, exige que seja o do registro gravado, refaz o ensaio e
+  exige o mesmo registro. O executor confere de novo antes da primeira
+  alteração (`Executor::execute_approved`). Diferença, registro ausente ou
+  aprovação sem registro para um plano que precisa dele: o disco não é tocado, a
+  ação termina em `action.failed` com `E_FS_EFFECTS_CHANGED` e só um plano novo,
+  com aprovação nova, volta a executar.
 - `approval.answer` leva `action_id`, `approval_id`, `plan_hash` (o que o dono
   viu) e `decision` (`approve` ou `deny`). Antes de gravar qualquer coisa, o
   daemon confere que a ação existe e que a aprovação é a pedida no histórico
   dela, em qualquer estado (`APPROVAL_NOT_FOUND`), e que a ação ainda aguarda
   resposta (`APPROVAL_ALREADY_ANSWERED`); nessas recusas nada é gravado. Depois
-  grava `answer.recorded:1` no stream `answer/<approval_id>`: o aparelho como
-  ator, o dono, o `ts` do relógio do daemon, a decisão, o hash, a chave de
+  grava `answer.recorded:2` no stream `answer/<approval_id>`: o aparelho como
+  ator, o dono, o `ts` do relógio do daemon, a decisão, o hash do plano, o
+  `effects_hash` dos efeitos gravados da ação (ou `null`), a chave de
   idempotência e o id do comando em `cause`. Se essa gravação falhar, a
   resposta é `INTERNAL_ERROR` e o portão não age. Só então o portão registra
   `approval.granted:2` ou `approval.denied:2`, com o mesmo ator e `cause`

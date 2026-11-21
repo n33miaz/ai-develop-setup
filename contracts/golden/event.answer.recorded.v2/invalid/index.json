@@ -1,0 +1,20 @@
+{
+  "01-missing-effects-hash.json": {
+    "rule": "A resposta diz qual registro de efeitos o dono viu, ou null.",
+    "keyword": "required",
+    "instancePath": "/data",
+    "params": {
+      "missingProperty": "effects_hash"
+    }
+  },
+  "02-effects-hash-without-prefix.json": {
+    "rule": "O hash dos efeitos é um sha256 com prefixo.",
+    "keyword": "anyOf",
+    "instancePath": "/data/effects_hash"
+  },
+  "03-daemon-actor.json": {
+    "rule": "Quem responde é um aparelho do dono.",
+    "keyword": "const",
+    "instancePath": "/actor/kind"
+  }
+}

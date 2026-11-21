@@ -1,0 +1,170 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:command:approval.list.response:2",
+  "title": "Resposta de approval.list",
+  "description": "Resposta JSON-RPC 2.0 aceita de approval.list: as ações que aguardam a resposta do dono, da mais antiga à mais nova, cada uma com a aprovação pedida, o registro do plano como o portão o julgou (alvos como pedidos, destino, quarentena, estimativa e regras), os efeitos concretos que o ensaio achou (record.action-effects:1, com o hash que a aprovação compromete; null quando o ensaio não gravou registro) e os motivos pelos quais a API não a deixa aprovar (not_approvable; vazio quando é aprovável). A versão 2 acrescenta effects e effects_hash. A recusa volta como command.response:2 com error.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "jsonrpc",
+    "id",
+    "result"
+  ],
+  "properties": {
+    "jsonrpc": {
+      "const": "2.0"
+    },
+    "id": {
+      "$ref": "urn:ads:common:ulid:1"
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "approvals"
+      ],
+      "properties": {
+        "approvals": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "action_id",
+              "approval_id",
+              "plan_hash",
+              "risk",
+              "summary",
+              "requested_at",
+              "expires_at",
+              "not_approvable",
+              "plan",
+              "effects_hash",
+              "effects"
+            ],
+            "properties": {
+              "action_id": {
+                "$ref": "urn:ads:common:id:1"
+              },
+              "approval_id": {
+                "$ref": "urn:ads:common:id:1"
+              },
+              "plan_hash": {
+                "$ref": "urn:ads:common:sha256:1"
+              },
+              "risk": {
+                "$ref": "urn:ads:common:risk:1"
+              },
+              "summary": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              },
+              "requested_at": {
+                "$ref": "urn:ads:common:timestamp:1"
+              },
+              "expires_at": {
+                "$ref": "urn:ads:common:timestamp:1"
+              },
+              "not_approvable": {
+                "type": "array",
+                "uniqueItems": true,
+                "maxItems": 4,
+                "items": {
+                  "enum": [
+                    "estimate_unknown",
+                    "wildcard_target",
+                    "definitive_recursive_delete",
+                    "restore_from_manifest"
+                  ]
+                }
+              },
+              "plan": {
+                "$ref": "urn:ads:record:action-plan:2"
+              },
+              "effects_hash": {
+                "anyOf": [
+                  {
+                    "$ref": "urn:ads:common:sha256:1"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "effects": {
+                "anyOf": [
+                  {
+                    "$ref": "urn:ads:record:action-effects:1"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "jsonrpc": "2.0",
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAD",
+      "result": {
+        "approvals": [
+          {
+            "action_id": "act-03",
+            "approval_id": "appr-03",
+            "plan_hash": "sha256:5486cc58827bffeb2204a994db3d77fe6c8f2c863eb73de6e2a60802784293cb",
+            "risk": "medium",
+            "summary": "Limpar arquivos temporários do projeto",
+            "requested_at": "2030-01-02T03:04:05Z",
+            "expires_at": "2030-01-02T03:19:05Z",
+            "not_approvable": [
+              "estimate_unknown",
+              "wildcard_target",
+              "definitive_recursive_delete"
+            ],
+            "plan": {
+              "version": 2,
+              "action_id": "act-03",
+              "plan_hash": "sha256:5486cc58827bffeb2204a994db3d77fe6c8f2c863eb73de6e2a60802784293cb",
+              "operation": "fs.clean_untracked",
+              "work_root": "C:\\work\\proj",
+              "destination": null,
+              "targets": [
+                {
+                  "path": "C:\\work\\proj\\cache",
+                  "pattern": "*.tmp",
+                  "repo_root": false
+                },
+                {
+                  "path": "C:\\work\\proj\\out",
+                  "pattern": null,
+                  "repo_root": false
+                }
+              ],
+              "estimate": null,
+              "verdict": {
+                "decision": "requires_approval",
+                "risk": "medium",
+                "reasons": [
+                  {
+                    "rule": "estimate_unknown",
+                    "subject": "C:\\work\\proj"
+                  }
+                ]
+              },
+              "quarantined": false
+            },
+            "effects_hash": null,
+            "effects": null
+          }
+        ]
+      }
+    }
+  ]
+}

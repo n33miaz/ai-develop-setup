@@ -1,0 +1,28 @@
+{
+  "01-missing-effects.json": {
+    "rule": "Cada aprovação diz que efeitos concretos o ensaio achou, ou null.",
+    "keyword": "required",
+    "instancePath": "/result/approvals/0",
+    "params": {
+      "missingProperty": "effects"
+    }
+  },
+  "02-effects-version-2.json": {
+    "rule": "Os efeitos são o registro que o executor escreve, na versão 1.",
+    "keyword": "anyOf",
+    "instancePath": "/result/approvals/0/effects"
+  },
+  "03-unknown-reason.json": {
+    "rule": "Os motivos de não aprovável são um conjunto fechado.",
+    "keyword": "enum",
+    "instancePath": "/result/approvals/0/not_approvable/0"
+  },
+  "04-with-accepted.json": {
+    "rule": "A resposta de approval.list e a de um comando com efeito não se misturam.",
+    "keyword": "additionalProperties",
+    "instancePath": "/result",
+    "params": {
+      "additionalProperty": "accepted"
+    }
+  }
+}

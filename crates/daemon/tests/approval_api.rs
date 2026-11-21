@@ -45,7 +45,8 @@ impl ApprovalControl for Counting {
             "action_id": "act-03", "approval_id": "appr-03", "plan_hash": HASH,
             "risk": "medium", "summary": "Limpar temporários",
             "requested_at": "2030-01-02T03:04:05Z", "expires_at": "2030-01-02T03:19:05Z",
-            "not_approvable": ["estimate_unknown", "wildcard_target", "definitive_recursive_delete"], "plan": plan
+            "not_approvable": ["estimate_unknown", "wildcard_target", "definitive_recursive_delete"], "plan": plan,
+            "effects_hash": null, "effects": null
         })])
     }
     fn answer(
@@ -161,7 +162,7 @@ async fn exchange(ws: &mut Socket, value: &Value) -> Value {
     };
     let reply: Value = serde_json::from_str(&text).unwrap();
     assert!(
-        valid("urn:ads:contract:local-api.server-message:4", &reply),
+        valid("urn:ads:contract:local-api.server-message:5", &reply),
         "{reply}"
     );
     if let Some(code) = reply["error"].get("code") {
@@ -228,7 +229,7 @@ async fn list_answers_with_the_plan_and_answer_reaches_the_gate_once() {
     let list = command("approval.list", json!({}));
     let reply = exchange(&mut ws, &list).await;
     assert!(
-        valid("urn:ads:command:approval.list.response:1", &reply),
+        valid("urn:ads:command:approval.list.response:2", &reply),
         "{reply}"
     );
     assert_eq!(

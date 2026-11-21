@@ -1,0 +1,25 @@
+{
+  "01-second-record.json": {
+    "rule": "Os efeitos de uma ação são gravados uma vez só.",
+    "keyword": "const",
+    "instancePath": "/seq"
+  },
+  "02-device-actor.json": {
+    "rule": "Quem grava os efeitos é o núcleo.",
+    "keyword": "const",
+    "instancePath": "/actor/kind"
+  },
+  "03-missing-hash.json": {
+    "rule": "O registro leva o hash que a aprovação repete.",
+    "keyword": "required",
+    "instancePath": "/data",
+    "params": {
+      "missingProperty": "effects_hash"
+    }
+  },
+  "04-action-stream.json": {
+    "rule": "Os efeitos ficam no stream effects/, fora do stream do portão.",
+    "keyword": "pattern",
+    "instancePath": "/stream"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "01-id-without-volume.json": {
+    "rule": "A identidade nomeia o volume e o objeto.",
+    "keyword": "pattern",
+    "instancePath": "/steps/0/entries/0/id"
+  },
+  "02-name-with-separator.json": {
+    "rule": "Cada nome do caminho de uma entrada é um nome só.",
+    "keyword": "pattern",
+    "instancePath": "/steps/0/entries/2/path/0"
+  },
+  "03-no-steps.json": {
+    "rule": "Um registro de efeitos tem pelo menos um passo.",
+    "keyword": "minItems",
+    "instancePath": "/steps"
+  },
+  "04-unknown-effect.json": {
+    "rule": "Os efeitos são os que o executor faz.",
+    "keyword": "enum",
+    "instancePath": "/steps/0/effect"
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "action_id": "act-07",
+  "plan_hash": "sha256:5486cc58827bffeb2204a994db3d77fe6c8f2c863eb73de6e2a60802784293cb",
+  "manifest": null,
+  "steps": [
+    {
+      "target": "C:\\work\\proj\\.ads\\quarantine\\act-01",
+      "effect": "delete_recursive",
+      "stored": null,
+      "entries": [
+        {
+          "path": [],
+          "kind": "dir",
+          "bytes": 0,
+          "id": "2869847911:1125899906842681"
+        },
+        {
+          "path": [
+            "items"
+          ],
+          "kind": "dir",
+          "bytes": 0,
+          "id": "2869847911:1125899906842682"
+        },
+        {
+          "path": [
+            "items",
+            "build.log"
+          ],
+          "kind": "file",
+          "bytes": 2048,
+          "id": "2869847911:1125899906842683"
+        },
+        {
+          "path": [
+            "manifest.json"
+          ],
+          "kind": "file",
+          "bytes": 412,
+          "id": "2869847911:1125899906842684"
+        }
+      ]
+    }
+  ]
+}
