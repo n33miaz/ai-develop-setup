@@ -28,7 +28,10 @@ Os arquivos de trava são reutilizados após a saída. O daemon supervisionado
 mantém sua própria trava (`daemon.lock`) na mesma pasta. Ao iniciar, o lançador
 cria essa trava privada quando falta e recusa a partida se a existente for de
 outra conta ou der acesso a ela, já que outra conta poderia segurá-la e impedir
-todo daemon da instalação de iniciar. Ao sair pelo sinal
+todo daemon da instalação de iniciar. O daemon cria a trava só para o usuário (no
+Unix, modo `0600`). No Unix, uma trava deixada por uma versão anterior do
+daemon tem modo `0644` e é recusada: apague `daemon.lock` com o daemon parado e
+inicie o lançador de novo. Ao sair pelo sinal
 `stop`, o lançador encerra o daemon. Na saída do supervisor que passa pela
 limpeza de processos, ele também tenta encerrá-lo. Se o lançador
 for encerrado à força, o daemon pode continuar vivo, mas outro daemon da mesma

@@ -30,12 +30,13 @@ impl InstanceLock {
                 )
             })?
             .to_path_buf();
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(path)?;
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create(true).truncate(false);
+        // Only the user may open the lock: another account could otherwise take it and keep
+        // every daemon of the installation from starting. The launcher refuses a wider one.
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let file = options.open(path)?;
         file.try_lock().map_err(|error| match error {
             TryLockError::WouldBlock => io::Error::new(
                 io::ErrorKind::AlreadyExists,
@@ -169,6 +170,22 @@ mod tests {
             config.profile(&alias).unwrap().directory().as_str(),
             directory
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn creates_the_instance_lock_for_the_user_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let folder = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target")
+            .join(format!("daemon-lock-test-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("daemon.lock");
+        let _ = std::fs::remove_file(&path);
+        let lock = InstanceLock::acquire(&path).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        drop(lock);
     }
 
     #[test]

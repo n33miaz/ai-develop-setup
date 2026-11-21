@@ -242,7 +242,10 @@ impl Window {
         self.state.starts = self.state.starts.saturating_add(1);
         let result = self.spawn(command, bootstrap);
         match &result {
-            Ok(()) => self.state.pid = self.child.as_ref().map(Child::id),
+            Ok(()) => {
+                self.state.pid = self.child.as_ref().map(Child::id);
+                self.state.last_error = None;
+            }
             Err(error) => self.state.last_error = Some(error.to_string()),
         }
         result
@@ -1286,18 +1289,16 @@ pub(crate) mod tests {
     }
 
     /// A lock the daemon created by path, still held by a daemon that outlived its launcher,
-    /// does not keep a new launcher from starting.
+    /// does not keep a new launcher from starting. The options mirror the daemon's.
     #[test]
     fn accepts_a_daemon_lock_held_by_a_running_daemon() {
         let dir = TestDir::new();
         let settings = config();
-        let held = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(dir.0.join(crate::DAEMON_LOCK_FILE))
-            .unwrap();
+        let mut options = fs::OpenOptions::new();
+        options.read(true).write(true).create(true).truncate(false);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let held = options.open(dir.0.join(crate::DAEMON_LOCK_FILE)).unwrap();
         held.try_lock().unwrap();
         fs::write(dir.0.join(&settings.stop_file), []).unwrap();
         let daemon = Command::new(dir.0.join("missing-daemon"));
@@ -1628,6 +1629,18 @@ pub(crate) mod tests {
         assert_eq!(state["shell"]["starts"], 1, "{state}");
         assert!(state["shell"]["pid"].is_null(), "{state}");
         assert_eq!(state["shell"]["last_exit"]["code"], 0, "{state}");
+    }
+
+    #[test]
+    fn a_successful_start_clears_the_previous_shell_error() {
+        let mut window = Window::new(&config());
+        let mut missing = Command::new(TestDir::new().0.join("missing-shell"));
+        assert!(window.start(&mut missing, Stdio::null()).is_err());
+        assert!(window.state.last_error.is_some());
+        window.start(&mut fixture(None), Stdio::null()).unwrap();
+        assert!(window.state.pid.is_some());
+        assert!(window.state.last_error.is_none());
+        assert_eq!(window.state.starts, 2);
     }
 
     #[test]
