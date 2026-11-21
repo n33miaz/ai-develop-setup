@@ -40,10 +40,11 @@ fn arguments_are_closed() {
 fn user_file_is_split_between_api_and_tools() {
     let path = user_file(
         "daemon-split",
-        b"max_sessions = 3\n[workdirs]\ndefault = 'C:/w'\n[tools.codex]\nargs = ['x']\n",
+        b"max_sessions = 3\n[workdirs]\ndefault = 'C:/w'\n[tools.codex]\nargs = ['x']\n[storage]\nbusy_timeout_ms = 42\n",
     );
-    let (api, _, tools) = load("--config", path).unwrap();
+    let (api, _, tools, storage) = load("--config", path).unwrap();
     assert_eq!(api.max_sessions, 3);
+    assert_eq!(storage.unwrap().busy_timeout_ms(), 42);
     let tools: toml::Table = toml::from_str(&tools).unwrap();
     assert_eq!(
         tools.keys().collect::<Vec<_>>(),

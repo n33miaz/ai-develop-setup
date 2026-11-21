@@ -108,6 +108,59 @@ impl Drop for ReadCredential {
     }
 }
 
+/// A real credential vault scoped to a caller-supplied unique test run.
+#[cfg(feature = "test-support")]
+pub struct TestVault {
+    run: u128,
+    entries: std::sync::Mutex<Vec<SecretName>>,
+}
+
+#[cfg(feature = "test-support")]
+impl TestVault {
+    pub fn new(run: u128) -> Self {
+        Self {
+            run,
+            entries: Default::default(),
+        }
+    }
+
+    fn target(&self, name: SecretName) -> Target {
+        Target::new(&format!("ads-test-{:032x}-{}", self.run, name.as_str()))
+    }
+}
+
+#[cfg(feature = "test-support")]
+impl Vault for TestVault {
+    fn store(&self, name: SecretName, secret: &Secret) -> Result<(), VaultError> {
+        let mut entries = self.entries.lock().map_err(|_| VaultError::Unavailable)?;
+        self.target(name).store(secret)?;
+        if !entries.contains(&name) {
+            entries.push(name);
+        }
+        Ok(())
+    }
+
+    fn read(&self, name: SecretName) -> Result<Option<Secret>, VaultError> {
+        self.target(name).read()
+    }
+
+    fn remove(&self, name: SecretName) -> Result<(), VaultError> {
+        self.target(name).remove()
+    }
+}
+
+#[cfg(feature = "test-support")]
+impl Drop for TestVault {
+    fn drop(&mut self) {
+        let entries = std::mem::take(self.entries.get_mut().unwrap_or_else(|e| e.into_inner()));
+        for name in entries {
+            if self.remove(name).is_err() {
+                eprintln!("could not clean up a vault test entry");
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

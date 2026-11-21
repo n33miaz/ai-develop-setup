@@ -382,6 +382,7 @@ pub struct ProductLog {
     log: Arc<Mutex<EventLog>>,
     state: ProductState,
     busy_timeout: Duration,
+    _local_runtime: Option<File>,
 }
 
 impl ProductLog {
@@ -459,6 +460,17 @@ fn open_product_in<V: Vault + Send + 'static>(
 ) -> Result<ProductLog, ProductLogError> {
     let (canonical, anchor) = canonical_anchor(path, config, true, vault, workdirs)?;
     let _binding = lock_binding(vault_dir)?;
+    finish_product(vault_dir, canonical, config, keys, anchor, instance)
+}
+
+fn finish_product<V: Vault + Send + 'static>(
+    vault_dir: &Path,
+    canonical: PathBuf,
+    config: &StorageConfig,
+    keys: Box<dyn KeyProvider + Send>,
+    anchor: VaultAnchor<V>,
+    instance: Option<&InstanceLock>,
+) -> Result<ProductLog, ProductLogError> {
     let log = EventLog::open(&canonical, config, keys, Box::new(anchor))?;
     // The configured spelling, so that every link on its way is protected too.
     let state = ProductState::resolve(
@@ -471,7 +483,60 @@ fn open_product_in<V: Vault + Send + 'static>(
         log: Arc::new(Mutex::new(log)),
         state,
         busy_timeout: Duration::from_millis(config.busy_timeout_ms().into()),
+        _local_runtime: None,
     })
+}
+
+pub(crate) fn open_local_product(
+    config: &StorageConfig,
+    instance: Option<&InstanceLock>,
+    workdirs: &[PathBuf],
+) -> Result<(ProductLog, crate::product::LocalIdentities), crate::product::StartupError> {
+    open_local_product_in(
+        &vault_directory()?,
+        config,
+        Arc::new(OsVault),
+        instance,
+        workdirs,
+    )
+}
+
+fn open_local_product_in<V: Vault + Send + Sync + 'static>(
+    directory: &Path,
+    config: &StorageConfig,
+    vault: Arc<V>,
+    instance: Option<&InstanceLock>,
+    workdirs: &[PathBuf],
+) -> Result<(ProductLog, crate::product::LocalIdentities), crate::product::StartupError> {
+    use crate::product::{LocalIdentities, StartupError, VaultKeys, first_use};
+
+    check_session()?;
+    check_audit_location(&directory.join("audit.db"), workdirs)?;
+    let _binding = lock_binding(directory)?;
+    let path = canonical_path(config)?;
+    let (canonical, anchor) = canonical_anchor(&path, config, true, Arc::clone(&vault), workdirs)?;
+    let first_use = first_use(&canonical, vault.as_ref())?;
+    let private = ControlDir::open_user_owned(directory, false).map_err(audit_access_error)?;
+    let runtime = private
+        .lock_file("local-runtime.lock")
+        .map_err(audit_access_error)?;
+    runtime.try_lock().map_err(|error| match error {
+        TryLockError::WouldBlock => StorageError::Busy,
+        TryLockError::Error(error) => error.into(),
+    })?;
+    let ids = LocalIdentities::load(&private, first_use).map_err(StartupError::Identity)?;
+    let keys = VaultKeys(vault);
+    keys.provision(first_use)?;
+    let mut log = finish_product(
+        directory,
+        canonical,
+        config,
+        Box::new(keys),
+        anchor,
+        instance,
+    )?;
+    log._local_runtime = Some(runtime);
+    Ok((log, ids))
 }
 
 /// Prepares a plan against the OS vault. Review its summary before confirming.
@@ -552,8 +617,14 @@ mod tests {
                 .transpose()
         }
 
-        fn remove(&self, _: SecretName) -> Result<(), VaultError> {
-            panic!("the audit anchor must never be removed")
+        fn remove(&self, name: SecretName) -> Result<(), VaultError> {
+            assert_eq!(
+                name,
+                SecretName::StorageKey,
+                "the audit anchor must never be removed"
+            );
+            self.0.lock().unwrap().remove(name.as_str().as_ref());
+            Ok(())
         }
     }
 
@@ -770,6 +841,187 @@ mod tests {
             "data": {}
         }))
         .unwrap()
+    }
+
+    struct LocalFixture {
+        root: Fixture,
+        storage: StorageConfig,
+        vault: Arc<TestVault>,
+    }
+
+    impl LocalFixture {
+        fn new() -> Self {
+            let root = Fixture::new("local-product", &["vault", "audit"]);
+            let database = root.path.join("audit/audit.db");
+            let storage = StorageConfig::from_toml_str(&format!(
+                "audit_database_path = {}",
+                serde_json::to_string(&database).unwrap()
+            ))
+            .unwrap();
+            Self {
+                root,
+                storage,
+                vault: Arc::new(TestVault::default()),
+            }
+        }
+
+        fn open(
+            &self,
+        ) -> Result<(ProductLog, crate::product::LocalIdentities), crate::product::StartupError>
+        {
+            open_local_product_in(
+                &self.root.path.join("vault"),
+                &self.storage,
+                self.vault.clone(),
+                None,
+                &[],
+            )
+        }
+
+        fn identities(&self) -> PathBuf {
+            self.root.path.join("vault/local-identities.toml")
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn local_product_restarts_with_the_windows_vault() {
+        let fixture = LocalFixture::new();
+        let mut run = [0; 16];
+        getrandom::fill(&mut run).unwrap();
+        let vault = Arc::new(ads_adapter_vault::TestVault::new(u128::from_be_bytes(run)));
+        let open = || {
+            open_local_product_in(
+                &fixture.root.path.join("vault"),
+                &fixture.storage,
+                vault.clone(),
+                None,
+                &[],
+            )
+        };
+        let (log, ids) = open().unwrap();
+        log.log().unwrap().append(&event(1)).unwrap();
+        drop(log);
+        let (log, reopened_ids) = open().unwrap();
+        assert_eq!(ids, reopened_ids);
+        assert_eq!(log.log().unwrap().verify_chain(), Ok(1));
+        drop(log);
+        vault.remove(SecretName::StorageKey).unwrap();
+        assert!(matches!(
+            open(),
+            Err(crate::product::StartupError::Audit(
+                ProductLogError::Storage(StorageError::KeyUnavailable)
+            ))
+        ));
+    }
+
+    #[test]
+    fn local_product_provisions_on_first_start() {
+        let fixture = LocalFixture::new();
+        assert!(!fixture.identities().exists());
+        assert!(
+            fixture
+                .vault
+                .read(SecretName::StorageKey)
+                .unwrap()
+                .is_none()
+        );
+        let (log, ids) = fixture.open().unwrap();
+        let key = fixture.vault.read(SecretName::StorageKey).unwrap().unwrap();
+        assert_eq!(key.expose().len(), 32);
+        let text = fs::read_to_string(fixture.identities()).unwrap();
+        assert_eq!(
+            toml::from_str::<crate::product::LocalIdentities>(&text).unwrap(),
+            ids
+        );
+        assert_eq!(log.log().unwrap().verify_chain(), Ok(0));
+        let (queue, approvals) = crate::product::controls(log, ids, &[], 1024 * 1024).unwrap();
+        assert!(matches!(
+            fixture.open(),
+            Err(crate::product::StartupError::Audit(
+                ProductLogError::Storage(StorageError::Busy)
+            ))
+        ));
+        drop((queue, approvals));
+        assert!(fixture.open().is_ok());
+    }
+
+    #[test]
+    fn local_product_restart_reuses_ids_and_decrypts_history() {
+        use ads_contracts::RecordTaskQueueV1State::{Enabled, Stopped};
+
+        use crate::{approvals::ApprovalControl, auth::Token, queue::QueueControl};
+
+        let fixture = LocalFixture::new();
+        let (log, ids) = fixture.open().unwrap();
+        let queue_id = ids.queue_id.clone();
+        let token = Token::generate().unwrap();
+        let bootstrap = zeroize::Zeroizing::new(token.desktop_bootstrap(1));
+        let local = token
+            .open_session(bootstrap.split_once(' ').unwrap().1)
+            .unwrap();
+        let (queue, approvals) = crate::product::controls(log, ids, &[], 1024 * 1024).unwrap();
+        assert!(approvals.pending(&local).unwrap().approvals.is_empty());
+        queue
+            .create(&local, &queue_id, &crate::events::new_id().unwrap())
+            .unwrap();
+        queue
+            .start(&local, &queue_id, &crate::events::new_id().unwrap())
+            .unwrap();
+        assert_eq!(queue.state(&local, &queue_id).unwrap(), Enabled);
+        drop((queue, approvals));
+
+        let (log, reopened_ids) = fixture.open().unwrap();
+        assert_eq!(queue_id, reopened_ids.queue_id);
+        assert_eq!(log.log().unwrap().verify_chain(), Ok(2));
+        let (queue, approvals) =
+            crate::product::controls(log, reopened_ids, &[], 1024 * 1024).unwrap();
+        assert_eq!(queue.state(&local, &queue_id).unwrap(), Stopped);
+        assert!(approvals.pending(&local).unwrap().approvals.is_empty());
+    }
+
+    #[test]
+    fn local_product_refuses_to_replace_a_missing_key() {
+        let fixture = LocalFixture::new();
+        let (log, _) = fixture.open().unwrap();
+        log.log().unwrap().append(&event(1)).unwrap();
+        drop(log);
+        fixture.vault.remove(SecretName::StorageKey).unwrap();
+        assert!(matches!(
+            fixture.open(),
+            Err(crate::product::StartupError::Audit(
+                ProductLogError::Storage(StorageError::KeyUnavailable)
+            ))
+        ));
+        assert!(
+            fixture
+                .vault
+                .read(SecretName::StorageKey)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn local_product_preserves_corrupt_identities_and_refuses_missing_ones() {
+        use crate::product::{IdentityError, StartupError};
+        let fixture = LocalFixture::new();
+        drop(fixture.open().unwrap());
+        let path = fixture.identities();
+        let saved = path.with_extension("backup");
+        fs::rename(&path, &saved).unwrap();
+        assert!(matches!(
+            fixture.open(),
+            Err(StartupError::Identity(IdentityError::Missing))
+        ));
+        fs::rename(&saved, &path).unwrap();
+        let damaged = "queue_id = 7";
+        fs::write(&path, damaged).unwrap();
+        assert!(matches!(
+            fixture.open(),
+            Err(StartupError::Identity(IdentityError::Invalid))
+        ));
+        assert_eq!(fs::read_to_string(path).unwrap(), damaged);
     }
 
     #[test]

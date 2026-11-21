@@ -283,6 +283,33 @@ impl ControlDir {
         check_windows_private(&self.local, &win::security(&file)?, true).map_err(refuse)
     }
 
+    /// Opens a plain, user-owned file relative to this private folder.
+    pub fn open_private_file(&self, name: &str) -> io::Result<File> {
+        let refuse = |reason| refusal("file", &self.path.join(name), reason);
+        if name.is_empty() || matches!(name, "." | "..") || name.contains(['/', '\\', ':', '\0']) {
+            return Err(refuse("does not have a plain file name"));
+        }
+        #[cfg(windows)]
+        {
+            let file = win::open_for_read(&self.dir, name)?;
+            if win::kind(&file)? != Kind::File {
+                return Err(refuse("is not a plain file"));
+            }
+            check_windows_private(&self.local, &win::security(&file)?, true).map_err(refuse)?;
+            Ok(file)
+        }
+        #[cfg(unix)]
+        {
+            let entry = unix::open_entry(&self.dir, name)?;
+            let stat = unix::stat(&entry)?;
+            if unix::kind(&stat) != Kind::File {
+                return Err(refuse("is not a plain file"));
+            }
+            unix_private(&self.local, stat.st_uid, stat.st_mode).map_err(refuse)?;
+            Ok(File::from(entry))
+        }
+    }
+
     /// The same folder, with its files judged as `local`'s.
     #[cfg(feature = "test-support")]
     pub fn judged_as(self, local: Identity) -> Self {

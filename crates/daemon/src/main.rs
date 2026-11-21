@@ -2,7 +2,7 @@
 
 use ads_daemon::api::{ApiError, LocalApi};
 use ads_daemon::pty_client::{ClientConfig, PtyClient};
-use ads_daemon::startup::{InstanceLock, load_config};
+use ads_daemon::startup::{InstanceLock, attach_product_controls, load_config};
 use ads_daemon::tool_launcher::ToolLauncher;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -21,7 +21,7 @@ async fn main() -> ExitCode {
         // by the Administrators group.
         ads_daemon::audit::check_session()?;
         let mut args = std::env::args_os().skip(1).peekable();
-        let _instance_lock = if args.next_if(|arg| arg == "--instance-lock").is_some() {
+        let instance_lock = if args.next_if(|arg| arg == "--instance-lock").is_some() {
             let path = args.next().ok_or("missing daemon instance lock path")?;
             Some(InstanceLock::acquire(std::path::Path::new(&path))?)
         } else {
@@ -29,7 +29,7 @@ async fn main() -> ExitCode {
         };
         let desktop = args.next_if(|arg| arg == "--desktop").is_some();
         let args = args.map(|arg| arg.into_string().map_err(|_| "invalid daemon argument"));
-        let (config, host_config, tools) =
+        let (config, host_config, tools, storage) =
             load_config(args.collect::<Result<Vec<_>, _>>()?.into_iter())?;
         let config = if desktop {
             config.for_desktop()
@@ -49,7 +49,16 @@ async fn main() -> ExitCode {
         .await
         .map_err(|_| ApiError::Unavailable)?
         .map_err(|_| ApiError::Unavailable)?;
+        let workdirs = launcher.workdirs();
+        let max_list_bytes = config.approval_list_max_bytes;
         let api = LocalApi::bind(config, host, Arc::new(launcher)).await?;
+        let api = attach_product_controls(
+            api,
+            storage,
+            instance_lock.as_ref(),
+            &workdirs,
+            max_list_bytes,
+        );
         if desktop {
             let mut bootstrap = zeroize::Zeroizing::new(api.desktop_bootstrap()?);
             // A closed or unavailable window must not interrupt the daemon.

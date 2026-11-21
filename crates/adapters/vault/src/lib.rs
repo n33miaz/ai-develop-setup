@@ -24,6 +24,9 @@ mod platform {
     }
 }
 
+#[cfg(all(windows, feature = "test-support"))]
+pub use windows::TestVault;
+
 /// Credential vault of the current operating system user.
 pub struct OsVault;
 

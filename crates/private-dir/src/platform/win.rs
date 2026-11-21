@@ -403,6 +403,10 @@ pub(super) fn open_for_inspection(root: &File, name: &str) -> io::Result<File> {
     open_at(root, name, access, SHARED, FILE_OPEN, ITSELF, None)
 }
 
+pub(super) fn open_for_read(root: &File, name: &str) -> io::Result<File> {
+    open_at(root, name, FILE_GENERIC_READ, HELD, FILE_OPEN, FILE, None)
+}
+
 /// Opens the entry `name` of the folder itself, to read its owner and access list and then
 /// remove it. Until the handle is dropped nobody can rename, replace or delete that entry.
 pub(super) fn open_to_remove(root: &File, name: &str) -> io::Result<File> {

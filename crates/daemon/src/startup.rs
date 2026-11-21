@@ -66,7 +66,12 @@ pub const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 
 /// The API settings, the host settings and the tools' part of the user file (`[env]`,
 /// `[workdirs]`, `[tools]`, `[accounts]`), still as TOML for the adapters.
-pub type StartupConfig = (ApiConfig, HostConfig, String);
+pub type StartupConfig = (
+    ApiConfig,
+    HostConfig,
+    String,
+    Result<ads_storage::StorageConfig, ads_storage::StorageError>,
+);
 
 /// Reads `--config` and `--host-config`. Errors name the flag or the line, never the content.
 pub fn load_config(mut args: impl Iterator<Item = String>) -> Result<StartupConfig, String> {
@@ -83,11 +88,14 @@ pub fn load_config(mut args: impl Iterator<Item = String>) -> Result<StartupConf
             _ => return Err("invalid daemon arguments".into()),
         }
     }
-    let (api, tools) = split_config(&overrides)?;
-    Ok((api, host, tools))
+    let (api, tools, storage) = split_config(&overrides)?;
+    Ok((api, host, tools, storage))
 }
 
-fn split_config(overrides: &str) -> Result<(ApiConfig, String), String> {
+type StorageSettings = Result<ads_storage::StorageConfig, ads_storage::StorageError>;
+type SplitConfig = (ApiConfig, String, StorageSettings);
+
+fn split_config(overrides: &str) -> Result<SplitConfig, String> {
     let mut api: toml::Table =
         toml::from_str(overrides).map_err(|error: toml::de::Error| match error.span() {
             // Only the position: the parser message could quote the file.
@@ -97,6 +105,13 @@ fn split_config(overrides: &str) -> Result<(ApiConfig, String), String> {
             ),
             None => "invalid user configuration TOML".to_owned(),
         })?;
+    let storage = match api.remove("storage") {
+        Some(toml::Value::Table(table)) => {
+            ads_storage::StorageConfig::from_toml_str(&table.to_string())
+        }
+        Some(_) => Err(ads_storage::StorageError::Configuration),
+        None => Ok(ads_storage::StorageConfig::defaults()),
+    };
     let mut tools = toml::Table::new();
     for name in ["env", "workdirs", "tools", "accounts"] {
         if let Some(value) = api.remove(name) {
@@ -125,7 +140,28 @@ fn split_config(overrides: &str) -> Result<(ApiConfig, String), String> {
     }
     let api =
         ApiConfig::from_toml_str(&api.to_string()).map_err(|_| "invalid daemon configuration")?;
-    Ok((api, tools.to_string()))
+    Ok((api, tools.to_string(), storage))
+}
+
+/// Attaches the local persistent controls when startup succeeds.
+pub fn attach_product_controls(
+    api: crate::api::LocalApi,
+    storage: StorageSettings,
+    instance: Option<&InstanceLock>,
+    workdirs: &[PathBuf],
+    max_list_bytes: usize,
+) -> crate::api::LocalApi {
+    let controls = (|| {
+        let (log, ids) = crate::audit::open_local_product(&storage?, instance, workdirs)?;
+        crate::product::controls(log, ids, workdirs, max_list_bytes)
+    })();
+    match controls {
+        Ok((queue, approvals)) => api.with_queue(queue).with_approvals(approvals),
+        Err(error) => {
+            eprintln!("ads-daemon: queue and approvals unavailable: {error}");
+            api
+        }
+    }
 }
 
 /// A literal absolute path (no network share, device prefix, variable, `..` or short name) to
@@ -163,7 +199,7 @@ mod tests {
         } else {
             "/profiles/primary"
         };
-        let (_, tools) = split_config(&format!(
+        let (_, tools, _) = split_config(&format!(
             "[accounts.claude.primary]\nprofile_dir = '{directory}'"
         ))
         .unwrap();

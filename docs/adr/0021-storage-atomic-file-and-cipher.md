@@ -83,12 +83,8 @@ cofre antes de persistir dados sensíveis.
 Atualizado em 21/11/2026, fronteira implementada: o armazenamento depende do
 núcleo só para `EventLog` implementar `GateJournal`
 (`crates/storage/src/log.rs`); o executor continua fora dele e nada no
-armazenamento autoriza execução. A composição Rust disponível é
-`audit::open_product`, no `ads-daemon`: usa `OsVault` para a âncora, recebe do
-chamador o `KeyProvider` e serializa a fixação no cofre. O serviço ainda não a
-chama: o binário entra por `LocalApi::bind` com `DisabledQueue`, os comandos da
-fila respondem `QUEUE_NOT_CONFIGURED` e o banco de auditoria não é aberto. Falta
-a inicialização do serviço ligar `audit::open_product` e fornecer a chave.
+armazenamento autoriza execução. A composição do daemon fornece chave e
+âncora do cofre ao log na partida. Veja a [âncora no cofre](../../crates/storage/README.md#âncora-no-cofre).
 
 ## Dependências e parâmetros
 

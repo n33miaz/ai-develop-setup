@@ -75,6 +75,15 @@ O compromisso de 105 bytes contém a versão do formato, a gênese, a última po
 
 O daemon recusa uma versão de compromisso desconhecida com `UnsupportedSchema`. Durante a sessão, `head`, `read_stream` e `verify_chain` consultam apenas o banco. A comparação com a âncora ocorre na abertura, no `append` e nas leituras que decidem: a carga do diário do portão, `read_queue` e `pending_approvals`. Sem um compromisso, só inicializa automaticamente um banco sem eventos nem chaves registradas. Um banco com histórico exige recuperação explícita (`AnchorMissing`). Uma divergência retorna `AnchorMismatch`, incluindo corte do fim, restauração de cópia antiga, troca de identidade e registro antecipado de chave.
 
+O daemon usa `urn:ads:vault:storage-key:1` como entrada da chave de coluna
+de 32 bytes, gerada pelo sistema e identificada nas linhas como
+`storage-key`. Provisão e reabertura são serializadas pela trava de vinculação.
+Uma ausência só permite gerar chave quando também faltam o banco, os
+arquivos auxiliares e a fixação da auditoria. Com histórico, a entrada
+ausente retorna `KeyUnavailable`; restaure a chave original antes de reabrir.
+Conserve a chave, o compromisso do cofre e o arquivo de identidades do
+[daemon](../daemon/README.md#fila-de-tarefas) para recuperar o histórico.
+
 O cofre é obrigatório. Falha de acesso retorna `AnchorUnavailable` e impede abrir ou acrescentar eventos. O `append` publica a nova âncora antes do commit do SQLite e mantém o lock de escrita durante as duas operações. Se o cofre recusar a gravação, a transação é desfeita. Uma interrupção entre a publicação e o commit pode deixar a âncora adiantada. A próxima abertura ou tentativa de escrita recusa a divergência.
 
 Para recuperar, pare todos os processos que usam o log. Preserve uma cópia consistente dos arquivos existentes (banco, WAL e, se existirem, journal e SHM) em quarentena antes de preparar o plano. Recupere as chaves antigas e procure uma cópia que coincida com a âncora.
