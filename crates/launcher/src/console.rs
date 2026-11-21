@@ -1,4 +1,5 @@
 use std::io;
+use std::time::SystemTime;
 
 #[cfg(windows)]
 #[allow(unsafe_code)]
@@ -29,4 +30,13 @@ pub(crate) fn console_stop_requested() -> bool {
     return win::console_stop_requested();
     #[cfg(unix)]
     false
+}
+
+/// When the launcher process started: the creation time on Windows, the first reading in
+/// `main` elsewhere.
+pub(crate) fn process_started() -> io::Result<SystemTime> {
+    #[cfg(windows)]
+    return win::process_started();
+    #[cfg(unix)]
+    Ok(SystemTime::now())
 }

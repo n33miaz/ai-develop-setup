@@ -5,7 +5,7 @@ use std::{
     path::Path,
     process::{Child, Command, ExitStatus, Stdio},
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use serde::Serialize;
@@ -13,6 +13,10 @@ use serde::Serialize;
 use ads_private_dir::{ControlDir, Identity, Signal};
 
 use crate::{Config, console};
+
+/// File times can come from a coarser clock than the start time, or be rounded to the second,
+/// so only a stop request older than this margin is taken as left over from an earlier run.
+const STALE_SIGNAL_MARGIN: Duration = Duration::from_secs(2);
 
 #[derive(Default, Serialize)]
 struct ProcessState {
@@ -363,8 +367,21 @@ impl Publication {
 
     /// `Some(true)` when the signal was accepted; a foreign signal file is reported and ignored.
     fn signal(&mut self, operation: &str, control: &ControlDir, name: &str) -> Option<bool> {
-        match self.attempt(operation, control.signal(name, true))? {
-            Signal::Accepted => Some(true),
+        self.record_signal(operation, control, name, control.signal(name, true))
+    }
+
+    fn record_signal(
+        &mut self,
+        operation: &str,
+        control: &ControlDir,
+        name: &str,
+        result: io::Result<Signal>,
+    ) -> Option<bool> {
+        match self.attempt(
+            &format!("{operation} {}", control.path().join(name).display()),
+            result,
+        )? {
+            Signal::Accepted | Signal::Stale => Some(true),
             Signal::Absent => Some(false),
             Signal::Foreign => {
                 self.report(format!(
@@ -380,9 +397,30 @@ impl Publication {
 pub(crate) fn run(
     config: &Config,
     control: &Path,
+    daemon: Command,
+    host: Command,
+    shell: Option<Command>,
+    started: SystemTime,
+) -> io::Result<()> {
+    run_with_interrupt(
+        config,
+        control,
+        daemon,
+        host,
+        shell,
+        started,
+        console::console_stop_requested,
+    )
+}
+
+fn run_with_interrupt(
+    config: &Config,
+    control: &Path,
     mut daemon: Command,
     mut host: Command,
     mut shell: Option<Command>,
+    started: SystemTime,
+    mut interrupted: impl FnMut() -> bool,
 ) -> io::Result<()> {
     let control = ControlDir::open(control, &Identity::current()?)?;
     let _lock = open_lock(&control, &config.lock_file)?;
@@ -399,28 +437,43 @@ pub(crate) fn run(
     // Declared after the daemon so that, on any exit, the window closes before it.
     let mut window = Window::new(config);
 
+    // Only a request clearly older than this run is left over from an earlier one.
+    let stale_before = started
+        .checked_sub(STALE_SIGNAL_MARGIN)
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    let mut publication = Publication::default();
+    publication.stop_pending_at_startup = publication.record_signal(
+        "discard stale stop signal",
+        &control,
+        stop,
+        control.dated_signal(stop, stale_before, true),
+    ) == Some(true);
     // Publish before starting children so an unusable state path fails early.
-    let mut publication = Publication {
-        stop_pending_at_startup: matches!(control.signal(stop, false), Ok(Signal::Accepted)),
-        ..Publication::default()
-    };
-    write_state(&control, state, &daemon, &host, false, &publication)?;
+    if let Err(error) = write_state(&control, state, &daemon, &host, false, &publication) {
+        publication.signal("consume stop signal", &control, stop);
+        return Err(error);
+    }
     let mut stopping = false;
     let mut restarting = false;
     loop {
         if !stopping {
-            stopping = console::console_stop_requested()
-                || publication.signal("consume stop signal", &control, stop) == Some(true);
+            let console_stop = interrupted();
+            let file_stop = control.dated_signal(stop, stale_before, false);
+            let stale = matches!(file_stop, Ok(Signal::Stale));
+            let consumed =
+                publication.record_signal("consume stop signal", &control, stop, file_stop);
+            stopping = console_stop || (!stale && consumed == Some(true));
         }
         let stopped = if stopping {
             let daemon_stopped = publication.attempt("stop daemon", daemon.stop()).is_some();
             let window_closed = publication.close_shell(&mut window);
-            let signal_cleared = publication
+            let restart_cleared = publication
                 .signal("clear restart signal", &control, restart)
                 .is_some();
             publication.attempt("check host exit", host.tick_exit_only());
             publication.dirty = true;
-            daemon_stopped && window_closed && signal_cleared
+            publication.signal("consume stop signal", &control, stop);
+            daemon_stopped && window_closed && restart_cleared
         } else {
             restarting |=
                 publication.signal("consume restart signal", &control, restart) == Some(true);
@@ -506,7 +559,17 @@ pub(crate) mod tests {
     use serde_json::Value;
     use std::fs;
     use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::UNIX_EPOCH;
+
+    fn run(
+        config: &Config,
+        control: &Path,
+        daemon: Command,
+        host: Command,
+        shell: Option<Command>,
+    ) -> io::Result<()> {
+        super::run(config, control, daemon, host, shell, SystemTime::now())
+    }
 
     pub(crate) struct TestDir(pub(crate) PathBuf);
 
@@ -707,26 +770,246 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn reports_stop_pending_at_startup_without_starting_children() {
+    fn consumes_stop_when_console_interrupt_arrives() {
         let dir = TestDir::new();
         let settings = config();
-        fs::write(dir.0.join(&settings.stop_file), []).unwrap();
-        let daemon = Command::new(dir.0.join("missing-daemon"));
-        let host = Command::new(dir.0.join("missing-host"));
-        run(&settings, &dir.0, daemon, host, None).unwrap();
-        let state = state_value(&dir.0.join(&settings.state_file)).unwrap();
-        assert_eq!(state["stopped"], true);
-        assert_eq!(state["stop_pending_at_startup"], true);
-        assert!(state["daemon"]["last_error"].is_null());
-        assert!(state["ptyhost"]["last_error"].is_null());
+        let stop = dir.0.join(&settings.stop_file);
+        let state = dir.0.join(&settings.state_file);
+        run_with_interrupt(
+            &settings,
+            &dir.0,
+            fixture(None),
+            fixture(None),
+            None,
+            SystemTime::now(),
+            || {
+                fs::write(&stop, []).unwrap();
+                true
+            },
+        )
+        .unwrap();
+        assert_eq!(state_value(&state).unwrap()["stopped"], true);
+        assert!(!stop.exists());
     }
 
     #[test]
-    fn initial_state_write_failure_is_fatal() {
+    fn discards_abandoned_stop_before_starting_children() {
         let dir = TestDir::new();
         let settings = config();
+        let stop = dir.0.join(&settings.stop_file);
+        let state = dir.0.join(&settings.state_file);
+        fs::write(&stop, []).unwrap();
+        let modified = fs::metadata(&stop).unwrap().modified().unwrap();
+        let started = modified + STALE_SIGNAL_MARGIN + Duration::from_secs(1);
+        let host_release = dir.0.join("release-host");
+        let daemon_release = dir.0.join("release-daemon");
+        let daemon = fixture(Some(&daemon_release));
+        let host = fixture(Some(&host_release));
+        let (interrupt, interrupted) = std::sync::mpsc::channel();
+        let worker = thread::spawn(move || {
+            run_with_interrupt(&settings, &dir.0, daemon, host, None, started, || {
+                interrupted.try_recv().is_ok()
+            })
+        });
+        let active = until(|| {
+            state_value(&state)
+                .filter(|state| state["daemon"]["pid"].is_u64() && state["ptyhost"]["pid"].is_u64())
+        });
+        assert_eq!(active["stop_pending_at_startup"], true);
+        assert!(!stop.exists());
+        interrupt.send(()).unwrap();
+        worker.join().unwrap().unwrap();
+        fs::write(host_release, []).unwrap();
+    }
+
+    #[test]
+    fn honors_stop_created_after_instance_start() {
+        let dir = TestDir::new();
+        let settings = config();
+        let started = SystemTime::now() - Duration::from_secs(1);
+        let stop = dir.0.join(&settings.stop_file);
+        fs::write(&stop, []).unwrap();
+        let mut checked = false;
+        run_with_interrupt(
+            &settings,
+            &dir.0,
+            fixture(None),
+            fixture(None),
+            None,
+            started,
+            || {
+                assert!(!checked, "the first poll must honor the startup stop");
+                checked = true;
+                false
+            },
+        )
+        .unwrap();
+        let state = state_value(&dir.0.join(&settings.state_file)).unwrap();
+        assert_eq!(state["stopped"], true);
+        assert_eq!(state["stop_pending_at_startup"], false);
+        assert_eq!(state["ptyhost"]["pid"], Value::Null);
+        assert!(!stop.exists());
+    }
+
+    #[test]
+    fn honors_stop_dated_just_before_instance_start() {
+        // File times may lag the start time (coarse clock or rounding to the second).
+        let dir = TestDir::new();
+        let settings = config();
+        let stop = dir.0.join(&settings.stop_file);
+        fs::write(&stop, []).unwrap();
+        let metadata = fs::metadata(&stop).unwrap();
+        let modified = metadata.modified().unwrap();
+        let dated = modified.max(metadata.created().unwrap_or(modified));
+        let started = dated + Duration::from_millis(500);
+        let mut checked = false;
+        run_with_interrupt(
+            &settings,
+            &dir.0,
+            fixture(None),
+            fixture(None),
+            None,
+            started,
+            || {
+                assert!(!checked, "the first poll must honor the recent stop");
+                checked = true;
+                false
+            },
+        )
+        .unwrap();
+        let state = state_value(&dir.0.join(&settings.state_file)).unwrap();
+        assert_eq!(state["stopped"], true);
+        assert_eq!(state["stop_pending_at_startup"], false);
+        assert!(!stop.exists());
+    }
+
+    #[test]
+    fn removes_stale_stop_found_while_running_without_stopping() {
+        let dir = TestDir::new();
+        let settings = config();
+        let stop = dir.0.join(&settings.stop_file);
+        let state = dir.0.join(&settings.state_file);
+        // Any file written now is dated before this start.
+        let started = SystemTime::now() + STALE_SIGNAL_MARGIN + Duration::from_secs(60);
+        let host_release = dir.0.join("release-host");
+        let daemon = fixture(Some(&dir.0.join("release-daemon")));
+        let host = fixture(Some(&host_release));
+        let (interrupt, interrupted) = std::sync::mpsc::channel();
+        let worker = thread::spawn(move || {
+            run_with_interrupt(&settings, &dir.0, daemon, host, None, started, || {
+                interrupted.try_recv().is_ok()
+            })
+        });
+        until(|| {
+            state_value(&state)
+                .filter(|state| state["daemon"]["pid"].is_u64() && state["ptyhost"]["pid"].is_u64())
+        });
+        fs::write(&stop, []).unwrap();
+        until(|| (!stop.exists()).then_some(()));
+        thread::sleep(Duration::from_millis(200));
+        assert!(
+            !worker.is_finished(),
+            "a stale stop must not stop the launcher"
+        );
+        assert_eq!(state_value(&state).unwrap()["stopped"], false);
+        interrupt.send(()).unwrap();
+        worker.join().unwrap().unwrap();
+        fs::write(host_release, []).unwrap();
+    }
+
+    #[test]
+    fn consumes_stop_arriving_during_shutdown() {
+        let dir = TestDir::new();
+        let settings = config();
+        let stop = dir.0.join(&settings.stop_file);
+        fs::write(dir.0.join(&settings.restart_file), []).unwrap();
+        let late_stop = stop.clone();
+        private::BEFORE_REMOVE.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || fs::write(late_stop, []).unwrap()));
+        });
+        run_with_interrupt(
+            &settings,
+            &dir.0,
+            fixture(None),
+            fixture(None),
+            None,
+            SystemTime::now(),
+            || true,
+        )
+        .unwrap();
+        assert!(!stop.exists());
+    }
+
+    #[test]
+    fn initial_state_write_failure_is_fatal_and_clears_stop() {
+        let dir = TestDir::new();
+        let settings = config();
+        let started = SystemTime::now() - Duration::from_secs(1);
+        let stop = dir.0.join(&settings.stop_file);
+        fs::write(&stop, []).unwrap();
         fs::create_dir(dir.0.join(&settings.state_file)).unwrap();
-        assert!(run(&settings, &dir.0, fixture(None), fixture(None), None).is_err());
+        assert!(
+            run_with_interrupt(
+                &settings,
+                &dir.0,
+                fixture(None),
+                fixture(None),
+                None,
+                started,
+                || panic!("initial publication must fail before polling"),
+            )
+            .is_err()
+        );
+        assert!(!stop.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn locked_stop_allows_startup_and_console_shutdown() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = TestDir::new();
+        let settings = config();
+        let stop = dir.0.join(&settings.stop_file);
+        let state = dir.0.join(&settings.state_file);
+        let blocked_signal = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .share_mode(3)
+            .open(&stop)
+            .unwrap();
+        let started = SystemTime::now();
+        let host_release = dir.0.join("release-host");
+        let daemon = fixture(Some(&dir.0.join("release-daemon")));
+        let host = fixture(Some(&host_release));
+        let (interrupt, interrupted) = std::sync::mpsc::channel();
+        let worker = thread::spawn(move || {
+            run_with_interrupt(&settings, &dir.0, daemon, host, None, started, || {
+                interrupted.try_recv().is_ok()
+            })
+        });
+        until(|| {
+            assert!(
+                !worker.is_finished(),
+                "launcher exited before starting its children"
+            );
+            state_value(&state)
+                .filter(|state| state["daemon"]["pid"].is_u64() && state["ptyhost"]["pid"].is_u64())
+        });
+        interrupt.send(()).unwrap();
+        until(|| worker.is_finished().then_some(()));
+        worker.join().unwrap().unwrap();
+        let stopped = state_value(&state).unwrap();
+        assert_eq!(stopped["stopped"], true);
+        assert!(
+            stopped["last_error"]
+                .as_str()
+                .unwrap()
+                .contains(&*stop.to_string_lossy())
+        );
+        assert!(stop.exists());
+        drop(blocked_signal);
+        fs::write(host_release, []).unwrap();
     }
 
     #[test]
@@ -834,12 +1117,28 @@ pub(crate) mod tests {
         let local = Identity::current().unwrap();
         fs::create_dir_all(&dir.0).unwrap();
         ControlDir::open(&control, &local).unwrap();
-        fs::write(control.join(&settings.stop_file), []).unwrap();
-        run(&settings, &control, fixture(None), fixture(None), None).unwrap();
+        run_with_interrupt(
+            &settings,
+            &control,
+            fixture(None),
+            fixture(None),
+            None,
+            SystemTime::now(),
+            || true,
+        )
+        .unwrap();
         assert_private(&control, &settings, &local);
         // The folder, lock and state now exist: a second run reuses and keeps them private.
-        fs::write(control.join(&settings.stop_file), []).unwrap();
-        run(&settings, &control, fixture(None), fixture(None), None).unwrap();
+        run_with_interrupt(
+            &settings,
+            &control,
+            fixture(None),
+            fixture(None),
+            None,
+            SystemTime::now(),
+            || true,
+        )
+        .unwrap();
         assert_private(&control, &settings, &local);
     }
 
@@ -851,13 +1150,21 @@ pub(crate) mod tests {
         let dir = TestDir::new();
         let settings = config();
         let local = Identity::current().unwrap();
-        fs::write(dir.0.join(&settings.stop_file), []).unwrap();
         let user = format!("*{}", local.user);
         icacls(&dir.0, &["/remove:g", &user]);
         icacls(&dir.0, &["/grant", &format!("{user}:F")]);
         let folder = private::access_list_text(&dir.0).unwrap();
         assert!(!folder.contains("OI") && !folder.contains("CI"), "{folder}");
-        run(&settings, &dir.0, fixture(None), fixture(None), None).unwrap();
+        run_with_interrupt(
+            &settings,
+            &dir.0,
+            fixture(None),
+            fixture(None),
+            None,
+            SystemTime::now(),
+            || true,
+        )
+        .unwrap();
         let file = private::canonical_access_list(&format!("D:P(A;;FA;;;{})", local.user)).unwrap();
         for name in [&settings.lock_file, &settings.state_file] {
             assert_eq!(private::access_list_text(&dir.0.join(name)).unwrap(), file);

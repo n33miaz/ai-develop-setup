@@ -20,7 +20,11 @@ ads-private-dir = { workspace = true, features = ["test-support"] }
 rustix = { workspace = true, features = ["process"] }
 
 [target.'cfg(windows)'.dependencies]
-windows = { workspace = true, features = ["Win32_System_Console"] }
+windows = { workspace = true, features = [
+  "Win32_Foundation",
+  "Win32_System_Console",
+  "Win32_System_Threading",
+] }
 
 [lints.rust]
 unsafe_code = "deny"

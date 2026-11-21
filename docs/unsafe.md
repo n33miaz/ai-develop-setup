@@ -11,7 +11,7 @@ A contagem só sobe com justificativa aqui.
 | `ads-testkit` | 7 | só de teste, fora de qualquer binário do produto; listados abaixo |
 | `ads-adapter-vault` | 6 | operações por nome no cofre do Windows e tratamento da memória devolvida |
 | `ads-private-dir` | 21 | chamadas da API do Windows para criar pastas privadas e arquivos de controle só do usuário, conferir dono e lista de acesso e operar relativo à pasta aberta, listadas abaixo (3 delas habilitadas em testes ou com `test-support`); no Unix o mesmo vem da biblioteca padrão e do `rustix`, sem `unsafe` |
-| `ads-launcher` | 3 | tratador de interrupções do console, com 2 blocos de teste |
+| `ads-launcher` | 4 | tratador de interrupções do console e leitura do horário de início do próprio processo, com 2 blocos de teste |
 | `ads-shell` | 2 | retirar e fechar a entrada padrão herdada antes de iniciar a WebView |
 | `ads-storage` | 0 | SQLite e cifra pelas APIs seguras das dependências; herda `forbid` |
 | demais | 0 | nenhum |
@@ -91,11 +91,12 @@ A biblioteca padrão não cria pasta nem arquivo com lista de acesso própria, n
 
 ## `ads-launcher` (`crates/launcher/src/console/win.rs`)
 
-O tratador registra Ctrl+C e Ctrl+Break em uma variável atômica para o supervisor encerrar os processos.
+O tratador registra Ctrl+C e Ctrl+Break em uma variável atômica para o supervisor encerrar os processos. O mesmo módulo lê o horário de criação do próprio processo.
 
 | Onde | Blocos | Chamada | Motivo |
 |---|---|---|---|
 | `install_console_handler` | 1 | `SetConsoleCtrlHandler` | registrar o retorno de chamada que marca a parada em uma variável atômica |
+| `process_started` | 1 | `GetProcessTimes` com `GetCurrentProcess` | ler o horário de início do próprio processo, para separar um sinal `stop` deixado por uma execução anterior de um criado depois do início |
 | `generate_console_interrupt` (só testes) | 2 | `SetConsoleCtrlHandler`, `GenerateConsoleCtrlEvent` | habilitar e gerar Ctrl+C dentro de um console isolado para verificar a limpeza |
 
 ## `ads-shell` (`crates/shell/src/stdin.rs`)

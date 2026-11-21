@@ -140,6 +140,7 @@ pub(crate) enum Kind {
 pub enum Signal {
     Absent,
     Accepted,
+    Stale,
     /// A file another account owns or can use: left in place and never honored.
     Foreign,
 }
@@ -346,6 +347,38 @@ impl ControlDir {
     /// Looks at the signal `name` and, when it is the user's own and `consume` is set,
     /// removes it: the entry removed is the one checked.
     pub fn signal(&self, name: &str, consume: bool) -> io::Result<Signal> {
+        self.signal_with(name, consume, |_| Ok(Signal::Accepted))
+    }
+
+    /// Looks at the signal `name` against a point in time: a request dated (created or last
+    /// changed) before `stale_before` is `Stale` and removed; a newer one is `Accepted` and
+    /// removed, or left in place as `Absent` while `keep_recent` is set.
+    pub fn dated_signal(
+        &self,
+        name: &str,
+        stale_before: SystemTime,
+        keep_recent: bool,
+    ) -> io::Result<Signal> {
+        self.signal_with(name, true, |file| {
+            let metadata = file.metadata()?;
+            let modified = metadata.modified()?;
+            let last_request = modified.max(metadata.created().unwrap_or(modified));
+            Ok(if last_request < stale_before {
+                Signal::Stale
+            } else if keep_recent {
+                Signal::Absent
+            } else {
+                Signal::Accepted
+            })
+        })
+    }
+
+    fn signal_with(
+        &self,
+        name: &str,
+        consume: bool,
+        classify: impl FnOnce(&File) -> io::Result<Signal>,
+    ) -> io::Result<Signal> {
         #[cfg(windows)]
         {
             let file = match win::open_to_remove(&self.dir, name) {
@@ -365,11 +398,12 @@ impl ControlDir {
             if windows_private(&self.local, &win::security(&file)?).is_err() {
                 return Ok(Signal::Foreign);
             }
-            if consume {
+            let signal = classify(&file)?;
+            if consume && matches!(signal, Signal::Accepted | Signal::Stale) {
                 before_remove();
                 win::remove(&file)?;
             }
-            Ok(Signal::Accepted)
+            Ok(signal)
         }
         #[cfg(unix)]
         {
@@ -396,7 +430,9 @@ impl ControlDir {
             if !owns(&checked) {
                 return Ok(Signal::Foreign);
             }
-            if consume {
+            let file = File::from(entry);
+            let signal = classify(&file)?;
+            if consume && matches!(signal, Signal::Accepted | Signal::Stale) {
                 before_remove();
                 // Only the user can change the entries of the private folder held open; the
                 // comparison still makes sure the name removed is the file checked.
@@ -407,7 +443,7 @@ impl ControlDir {
                 }
                 unix::remove(&self.dir, name)?;
             }
-            Ok(Signal::Accepted)
+            Ok(signal)
         }
     }
 }

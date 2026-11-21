@@ -199,7 +199,7 @@ fn installation_commands(
     (control, daemon, host)
 }
 
-fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
+fn run(started: std::time::SystemTime) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let args: Vec<_> = env::args_os().skip(1).collect();
     let config_path = match args.as_slice() {
         [] => None,
@@ -235,15 +235,18 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         shell
     });
     console::install_console_handler()?;
-    supervisor::run(&config, &control, daemon, host, shell)?;
+    supervisor::run(&config, &control, daemon, host, shell, started)?;
     Ok(ExitCode::SUCCESS)
 }
 
 fn main() -> ExitCode {
-    run().unwrap_or_else(|error| {
-        eprintln!("ads-launcher: {error}");
-        ExitCode::FAILURE
-    })
+    console::process_started()
+        .map_err(Into::into)
+        .and_then(run)
+        .unwrap_or_else(|error| {
+            eprintln!("ads-launcher: {error}");
+            ExitCode::FAILURE
+        })
 }
 
 #[cfg(test)]
