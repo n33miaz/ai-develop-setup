@@ -1,6 +1,5 @@
 export const ptBR = {
   'usage.heading': 'Uso e contas',
-  'usage.locale': 'pt-BR',
   'usage.picker': 'Perfil da ferramenta {harness}',
   'usage.next': '{alias} (próxima sessão)',
   'usage.switchDisabled': 'A troca de conta fica desativada até a habilitação dos perfis.',
@@ -84,7 +83,6 @@ export type MessageKey = keyof typeof ptBR
 
 export const en: Record<MessageKey, string> = {
   'usage.heading': 'Usage and accounts',
-  'usage.locale': 'en',
   'usage.picker': 'Profile for {harness}',
   'usage.next': '{alias} (next session)',
   'usage.switchDisabled': 'Account switching is disabled until profiles are enabled.',

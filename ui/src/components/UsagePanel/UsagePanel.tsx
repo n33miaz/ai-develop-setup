@@ -22,9 +22,9 @@ const windows = [
 function ToolUsage({ tool }: { tool: UsageTool }) {
   const t = useT()
   const id = useId()
-  const percent = new Intl.NumberFormat(t('usage.locale'), {
+  const percent = new Intl.NumberFormat(t.locale, {
     style: 'percent',
-    maximumFractionDigits: 8,
+    maximumFractionDigits: 1,
   })
   return (
     <section className={styles.tool} aria-labelledby={id}>
@@ -51,7 +51,8 @@ function ToolUsage({ tool }: { tool: UsageTool }) {
             <h3>{alias}</h3>
             <dl>
               {windows.map(([field, label]) => {
-                const used = quota?.[field]
+                const observed = quota?.[field]
+                const used = observed == null ? null : Math.min(100, Math.max(0, observed))
                 return (
                   <div key={field}>
                     <dt>{t(label)}</dt>
@@ -73,7 +74,7 @@ function ToolUsage({ tool }: { tool: UsageTool }) {
       <p>
         {t('usage.taskBudget', {
           task: tool.taskBudget.task,
-          amount: new Intl.NumberFormat(t('usage.locale'), {
+          amount: new Intl.NumberFormat(t.locale, {
             style: 'currency',
             currency: 'USD',
           }).format(tool.taskBudget.remainingUsd),
@@ -95,7 +96,23 @@ export function UsagePanel({ tools }: { tools: readonly UsageTool[] | null }) {
   const id = useId()
   return (
     <details className={styles.panel}>
-      <summary id={id}>{t('usage.heading')}</summary>
+      <summary
+        id={id}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault()
+            if (event.key === 'Enter' && !event.repeat) event.currentTarget.click()
+          }
+        }}
+        onKeyUp={(event) => {
+          if (event.key === ' ') {
+            event.preventDefault()
+            event.currentTarget.click()
+          }
+        }}
+      >
+        {t('usage.heading')}
+      </summary>
       <div className={styles.content} role="region" aria-labelledby={id} tabIndex={0}>
         {tools === null ? (
           <p>{t('usage.unavailable')}</p>
