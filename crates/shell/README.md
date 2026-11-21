@@ -6,13 +6,10 @@ principal carrega o bundle, envia comandos e recebe respostas e eventos por
 IPC. A credencial fica no processo Rust. A janela reconecta automaticamente
 após uma queda. A cada conexão, a casca exige que o daemon comprove conhecer
 o token recebido no pipe antes de enviar a credencial ou encaminhar
-comandos. Em falhas transitórias na abertura ou após uma queda, a interface
-tenta de novo a partir de 250 ms e dobra a espera até 5 s por padrão. A
-[configuração da interface](../../ui/README.md) define esses limites. Uma
-prova ausente indica que é preciso conferir se a casca e o daemon têm a
-mesma versão. Uma prova inválida bloqueia novas conexões nessa execução da
-casca e orienta a reabrir pelo lançador para obter a credencial da execução
-atual.
+comandos. A [configuração da interface](../../ui/README.md) define a espera,
+o período de estabilidade e o limite de tentativas. Uma prova ausente ou
+inválida bloqueia novas conexões nessa execução da casca e orienta a reabrir
+pelo lançador para obter a credencial da execução atual.
 
 Fechar a janela a oculta na bandeja. A opção de saída encerra apenas a casca.
 Em uma nova execução do daemon, o lançador substitui a janela para usar a

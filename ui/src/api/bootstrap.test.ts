@@ -103,7 +103,7 @@ describe('desktop client selection', () => {
   })
 
   it.each([
-    ['desktop protocol incompatible', 'incompatible'],
+    ['desktop identity proof missing', 'proof_missing'],
     ['desktop relaunch required', 'relaunch_required'],
   ])('reports %s as %s', async (reason, state) => {
     const invoke = vi.fn(() => Promise.resolve()).mockRejectedValueOnce(reason)
@@ -112,6 +112,73 @@ describe('desktop client selection', () => {
     await expect(client.connect()).rejects.toMatchObject({ code: 'not_connected' })
     expect(client.getState()).toBe(state)
   })
+
+  it.each([{ kind: 'closed' }, { kind: 'message', text: '{' }] satisfies Frame[])(
+    'backs off across short-lived connections that end with $kind',
+    async (frame) => {
+      vi.useFakeTimers()
+      let channel: Channel | undefined
+      const connect = vi.fn()
+      const invoke = (command: string, args: Record<string, unknown>) => {
+        if (command === 'desktop_connect') {
+          connect()
+          channel = args.frames as Channel
+        }
+        return Promise.resolve()
+      }
+      const { client } = selectDesktopClient({ core: { invoke, Channel } }, {}, 250, 1000, 2000)
+      try {
+        await client.connect()
+        for (const [index, delay] of [250, 500, 1000, 1000].entries()) {
+          channel?.onmessage(frame)
+          await vi.advanceTimersByTimeAsync(delay - 1)
+          expect(connect).toHaveBeenCalledTimes(index + 1)
+          await vi.advanceTimersByTimeAsync(1)
+          expect(connect).toHaveBeenCalledTimes(index + 2)
+          expect(client.getState()).toBe('connected')
+        }
+        await vi.advanceTimersByTimeAsync(2000)
+        channel?.onmessage(frame)
+        await vi.advanceTimersByTimeAsync(250)
+        expect(connect).toHaveBeenCalledTimes(6)
+      } finally {
+        client.disconnect()
+        vi.useRealTimers()
+      }
+    },
+  )
+
+  it.each(['desktop connection unavailable', 'desktop connection retry'])(
+    'retries %s after a drop until the attempt limit',
+    async (reason) => {
+      vi.useFakeTimers()
+      let channel: Channel | undefined
+      const connect = vi
+        .fn<() => Promise<void>>()
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValue(reason)
+      const invoke = (command: string, args: Record<string, unknown>) => {
+        if (command !== 'desktop_connect') return Promise.resolve()
+        channel = args.frames as Channel
+        return connect()
+      }
+      const { client } = selectDesktopClient({ core: { invoke, Channel } }, {}, 25, 50, 2000, 2)
+      try {
+        await client.connect()
+        channel?.onmessage({ kind: 'closed' })
+        await vi.advanceTimersByTimeAsync(74)
+        expect(connect).toHaveBeenCalledTimes(2)
+        expect(client.getState()).toBe('connecting')
+        await vi.advanceTimersByTimeAsync(1)
+        expect(client.getState()).toBe('retry_exhausted')
+        await vi.advanceTimersByTimeAsync(1000)
+        expect(connect).toHaveBeenCalledTimes(3)
+      } finally {
+        client.disconnect()
+        vi.useRealTimers()
+      }
+    },
+  )
 
   it('stops reconnecting when the replacement daemon fails the identity check', async () => {
     vi.useFakeTimers()

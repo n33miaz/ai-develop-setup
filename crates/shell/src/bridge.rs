@@ -20,7 +20,7 @@ use super::{Bootstrap, trusted_window};
 
 const UNAVAILABLE: &str = "desktop connection unavailable";
 const RETRY: &str = "desktop connection retry";
-const INCOMPATIBLE: &str = "desktop protocol incompatible";
+const PROOF_MISSING: &str = "desktop identity proof missing";
 const RELAUNCH: &str = "desktop relaunch required";
 const DEADLINE: Duration = Duration::from_secs(5);
 const HELLO_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAB";
@@ -34,7 +34,16 @@ pub(super) struct Bridge {
 enum ConnectionState {
     Idle,
     Connected(Connection),
-    RelaunchRequired,
+    Blocked(&'static str),
+}
+
+impl ConnectionState {
+    fn sender_for(&self, id: &str) -> Result<mpsc::Sender<String>, &'static str> {
+        match self {
+            Self::Connected(connection) if connection.id == id => Ok(connection.requests.clone()),
+            _ => Err(UNAVAILABLE),
+        }
+    }
 }
 
 struct Connection {
@@ -81,7 +90,7 @@ async fn authenticate(bootstrap: &Bootstrap) -> Result<WebSocketStream<TcpStream
     let proof = response
         .headers()
         .get(desktop_proof::HEADER)
-        .ok_or(INCOMPATIBLE)?;
+        .ok_or(PROOF_MISSING)?;
     if !desktop_proof::verify(
         &bootstrap.token,
         nonce.as_bytes(),
@@ -114,15 +123,15 @@ async fn connect_socket(
     bootstrap: &Bootstrap,
     connection: &mut ConnectionState,
 ) -> Result<WebSocketStream<TcpStream>, &'static str> {
-    if matches!(connection, ConnectionState::RelaunchRequired) {
-        return Err(RELAUNCH);
+    if let ConnectionState::Blocked(reason) = connection {
+        return Err(reason);
     }
     *connection = ConnectionState::Idle;
     let result = timeout(DEADLINE, authenticate(bootstrap))
         .await
         .unwrap_or(Err(RETRY));
-    if matches!(result, Err(RELAUNCH)) {
-        *connection = ConnectionState::RelaunchRequired;
+    if let Err(reason @ (PROOF_MISSING | RELAUNCH)) = result {
+        *connection = ConnectionState::Blocked(reason);
     }
     result
 }
@@ -197,12 +206,7 @@ pub(super) async fn desktop_send(
     {
         return Err(UNAVAILABLE);
     }
-    let sender = match &*bridge.connection.lock().await {
-        ConnectionState::Connected(connection) if connection.id == id => {
-            connection.requests.clone()
-        }
-        _ => return Err(UNAVAILABLE),
-    };
+    let sender = bridge.connection.lock().await.sender_for(&id)?;
     timeout(DEADLINE, sender.send(text))
         .await
         .map_err(|_| UNAVAILABLE)?
@@ -290,7 +294,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn authenticates_again_after_a_drop_and_a_refused_upgrade() {
+    async fn reports_retry_for_refused_upgrade_between_authenticated_connections() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let bootstrap = bootstrap(&listener);
         let token = bootstrap.token.clone();
@@ -333,32 +337,43 @@ mod tests {
             Ok(None | Some(Err(_)))
         ));
         let result = connect_socket(&bootstrap, &mut state).await;
-        assert_eq!(
-            result.err(),
-            Some(if wrong_connection {
-                RELAUNCH
-            } else {
-                INCOMPATIBLE
-            })
-        );
-        timeout(DEADLINE, impostor).await.unwrap().unwrap();
-        if wrong_connection {
-            assert!(matches!(
-                connect_socket(&bootstrap, &mut state).await,
-                Err(RELAUNCH)
-            ));
+        let expected = if wrong_connection {
+            RELAUNCH
         } else {
-            assert!(matches!(state, ConnectionState::Idle));
-        }
+            PROOF_MISSING
+        };
+        assert_eq!(result.err(), Some(expected));
+        timeout(DEADLINE, impostor).await.unwrap().unwrap();
+        assert_eq!(
+            connect_socket(&bootstrap, &mut state).await.err(),
+            Some(expected)
+        );
     }
 
     #[tokio::test]
-    async fn missing_proof_sends_no_frames_and_leaves_connection_idle() {
+    async fn missing_proof_sends_no_frames_and_blocks_reconnection() {
         listener_without_valid_proof_receives_no_frames(false).await;
     }
 
     #[tokio::test]
     async fn proof_for_another_connection_sends_no_frames_and_requires_relaunch() {
         listener_without_valid_proof_receives_no_frames(true).await;
+    }
+
+    #[tokio::test]
+    async fn desktop_send_rejects_the_previous_connection_id() {
+        let (requests, mut incoming) = mpsc::channel(1);
+        let state = ConnectionState::Connected(Connection {
+            id: "current".into(),
+            requests,
+            task: tauri::async_runtime::spawn(std::future::pending()),
+        });
+        assert!(matches!(state.sender_for("previous"), Err(UNAVAILABLE)));
+        state
+            .sender_for("current")
+            .unwrap()
+            .try_send("command".into())
+            .unwrap();
+        assert_eq!(incoming.try_recv().unwrap(), "command");
     }
 }

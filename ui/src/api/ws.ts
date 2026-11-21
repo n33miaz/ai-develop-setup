@@ -232,8 +232,13 @@ export function createCoreClient(
         current.addEventListener('error', (event) => {
           if (socket !== current) return
           const reason: unknown = event instanceof CustomEvent ? event.detail : undefined
-          if (reason === 'incompatible' || reason === 'relaunch_required') disconnect(reason)
-          else fail()
+          if (
+            reason === 'relaunch_required' ||
+            reason === 'proof_missing' ||
+            reason === 'retry_exhausted'
+          ) {
+            disconnect(reason)
+          } else fail()
         })
         current.addEventListener('open', () => {
           if (socket !== current) return
@@ -265,7 +270,7 @@ export function createCoreClient(
           try {
             value = JSON.parse(String(message.data))
           } catch {
-            fail()
+            fail(true)
             return
           }
           // A resposta a um pedido vencido não tem mais quem a espere: some sem derrubar a conexão.

@@ -74,6 +74,8 @@ export function selectDesktopClient(
   replay: ReplaySettings,
   retryInitial?: unknown,
   retryMax?: unknown,
+  retryStable?: unknown,
+  retryAttempts?: unknown,
 ): { client: CoreClient; live: true } {
   const delay = (value: unknown) => {
     const parsed = positive(value)
@@ -82,6 +84,8 @@ export function selectDesktopClient(
   const socketFactory = desktopSocketFactory(core, {
     initialMs: delay(retryInitial),
     maxMs: delay(retryMax),
+    stableMs: delay(retryStable),
+    maxAttempts: positive(retryAttempts),
   })
   return {
     client: createCoreClient(socketFactory, { ...replay, reconnectOnDrop: true }),

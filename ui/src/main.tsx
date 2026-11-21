@@ -57,6 +57,8 @@ function render(root: HTMLElement) {
           replay,
           import.meta.env.VITE_DESKTOP_RETRY_INITIAL_MS,
           import.meta.env.VITE_DESKTOP_RETRY_MAX_MS,
+          import.meta.env.VITE_DESKTOP_RETRY_STABLE_MS,
+          import.meta.env.VITE_DESKTOP_RETRY_MAX_ATTEMPTS,
         )
       : selectCoreClient(window, undefined, replay)
     react.render(
