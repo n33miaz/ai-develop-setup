@@ -83,12 +83,16 @@ pub enum Reason {
     TooDeep,
     /// Planning exceeded its entry budget.
     PlanEntryLimit,
+    /// What a rehearsal finds now is not the record of effects that was approved.
+    EffectsChanged,
+    /// The record of effects of a rehearsal would be larger than `max_effects_bytes`.
+    EffectsTooLarge,
     /// The operating system refused the operation.
     Io,
 }
 
 impl Reason {
-    pub const ALL: [Reason; 37] = [
+    pub const ALL: [Reason; 39] = [
         Self::StartedMismatch,
         Self::JournalRefused,
         Self::PermitReused,
@@ -125,6 +129,8 @@ impl Reason {
         Self::Unconfirmed,
         Self::TooDeep,
         Self::PlanEntryLimit,
+        Self::EffectsChanged,
+        Self::EffectsTooLarge,
         Self::Io,
     ];
 
@@ -166,6 +172,8 @@ impl Reason {
             Self::Unconfirmed => "E_FS_UNCONFIRMED",
             Self::TooDeep => "E_FS_TOO_DEEP",
             Self::PlanEntryLimit => "E_FS_PLAN_ENTRY_LIMIT",
+            Self::EffectsChanged => "E_FS_EFFECTS_CHANGED",
+            Self::EffectsTooLarge => "E_FS_EFFECTS_TOO_LARGE",
             Self::Io => "E_FS_IO",
         }
     }
@@ -186,7 +194,7 @@ pub struct Stop {
 }
 
 impl Stop {
-    pub(crate) fn new(reason: Reason, detail: impl fmt::Display) -> Self {
+    pub fn new(reason: Reason, detail: impl fmt::Display) -> Self {
         Self {
             reason,
             detail: detail.to_string(),

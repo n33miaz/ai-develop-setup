@@ -2,9 +2,10 @@
 //! nothing else, and an execution starts with it.
 
 use ads_core::gate::{
-    AbsPath, ActionPlan, Decision, Estimate, ExecutionPermit, GatePolicy, Operation,
-    OperationRequest, PlanRequest, Rule, TargetRequest, classify, may_name,
+    AbsPath, ActionPlan, Decision, Estimate, ExecutionPermit, GatePolicy, Id, Operation,
+    OperationRequest, PlanHash, PlanRequest, Rule, TargetRequest, classify, may_name,
 };
+use sha2::{Digest, Sha256};
 
 use crate::fence::{Fence, Kind};
 use crate::limits::{DefinitiveDelete, Limits};
@@ -42,6 +43,35 @@ pub(crate) enum Act {
     Remove { place: Option<Vec<String>> },
 }
 
+/// What the checks need of a permit: the plan, its action and hash, and whether an approval
+/// stands behind it. A rehearsal before the approval assumes the one it asks for.
+pub(crate) struct Grant<'a> {
+    pub plan: &'a ActionPlan,
+    pub action_id: &'a Id,
+    pub plan_hash: PlanHash,
+    pub approved: bool,
+}
+
+impl<'a> Grant<'a> {
+    pub(crate) fn of(permit: &'a ExecutionPermit) -> Self {
+        Self {
+            plan: permit.plan(),
+            action_id: permit.action_id(),
+            plan_hash: permit.plan_hash().clone(),
+            approved: permit.approval_id().is_some(),
+        }
+    }
+
+    pub(crate) fn assumed(action_id: &'a Id, plan: &'a ActionPlan) -> Self {
+        Self {
+            plan,
+            action_id,
+            plan_hash: plan.hash(),
+            approved: true,
+        }
+    }
+}
+
 /// A plan that passed every check, ready to run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Job {
@@ -59,6 +89,8 @@ pub(crate) struct Job {
     pub report: Report,
     /// The mutation of each step; `None` for a step with nothing to do.
     pub ops: Vec<Option<Op>>,
+    /// The digest of the manifest a restore read its items from.
+    pub read_manifest: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,6 +124,7 @@ impl Job {
                 steps,
             },
             ops,
+            read_manifest: None,
         }
     }
 
@@ -185,13 +218,15 @@ fn missing_folders(
     Ok(Vec::new())
 }
 
+/// `budget` caps the entries the targets may hold, as in planning; an execution has none.
 pub(crate) fn prepare(
     fence: &Fence,
     policy: &GatePolicy,
     limits: &Limits,
-    permit: &ExecutionPermit,
+    permit: &Grant<'_>,
+    budget: Option<usize>,
 ) -> Result<Job, Stop> {
-    let plan = permit.plan();
+    let plan = permit.plan;
 
     // The permit proves the plan passed a gate; this is the gate of the trusted policy again.
     let declared =
@@ -210,7 +245,7 @@ pub(crate) fn prepare(
             "the policy rewrites this delete as a move to quarantine",
         ));
     }
-    if declared.decision() == Decision::RequiresApproval && permit.approval_id().is_none() {
+    if declared.decision() == Decision::RequiresApproval && !permit.approved {
         return Err(Stop::new(
             Reason::ApprovalMissing,
             "the policy asks for an approval",
@@ -222,7 +257,7 @@ pub(crate) fn prepare(
     // Every name down to the work root has to be a folder; a link is refused.
     fence.open_dir(&work)?;
 
-    let targets = inspect_targets(fence, limits, plan, &work, None)?;
+    let targets = inspect_targets(fence, limits, plan, &work, budget)?;
     check_facts(fence, policy, permit, declared.decision(), &targets)?;
     if let Some(wildcard) = plan
         .targets()
@@ -281,12 +316,12 @@ fn build_job(
     fence: &Fence,
     policy: &GatePolicy,
     limits: &Limits,
-    permit: &ExecutionPermit,
+    permit: &Grant<'_>,
     work: Vec<String>,
     targets: &[Target],
     quarantine: &AbsPath,
 ) -> Result<Job, Stop> {
-    let plan = permit.plan();
+    let plan = permit.plan;
     let work_root = plan.work_root();
     let declared =
         classify(plan, policy).map_err(|error| Stop::caused_by(Reason::PolicyDenies, error))?;
@@ -300,7 +335,7 @@ fn build_job(
             // rule fired and approved, and a policy that turned the quarantine off.
             if policy.quarantine_enabled() {
                 let purge = declared.has(Rule::QuarantinePurge)
-                    && permit.approval_id().is_some()
+                    && permit.approved
                     && plan
                         .targets()
                         .iter()
@@ -498,11 +533,11 @@ pub(crate) fn observe_plan(
 fn check_facts(
     fence: &Fence,
     policy: &GatePolicy,
-    permit: &ExecutionPermit,
+    permit: &Grant<'_>,
     declared: Decision,
     targets: &[Target],
 ) -> Result<(), Stop> {
-    let plan = permit.plan();
+    let plan = permit.plan;
     let (items, bytes) = total(targets.iter().map(|target| &target.facts))?;
     let real = Estimate { items, bytes };
     let real_plan = with_repository_targets(fence, plan, targets, Some(real))?;
@@ -529,7 +564,7 @@ fn check_facts(
             ),
         ));
     }
-    if let (Some(_), Some(estimate)) = (permit.approval_id(), plan.estimate())
+    if let (true, Some(estimate)) = (permit.approved, plan.estimate())
         && (real.items > estimate.items || real.bytes > estimate.bytes)
     {
         return Err(Stop::new(
@@ -558,7 +593,7 @@ fn refuse_nested_repositories(targets: &[Target]) -> Result<(), Stop> {
 fn delete_job(
     fence: &Fence,
     limits: &Limits,
-    permit: &ExecutionPermit,
+    permit: &Grant<'_>,
     work: &[String],
     floor: Vec<String>,
     targets: &[Target],
@@ -592,7 +627,7 @@ fn delete_job(
     };
     let private = join(work, &limits.private_dir);
     let holding = match targets.iter().any(tree) {
-        true => Some(child(&private, &folder_name(permit.action_id())?)),
+        true => Some(child(&private, &folder_name(permit.action_id)?)),
         false => None,
     };
     for target in targets {
@@ -707,13 +742,13 @@ fn judge_restore_place(
 fn quarantine_job(
     fence: &Fence,
     limits: &Limits,
-    permit: &ExecutionPermit,
+    permit: &Grant<'_>,
     work: Vec<String>,
     targets: &[Target],
     destination: &AbsPath,
     quarantine: &AbsPath,
 ) -> Result<Job, Stop> {
-    let plan = permit.plan();
+    let plan = permit.plan;
     if let Some(inside) = plan
         .targets()
         .iter()
@@ -725,7 +760,7 @@ fn quarantine_job(
         ));
     }
     refuse_nested_repositories(targets)?;
-    let name = folder_name(permit.action_id())?;
+    let name = folder_name(permit.action_id)?;
     let dest = fence.relative(destination)?;
     if dest.len() <= work.len() || !starts_with(&dest, &work) {
         return Err(Stop::new(
@@ -778,7 +813,7 @@ fn quarantine_job(
     let manifest = Manifest {
         version: MANIFEST_VERSION,
         action_id: name,
-        plan_hash: permit.plan_hash().to_string(),
+        plan_hash: permit.plan_hash.to_string(),
         started_at: String::new(),
         work_root: plan.work_root().to_string(),
         items: listed,
@@ -807,12 +842,12 @@ fn restore_job(
     fence: &Fence,
     policy: &GatePolicy,
     limits: &Limits,
-    permit: &ExecutionPermit,
+    permit: &Grant<'_>,
     work: Vec<String>,
     targets: &[Target],
     quarantine: &AbsPath,
 ) -> Result<Job, Stop> {
-    let plan = permit.plan();
+    let plan = permit.plan;
     let [batch] = targets else {
         return Err(Stop::new(
             Reason::Unsupported,
@@ -846,6 +881,7 @@ fn restore_job(
         }
     };
     let manifest = Manifest::from_bytes(&bytes)?;
+    let read_manifest = format!("sha256:{:x}", Sha256::digest(&bytes));
     if batch.rel.last() != Some(&manifest.action_id) {
         return Err(invalid("the manifest is of another action"));
     }
@@ -932,5 +968,7 @@ fn restore_job(
             format!("{} holds none of its items", batch.text),
         ));
     }
-    Ok(Job::new(work, steps, ops))
+    let mut job = Job::new(work, steps, ops);
+    job.read_manifest = Some(read_manifest);
+    Ok(job)
 }

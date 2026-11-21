@@ -6,6 +6,7 @@
 //! what is open, never what a path happens to mean at that instant.
 
 mod disk;
+mod effects;
 mod executor;
 mod fence;
 mod journal;
@@ -18,6 +19,7 @@ mod survey;
 mod sys;
 
 pub use disk::{Midway, Mutation, Probe};
+pub use effects::{EFFECTS_VERSION, EffectEntry, EffectKind, EffectStep, Effects};
 pub use executor::Executor;
 pub use fence::FenceError;
 pub use journal::{Journal, JournalError};

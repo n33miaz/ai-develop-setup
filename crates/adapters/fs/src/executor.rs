@@ -3,13 +3,16 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use ads_core::gate::{AbsPath, ActionPlan, Event, ExecutionPermit, GatePolicy, StartedExecution};
+use ads_core::gate::{
+    AbsPath, ActionPlan, Event, ExecutionPermit, GatePolicy, Id, StartedExecution,
+};
 
 use crate::disk::{Disk, Probe};
+use crate::effects::Effects;
 use crate::fence::{Fence, FenceError};
 use crate::journal::Journal;
 use crate::limits::Limits;
-use crate::prepare::{observe_plan, prepare};
+use crate::prepare::{Grant, observe_plan, prepare};
 use crate::reason::{Reason, Stop};
 use crate::report::{Completed, Failure, Report};
 use crate::survey::{Facts, survey};
@@ -103,9 +106,26 @@ impl Executor {
     /// Goes through every check of an execution and says what would be done, changing
     /// nothing.
     pub fn rehearse(&self, permit: &ExecutionPermit) -> Result<Report, Box<Failure>> {
-        let job = prepare(&self.fence, &self.policy, &self.limits, permit)
-            .map_err(Failure::before_anything)?;
+        let job = prepare(
+            &self.fence,
+            &self.policy,
+            &self.limits,
+            &Grant::of(permit),
+            None,
+        )
+        .map_err(Failure::before_anything)?;
         Ok(job.report)
+    }
+
+    /// Goes through every check of an execution of `plan` as if its approval were granted,
+    /// changing nothing, and returns its concrete effects: what an approval has to cover.
+    /// The targets are inspected within `max_plan_entries`; a record larger than
+    /// `max_effects_bytes` is refused.
+    pub fn rehearse_effects(&self, action_id: &Id, plan: &ActionPlan) -> Result<Effects, Stop> {
+        let grant = Grant::assumed(action_id, plan);
+        let budget = Some(self.limits.max_plan_entries);
+        let job = prepare(&self.fence, &self.policy, &self.limits, &grant, budget)?;
+        Effects::of(&job, &grant).within(&self.limits)
     }
 
     /// Runs the plan of `permit`. Nothing is read or changed before `journal` records that
@@ -129,7 +149,27 @@ impl Executor {
                 "the event is not the action.started of this permit",
             )));
         }
-        self.run(permit, started, |started| journal.consume(started))
+        self.run(permit, started, None, |started| journal.consume(started))
+    }
+
+    /// Like [`Self::execute`], for a plan approved with the record `approved` (see
+    /// [`Self::execute_approved`]).
+    pub fn execute_with_effects(
+        &mut self,
+        permit: ExecutionPermit,
+        started: &Event,
+        journal: &mut dyn Journal,
+        approved: &Effects,
+    ) -> Result<Completed, Box<Failure>> {
+        if !started_by(&permit, started) {
+            return Err(Failure::before_anything(Stop::new(
+                Reason::StartedMismatch,
+                "the event is not the action.started of this permit",
+            )));
+        }
+        self.run(permit, started, Some(approved), |started| {
+            journal.consume(started)
+        })
     }
 
     /// Runs an authorization obtained after the gate committed its start.
@@ -140,13 +180,27 @@ impl Executor {
         let (permit, event) = started.into_parts();
         // Only `JournalGate::authorize` builds a `StartedExecution`, with the two together.
         debug_assert!(started_by(&permit, &event));
-        self.run(permit, &event, |_| Ok(()))
+        self.run(permit, &event, None, |_| Ok(()))
+    }
+
+    /// Like [`Self::execute_recorded`], for a plan approved with the record `approved`: the
+    /// checks of the execution have to find exactly these effects, or it stops before the
+    /// first change with [`Reason::EffectsChanged`].
+    pub fn execute_approved(
+        &mut self,
+        started: StartedExecution,
+        approved: &Effects,
+    ) -> Result<Completed, Box<Failure>> {
+        let (permit, event) = started.into_parts();
+        debug_assert!(started_by(&permit, &event));
+        self.run(permit, &event, Some(approved), |_| Ok(()))
     }
 
     fn run(
         &mut self,
         permit: ExecutionPermit,
         started: &Event,
+        approved: Option<&Effects>,
         consume: impl FnOnce(&Event) -> Result<(), crate::JournalError>,
     ) -> Result<Completed, Box<Failure>> {
         let action_id = permit.action_id().as_str().to_owned();
@@ -161,8 +215,24 @@ impl Executor {
         })?;
         self.spent.insert(action_id);
 
-        let mut job = prepare(&self.fence, &self.policy, &self.limits, &permit)
+        let grant = Grant::of(&permit);
+        let mut job = prepare(&self.fence, &self.policy, &self.limits, &grant, None)
             .map_err(Failure::before_anything)?;
+        if let Some(approved) = approved {
+            let found = Effects::of(&job, &grant);
+            if &found != approved {
+                return Err(Failure::before_anything(Stop::new(
+                    Reason::EffectsChanged,
+                    format!(
+                        "approved for {} entries in {} steps; found {} entries in {} steps,                          or other ones",
+                        approved.entries(),
+                        approved.steps.len(),
+                        found.entries(),
+                        found.steps.len()
+                    ),
+                )));
+            }
+        }
         if let Some(manifest) = &mut job.manifest {
             manifest.started_at = started.ts().to_string();
         }
