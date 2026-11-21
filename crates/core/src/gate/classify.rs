@@ -343,7 +343,7 @@ fn judge(
     };
 
     let work_root = plan.work_root();
-    if let Some(protection) = policy.protection(work_root) {
+    if let Some(protection) = policy.place_protection(work_root) {
         find(Rule::WorkRootProtected(protection), work_root);
     }
     let same_root = |root: &AbsPath| root.is_within(work_root) && work_root.is_within(root);
@@ -434,7 +434,7 @@ fn judge(
         if in_other_quarantine(destination) {
             find(Rule::QuarantineOfOtherRoot, destination);
         }
-        if let Some(protection) = policy.protection(destination) {
+        if let Some(protection) = policy.place_protection(destination) {
             find(Rule::DestinationProtected(protection), destination);
         }
         let allowed = destination.is_within(work_root)
@@ -482,6 +482,12 @@ fn judge(
                 reserved
                     .iter()
                     .map(|&path| (path, Rule::DestinationEntryReserved)),
+            )
+            .chain(
+                policy
+                    .product_paths()
+                    .iter()
+                    .map(|path| (path, Rule::DestinationProtected(Protection::ProductData))),
             );
         let mut candidates = Vec::new();
         let mut seen_children = HashSet::new();

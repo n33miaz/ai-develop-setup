@@ -1,19 +1,22 @@
 //! Composição dos comandos da API local autenticada com o host de terminais.
 
-use crate::auth::{Token, permits_upgrade};
+use crate::auth::{LocalSession, Token, permits_upgrade};
 use crate::events::{Closing, EventLog, Poll, Stream};
 use crate::pty_client::{ClientError, ErrorCode, Event, PtyClient};
+use crate::queue::{DisabledQueue, QueueControl};
 use ads_contracts::{
-    CommandSessionOpenV1Params, ContractLocalApiErrorCodeV1CapacityExceeded as CapacityExceeded,
-    ContractLocalApiErrorCodeV1Conflict as Conflict,
-    ContractLocalApiErrorCodeV1HarnessNotConfigured as HarnessNotConfigured,
-    ContractLocalApiErrorCodeV1InternalError as InternalError,
-    ContractLocalApiErrorCodeV1InvalidParams as InvalidParams,
-    ContractLocalApiErrorCodeV1MethodNotFound as MethodNotFound,
-    ContractLocalApiErrorCodeV1RemoteOriginRefused as RemoteOriginRefused,
-    ContractLocalApiErrorCodeV1SessionClosePending as SessionClosePending,
-    ContractLocalApiErrorCodeV1SessionSetupFailed as SessionSetupFailed,
-    ContractLocalApiErrorCodeV1SubscriptionReplayUnavailable as SubscriptionReplayUnavailable,
+    CommandSessionOpenV1Params, ContractLocalApiErrorCodeV2CapacityExceeded as CapacityExceeded,
+    ContractLocalApiErrorCodeV2Conflict as Conflict,
+    ContractLocalApiErrorCodeV2HarnessNotConfigured as HarnessNotConfigured,
+    ContractLocalApiErrorCodeV2InternalError as InternalError,
+    ContractLocalApiErrorCodeV2InvalidParams as InvalidParams,
+    ContractLocalApiErrorCodeV2MethodNotFound as MethodNotFound,
+    ContractLocalApiErrorCodeV2QueueAlreadyEnabled as QueueAlreadyEnabled,
+    ContractLocalApiErrorCodeV2QueueNotConfigured as QueueNotConfigured,
+    ContractLocalApiErrorCodeV2RemoteOriginRefused as RemoteOriginRefused,
+    ContractLocalApiErrorCodeV2SessionClosePending as SessionClosePending,
+    ContractLocalApiErrorCodeV2SessionSetupFailed as SessionSetupFailed,
+    ContractLocalApiErrorCodeV2SubscriptionReplayUnavailable as SubscriptionReplayUnavailable,
 };
 use ads_ptyhost::wire::{
     Notification, OpenParams, ResizeParams, SessionId, SessionParams, WriteParams,
@@ -50,6 +53,11 @@ pub enum ApiError {
     /// Prazo do host esgotado num comando; o efeito é incerto e o serviço encerra.
     HostTimeout,
     Host(ErrorCode),
+    /// No queue bound to the audit log, or a queue id it does not serve.
+    QueueNotConfigured,
+    QueueAlreadyEnabled,
+    /// The audit log refused a queue event; unlike `Unavailable`, the service keeps running.
+    Storage,
 }
 impl ApiError {
     pub fn code(self) -> i64 {
@@ -63,7 +71,9 @@ impl ApiError {
             Self::Replay => SubscriptionReplayUnavailable::VALUE,
             Self::ClosePending => SessionClosePending::VALUE,
             Self::SetupFailed => SessionSetupFailed::VALUE,
-            Self::Unavailable | Self::HostTimeout => InternalError::VALUE,
+            Self::Unavailable | Self::HostTimeout | Self::Storage => InternalError::VALUE,
+            Self::QueueNotConfigured => QueueNotConfigured::VALUE,
+            Self::QueueAlreadyEnabled => QueueAlreadyEnabled::VALUE,
             Self::Host(code) => code.number(),
         }
     }
@@ -81,6 +91,9 @@ impl ApiError {
             Self::SetupFailed => "session setup failed",
             Self::HostTimeout => "service unavailable",
             Self::Host(_) => "host refused command",
+            Self::QueueNotConfigured => "queue not configured",
+            Self::QueueAlreadyEnabled => "queue already enabled",
+            Self::Storage => "service unavailable",
         }
     }
 }
@@ -237,6 +250,8 @@ impl Launcher for DisabledLauncher {
 
 struct Request {
     command: Value,
+    /// Proof that the connection passed `auth.hello`; the queue controls require it.
+    session: Arc<LocalSession>,
     reply: oneshot::Sender<Result<Reply, ApiError>>,
 }
 struct Reply {
@@ -278,6 +293,7 @@ struct Service {
     in_flight: Option<(SessionId, u64)>,
     host: PtyClient,
     launcher: Arc<dyn Launcher>,
+    queue: Arc<dyn QueueControl>,
     config: ApiConfig,
     log: Arc<Mutex<EventLog>>,
     sessions: HashMap<String, Session>,
@@ -287,11 +303,26 @@ struct Service {
     generations: u64,
 }
 impl Service {
-    async fn command(&mut self, command: &Value, deadline: Instant) -> Result<Reply, ApiError> {
+    async fn command(
+        &mut self,
+        command: &Value,
+        session: &LocalSession,
+        deadline: Instant,
+    ) -> Result<Reply, ApiError> {
         let method = command["method"].as_str().ok_or(ApiError::Invalid)?;
         let params = &command["params"];
         if params["_meta"]["origin"] != "local" {
             return Err(ApiError::Remote);
+        }
+        if method == "queue.stop" {
+            // Parar expressa o estado desejado: uma chave já vista não pode devolver aceite com a fila ligada.
+            let queue_id = queue_id(params)?;
+            let cause = command["id"].as_str().ok_or(ApiError::Invalid)?;
+            let stopped_now = self.queue.stop(session, &queue_id, cause)?;
+            return Ok(Reply {
+                replayed: !stopped_now,
+                stream: None,
+            });
         }
         let key = params["_meta"]["idempotency_key"]
             .as_str()
@@ -307,9 +338,14 @@ impl Service {
         };
         let mut stream = None;
         if !replayed {
-            stream = self
-                .execute(method, params, command["id"].as_str(), deadline)
-                .await?;
+            if method == "queue.start" {
+                let cause = command["id"].as_str().ok_or(ApiError::Invalid)?;
+                self.queue.start(session, &queue_id(params)?, cause)?;
+            } else {
+                stream = self
+                    .execute(method, params, command["id"].as_str(), deadline)
+                    .await?;
+            }
             self.keys.push_back(Entry {
                 key: key.to_owned(),
                 digest,
@@ -963,6 +999,7 @@ impl LocalApi {
             in_flight: None,
             host,
             launcher,
+            queue: Arc::new(DisabledQueue),
             config: config.clone(),
             log,
             sessions: HashMap::new(),
@@ -980,6 +1017,12 @@ impl LocalApi {
             service,
             hooks,
         })
+    }
+    /// Serves `queue.get`, `queue.start` and `queue.stop` from `queue`; without it they answer
+    /// `QUEUE_NOT_CONFIGURED`.
+    pub fn with_queue(mut self, queue: Arc<dyn QueueControl>) -> Self {
+        self.service.queue = queue;
+        self
     }
     #[doc(hidden)]
     pub fn test_hooks(&self) -> Arc<TestHooks> {
@@ -1017,6 +1060,7 @@ impl LocalApi {
             .map_err(|_| ApiError::Unavailable)?
             .port();
         let log = service.log.clone();
+        let queue = service.queue.clone();
         let permits = Arc::new(Semaphore::new(config.max_connections));
         let admitter = Admitter {
             listener: &listener,
@@ -1042,7 +1086,7 @@ impl LocalApi {
                 },
                 Some(request) = incoming.recv() => {
                     let deadline = Instant::now() + Duration::from_millis(config.host_timeout_ms);
-                    let result = service.command(&request.command, deadline).await;
+                    let result = service.command(&request.command, &request.session, deadline).await;
                     // Um comando sem resposta do host pode ter executado; encerrar impede repetir efeito incerto.
                     if let Err(ApiError::Unavailable | ApiError::HostTimeout) = result {
                         let _ = request.reply.send(Err(ApiError::Unavailable));
@@ -1053,10 +1097,10 @@ impl LocalApi {
                 }
                 admission = &mut accepting => {
                     accepting.set(admitter.admit());
-                    let (token, config, commands, log, hooks, catalog) = (token.clone(), config.clone(), commands.clone(), log.clone(), hooks.clone(), catalog.clone());
+                    let (token, config, commands, log, hooks, catalog, queue) = (token.clone(), config.clone(), commands.clone(), log.clone(), hooks.clone(), catalog.clone(), queue.clone());
                     let authenticated = permits.clone();
                     connections.spawn(async move {
-                        let _ = connection(admission, port, token, config, commands, log, (authenticated, hooks, catalog)).await;
+                        let _ = connection(admission, port, token, config, commands, log, (authenticated, hooks, catalog, queue)).await;
                     });
                 }
                 Some(_) = connections.join_next(), if !connections.is_empty() => (),
@@ -1113,6 +1157,9 @@ fn response(id: &Value, result: Result<bool, ApiError>) -> Value {
         }
     }
 }
+fn queue_id(params: &Value) -> Result<ads_contracts::CommonIdV1, ApiError> {
+    serde_json::from_value(params["queue_id"].clone()).map_err(|_| ApiError::Invalid)
+}
 fn validate_command(value: Value) -> Result<Value, ApiError> {
     let method = value["method"].as_str().ok_or(ApiError::Invalid)?;
     if !matches!(
@@ -1124,6 +1171,9 @@ fn validate_command(value: Value) -> Result<Value, ApiError> {
             | "session.close"
             | "events.subscribe"
             | "harness.list"
+            | "queue.get"
+            | "queue.start"
+            | "queue.stop"
     ) {
         return Err(ApiError::Method);
     }
@@ -1147,7 +1197,12 @@ async fn connection(
     config: Arc<ApiConfig>,
     commands: mpsc::Sender<Request>,
     log: Arc<Mutex<EventLog>>,
-    (authenticated, hooks, catalog): (Arc<Semaphore>, Arc<TestHooks>, Arc<Value>),
+    (authenticated, hooks, catalog, queue): (
+        Arc<Semaphore>,
+        Arc<TestHooks>,
+        Arc<Value>,
+        Arc<dyn QueueControl>,
+    ),
 ) -> Result<(), ApiError> {
     use tokio_tungstenite::tungstenite::handshake::server::{Request as HttpRequest, Response};
     let ws_config = WebSocketConfig::default()
@@ -1231,24 +1286,22 @@ async fn connection(
                 .and_then(|v| validate_command(v).ok()),
             _ => None,
         };
-        let valid = hello.as_ref().is_some_and(|v| {
-            v["method"] == "auth.hello"
-                && v["params"]["_meta"]["origin"] == "local"
-                && v["params"]["token"]
-                    .as_str()
-                    .is_some_and(|s| token.matches(s))
-        });
-        if !valid {
+        let session = hello
+            .as_ref()
+            .filter(|v| v["method"] == "auth.hello" && v["params"]["_meta"]["origin"] == "local")
+            .and_then(|v| v["params"]["token"].as_str())
+            .and_then(|s| token.open_session(s));
+        let Some(session) = session else {
             let _ = timeout(
                 Duration::from_millis(config.send_timeout_ms),
                 ws.close(None),
             )
             .await;
             return Err(ApiError::Invalid);
-        }
-        Ok(hello)
+        };
+        Ok((hello, Arc::new(session)))
     };
-    let mut hello = hello.await?;
+    let (mut hello, session) = hello.await?;
     let id = consume_hello(&mut hello)?;
     let _authenticated = authenticated
         .try_acquire_owned()
@@ -1299,6 +1352,25 @@ async fn connection(
                         send(&mut ws, reply, &config).await?;
                         continue;
                     }
+                    if command["method"] == "queue.get" {
+                        // Só leitura, como harness.list; a origem é conferida aqui porque não passa pelo serviço.
+                        let queue_id = command["params"]["queue_id"].clone();
+                        let state = if command["params"]["_meta"]["origin"] == "local" {
+                            serde_json::from_value(queue_id.clone())
+                                .map_err(|_| ApiError::Invalid)
+                                .and_then(|id| queue.state(&session, &id))
+                        } else {
+                            Err(ApiError::Remote)
+                        };
+                        let reply = match state {
+                            Ok(state) => {
+                                json!({"jsonrpc": "2.0", "id": id, "result": {"queue_id": queue_id, "state": state}})
+                            }
+                            Err(error) => response(&id, Err(error)),
+                        };
+                        send(&mut ws, reply, &config).await?;
+                        continue;
+                    }
                     let subscribe = command["method"] == "events.subscribe";
                     let stream = command["params"]["stream"]
                         .as_str()
@@ -1324,7 +1396,11 @@ async fn connection(
                     let after = command["params"]["after_seq"].as_u64().unwrap_or(0);
                     let (reply, answer) = oneshot::channel();
                     commands
-                        .send(Request { command, reply })
+                        .send(Request {
+                            command,
+                            session: session.clone(),
+                            reply,
+                        })
                         .await
                         .map_err(|_| ApiError::Unavailable)?;
                     hooks.queued_commands.fetch_add(1, Ordering::AcqRel);
@@ -1429,7 +1505,7 @@ async fn send<S>(ws: &mut S, value: Value, config: &ApiConfig) -> Result<(), Api
 where
     S: futures_util::Sink<Message> + Unpin,
 {
-    let value = checked("urn:ads:contract:local-api.server-message:2", value)?;
+    let value = checked("urn:ads:contract:local-api.server-message:3", value)?;
     timeout(
         Duration::from_millis(config.send_timeout_ms),
         ws.send(Message::Text(value.to_string().into())),

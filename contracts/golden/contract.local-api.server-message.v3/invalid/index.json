@@ -1,0 +1,27 @@
+{
+  "01-response-with-both.json": {
+    "rule": "Resposta tem result ou error, não os dois.",
+    "keyword": "anyOf",
+    "instancePath": ""
+  },
+  "02-event-without-seq.json": {
+    "rule": "Evento sem seq não se encaixa no envelope.",
+    "keyword": "anyOf",
+    "instancePath": ""
+  },
+  "03-command.json": {
+    "rule": "O núcleo não manda comando à interface.",
+    "keyword": "anyOf",
+    "instancePath": ""
+  },
+  "04-list-with-accepted.json": {
+    "rule": "A resposta de harness.list e a de um comando com efeito não se misturam.",
+    "keyword": "anyOf",
+    "instancePath": ""
+  },
+  "05-queue-get-with-harnesses.json": {
+    "rule": "A resposta de queue.get e a de harness.list não se misturam.",
+    "keyword": "anyOf",
+    "instancePath": ""
+  }
+}

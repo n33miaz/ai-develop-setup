@@ -11,6 +11,15 @@ use tokio::sync::watch;
 
 use crate::api::{ApiError, checked};
 
+/// The daemon clock in whole UTC seconds, the `ts` of every event it writes.
+pub(crate) fn now_ts() -> Result<String, ApiError> {
+    OffsetDateTime::now_utc()
+        .replace_nanosecond(0)
+        .map_err(|_| ApiError::Unavailable)?
+        .format(&Rfc3339)
+        .map_err(|_| ApiError::Unavailable)
+}
+
 pub fn new_id() -> Result<String, ApiError> {
     let mut bytes = [0; 16];
     getrandom::fill(&mut bytes).map_err(|_| ApiError::Unavailable)?;
@@ -235,11 +244,7 @@ impl EventLog {
             .filter(|s| *s <= 9_007_199_254_740_991)
             .ok_or(ApiError::Capacity)?;
         let schema = format!("urn:ads:event:session.{kind}:1");
-        let ts = OffsetDateTime::now_utc()
-            .replace_nanosecond(0)
-            .map_err(|_| ApiError::Unavailable)?
-            .format(&Rfc3339)
-            .map_err(|_| ApiError::Unavailable)?;
+        let ts = now_ts()?;
         let event = checked(
             &schema,
             json!({

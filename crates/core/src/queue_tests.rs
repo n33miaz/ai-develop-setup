@@ -2134,3 +2134,26 @@ fn creation_v4_is_admitted_with_the_older_versions_and_a_v3_record_restores() {
         RunningAfterRestart::Fail(data) if data.from == Running && data.attempts.get() == 1
     ));
 }
+
+#[test]
+fn the_local_owner_transition_matches_the_device_transition_on_the_local_channel() {
+    let owner = device("device-01", "owner-01", LocalUi);
+    let queue = new_stopped(id("queue-01"), &owner);
+    for next in [Enabled, Stopped] {
+        let mut from = queue.clone();
+        from.state = if next == Enabled { Stopped } else { Enabled };
+        let (by_device, device_event, _) = change_queue_state(&from, Some(&owner), next).unwrap();
+        assert_eq!(
+            change_local_queue_state(&from, &id("owner-01"), next).unwrap(),
+            (by_device, device_event)
+        );
+    }
+    assert_eq!(
+        change_local_queue_state(&queue, &id("owner-02"), Enabled).err(),
+        Some(QueueRefusal::NotOwner)
+    );
+    assert_eq!(
+        change_local_queue_state(&queue, &id("owner-01"), Stopped).err(),
+        Some(QueueRefusal::Unchanged)
+    );
+}
