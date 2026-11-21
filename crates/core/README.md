@@ -299,8 +299,15 @@ comparações de prefixos de caminhos, o tamanho das entradas no destino e os pa
 casamento de curingas. O padrão comporta 10 mil nomes literais de 100 bytes em destinos comuns.
 Ao esgotar o orçamento, `classify` devolve `ClassificationBudgetExceeded` antes de emitir um
 veredito. A admissão recusa o plano sem gravar a ação ou emitir licença. Divida o lote ao
-exceder o limite. A redução do teto também afeta a conferência do veredito vigente no diário.
-Restaure a configuração anterior se precisar reabrir um plano salvo que exceda o novo teto.
+exceder o limite.
+
+O diário reclassifica o plano gravado sob o teto vigente a cada consulta. Com um teto menor do
+que o plano exige, `JournalGate::inspect` reconstrói o estado pelo histórico autenticado e
+devolve `ClassificationBudgetExceeded` em `policy_warning`. Negar, expirar e registrar o
+resultado de uma ação já iniciada (`Executed` ou `Fail`) continuam aceitos e gravados com o
+mesmo aviso. Pedir aprovação, conceder a aprovação e iniciar (`authorize`) devolvem o erro sem
+gravar nada e sem emitir licença. Só é preciso subir o teto para pedir, conceder ou iniciar uma
+ação acima dele; nos outros casos, negue a ação e divida o plano.
 
 Quarentena por padrão: apagar e apagar recursivo saem do veredito reescritos como "mover para `<raiz de trabalho>/<quarantine_dir>/<16 primeiros hexadecimais do hash do plano pedido>`". É o plano reescrito que recebe o `plan_hash`, a aprovação e a execução.
 
