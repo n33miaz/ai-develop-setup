@@ -7,7 +7,7 @@ use ads_daemon::api::{ApiConfig, ApiError, DisabledLauncher, LocalApi};
 use ads_daemon::auth::LocalSession;
 use ads_daemon::events::new_id;
 use ads_daemon::pty_client::{ClientConfig, PtyClient};
-use ads_daemon::queue::{LoggedQueue, QueueControl, QueueOpenError, QueueOwner};
+use ads_daemon::queue::{LocalQueue, LoggedQueue, QueueControl, QueueOpenError, QueueOwner};
 use ads_ptyhost::{FakeBackend, HostConfig, PtyHost, server};
 use ads_storage::{
     EventLog, StorageConfig, StorageError,
@@ -113,6 +113,21 @@ impl Bench {
             queue: name.to_owned(),
             config: StorageConfig::defaults(),
         }
+    }
+    fn bind_or_pending(&self) -> LocalQueue {
+        LocalQueue::bind_or_pending(
+            Arc::new(Mutex::new(open_log(
+                &self.folder.db(),
+                &self.anchor,
+                &self.config,
+            ))),
+            id(&self.queue),
+            QueueOwner {
+                owner_id: id("owner-01"),
+                device_id: id("device-01"),
+            },
+        )
+        .unwrap()
     }
     fn open_as(&self, owner_id: &str) -> Result<LoggedQueue, QueueOpenError> {
         LoggedQueue::bind(
@@ -286,7 +301,7 @@ async fn exchange(ws: &mut Socket, value: &Value) -> Value {
     );
     if let Some(code) = reply["error"].get("code") {
         assert!(
-            valid("urn:ads:contract:local-api.error-code:2", code),
+            valid("urn:ads:contract:local-api.error-code:4", code),
             "{reply}"
         );
     }
@@ -478,6 +493,10 @@ async fn a_locked_queue_stop_does_not_stall_other_connections() {
 #[derive(Default)]
 struct Counting(AtomicUsize);
 impl QueueControl for Counting {
+    fn create(&self, _: &LocalSession, _: &CommonIdV1, _: &str) -> Result<(), ApiError> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
     fn state(&self, _: &LocalSession, _: &CommonIdV1) -> Result<RecordTaskQueueV1State, ApiError> {
         self.0.fetch_add(1, Ordering::SeqCst);
         Ok(RecordTaskQueueV1State::Stopped)
@@ -497,7 +516,7 @@ async fn refused_queue_commands_never_reach_the_queue() {
     let counting = Arc::new(Counting::default());
     let f = fixture(Some(counting.clone())).await;
     let params = json!({"queue_id": "queue-refusals"});
-    for method in ["queue.get", "queue.start", "queue.stop"] {
+    for method in ["queue.get", "queue.create", "queue.start", "queue.stop"] {
         let mut unauthenticated = connect(&f).await;
         let first = command(method, params.clone()).to_string();
         bounded(unauthenticated.send(Message::Text(first.into())))
@@ -509,7 +528,7 @@ async fn refused_queue_commands_never_reach_the_queue() {
         ));
     }
     let mut ws = authenticated(&f).await;
-    for method in ["queue.get", "queue.start", "queue.stop"] {
+    for method in ["queue.get", "queue.create", "queue.start", "queue.stop"] {
         let reply = exchange(&mut ws, &remote(command(method, params.clone()))).await;
         assert_eq!(reply["error"]["code"], -32010, "{method}");
         let forged = json!({"queue_id": "queue-refusals", "owner_id": "owner-01"});
@@ -533,7 +552,7 @@ async fn an_unknown_or_unbound_queue_is_refused() {
 
     let f = fixture(None).await;
     let mut ws = authenticated(&f).await;
-    for method in ["queue.get", "queue.start", "queue.stop"] {
+    for method in ["queue.get", "queue.create", "queue.start", "queue.stop"] {
         let reply = exchange(&mut ws, &command(method, bench.params())).await;
         assert_eq!(reply["error"]["code"], -32015, "{method}");
     }
@@ -685,7 +704,7 @@ fn binding_an_empty_stream_without_a_session_creates_nothing() {
 }
 
 #[test]
-fn only_version_2_of_the_error_catalog_names_the_queue_codes() {
+fn versioned_error_catalogs_keep_the_published_queue_codes() {
     for code in [-32015, -32016] {
         assert!(!valid(
             "urn:ads:contract:local-api.error-code:1",
@@ -695,9 +714,17 @@ fn only_version_2_of_the_error_catalog_names_the_queue_codes() {
             "urn:ads:contract:local-api.error-code:2",
             &json!(code)
         ));
+        assert!(valid(
+            "urn:ads:contract:local-api.error-code:4",
+            &json!(code)
+        ));
         let response = json!({"jsonrpc": "2.0", "id": new_id().unwrap(), "error": {"code": code, "message": "queue"}});
         assert!(valid("urn:ads:command:response:2", &response));
     }
+    assert!(!valid(
+        "urn:ads:contract:local-api.error-code:3",
+        &json!(-32024)
+    ));
     let listed = json!({"jsonrpc": "2.0", "id": new_id().unwrap(), "result": {"queue_id": "queue-01", "state": "enabled"}});
     assert!(valid(
         "urn:ads:contract:local-api.server-message:3",
@@ -707,4 +734,75 @@ fn only_version_2_of_the_error_catalog_names_the_queue_codes() {
         "urn:ads:contract:local-api.server-message:2",
         &listed
     ));
+}
+
+#[tokio::test]
+async fn create_without_a_session_leaves_the_stream_empty() {
+    let bench = Bench::new("queue-create-no-session");
+    let f = fixture(Some(Arc::new(bench.bind_or_pending()))).await;
+    let mut ws = connect(&f).await;
+    let create = command("queue.create", bench.params());
+    bounded(ws.send(Message::Text(create.to_string().into())))
+        .await
+        .unwrap();
+    assert!(matches!(
+        bounded(ws.next()).await,
+        None | Some(Err(_)) | Some(Ok(Message::Close(_)))
+    ));
+    assert!(bench.audit().is_empty());
+}
+
+#[tokio::test]
+async fn create_records_the_default_policy_and_refuses_a_second_creation() {
+    let bench = Bench::new("queue-create-policy");
+    let f = fixture(Some(Arc::new(bench.bind_or_pending()))).await;
+    let mut ws = authenticated(&f).await;
+    let create = command("queue.create", bench.params());
+    assert_eq!(exchange(&mut ws, &create).await["result"]["accepted"], true);
+    assert_eq!(state(&mut ws, &bench.params()).await, "stopped");
+
+    let policy: QueuePolicy = toml::from_str(DEFAULT_POLICY).unwrap();
+    let (_, expected) = new_local_stopped(id(&bench.queue), &id("owner-01"), &policy);
+    let events = bench.audit();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["type"], "urn:ads:event:queue.created:2");
+    assert_eq!(events[0]["data"], serde_json::to_value(expected).unwrap());
+    assert_eq!(events[0]["actor"]["id"], "device-01");
+    assert_eq!(events[0]["cause"], create["id"]);
+
+    assert_eq!(exchange(&mut ws, &create).await["result"]["replayed"], true);
+    let again = exchange(&mut ws, &command("queue.create", bench.params())).await;
+    assert_eq!(again["error"]["code"], -32024);
+    assert_eq!(again["error"]["message"], "queue already created");
+    assert_eq!(bench.audit(), events);
+}
+
+#[tokio::test]
+async fn startup_binds_an_existing_queue_stopped() {
+    let bench = Bench::new("queue-create-restart");
+    {
+        let f = fixture(Some(Arc::new(bench.bind_or_pending()))).await;
+        let mut ws = authenticated(&f).await;
+        for method in ["queue.create", "queue.start"] {
+            assert_eq!(
+                exchange(&mut ws, &command(method, bench.params())).await["result"]["accepted"],
+                true
+            );
+        }
+        f.api.abort();
+        drop(ws);
+        bounded(async {
+            while !f.api.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+    }
+    let f = fixture(Some(Arc::new(bench.bind_or_pending()))).await;
+    let mut ws = authenticated(&f).await;
+    assert_eq!(state(&mut ws, &bench.params()).await, "stopped");
+    let events = bench.audit();
+    assert_eq!(events.len(), 3);
+    assert_eq!(events[2]["type"], "urn:ads:event:queue.stopped:1");
+    assert_eq!(events[2]["data"]["reason"], "restart");
 }
