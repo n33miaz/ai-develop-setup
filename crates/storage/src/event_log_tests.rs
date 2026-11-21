@@ -23,7 +23,7 @@ pub(crate) struct MemoryAnchor(std::sync::Arc<std::sync::Mutex<MemoryAnchorState
 #[derive(Default)]
 struct MemoryAnchorState {
     commitment: Option<crate::anchor::Commitment>,
-    deny_reads: bool,
+    read_error: Option<StorageError>,
     deny_writes: bool,
 }
 
@@ -37,8 +37,8 @@ impl crate::anchor::AnchorStore for MemoryAnchor {
         _: crate::anchor::DatabaseId,
     ) -> Result<Option<crate::anchor::Commitment>, StorageError> {
         let state = self.0.lock().unwrap();
-        if state.deny_reads {
-            return Err(StorageError::AnchorUnavailable);
+        if let Some(error) = state.read_error {
+            return Err(error);
         }
         Ok(state.commitment)
     }
@@ -125,19 +125,19 @@ fn external_commitment_refuses_a_registered_future_key_before_rotation() {
 fn unavailable_anchor_blocks_open_and_rolls_back_append() {
     let path = fixture();
     let anchor = MemoryAnchor::default();
-    anchor.0.lock().unwrap().deny_reads = true;
+    anchor.0.lock().unwrap().read_error = Some(StorageError::AnchorUnavailable);
     assert_eq!(
         anchored(&path, &anchor).unwrap_err(),
         StorageError::AnchorUnavailable
     );
     assert!(!path.exists());
-    anchor.0.lock().unwrap().deny_reads = false;
+    anchor.0.lock().unwrap().read_error = None;
     let mut log = anchored(&path, &anchor).unwrap();
     let event = event("task/t1", 1, 1, serde_json::json!({}));
     for deny_reads in [true, false] {
         {
             let mut state = anchor.0.lock().unwrap();
-            state.deny_reads = deny_reads;
+            state.read_error = deny_reads.then_some(StorageError::AnchorUnavailable);
             state.deny_writes = !deny_reads;
         }
         assert_eq!(log.append(&event), Err(StorageError::AnchorUnavailable));
@@ -2516,6 +2516,35 @@ mod gate_journal {
             GateJournal::append(&mut log, &action_id, 4, &started),
             Err(JournalError::Integrity)
         );
+    }
+
+    #[test]
+    fn journal_distinguishes_integrity_errors_from_an_unavailable_vault() {
+        let path = fixture();
+        let anchor = MemoryAnchor::default();
+        let mut log = anchored(&path, &anchor).unwrap();
+        let (action_id, _) = approved(&mut log);
+        anchor.0.lock().unwrap().read_error = Some(StorageError::AnchorUnavailable);
+        assert!(matches!(
+            log.load(&action_id),
+            Err(JournalError::Unavailable)
+        ));
+        {
+            let mut state = anchor.0.lock().unwrap();
+            state.read_error = None;
+            state.commitment = None;
+        }
+        assert!(matches!(log.load(&action_id), Err(JournalError::Integrity)));
+        for error in [
+            StorageError::DuplicateDatabaseIdentity,
+            StorageError::NonCanonicalDatabase,
+        ] {
+            anchor.0.lock().unwrap().read_error = Some(error);
+            assert!(
+                matches!(log.load(&action_id), Err(JournalError::Integrity)),
+                "{error:?}"
+            );
+        }
     }
 
     #[test]

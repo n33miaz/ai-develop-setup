@@ -9,17 +9,23 @@ describe('ConnectionStatus', () => {
     ['disconnected', 'pt-BR', 'Núcleo: desconectado'],
     ['relaunch_required', 'pt-BR', 'Núcleo: conexão indisponível. Reabra pelo lançador.'],
     [
-      'incompatible',
+      'proof_missing',
       'pt-BR',
-      'Núcleo: prova de identidade ausente. Confira se a casca e o daemon têm a mesma versão.',
+      'Núcleo: o serviço na porta local não comprovou sua identidade. Reabra pelo lançador.',
     ],
     ['disconnected', 'en', 'Core: disconnected'],
     ['relaunch_required', 'en', 'Core: connection unavailable. Reopen from the launcher.'],
     [
-      'incompatible',
+      'proof_missing',
       'en',
-      'Core: identity proof missing. Check that the shell and daemon are the same version.',
+      'Core: the service on the local port did not prove its identity. Reopen from the launcher.',
     ],
+    [
+      'retry_exhausted',
+      'pt-BR',
+      'Núcleo: limite de tentativas de conexão atingido. Reabra pelo lançador.',
+    ],
+    ['retry_exhausted', 'en', 'Core: connection attempt limit reached. Reopen from the launcher.'],
   ])('labels %s in %s', (state, locale, label) => {
     render(
       <I18nContext.Provider value={createTranslator(locale)}>

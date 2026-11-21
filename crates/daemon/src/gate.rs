@@ -5,6 +5,7 @@ use std::{
     fs,
     io::ErrorKind,
     path::{Component, Path, PathBuf},
+    sync::MutexGuard,
 };
 
 use ads_adapter_fs::{Effects, Executor, Failure, Reason, Report, Stop};
@@ -200,7 +201,7 @@ pub struct SessionGate {
     executor: Executor,
     /// Called once the license is spent and before the executor starts.
     #[cfg(test)]
-    after_license: Option<Box<dyn FnMut() + Send>>,
+    pub(crate) before_execute: Option<Box<dyn FnOnce() + Send>>,
 }
 
 impl SessionGate {
@@ -225,7 +226,7 @@ impl SessionGate {
             product,
             executor,
             #[cfg(test)]
-            after_license: None,
+            before_execute: None,
         })
     }
 
@@ -242,8 +243,8 @@ impl SessionGate {
 
     /// The same gate, calling `hook` between the license and the executor.
     #[cfg(test)]
-    pub(crate) fn after_license(mut self, hook: impl FnMut() + Send + 'static) -> Self {
-        self.after_license = Some(Box::new(hook));
+    pub(crate) fn after_license(mut self, hook: impl FnOnce() + Send + 'static) -> Self {
+        self.before_execute = Some(Box::new(hook));
         self
     }
 
@@ -256,11 +257,14 @@ impl SessionGate {
         }
     }
 
-    fn bound<'a>(&self, log: &'a mut ProductLog) -> Result<&'a mut EventLog, JournalError> {
+    fn bound<'a>(&self, log: &'a ProductLog) -> Result<MutexGuard<'a, EventLog>, JournalError> {
         if log.state() != &self.product {
             return Err(JournalError::PolicyChanged);
         }
-        Ok(log.log())
+        log.log().map_err(|error| match error {
+            ads_storage::StorageError::Busy => JournalError::Busy,
+            _ => JournalError::Unavailable,
+        })
     }
 
     pub fn plan(
@@ -270,7 +274,8 @@ impl SessionGate {
         mut request: PlanRequest,
         meta: EventMeta,
     ) -> Result<ActionSnapshot, PlanActionError> {
-        let log = self.bound(log).map_err(PlanActionError::Journal)?;
+        let mut guard = self.bound(log).map_err(PlanActionError::Journal)?;
+        let log: &mut EventLog = &mut guard;
         request.work_root = self.root.to_string();
         let plan = ActionPlan::normalize(&request).map_err(PlanActionError::Invalid)?;
         let observed = self
@@ -326,7 +331,8 @@ impl SessionGate {
         log: &mut ProductLog,
         action_id: &Id,
     ) -> Result<ActionSnapshot, JournalError> {
-        let log = self.bound(log)?;
+        let mut guard = self.bound(log)?;
+        let log: &mut EventLog = &mut guard;
         self.journal(log).inspect(action_id)
     }
 
@@ -337,7 +343,8 @@ impl SessionGate {
         command: Command,
         meta: EventMeta,
     ) -> Result<ActionSnapshot, JournalError> {
-        let log = self.bound(log)?;
+        let mut guard = self.bound(log)?;
+        let log: &mut EventLog = &mut guard;
         self.journal(log).apply(action_id, command, meta)
     }
 
@@ -354,7 +361,8 @@ impl SessionGate {
         start: EventMeta,
         mut finish: EventMeta,
     ) -> Result<ExecutionOutcome, JournalError> {
-        let log = self.bound(log)?;
+        let mut guard = self.bound(log)?;
+        let log: &mut EventLog = &mut guard;
         if finish.ts.is_before(&start.ts) {
             finish.ts = start.ts.clone();
         }
@@ -376,8 +384,8 @@ impl SessionGate {
         let mut gate = JournalGate::new(&self.policy, log).for_work_root(&self.root);
         let started = gate.authorize(action_id, start)?;
         #[cfg(test)]
-        if let Some(hook) = self.after_license.as_mut() {
-            hook();
+        if let Some(before_execute) = self.before_execute.take() {
+            before_execute();
         }
         let ran = match &approved {
             Some(effects) => self.executor.execute_approved(started, effects),

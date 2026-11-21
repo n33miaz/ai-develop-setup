@@ -212,6 +212,14 @@ recebe `REMOTE_ORIGIN_REFUSED`.
 `queue::LoggedQueue::bind` liga uma fila já criada ao stream `queue/<id>` do log
 ancorado: recusa um stream criado por outro dono e, a cada abertura, restaura a
 fila parada e grava `queue.stopped` com `reason: restart` se o log dizia ligada.
+Quando a composição usa um `ProductLog`, passe `ProductLog::shared_log()` à fila
+para usar a mesma conexão SQLite do portão. A espera por cada aquisição da
+trava da conexão usa o `busy_timeout_ms` do armazenamento, assim como a espera
+por uma trava do SQLite. Se o portão ainda estiver usando a conexão ao fim do
+prazo, a API responde `INTERNAL_ERROR` com a mensagem `audit log busy`. A fila
+já estará parada se o comando era `queue.stop`. Os controles da fila rodam em
+tarefas bloqueantes, mantendo o atendimento de assinaturas e do terminal
+enquanto aguardam a gravação.
 Com o stream vazio, `bind` recusa com `NotCreated` e não grava nada. Criar a fila
 (`queue.created:2`, com o aparelho do dono como ator e a política inicial) é ato
 do dono: `open` (política embutida em `defaults/queue.toml`) e `open_with_policy`
@@ -337,7 +345,11 @@ recebe `REMOTE_ORIGIN_REFUSED`. O dono e o aparelho vêm do daemon
 `approvals::ApprovalDesk` guarda o log ancorado (`audit::ProductLog`) e as
 portas de sessão (`gate::SessionGate`) ligadas a ele; planejar, pedir aprovação
 e executar passam por `ApprovalDesk::with_gates`, sob a mesma trava das
-respostas. A lista vem de `EventLog::pending_approvals`, que confere a âncora e
+respostas. `approval.answer` roda em uma tarefa bloqueante e cada espera
+pela trava da mesa ou da conexão usa `busy_timeout_ms`. Ao fim do prazo,
+a API responde `INTERNAL_ERROR` com a mensagem `audit log busy`. Se um pânico
+invalidar a trava da conexão, a fila e o portão recusam novos acessos ao log.
+A lista vem de `EventLog::pending_approvals`, que confere a âncora e
 a cadeia uma vez antes de ler e aplica o filtro da mesa antes do limite. `LocalApi::with_approvals` entrega o controle à API. O
 executável ainda não monta o portão, porque falta o provedor de chaves do
 cofre; até lá ele serve `approvals::DisabledApprovals`, que recusa os dois

@@ -90,14 +90,8 @@ impl AnchorStore for Anchor {
     }
 }
 
-fn open_log(path: &Path, anchor: &Anchor) -> EventLog {
-    EventLog::open(
-        path,
-        &StorageConfig::defaults(),
-        Box::new(Keys),
-        Box::new(anchor.clone()),
-    )
-    .unwrap()
+fn open_log(path: &Path, anchor: &Anchor, config: &StorageConfig) -> EventLog {
+    EventLog::open(path, config, Box::new(Keys), Box::new(anchor.clone())).unwrap()
 }
 
 fn id(text: &str) -> CommonIdV1 {
@@ -109,6 +103,7 @@ struct Bench {
     folder: Folder,
     anchor: Anchor,
     queue: String,
+    config: StorageConfig,
 }
 impl Bench {
     fn new(name: &str) -> Self {
@@ -116,11 +111,16 @@ impl Bench {
             folder: Folder::new(name),
             anchor: Anchor::default(),
             queue: name.to_owned(),
+            config: StorageConfig::defaults(),
         }
     }
     fn open_as(&self, owner_id: &str) -> Result<LoggedQueue, QueueOpenError> {
         LoggedQueue::bind(
-            open_log(&self.folder.db(), &self.anchor),
+            Arc::new(Mutex::new(open_log(
+                &self.folder.db(),
+                &self.anchor,
+                &self.config,
+            ))),
             id(&self.queue),
             QueueOwner {
                 owner_id: id(owner_id),
@@ -151,7 +151,7 @@ impl Bench {
             "data": data,
         }))
         .unwrap();
-        open_log(&self.folder.db(), &self.anchor)
+        open_log(&self.folder.db(), &self.anchor, &self.config)
             .append(&event)
             .unwrap();
     }
@@ -172,7 +172,7 @@ impl Bench {
     }
     /// Every event of the queue stream as JSON, read through a second connection.
     fn audit(&self) -> Vec<Value> {
-        open_log(&self.folder.db(), &self.anchor)
+        open_log(&self.folder.db(), &self.anchor, &self.config)
             .read_queue(&id(&self.queue))
             .unwrap()
             .into_iter()
@@ -403,6 +403,75 @@ async fn an_old_stop_sent_again_after_a_restart_stops_the_queue() {
         first_start["params"]["_meta"]["idempotency_key"].clone();
     assert_eq!(exchange(&mut ws, &reused).await["result"]["accepted"], true);
     assert_eq!(state(&mut ws, &params).await, "stopped");
+}
+
+struct ObservedStop {
+    queue: Arc<LoggedQueue>,
+    entered: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+}
+
+impl QueueControl for ObservedStop {
+    fn state(
+        &self,
+        session: &LocalSession,
+        id: &CommonIdV1,
+    ) -> Result<RecordTaskQueueV1State, ApiError> {
+        self.queue.state(session, id)
+    }
+
+    fn start(&self, session: &LocalSession, id: &CommonIdV1, cause: &str) -> Result<(), ApiError> {
+        self.queue.start(session, id, cause)
+    }
+
+    fn stop(&self, session: &LocalSession, id: &CommonIdV1, cause: &str) -> Result<bool, ApiError> {
+        self.entered
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap()
+            .send(())
+            .unwrap();
+        self.queue.stop(session, id, cause)
+    }
+}
+
+#[tokio::test]
+async fn a_locked_queue_stop_does_not_stall_other_connections() {
+    let mut bench = Bench::new("queue-stop-lock");
+    bench.config = StorageConfig::from_toml_str("busy_timeout_ms = 60000").unwrap();
+    let (entered, waiting) = tokio::sync::oneshot::channel();
+    let f = fixture(Some(Arc::new(ObservedStop {
+        queue: bench.open(),
+        entered: Mutex::new(Some(entered)),
+    })))
+    .await;
+    let mut ws = authenticated(&f).await;
+    let mut other = authenticated(&f).await;
+    assert_eq!(
+        exchange(&mut ws, &command("queue.start", bench.params())).await["result"]["accepted"],
+        true
+    );
+
+    let mut writer = rusqlite::Connection::open(bench.folder.db()).unwrap();
+    let lock = writer
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .unwrap();
+    let stop = command("queue.stop", bench.params());
+    let stop = tokio::spawn(async move { exchange(&mut ws, &stop).await });
+    bounded(waiting).await.unwrap();
+
+    let subscribe = command(
+        "events.subscribe",
+        json!({"stream": "session/absent", "after_seq": 0}),
+    );
+    let reply = bounded(exchange(&mut other, &subscribe)).await;
+    assert_eq!(reply["result"]["accepted"], true, "{reply}");
+    assert!(
+        !stop.is_finished(),
+        "the stop must still be waiting for the write lock"
+    );
+    lock.rollback().unwrap();
+    assert_eq!(bounded(stop).await.unwrap()["result"]["accepted"], true);
 }
 
 /// Counts every call, to prove refused commands never reach the queue.

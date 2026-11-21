@@ -143,6 +143,15 @@ mod tests {
         for (name, expected) in [
             (SecretName::StorageKey, "urn:ads:vault:storage-key:1"),
             (SecretName::AuditAnchor, "urn:ads:vault:audit-anchor:1"),
+            (SecretName::AuditDatabase, "urn:ads:vault:audit-database:1"),
+            (
+                SecretName::AuditAnchorFor([0xab; 32]),
+                concat!(
+                    "urn:ads:vault:audit-anchor-",
+                    "abababababababababababababababab",
+                    "abababababababababababababababab:1",
+                ),
+            ),
         ] {
             let wide: Vec<u16> = expected.encode_utf16().chain(iter::once(0)).collect();
             assert_eq!(Target::product(name).0, wide);
