@@ -86,30 +86,63 @@ impl ProductState {
 /// entry is accepted (a file not created yet) and ends the walk; a link whose target is
 /// missing or written with `..` is refused, as is a chain longer than [`MAX_LINKS`].
 pub(crate) fn spellings(path: &Path) -> Result<Vec<AbsPath>, String> {
-    resolve_spellings(path, false)
+    let mut found = Vec::new();
+    walk_spellings(path, false, &mut found).map_err(Walk::into_message)?;
+    Ok(found)
 }
 
 /// Work folders may be offline. Keep the link and its target protected even while absent.
 pub(crate) fn workdir_spellings(path: &Path) -> Result<Vec<AbsPath>, String> {
-    resolve_spellings(path, true)
+    let mut found = Vec::new();
+    walk_spellings(path, true, &mut found).map_err(Walk::into_message)?;
+    Ok(found)
 }
 
-fn resolve_spellings(path: &Path, allow_missing_target: bool) -> Result<Vec<AbsPath>, String> {
-    let failed = |at: &Path, error: std::io::Error| format!("{}: {error}", at.display());
+/// The spellings of a work folder the system cannot reach (a drive or share that is gone, a
+/// denied access): the path as written and what resolved before the failure. Only a path
+/// that is invalid as configured is refused.
+pub(crate) fn unreachable_workdir_spellings(path: &Path) -> Result<Vec<AbsPath>, String> {
     let mut found = Vec::new();
+    match walk_spellings(path, true, &mut found) {
+        Ok(()) | Err(Walk::Unreachable(_)) => Ok(found),
+        Err(Walk::Invalid(message)) => Err(message),
+    }
+}
+
+/// Why a walk stopped: the system could not answer, or the path is refused as written.
+enum Walk {
+    Unreachable(String),
+    Invalid(String),
+}
+
+impl Walk {
+    fn into_message(self) -> String {
+        match self {
+            Self::Unreachable(message) | Self::Invalid(message) => message,
+        }
+    }
+}
+
+fn walk_spellings(
+    path: &Path,
+    allow_missing_target: bool,
+    found: &mut Vec<AbsPath>,
+) -> Result<(), Walk> {
+    let failed =
+        |at: &Path, error: std::io::Error| Walk::Unreachable(format!("{}: {error}", at.display()));
     let mut push = |path: AbsPath| {
         if !found.contains(&path) {
             found.push(path);
         }
     };
-    push(spelling(path)?);
+    push(spelling(path).map_err(Walk::Invalid)?);
     let mut current = path.to_path_buf();
     for _ in 0..=MAX_LINKS {
         if !current.is_absolute() {
-            return Err(format!(
+            return Err(Walk::Invalid(format!(
                 "product path is not absolute: {}",
                 current.display()
-            ));
+            )));
         }
         let mut walked = PathBuf::new();
         let mut components = current.components();
@@ -121,10 +154,10 @@ fn resolve_spellings(path: &Path, allow_missing_target: bool) -> Result<Vec<AbsP
                 Component::Prefix(_) | Component::RootDir => continue,
                 Component::Normal(_) => {}
                 _ => {
-                    return Err(format!(
+                    return Err(Walk::Invalid(format!(
                         "product path is not normalized: {}",
                         current.display()
-                    ));
+                    )));
                 }
             }
             let meta = match fs::symlink_metadata(&walked) {
@@ -142,21 +175,27 @@ fn resolve_spellings(path: &Path, allow_missing_target: bool) -> Result<Vec<AbsP
             let parent = walked.parent().unwrap_or(&walked);
             let real_parent = fs::canonicalize(parent).map_err(|error| failed(parent, error))?;
             if let Some(name) = walked.file_name() {
-                push(spelling(&real_parent.join(name))?);
+                push(spelling(&real_parent.join(name)).map_err(Walk::Invalid)?);
             }
             let target = fs::read_link(&walked).map_err(|error| failed(&walked, error))?;
             if target
                 .components()
                 .any(|part| matches!(part, Component::ParentDir))
             {
-                return Err(format!("link target uses `..`: {}", walked.display()));
+                return Err(Walk::Invalid(format!(
+                    "link target uses `..`: {}",
+                    walked.display()
+                )));
             }
             let target = real_parent.join(target);
             match fs::symlink_metadata(&target) {
                 Ok(_) => {}
                 Err(error) if allow_missing_target && error.kind() == ErrorKind::NotFound => {}
                 Err(error) if error.kind() == ErrorKind::NotFound => {
-                    return Err(format!("link target is missing: {}", walked.display()));
+                    return Err(Walk::Invalid(format!(
+                        "link target is missing: {}",
+                        walked.display()
+                    )));
                 }
                 Err(error) => return Err(failed(&target, error)),
             }
@@ -168,15 +207,15 @@ fn resolve_spellings(path: &Path, allow_missing_target: bool) -> Result<Vec<AbsP
             None => {
                 let rest = current
                     .strip_prefix(&existing)
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|error| Walk::Invalid(error.to_string()))?;
                 let resolved =
                     fs::canonicalize(&existing).map_err(|error| failed(&existing, error))?;
-                push(spelling(&resolved.join(rest))?);
-                return Ok(found);
+                push(spelling(&resolved.join(rest)).map_err(Walk::Invalid)?);
+                return Ok(());
             }
         }
     }
-    Err(format!("too many links: {}", path.display()))
+    Err(Walk::Invalid(format!("too many links: {}", path.display())))
 }
 
 /// The text of `path` as the gate compares it. The resolved spelling of a Windows path

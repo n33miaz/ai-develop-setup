@@ -268,8 +268,9 @@ fn check_audit_location(path: &Path, workdirs: &[PathBuf]) -> Result<(), Storage
     if !workdirs.is_empty() {
         let paths = crate::gate::spellings(directory).map_err(|_| StorageError::CantOpen)?;
         for workdir in workdirs {
-            let roots =
-                crate::gate::workdir_spellings(workdir).map_err(|_| StorageError::Configuration)?;
+            // A folder out of reach cannot hold the database, which has just resolved.
+            let roots = crate::gate::unreachable_workdir_spellings(workdir)
+                .map_err(|_| StorageError::Configuration)?;
             if paths
                 .iter()
                 .any(|path| roots.iter().any(|root| path.matches_denied_root(root)))
@@ -1233,6 +1234,55 @@ mod tests {
         peer.abort();
         let _ = daemon.await;
         let _ = peer.await;
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn unreachable_drive_keeps_controls_for_the_other_workdirs() {
+        use crate::tool_launcher::ToolLauncher;
+        use ads_core::gate::AbsPath;
+        use ads_core::tool_launch::{DiskProbe, HostRules};
+
+        let Some(drive) = ('D'..='Z')
+            .rev()
+            .find(|letter| fs::metadata(format!(r"{letter}:\")).is_err())
+        else {
+            return;
+        };
+        let unreachable = format!(r"{drive}:\ads-unreachable\work");
+        let mut fixture = LocalFixture::new();
+        let online = fixture.root.join("online");
+        fixture.root.directories.push(online.clone());
+        fs::create_dir_all(&online).unwrap();
+        let text = online.to_str().unwrap();
+        let online_text = text.strip_prefix(r"\\?\").unwrap_or(text);
+        let mut launcher = ToolLauncher::from_toml_str(
+            &format!("[workdirs]\nonline = {online_text:?}\nunreachable = {unreachable:?}"),
+            HostRules::host(),
+            std::iter::empty::<(&str, &str)>(),
+            DiskProbe,
+            DiskProbe,
+        )
+        .unwrap();
+        let mut warnings = Vec::new();
+        let workdirs = launcher.check_workdirs(|warning| warnings.push(warning.to_owned()));
+        assert_eq!(
+            warnings,
+            ["ads-daemon: work folder unavailable at startup: unreachable"]
+        );
+        assert_eq!(
+            crate::gate::unreachable_workdir_spellings(Path::new(&unreachable)),
+            Ok(vec![AbsPath::parse(&unreachable).unwrap()])
+        );
+        let (log, ids) = open_local_product_in(
+            &fixture.root.join("vault"),
+            &fixture.storage,
+            fixture.vault.clone(),
+            None,
+            &launcher.workdirs(),
+        )
+        .unwrap();
+        assert!(crate::product::controls(log, ids, &workdirs, 1024 * 1024).is_ok());
     }
 
     #[test]

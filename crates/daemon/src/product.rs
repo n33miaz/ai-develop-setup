@@ -13,7 +13,7 @@ use zeroize::Zeroizing;
 use crate::{
     approvals::{ApprovalDesk, ApprovalOwner},
     audit::{ProductLog, ProductLogError},
-    gate::{SessionGate, workdir_spellings},
+    gate::{SessionGate, unreachable_workdir_spellings, workdir_spellings},
     queue::{LocalQueue, QueueOpenError, QueueOwner},
     tool_launcher::Workdir,
 };
@@ -220,7 +220,12 @@ fn gates(log: &ProductLog, workdirs: &[Workdir]) -> Result<Vec<SessionGate>, Sta
     let mut roots = Vec::new();
     let mut gates = Vec::new();
     for dir in workdirs {
-        for root in workdir_spellings(&dir.path).map_err(|_| StartupError::GateConfiguration)? {
+        let spellings = if dir.missing {
+            unreachable_workdir_spellings(&dir.path)
+        } else {
+            workdir_spellings(&dir.path)
+        };
+        for root in spellings.map_err(|_| StartupError::GateConfiguration)? {
             // Available gates still protect the quarantines of missing work roots.
             if !roots.contains(&root) {
                 roots.push(root.clone());

@@ -54,8 +54,8 @@ impl<C, X> ToolLauncher<C, X> {
             .zip(self.claude.workdirs())
             .map(|(alias, dir)| {
                 let path = PathBuf::from(dir.as_str());
-                let missing = std::fs::metadata(&path)
-                    .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound);
+                // Gone, on a drive or share out of reach, or denied: none can be served.
+                let missing = std::fs::canonicalize(&path).is_err();
                 if missing {
                     self.missing_workdir_aliases.insert(alias.to_owned());
                     warn(&format!(
