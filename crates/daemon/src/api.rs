@@ -171,6 +171,8 @@ pub struct ApiConfig {
     pub subscription_ids_per_stream: usize,
     pub close_retries: usize,
     pub close_retry_ms: u64,
+    /// The ceiling, in bytes, of one `approval.list` response.
+    pub approval_list_max_bytes: usize,
 }
 impl ApiConfig {
     pub fn for_desktop(mut self) -> Self {
@@ -211,6 +213,7 @@ impl ApiConfig {
         if positive.iter().any(|n| *n == 0 || *n > 1_048_576)
             || self.max_write_bytes > 65536
             || self.max_message_bytes < 1024
+            || !(1_048_576..=268_435_456).contains(&self.approval_list_max_bytes)
             || [
                 self.accept_retry_ms,
                 self.auth_timeout_ms,
@@ -1437,8 +1440,8 @@ async fn connection(
                             Err(ApiError::Remote)
                         };
                         let reply = match pending {
-                            Ok(approvals) => {
-                                json!({"jsonrpc": "2.0", "id": id, "result": {"approvals": approvals}})
+                            Ok(page) => {
+                                json!({"jsonrpc": "2.0", "id": id, "result": {"approvals": page.approvals, "more": page.more}})
                             }
                             Err(error) => response(&id, Err(error)),
                         };

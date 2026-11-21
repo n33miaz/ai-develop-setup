@@ -13,7 +13,7 @@
   "data": {
     "action_id": "act-07",
     "plan_hash": "sha256:5486cc58827bffeb2204a994db3d77fe6c8f2c863eb73de6e2a60802784293cb",
-    "effects_hash": "sha256:9f2b1c4e8a7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c5b4a3928170605f4e3",
+    "effects_hash": "sha256:627cd83d8cfa08f8a0fde24dae357b54ba07198da755e9dc1f0e806003578bd3",
     "effects": {
       "version": 1,
       "action_id": "act-07",

@@ -24,3 +24,9 @@ subscription_ids_per_stream = 2
 # Fechamento automático de sessão invalidada: tentativas e espera entre elas; esgotadas, a assinatura recebe SESSION_CLOSE_PENDING.
 close_retries = 3
 close_retry_ms = 1000
+# Teto, em bytes, de uma resposta de approval.list (as acoes que aguardam o dono, com os efeitos concretos de
+# cada uma). As acoes entram da mais antiga a mais nova enquanto couberem; `more` diz que outras ficaram de fora
+# e aparecem quando as primeiras forem respondidas. Um registro de efeitos so e mostrado, e so pode ser aprovado
+# pela API, se ocupar ate a metade deste teto. Aceita de 1 MiB a 256 MiB; padrao 4 MiB, que comporta oito
+# registros no teto padrao de efeitos do executor (`max_effects_bytes`, 512 KiB).
+approval_list_max_bytes = 4194304

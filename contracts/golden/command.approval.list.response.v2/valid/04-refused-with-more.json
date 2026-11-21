@@ -1,0 +1,56 @@
+{
+  "jsonrpc": "2.0",
+  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAD",
+  "result": {
+    "approvals": [
+      {
+        "action_id": "act-01",
+        "approval_id": "appr-03",
+        "plan_hash": "sha256:c7b870d89ef435eb431fcdf8e99f82f2b10c9b05a25eb86eb2ed603fa366eb94",
+        "risk": "medium",
+        "summary": "Limpar arquivos temporários do projeto",
+        "requested_at": "2030-01-02T03:04:05Z",
+        "expires_at": "2030-01-02T03:19:05Z",
+        "not_approvable": [
+          "estimate_unknown",
+          "definitive_recursive_delete",
+          "effects_refused"
+        ],
+        "plan": {
+          "version": 2,
+          "action_id": "act-01",
+          "plan_hash": "sha256:c7b870d89ef435eb431fcdf8e99f82f2b10c9b05a25eb86eb2ed603fa366eb94",
+          "operation": "fs.delete_recursive",
+          "work_root": "/work/proj",
+          "destination": null,
+          "targets": [
+            {
+              "path": "/work/proj/a",
+              "pattern": null,
+              "repo_root": false
+            },
+            {
+              "path": "/work/proj/b",
+              "pattern": null,
+              "repo_root": false
+            }
+          ],
+          "estimate": {
+            "items": 3,
+            "bytes": 4096
+          },
+          "verdict": {
+            "decision": "allowed",
+            "risk": "low",
+            "reasons": []
+          },
+          "quarantined": false
+        },
+        "effects_hash": null,
+        "effects": null,
+        "effects_error": "E_FS_EFFECTS_TOO_LARGE"
+      }
+    ],
+    "more": true
+  }
+}

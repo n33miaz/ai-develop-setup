@@ -126,7 +126,7 @@ export interface CommandQueueGetResponseV1 {
   };
 }
 /**
- * Resposta de approval.list. Resposta JSON-RPC 2.0 aceita de approval.list: as ações que aguardam a resposta do dono, da mais antiga à mais nova, cada uma com a aprovação pedida, o registro do plano como o portão o julgou (alvos como pedidos, destino, quarentena, estimativa e regras), os efeitos concretos que o ensaio achou (record.action-effects:1, com o hash que a aprovação compromete; null quando o ensaio não gravou registro) e os motivos pelos quais a API não a deixa aprovar (not_approvable; vazio quando é aprovável). A versão 2 acrescenta effects e effects_hash. A recusa volta como command.response:2 com error.
+ * Resposta de approval.list. Resposta JSON-RPC 2.0 aceita de approval.list: as ações que aguardam a resposta do dono, da mais antiga à mais nova, cada uma com a aprovação pedida, o registro do plano como o portão o julgou (alvos como pedidos, destino, quarentena, estimativa e regras), os efeitos concretos que o ensaio achou (record.action-effects:1, com o hash que a aprovação compromete; null quando não há registro legível), o código da recusa do ensaio (effects_error, ou null) e os motivos pelos quais a API não a deixa aprovar (not_approvable; vazio quando é aprovável). A resposta tem um teto de bytes: more diz que há mais ações aguardando além das listadas, que aparecem quando as primeiras forem respondidas. A versão 2 acrescenta effects, effects_hash, effects_error e more, e os motivos effects_refused, effects_unreadable e effects_not_listed. A recusa volta como command.response:2 com error.
  */
 export interface CommandApprovalListResponseV2 {
   jsonrpc: "2.0";
@@ -144,30 +144,280 @@ export interface CommandApprovalListResponseV2 {
       requested_at: CommonTimestampV1;
       expires_at: CommonTimestampV1;
       /**
-       * @maxItems 4
+       * @maxItems 7
        */
       not_approvable:
         | []
-        | ["estimate_unknown" | "wildcard_target" | "definitive_recursive_delete" | "restore_from_manifest"]
         | [
-            "estimate_unknown" | "wildcard_target" | "definitive_recursive_delete" | "restore_from_manifest",
-            "estimate_unknown" | "wildcard_target" | "definitive_recursive_delete" | "restore_from_manifest"
+            | "estimate_unknown"
+            | "wildcard_target"
+            | "definitive_recursive_delete"
+            | "restore_from_manifest"
+            | "effects_refused"
+            | "effects_unreadable"
+            | "effects_not_listed"
           ]
         | [
-            "estimate_unknown" | "wildcard_target" | "definitive_recursive_delete" | "restore_from_manifest",
-            "estimate_unknown" | "wildcard_target" | "definitive_recursive_delete" | "restore_from_manifest",
-            "estimate_unknown" | "wildcard_target" | "definitive_recursive_delete" | "restore_from_manifest"
+            (
+              | "estimate_unknown"
+              | "wildcard_target"
+              | "definitive_recursive_delete"
+              | "restore_from_manifest"
+              | "effects_refused"
+              | "effects_unreadable"
+              | "effects_not_listed"
+            ),
+            (
+              | "estimate_unknown"
+              | "wildcard_target"
+              | "definitive_recursive_delete"
+              | "restore_from_manifest"
+              | "effects_refused"
+              | "effects_unreadable"
+              | "effects_not_listed"
+            )
           ]
         | [
-            "estimate_unknown" | "wildcard_target" | "definitive_recursive_delete" | "restore_from_manifest",
-            "estimate_unknown" | "wildcard_target" | "definitive_recursive_delete" | "restore_from_manifest",
-            "estimate_unknown" | "wildcard_target" | "definitive_recursive_delete" | "restore_from_manifest",
-            "estimate_unknown" | "wildcard_target" | "definitive_recursive_delete" | "restore_from_manifest"
+            (
+              | "estimate_unknown"
+              | "wildcard_target"
+              | "definitive_recursive_delete"
+              | "restore_from_manifest"
+              | "effects_refused"
+              | "effects_unreadable"
+              | "effects_not_listed"
+            ),
+            (
+              | "estimate_unknown"
+              | "wildcard_target"
+              | "definitive_recursive_delete"
+              | "restore_from_manifest"
+              | "effects_refused"
+              | "effects_unreadable"
+              | "effects_not_listed"
+            ),
+            (
+              | "estimate_unknown"
+              | "wildcard_target"
+              | "definitive_recursive_delete"
+              | "restore_from_manifest"
+              | "effects_refused"
+              | "effects_unreadable"
+              | "effects_not_listed"
+            )
+          ]
+        | [
+            (
+              | "estimate_unknown"
+              | "wildcard_target"
+              | "definitive_recursive_delete"
+              | "restore_from_manifest"
+              | "effects_refused"
+              | "effects_unreadable"
+              | "effects_not_listed"
+            ),
+            (
+              | "estimate_unknown"
+              | "wildcard_target"
+              | "definitive_recursive_delete"
+              | "restore_from_manifest"
+              | "effects_refused"
+              | "effects_unreadable"
+              | "effects_not_listed"
+            ),
+            (
+              | "estimate_unknown"
+              | "wildcard_target"
+              | "definitive_recursive_delete"
+              | "restore_from_manifest"
+              | "effects_refused"
+              | "effects_unreadable"
+              | "effects_not_listed"
+            ),
+            (
+              | "estimate_unknown"
+              | "wildcard_target"
+              | "definitive_recursive_delete"
+              | "restore_from_manifest"
+              | "effects_refused"
+              | "effects_unreadable"
+              | "effects_not_listed"
+            )
+          ]
+        | [
+            (
+              | "estimate_unknown"
+              | "wildcard_target"
+              | "definitive_recursive_delete"
+              | "restore_from_manifest"
+              | "effects_refused"
+              | "effects_unreadable"
+              | "effects_not_listed"
+            ),
+            (
+              | "estimate_unknown"
+              | "wildcard_target"
+              | "definitive_recursive_delete"
+              | "restore_from_manifest"
+              | "effects_refused"
+              | "effects_unreadable"
+              | "effects_not_listed"
+            ),
+            (
+              | "estimate_unknown"
+              | "wildcard_target"
+              | "definitive_recursive_delete"
+              | "restore_from_manifest"
+              | "effects_refused"
+              | "effects_unreadable"
+              | "effects_not_listed"
+            ),
+            (
+              | "estimate_unknown"
+              | "wildcard_target"
+              | "definitive_recursive_delete"
+              | "restore_from_manifest"
+              | "effects_refused"
+              | "effects_unreadable"
+              | "effects_not_listed"
+            ),
+            (
+              | "estimate_unknown"
+              | "wildcard_target"
+              | "definitive_recursive_delete"
+              | "restore_from_manifest"
+              | "effects_refused"
+              | "effects_unreadable"
+              | "effects_not_listed"
+            )
+          ]
+        | [
+            (
+              | "estimate_unknown"
+              | "wildcard_target"
+              | "definitive_recursive_delete"
+              | "restore_from_manifest"
+              | "effects_refused"
+              | "effects_unreadable"
+              | "effects_not_listed"
+            ),
+            (
+              | "estimate_unknown"
+              | "wildcard_target"
+              | "definitive_recursive_delete"
+              | "restore_from_manifest"
+              | "effects_refused"
+              | "effects_unreadable"
+              | "effects_not_listed"
+            ),
+            (
+              | "estimate_unknown"
+              | "wildcard_target"
+              | "definitive_recursive_delete"
+              | "restore_from_manifest"
+              | "effects_refused"
+              | "effects_unreadable"
+              | "effects_not_listed"
+            ),
+            (
+              | "estimate_unknown"
+              | "wildcard_target"
+              | "definitive_recursive_delete"
+              | "restore_from_manifest"
+              | "effects_refused"
+              | "effects_unreadable"
+              | "effects_not_listed"
+            ),
+            (
+              | "estimate_unknown"
+              | "wildcard_target"
+              | "definitive_recursive_delete"
+              | "restore_from_manifest"
+              | "effects_refused"
+              | "effects_unreadable"
+              | "effects_not_listed"
+            ),
+            (
+              | "estimate_unknown"
+              | "wildcard_target"
+              | "definitive_recursive_delete"
+              | "restore_from_manifest"
+              | "effects_refused"
+              | "effects_unreadable"
+              | "effects_not_listed"
+            )
+          ]
+        | [
+            (
+              | "estimate_unknown"
+              | "wildcard_target"
+              | "definitive_recursive_delete"
+              | "restore_from_manifest"
+              | "effects_refused"
+              | "effects_unreadable"
+              | "effects_not_listed"
+            ),
+            (
+              | "estimate_unknown"
+              | "wildcard_target"
+              | "definitive_recursive_delete"
+              | "restore_from_manifest"
+              | "effects_refused"
+              | "effects_unreadable"
+              | "effects_not_listed"
+            ),
+            (
+              | "estimate_unknown"
+              | "wildcard_target"
+              | "definitive_recursive_delete"
+              | "restore_from_manifest"
+              | "effects_refused"
+              | "effects_unreadable"
+              | "effects_not_listed"
+            ),
+            (
+              | "estimate_unknown"
+              | "wildcard_target"
+              | "definitive_recursive_delete"
+              | "restore_from_manifest"
+              | "effects_refused"
+              | "effects_unreadable"
+              | "effects_not_listed"
+            ),
+            (
+              | "estimate_unknown"
+              | "wildcard_target"
+              | "definitive_recursive_delete"
+              | "restore_from_manifest"
+              | "effects_refused"
+              | "effects_unreadable"
+              | "effects_not_listed"
+            ),
+            (
+              | "estimate_unknown"
+              | "wildcard_target"
+              | "definitive_recursive_delete"
+              | "restore_from_manifest"
+              | "effects_refused"
+              | "effects_unreadable"
+              | "effects_not_listed"
+            ),
+            (
+              | "estimate_unknown"
+              | "wildcard_target"
+              | "definitive_recursive_delete"
+              | "restore_from_manifest"
+              | "effects_refused"
+              | "effects_unreadable"
+              | "effects_not_listed"
+            )
           ];
       plan: RecordActionPlanV2;
       effects_hash: CommonSha256V1 | null;
       effects: RecordActionEffectsV1 | null;
+      effects_error: string | null;
     }[];
+    more: boolean;
   };
 }
 /**

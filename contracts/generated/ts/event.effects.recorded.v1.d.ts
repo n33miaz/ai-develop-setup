@@ -1,7 +1,7 @@
 /* Gerado por tools/gen-ts.mjs a partir de schemas/event.effects.recorded.v1.schema.json. Não edite à mão. */
 
 /**
- * Efeitos concretos registrados. O registro record.action-effects:1 que o ensaio de uma ação achou, gravado pelo núcleo logo depois do plano, no stream effects/<action_id>, uma vez só (seq 1). effects_hash é o SHA-256 da serialização do registro que o núcleo grava; a resposta do dono (answer.recorded:2) repete esse hash, e a execução só começa se o ensaio dela achar o mesmo registro.
+ * Efeitos concretos registrados. O registro record.action-effects:1 que o ensaio de uma ação achou, gravado pelo núcleo logo depois do plano, no stream effects/<action_id>, uma vez só (seq 1; um ensaio recusado grava effects.refused:1 no lugar). effects_hash é o SHA-256 da forma canônica do registro: JSON compacto, sem espaços, com as chaves de cada objeto em ordem de bytes UTF-8 (ver README). A resposta do dono (answer.recorded:2) repete esse hash, e a execução só começa se o ensaio dela achar o mesmo registro.
  */
 export type EventEffectsRecordedV1 = EventEnvelopeV1 & {
   type: "urn:ads:event:effects.recorded:1";

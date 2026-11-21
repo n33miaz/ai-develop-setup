@@ -24,5 +24,18 @@
     "params": {
       "additionalProperty": "accepted"
     }
+  },
+  "05-missing-more.json": {
+    "rule": "A resposta diz se há mais ações além das listadas.",
+    "keyword": "required",
+    "instancePath": "/result",
+    "params": {
+      "missingProperty": "more"
+    }
+  },
+  "06-error-not-a-code.json": {
+    "rule": "A recusa do ensaio é um código.",
+    "keyword": "anyOf",
+    "instancePath": "/result/approvals/0/effects_error"
   }
 }

@@ -49,8 +49,10 @@
           "quarantined": false
         },
         "effects_hash": null,
-        "effects": null
+        "effects": null,
+        "effects_error": null
       }
-    ]
+    ],
+    "more": false
   }
 }

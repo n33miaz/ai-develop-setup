@@ -12,9 +12,9 @@ use super::common_ulid_v1::CommonUlidV1;
 use super::record_action_effects_v1::RecordActionEffectsV1;
 use super::record_action_plan_v2::RecordActionPlanV2;
 use crate::support;
-use crate::support::ContractError;
+use crate::support::{ContractError, Pattern};
 
-/// Resposta de approval.list. Resposta JSON-RPC 2.0 aceita de approval.list: as ações que aguardam a resposta do dono, da mais antiga à mais nova, cada uma com a aprovação pedida, o registro do plano como o portão o julgou (alvos como pedidos, destino, quarentena, estimativa e regras), os efeitos concretos que o ensaio achou (record.action-effects:1, com o hash que a aprovação compromete; null quando o ensaio não gravou registro) e os motivos pelos quais a API não a deixa aprovar (not_approvable; vazio quando é aprovável). A versão 2 acrescenta effects e effects_hash. A recusa volta como command.response:2 com error.
+/// Resposta de approval.list. Resposta JSON-RPC 2.0 aceita de approval.list: as ações que aguardam a resposta do dono, da mais antiga à mais nova, cada uma com a aprovação pedida, o registro do plano como o portão o julgou (alvos como pedidos, destino, quarentena, estimativa e regras), os efeitos concretos que o ensaio achou (record.action-effects:1, com o hash que a aprovação compromete; null quando não há registro legível), o código da recusa do ensaio (effects_error, ou null) e os motivos pelos quais a API não a deixa aprovar (not_approvable; vazio quando é aprovável). A resposta tem um teto de bytes: more diz que há mais ações aguardando além das listadas, que aparecem quando as primeiras forem respondidas. A versão 2 acrescenta effects, effects_hash, effects_error e more, e os motivos effects_refused, effects_unreadable e effects_not_listed. A recusa volta como command.response:2 com error.
 ///
 /// `urn:ads:command:approval.list.response:2`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -52,6 +52,7 @@ impl<'de> Deserialize<'de> for CommandApprovalListResponseV2Jsonrpc {
 #[serde(deny_unknown_fields)]
 pub struct CommandApprovalListResponseV2Result {
     pub approvals: CommandApprovalListResponseV2ResultApprovals,
+    pub more: bool,
 }
 
 /// `result.approvals` in `urn:ads:command:approval.list.response:2`.
@@ -131,6 +132,8 @@ pub struct CommandApprovalListResponseV2ResultApprovalsItem {
     pub effects_hash: Option<CommonSha256V1>,
     #[serde(deserialize_with = "support::nullable")]
     pub effects: Option<RecordActionEffectsV1>,
+    #[serde(deserialize_with = "support::nullable")]
+    pub effects_error: Option<CommandApprovalListResponseV2ResultApprovalsItemEffectsError>,
 }
 
 /// `result.approvals[].summary` in `urn:ads:command:approval.list.response:2`.
@@ -197,7 +200,7 @@ pub struct CommandApprovalListResponseV2ResultApprovalsItemNotApprovable(
 );
 
 impl CommandApprovalListResponseV2ResultApprovalsItemNotApprovable {
-    pub const MAX_ITEMS: usize = 4;
+    pub const MAX_ITEMS: usize = 7;
 
     pub fn new(
         items: Vec<CommandApprovalListResponseV2ResultApprovalsItemNotApprovableItem>,
@@ -262,6 +265,12 @@ pub enum CommandApprovalListResponseV2ResultApprovalsItemNotApprovableItem {
     DefinitiveRecursiveDelete,
     #[serde(rename = "restore_from_manifest")]
     RestoreFromManifest,
+    #[serde(rename = "effects_refused")]
+    EffectsRefused,
+    #[serde(rename = "effects_unreadable")]
+    EffectsUnreadable,
+    #[serde(rename = "effects_not_listed")]
+    EffectsNotListed,
 }
 
 impl CommandApprovalListResponseV2ResultApprovalsItemNotApprovableItem {
@@ -271,6 +280,65 @@ impl CommandApprovalListResponseV2ResultApprovalsItemNotApprovableItem {
             Self::WildcardTarget => "wildcard_target",
             Self::DefinitiveRecursiveDelete => "definitive_recursive_delete",
             Self::RestoreFromManifest => "restore_from_manifest",
+            Self::EffectsRefused => "effects_refused",
+            Self::EffectsUnreadable => "effects_unreadable",
+            Self::EffectsNotListed => "effects_not_listed",
         }
+    }
+}
+
+static COMMAND_APPROVAL_LIST_RESPONSE_V2_RESULT_APPROVALS_ITEM_EFFECTS_ERROR_PATTERN: Pattern =
+    Pattern::new(r"^E_[A-Z0-9_]{1,60}$");
+
+/// `result.approvals[].effects_error` in `urn:ads:command:approval.list.response:2`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
+#[serde(try_from = "String")]
+pub struct CommandApprovalListResponseV2ResultApprovalsItemEffectsError(String);
+
+impl CommandApprovalListResponseV2ResultApprovalsItemEffectsError {
+    pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
+        let text = text.into();
+        if Self::accepts(&text) {
+            Ok(Self(text))
+        } else {
+            Err(ContractError::new(
+                "CommandApprovalListResponseV2ResultApprovalsItemEffectsError",
+                text,
+            ))
+        }
+    }
+
+    fn accepts(text: &str) -> bool {
+        COMMAND_APPROVAL_LIST_RESPONSE_V2_RESULT_APPROVALS_ITEM_EFFECTS_ERROR_PATTERN.matches(text)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for CommandApprovalListResponseV2ResultApprovalsItemEffectsError {
+    type Error = ContractError;
+
+    fn try_from(text: String) -> Result<Self, ContractError> {
+        Self::new(text)
+    }
+}
+
+impl From<CommandApprovalListResponseV2ResultApprovalsItemEffectsError> for String {
+    fn from(value: CommandApprovalListResponseV2ResultApprovalsItemEffectsError) -> String {
+        value.0
+    }
+}
+
+impl fmt::Display for CommandApprovalListResponseV2ResultApprovalsItemEffectsError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl Serialize for CommandApprovalListResponseV2ResultApprovalsItemEffectsError {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.0)
     }
 }

@@ -27,6 +27,12 @@ use crate::events::new_id;
 /// stream.
 const EFFECTS: &str = "urn:ads:event:effects.recorded:1";
 
+/// The type of a rehearsal that recorded no effects, in the same stream and in their place.
+const REFUSED: &str = "urn:ads:event:effects.refused:1";
+
+/// The code of a record the core could not write (the log refused it, or the contract did).
+const UNRECORDABLE: &str = "E_EFFECTS_UNRECORDABLE";
+
 /// Suffixes SQLite gives the files beside the database; losing one loses committed history.
 const DATABASE_SIDECARS: [&str; 3] = ["-wal", "-shm", "-journal"];
 
@@ -192,6 +198,9 @@ pub struct SessionGate {
     policy: GatePolicy,
     product: ProductState,
     executor: Executor,
+    /// Called once the license is spent and before the executor starts.
+    #[cfg(test)]
+    after_license: Option<Box<dyn FnMut() + Send>>,
 }
 
 impl SessionGate {
@@ -215,6 +224,8 @@ impl SessionGate {
             policy,
             product,
             executor,
+            #[cfg(test)]
+            after_license: None,
         })
     }
 
@@ -227,6 +238,13 @@ impl SessionGate {
     #[cfg(test)]
     pub(crate) fn executor_mut(&mut self) -> &mut Executor {
         &mut self.executor
+    }
+
+    /// The same gate, calling `hook` between the license and the executor.
+    #[cfg(test)]
+    pub(crate) fn after_license(mut self, hook: impl FnMut() + Send + 'static) -> Self {
+        self.after_license = Some(Box::new(hook));
+        self
     }
 
     /// The same gate with the executor under `limits`.
@@ -266,15 +284,39 @@ impl SessionGate {
             .plan(action_id, &observed, meta)
             .map_err(PlanActionError::Journal)?;
         // What the approval will have to cover. A rehearsal that is refused, or a record that
-        // cannot be written, leaves none: such a plan stays unapprovable where it needs one.
-        if let Ok(verdict) = classify(&observed, &self.policy)
-            && verdict.decision() == Decision::RequiresApproval
-            && verdict.plan().hash() == snapshot.plan_hash
-            && let Ok(effects) = self
+        // cannot be written, is recorded with its code instead: such a plan stays unapprovable
+        // where it needs one, and the listing says why.
+        let Ok(verdict) = classify(&observed, &self.policy) else {
+            return Ok(snapshot);
+        };
+        if verdict.decision() != Decision::RequiresApproval {
+            return Ok(snapshot);
+        }
+        let at = Rehearsal {
+            action_id: snapshot.action_id.as_str(),
+            plan_hash: snapshot.plan_hash.as_str(),
+            cause: cause.as_str(),
+            ts: ts.as_str(),
+        };
+        let written = if verdict.plan().hash() != snapshot.plan_hash {
+            record_refusal(log, &at, UNRECORDABLE)
+        } else {
+            match self
                 .executor
                 .rehearse_effects(&snapshot.action_id, verdict.plan())
-        {
-            let _ = record_effects(log, &effects, cause.as_str(), ts.as_str());
+            {
+                Ok(effects) => match record_effects(log, &effects, &at) {
+                    Err(JournalError::Integrity) => record_refusal(log, &at, UNRECORDABLE),
+                    other => other,
+                },
+                Err(stop) => record_refusal(log, &at, stop.reason.as_str()),
+            }
+        };
+        if let Err(error) = written {
+            log::warn!(
+                "effects of {} not recorded: {error}",
+                snapshot.action_id.as_str()
+            );
         }
         Ok(snapshot)
     }
@@ -333,6 +375,10 @@ impl SessionGate {
         };
         let mut gate = JournalGate::new(&self.policy, log).for_work_root(&self.root);
         let started = gate.authorize(action_id, start)?;
+        #[cfg(test)]
+        if let Some(hook) = self.after_license.as_mut() {
+            hook();
+        }
         let ran = match &approved {
             Some(effects) => self.executor.execute_approved(started, effects),
             None => self.executor.execute_recorded(started),
@@ -394,7 +440,7 @@ impl SessionGate {
             }
             return Ok(Approved::NotNeeded);
         };
-        let Some((recorded, hash)) = recorded_effects(log, &history.plan)? else {
+        let Recorded::Effects(recorded, hash) = recorded_effects(log, &history.plan)? else {
             return refused("the record of effects the approval names is missing");
         };
         if hash != committed {
@@ -455,68 +501,116 @@ fn effects_stream(action_id: &str) -> Result<EventEnvelopeV1Stream, JournalError
         .map_err(|_| JournalError::Integrity)
 }
 
-/// Writes the record once, at `seq` 1 of `effects/<action_id>`: the log refuses a second one.
-fn record_effects(
+/// Where a rehearsal at planning time writes what it found.
+struct Rehearsal<'a> {
+    action_id: &'a str,
+    plan_hash: &'a str,
+    cause: &'a str,
+    ts: &'a str,
+}
+
+/// Appends the only event of `effects/<action_id>`, at `seq` 1: the log refuses a second one.
+fn append_once(
     log: &mut EventLog,
-    effects: &Effects,
-    cause: &str,
-    ts: &str,
+    kind: &str,
+    at: &Rehearsal<'_>,
+    data: Value,
 ) -> Result<(), JournalError> {
-    let stream = effects_stream(&effects.action_id)?;
+    let stream = effects_stream(at.action_id)?;
     if log.head(&stream).map_err(|_| JournalError::Unavailable)? != 0 {
         return Err(JournalError::Conflict);
     }
     let value = json!({
         "id": new_id().map_err(|_| JournalError::Unavailable)?,
-        "type": EFFECTS, "ts": ts, "stream": stream, "seq": 1,
+        "type": kind, "ts": at.ts, "stream": stream, "seq": 1,
         "actor": {"kind": "daemon", "id": "core"},
-        "cause": cause, "data_class": "internal",
-        "data": {
-            "action_id": effects.action_id, "plan_hash": effects.plan_hash,
-            "effects_hash": effects_hash(effects), "effects": effects,
-        }
+        "cause": at.cause, "data_class": "internal", "data": data,
     });
-    let value = checked(EFFECTS, value).map_err(|_| JournalError::Integrity)?;
+    let value = checked(kind, value).map_err(|_| JournalError::Integrity)?;
     let event: EventEnvelopeV1 =
         serde_json::from_value(value).map_err(|_| JournalError::Integrity)?;
-    log.append(&event).map_err(|_| JournalError::Unavailable)?;
-    Ok(())
+    match log.append(&event) {
+        Ok(_) => Ok(()),
+        // Over `max_event_bytes`, or refused by a check of the log: the record cannot be kept.
+        Err(ads_storage::StorageError::TooLarge | ads_storage::StorageError::InvalidEvent) => {
+            Err(JournalError::Integrity)
+        }
+        Err(_) => Err(JournalError::Unavailable),
+    }
 }
 
-/// The record of effects of the plan `record`, with its hash, if the rehearsal wrote one. A
-/// second record, one of another plan or one whose hash does not match is an integrity error.
+fn record_effects(
+    log: &mut EventLog,
+    effects: &Effects,
+    at: &Rehearsal<'_>,
+) -> Result<(), JournalError> {
+    let data = json!({
+        "action_id": effects.action_id, "plan_hash": effects.plan_hash,
+        "effects_hash": effects_hash(effects), "effects": effects,
+    });
+    append_once(log, EFFECTS, at, data)
+}
+
+fn record_refusal(log: &mut EventLog, at: &Rehearsal<'_>, code: &str) -> Result<(), JournalError> {
+    let data = json!({"action_id": at.action_id, "plan_hash": at.plan_hash, "error_code": code});
+    append_once(log, REFUSED, at, data)
+}
+
+/// What the rehearsal at planning time left for an action.
+#[derive(Debug)]
+pub(crate) enum Recorded {
+    /// Nothing: the plan asked for no approval, or the log lost the write.
+    Nothing,
+    /// The record of effects and its hash.
+    Effects(Effects, String),
+    /// The rehearsal was refused, with this code.
+    Refused(String),
+}
+
+/// What the rehearsal of the plan `record` left. A second event, one of another plan, a
+/// record this core does not read (another version, an unknown field) or one whose hash does
+/// not match is an integrity error.
 pub(crate) fn recorded_effects(
     log: &mut EventLog,
     record: &ActionPlanRecord,
-) -> Result<Option<(Effects, String)>, JournalError> {
+) -> Result<Recorded, JournalError> {
     let fields = record.fields();
     let stream = effects_stream(fields.action_id.as_str())?;
     let page = log
         .read_stream(&stream, 1, 2)
         .map_err(|_| JournalError::Unavailable)?;
     let stored = match &page[..] {
-        [] => return Ok(None),
+        [] => return Ok(Recorded::Nothing),
         [one] => one,
         _ => return Err(JournalError::Integrity),
     };
     let event = serde_json::to_value(&stored.event).map_err(|_| JournalError::Integrity)?;
-    let event = checked(EFFECTS, event).map_err(|_| JournalError::Integrity)?;
+    let kind = match event["type"].as_str() {
+        Some(EFFECTS) => EFFECTS,
+        Some(REFUSED) => REFUSED,
+        _ => return Err(JournalError::Integrity),
+    };
+    let event = checked(kind, event).map_err(|_| JournalError::Integrity)?;
     let data = &event["data"];
+    let plan_hash = fields.plan_hash.as_str();
+    if data["action_id"] != fields.action_id.as_str() || data["plan_hash"] != plan_hash {
+        return Err(JournalError::Integrity);
+    }
+    if kind == REFUSED {
+        let code = data["error_code"].as_str().ok_or(JournalError::Integrity)?;
+        return Ok(Recorded::Refused(code.to_owned()));
+    }
     let effects: Effects =
         serde_json::from_value(data["effects"].clone()).map_err(|_| JournalError::Integrity)?;
     let hash = effects_hash(&effects);
-    let plan_hash = fields.plan_hash.as_str();
-    if event["type"] != EFFECTS
-        || effects.version != ads_adapter_fs::EFFECTS_VERSION
+    if effects.version != ads_adapter_fs::EFFECTS_VERSION
         || effects.action_id != fields.action_id.as_str()
         || effects.plan_hash != plan_hash
-        || data["action_id"] != fields.action_id.as_str()
-        || data["plan_hash"] != plan_hash
         || data["effects_hash"] != hash.as_str()
     {
         return Err(JournalError::Integrity);
     }
-    Ok(Some((effects, hash)))
+    Ok(Recorded::Effects(effects, hash))
 }
 
 /// The `effects_hash` of the answer that caused the grant in force; `None` when that answer

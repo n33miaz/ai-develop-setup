@@ -71,6 +71,7 @@ pub mod event_approval_granted_v2;
 pub mod event_approval_requested_v1;
 pub mod event_approval_requested_v2;
 pub mod event_effects_recorded_v1;
+pub mod event_effects_refused_v1;
 pub mod event_envelope_v1;
 pub mod event_host_alert_acked_v1;
 pub mod event_host_alert_raised_v1;
@@ -200,6 +201,7 @@ pub use event_approval_granted_v2::*;
 pub use event_approval_requested_v1::*;
 pub use event_approval_requested_v2::*;
 pub use event_effects_recorded_v1::*;
+pub use event_effects_refused_v1::*;
 pub use event_envelope_v1::*;
 pub use event_host_alert_acked_v1::*;
 pub use event_host_alert_raised_v1::*;
@@ -450,6 +452,10 @@ pub const SCHEMAS: &[(&str, &str)] = &[
     (
         "event.effects.recorded.v1",
         "urn:ads:event:effects.recorded:1",
+    ),
+    (
+        "event.effects.refused.v1",
+        "urn:ads:event:effects.refused:1",
     ),
     ("event.envelope.v1", "urn:ads:event:envelope:1"),
     (
@@ -777,6 +783,7 @@ pub fn reencode(id: &str, value: Value) -> Option<Result<Value, serde_json::Erro
             support::reencode::<EventApprovalRequestedV2>(value)
         }
         "urn:ads:event:effects.recorded:1" => support::reencode::<EventEffectsRecordedV1>(value),
+        "urn:ads:event:effects.refused:1" => support::reencode::<EventEffectsRefusedV1>(value),
         "urn:ads:event:envelope:1" => support::reencode::<EventEnvelopeV1>(value),
         "urn:ads:event:host.alert_acked:1" => support::reencode::<EventHostAlertAckedV1>(value),
         "urn:ads:event:host.alert_raised:1" => support::reencode::<EventHostAlertRaisedV1>(value),

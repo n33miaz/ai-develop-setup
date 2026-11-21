@@ -49,10 +49,12 @@
           "quarantined": false
         },
         "effects_hash": null,
-        "effects": null
+        "effects": null,
+        "effects_error": null
       }
     ],
     "accepted": true,
-    "replayed": false
+    "replayed": false,
+    "more": false
   }
 }
