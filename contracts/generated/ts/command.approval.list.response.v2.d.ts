@@ -73,7 +73,7 @@ export type CommonAbspathV2 = string;
 export type CommonActionRuleV1 = string;
 
 /**
- * Resposta de approval.list. Resposta JSON-RPC 2.0 aceita de approval.list: as ações que aguardam a resposta do dono, da mais antiga à mais nova, cada uma com a aprovação pedida, o registro do plano como o portão o julgou (alvos como pedidos, destino, quarentena, estimativa e regras), os efeitos concretos que o ensaio achou (record.action-effects:1, com o hash que a aprovação compromete; null quando não há registro legível), o código da recusa do ensaio (effects_error, ou null) e os motivos pelos quais a API não a deixa aprovar (not_approvable; vazio quando é aprovável). A resposta tem um teto de bytes: more diz que há mais ações aguardando além das listadas, que aparecem quando as primeiras forem respondidas. A versão 2 acrescenta effects, effects_hash, effects_error e more, e os motivos effects_refused, effects_unreadable e effects_not_listed. A recusa volta como command.response:2 com error.
+ * Resposta de approval.list. Resposta JSON-RPC 2.0 aceita de approval.list: as ações que aguardam a resposta do dono, da mais antiga à mais nova, cada uma com a aprovação pedida, o registro do plano como o portão o julgou (alvos como pedidos, destino, quarentena, estimativa e regras), os efeitos concretos que o ensaio achou (record.action-effects:1, com o hash que a aprovação compromete; null quando não há registro legível), o código da recusa do ensaio (effects_error, ou null) e os motivos pelos quais a API não a deixa aprovar (not_approvable; vazio quando é aprovável). O campo more indica que o limite de itens ou de bytes deixou outra ação listável para depois. A versão 2 acrescenta effects, effects_hash, effects_error e more, e os motivos effects_refused, effects_unreadable e effects_not_listed. A recusa volta como command.response:2 com error.
  */
 export interface CommandApprovalListResponseV2 {
   jsonrpc: "2.0";
@@ -364,6 +364,9 @@ export interface CommandApprovalListResponseV2 {
       effects: RecordActionEffectsV1 | null;
       effects_error: string | null;
     }[];
+    /**
+     * Indica que o limite de itens ou de bytes deixou outra ação listável para depois.
+     */
     more: boolean;
   };
 }

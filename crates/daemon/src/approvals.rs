@@ -201,6 +201,19 @@ fn listable(effects: &Effects, max_list_bytes: usize) -> bool {
     effects.to_bytes().len() <= max_list_bytes / 2
 }
 
+fn effects_record_size(plan: &ActionPlanRecord, ciphertext_bytes: usize) -> usize {
+    let fields = plan.fields();
+    // A valid stored record repeats the action ID and has two SHA-256 strings.
+    let envelope = json!({
+        "action_id": fields.action_id,
+        "plan_hash": fields.plan_hash,
+        "effects_hash": fields.plan_hash,
+        "effects": null,
+    });
+    let overhead = envelope.to_string().len() - "null".len() + ads_storage::cipher::DATA_TAG_BYTES;
+    ciphertext_bytes.saturating_sub(overhead)
+}
+
 /// What the owner sees of the effects of one action.
 enum Shown {
     /// No record, and none needed or none written.
@@ -215,8 +228,8 @@ enum Shown {
 
 impl Shown {
     /// The same reading for the listing and the answer, so that an approval never commits to
-    /// a record the owner could not see. A record whose stored size (`size`, from
-    /// [`effects_size`]) already passes half of the page is neither decrypted nor read.
+    /// a record the owner could not see. The stored size can rule out an oversized record
+    /// before decryption.
     fn read(
         log: &(impl EffectsSource + ?Sized),
         plan: &ActionPlanRecord,
@@ -225,7 +238,9 @@ impl Shown {
     ) -> Self {
         let action = &plan.fields().action_id;
         match size {
-            Ok(Some(size)) if size > max_list_bytes / 2 => Self::NotListed,
+            Ok(Some(size)) if effects_record_size(plan, size) > max_list_bytes / 2 => {
+                Self::NotListed
+            }
             Err(error) => Self::of(Err(error), action, max_list_bytes),
             Ok(_) => Self::of(recorded_effects(log, plan), action, max_list_bytes),
         }
@@ -371,20 +386,15 @@ impl ApprovalControl for ApprovalDesk {
         // The envelope of the response and `"more":false`.
         let mut used = 128;
         let mut failed = None;
-        // One action at a time, and each record weighed before it is read: what the lock
-        // holds and the time it is held grow with the ceiling of the page, not with how many
-        // actions wait.
         let visited = desk
             .log
             .log()
             .map_err(ApiError::from_storage)?
-            .visit_pending_approvals(MAX_LISTED, &mut |entry, reads| {
+            .visit_pending_approvals(MAX_LISTED, &mut |entry, reads, full| {
                 let history = match entry {
                     StoredPending::History(history) => history,
                     StoredPending::Unreadable(action_id) => {
-                        // Never silent: the owner is told that actions were left out.
                         log::warn!("pending approval of {action_id} not readable; not listed");
-                        page.more = true;
                         return Visit::Skip;
                     }
                 };
@@ -396,11 +406,15 @@ impl ApprovalControl for ApprovalDesk {
                 let Some(Event::ApprovalRequested(requested)) = history.events.last() else {
                     return Visit::Skip;
                 };
+                if full {
+                    page.more = true;
+                    return Visit::Stop;
+                }
                 let size = effects_size(reads, &history.plan);
                 // A record that cannot fit in what is left waits for a later page, unread.
                 if let Ok(Some(size)) = size
                     && !page.approvals.is_empty()
-                    && size <= max_list_bytes / 2
+                    && effects_record_size(&history.plan, size) <= max_list_bytes / 2
                     && used + size > max_list_bytes
                 {
                     page.more = true;
@@ -1845,6 +1859,29 @@ mod tests {
         assert_eq!(item["action_id"], action.as_str());
     }
 
+    #[test]
+    fn the_item_limit_reports_another_served_request() {
+        let mut bench = Bench::with_storage("read_page_limit = 1");
+        let gate = bench.gate(OVER_LIMIT);
+        let other = bench.other_work();
+        let unserved = bench.gate_in(&other, OVER_LIMIT);
+        let (first, approval, hash) = bench.waiting(&gate, "act-first");
+        bench.waiting(&unserved, "act-unserved");
+        let (second, _, _) = bench.waiting(&gate, "act-second");
+        bench.waiting(&unserved, "act-unserved-last");
+        let desk = bench.desk(vec![gate]);
+        let session = session();
+        let page = desk.pending(&session).unwrap();
+        assert_eq!(only(&page.approvals)["action_id"], first.as_str());
+        assert!(page.more);
+
+        let deny = params(&first, &approval, &hash, "deny");
+        assert_eq!(desk.answer(&session, &deny, &new_id().unwrap()), Ok(false));
+        let page = desk.pending(&session).unwrap();
+        assert_eq!(only(&page.approvals)["action_id"], second.as_str());
+        assert!(!page.more);
+    }
+
     /// The records of effects this thread asked the log for while `run` ran.
     fn records_read<R>(run: impl FnOnce() -> R) -> (R, usize) {
         let before = crate::gate::RECORDS_READ.with(std::cell::Cell::get);
@@ -1861,7 +1898,13 @@ mod tests {
             let gate = bench.gate("quarantine_enabled = false");
             for at in 0..waiting {
                 let name = format!("act-{at:02}");
-                purge_in(&mut bench, &gate, &name, &format!("cache-{at:02}"));
+                let folder = format!("cache-{at:02}");
+                let path = bench.at(&bench.work, &folder);
+                fs::create_dir_all(&path).unwrap();
+                for file in 0..64 {
+                    bench.file(&bench.at(&path, &format!("entry-{file:02}")));
+                }
+                purge_in(&mut bench, &gate, &name, &folder);
             }
             let log = bench.log.take().unwrap();
             let unbounded = desk_with(log, vec![gate], usize::MAX);
@@ -1881,7 +1924,23 @@ mod tests {
             reads[0], reads[1],
             "records read grow with the waiting actions"
         );
-        assert!(reads[0] <= 3, "{} records read for a page of two", reads[0]);
+        assert_eq!(reads[0], 2);
+    }
+
+    #[test]
+    fn effects_at_half_the_ceiling_are_listed() {
+        let mut bench = Bench::new();
+        let gate = bench.gate("quarantine_enabled = false");
+        purge(&mut bench, &gate, "act-half");
+        let all = desk_with(bench.log.take().unwrap(), vec![gate], usize::MAX);
+        let page = all.pending(&session()).unwrap();
+        let effects = &only(&page.approvals)["effects"];
+        assert!(effects.is_object());
+        let ceiling = 2 * serde_json::to_vec(effects).unwrap().len();
+        let Desk { log, gates, .. } = all.inner.into_inner().unwrap();
+        let desk = desk_with(log, gates, ceiling);
+        let page = desk.pending(&session()).unwrap();
+        assert_eq!(&only(&page.approvals)["effects"], effects);
     }
 
     #[test]
@@ -1906,7 +1965,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unreadable_request_is_left_out_and_the_list_says_so() {
+    fn an_unreadable_request_does_not_keep_the_list_open() {
         let mut bench = Bench::new();
         let gate = bench.gate(OVER_LIMIT);
         let (broken, _, _) = bench.waiting(&gate, "act-broken");
@@ -1924,10 +1983,18 @@ mod tests {
                 GateJournal::append(&mut *log, &broken, 2 + extra, &event).unwrap();
             }
         }
-        let (fine, _, _) = bench.waiting(&gate, "act-fine");
+        let (fine, approval, hash) = bench.waiting(&gate, "act-fine");
         let desk = bench.desk(vec![gate]);
         let page = desk.pending(&session()).unwrap();
         assert_eq!(only(&page.approvals)["action_id"], fine.as_str());
-        assert!(page.more);
+        assert!(!page.more);
+        let deny = params(&fine, &approval, &hash, "deny");
+        assert_eq!(
+            desk.answer(&session(), &deny, &new_id().unwrap()),
+            Ok(false)
+        );
+        let page = desk.pending(&session()).unwrap();
+        assert!(page.approvals.is_empty());
+        assert!(!page.more);
     }
 }

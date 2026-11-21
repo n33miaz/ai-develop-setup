@@ -1240,7 +1240,8 @@ impl EventLog {
         keep: &mut dyn FnMut(&GateHistory) -> bool,
     ) -> Result<Vec<GateHistory>, StorageError> {
         let mut kept = Vec::new();
-        self.visit_pending_approvals(limit, &mut |entry, _| match entry {
+        self.visit_pending_approvals(limit, &mut |entry, _, full| match entry {
+            _ if full => Visit::Stop,
             Pending::History(history) if keep(&history) => {
                 kept.push(history);
                 Visit::Take
@@ -1251,10 +1252,11 @@ impl EventLog {
     }
 
     /// Hands the pending approvals to `visit` one at a time, oldest request first, until it
-    /// answers [`Visit::Stop`] or `limit` (capped by `read_page_limit`) were taken. Only gate
+    /// answers [`Visit::Stop`]. After `limit` entries are taken (capped by `read_page_limit`),
+    /// the visitor receives `full = true` and can look for another eligible entry. Only gate
     /// rows count: a request or a decision of another row format neither lists nor hides an
-    /// action. Each history is read only when its turn comes, so the caller bounds the memory
-    /// and the time; `reads` serves other streams in the same transaction. A gate history that
+    /// action. Each history is read only when its turn comes. Skipped histories do not count
+    /// toward the page limit. `reads` serves other streams in the same transaction. A gate history that
     /// does not read comes as [`Pending::Unreadable`], once per action, and the walk goes on.
     /// Like `read_queue`, it runs under the write lock after the anchor and the whole chain were
     /// checked once. A validity that is over without an `approval.expired` still counts as
@@ -1262,7 +1264,7 @@ impl EventLog {
     pub fn visit_pending_approvals(
         &self,
         limit: u32,
-        visit: &mut dyn FnMut(Pending, &PendingReads<'_>) -> Visit,
+        visit: &mut dyn FnMut(Pending, &PendingReads<'_>, bool) -> Visit,
     ) -> Result<(), StorageError> {
         let limit = usize::try_from(limit.min(self.config.read_page_limit)).unwrap_or(usize::MAX);
         self.read_anchored(|log, tx| {
@@ -1285,11 +1287,11 @@ impl EventLog {
             let reads = PendingReads { log, tx };
             let mut unreadable = HashSet::new();
             let mut taken = 0;
-            while taken < limit {
-                let Some(row) = rows.next()? else {
-                    break;
-                };
+            while let Some(row) = rows.next()? {
                 let id: String = row.get(0)?;
+                if unreadable.contains(&id) {
+                    continue;
+                }
                 let entry = match Id::new(id.as_str()) {
                     Ok(action_id) => match read_gate(tx, &*log.keys, &action_id) {
                         Ok(Some(history)) => Pending::History(history),
@@ -1299,12 +1301,12 @@ impl EventLog {
                     },
                     Err(_) => Pending::Unreadable(id),
                 };
-                if let Pending::Unreadable(id) = &entry
-                    && !unreadable.insert(id.clone())
-                {
-                    continue;
+                if let Pending::Unreadable(id) = &entry {
+                    unreadable.insert(id.clone());
                 }
-                match visit(entry, &reads) {
+                let full = taken == limit;
+                match visit(entry, &reads, full) {
+                    Visit::Take if full => break,
                     Visit::Take => taken += 1,
                     Visit::Skip => {}
                     Visit::Stop => break,

@@ -2889,7 +2889,7 @@ mod gate_journal {
         let waiting = ask(&mut log, "waiting", 20);
 
         let mut seen = Vec::new();
-        log.visit_pending_approvals(10, &mut |entry, _| {
+        log.visit_pending_approvals(10, &mut |entry, _, _| {
             seen.push(match entry {
                 crate::Pending::History(history) => {
                     format!("ok {}", history.plan.fields().action_id.as_str())
@@ -2911,7 +2911,7 @@ mod gate_journal {
         let first = ask(&mut log, "first", 10);
         ask(&mut log, "second", 20);
         let mut visits = 0;
-        log.visit_pending_approvals(10, &mut |entry, reads| {
+        log.visit_pending_approvals(10, &mut |entry, reads, _| {
             visits += 1;
             let crate::Pending::History(history) = entry else {
                 panic!("readable history expected");

@@ -259,19 +259,22 @@ recebe `REMOTE_ORIGIN_REFUSED`. O dono e o aparelho vêm do daemon
   sessão servida aqui: o filtro vem antes do limite, então pedidos de outras
   pastas nunca ocupam a página. No máximo `read_page_limit` da configuração do
   armazenamento por pedido, e nunca mais de 1000 (o limite do contrato da
-  resposta). A resposta inteira cabe em `approval_list_max_bytes`: as ações
-  entram da mais antiga à mais nova enquanto couberem, a mais antiga sempre, e
-  `more: true` diz que outras ficaram de fora; elas aparecem quando as primeiras
-  forem respondidas. Um registro de efeitos maior que metade desse teto não é
-  mostrado e a ação fica com `effects_not_listed`; o tamanho gravado é conferido
-  antes, e um registro grande demais nem é decifrado, na listagem e na resposta.
+  resposta). As ações entram da mais antiga à mais nova enquanto couberem em
+  `approval_list_max_bytes`. A mais antiga sempre entra, mesmo acima desse teto.
+  `more: true` indica que uma ação da lista ficou para depois pelo limite de
+  itens ou de bytes. Um registro de efeitos maior que metade desse teto não é
+  mostrado e a ação fica com `effects_not_listed`. A listagem e a resposta
+  conferem o tamanho cifrado descontando o invólucro e a tag antes de ler os efeitos.
   A leitura é feita sob a trava da mesa, uma ação por vez e na ordem do pedido:
-  cada item é montado e medido assim que lido, um registro de efeitos que não
-  cabe no que resta fica para a próxima página sem ser lido, e a leitura para
-  quando a página enche. Memória e tempo sob a trava crescem com o teto, não com
-  o número de ações aguardando. Um pedido do portão cujo histórico não se lê não
-  derruba a lista: fica de fora, o log do daemon registra o `action_id` e a
-  resposta traz `more: true`. Pedido ou decisão gravados fora do formato do
+  cada item é montado e medido assim que lido. Se o tamanho cifrado já mostra
+  que os efeitos listáveis excedem o espaço restante, a leitura do registro
+  fica para a próxima página. O teto limita a montagem da página e a leitura
+  dos efeitos. O tempo sob a trava também inclui a autenticação da cadeia
+  inteira e a leitura dos históricos de outras pastas ou ilegíveis, inclusive
+  ao procurar mais um pedido listável após atingir o limite de itens. O daemon
+  omite pedidos cujo histórico é ilegível, registra o `action_id` no log e
+  segue a listagem. O portão precisa de um histórico legível para negar ou
+  expirar um pedido. Pedido ou decisão gravados fora do formato do
   portão são ignorados. Só lê e fica fora da cache de idempotência.
 - O que o registro do plano garante: a operação, os alvos como foram pedidos
   (caminho e curinga), o destino, se há quarentena, a estimativa e as regras.
