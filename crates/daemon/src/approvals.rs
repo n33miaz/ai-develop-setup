@@ -9,8 +9,9 @@ use ads_contracts::{
     EventEnvelopeV1, EventEnvelopeV1Stream,
 };
 use ads_core::gate::{
-    AbsPath, ActionPlanFields, Actor, ActorKind, Command, DataClass, Event, EventMeta, GateHistory,
-    GateJournal, Id, JournalError, PlanHash, PlanOperation, State, Timestamp, Ulid, Via,
+    AbsPath, ActionPlanFields, ActionPlanRecord, Actor, ActorKind, Command, DataClass, Event,
+    EventMeta, GateHistory, GateJournal, Id, JournalError, PlanHash, PlanOperation, State,
+    Timestamp, Ulid, Via,
 };
 use serde_json::{Value, json};
 
@@ -18,8 +19,9 @@ use crate::api::{ApiError, checked};
 use crate::audit::{ProductLog, lock_with_timeout};
 use crate::auth::LocalSession;
 use crate::events::{new_id, now_ts};
-use crate::gate::{Recorded, SessionGate, recorded_effects};
+use crate::gate::{EffectsSource, Recorded, SessionGate, effects_size, recorded_effects};
 use ads_adapter_fs::Effects;
+use ads_storage::{Pending as StoredPending, Visit};
 
 /// The type of the answer record and the family of its `answer/<approval_id>` stream.
 const ANSWER: &str = "urn:ads:event:answer.recorded:2";
@@ -212,6 +214,23 @@ enum Shown {
 }
 
 impl Shown {
+    /// The same reading for the listing and the answer, so that an approval never commits to
+    /// a record the owner could not see. A record whose stored size (`size`, from
+    /// [`effects_size`]) already passes half of the page is neither decrypted nor read.
+    fn read(
+        log: &(impl EffectsSource + ?Sized),
+        plan: &ActionPlanRecord,
+        size: Result<Option<usize>, JournalError>,
+        max_list_bytes: usize,
+    ) -> Self {
+        let action = &plan.fields().action_id;
+        match size {
+            Ok(Some(size)) if size > max_list_bytes / 2 => Self::NotListed,
+            Err(error) => Self::of(Err(error), action, max_list_bytes),
+            Ok(_) => Self::of(recorded_effects(log, plan), action, max_list_bytes),
+        }
+    }
+
     fn of(recorded: Result<Recorded, JournalError>, action: &Id, max_list_bytes: usize) -> Self {
         match recorded {
             Ok(Recorded::Nothing) => Self::Nothing,
@@ -338,76 +357,94 @@ fn decided_by(history: &GateHistory, answer_id: &Value) -> Option<Result<(), Api
 
 impl ApprovalControl for ApprovalDesk {
     fn pending(&self, _: &LocalSession) -> Result<Pending, ApiError> {
-        let (waiting, max_list_bytes) = {
-            let desk = self.lock()?;
-            let roots: Vec<AbsPath> = desk
-                .gates
-                .iter()
-                .map(|gate| gate.work_root().clone())
-                .collect();
-            // Only what a gate here can answer; the rest belongs to another session folder and
-            // never takes a place in the page.
-            let mut served =
-                |history: &GateHistory| root_of(history).is_some_and(|root| roots.contains(&root));
-            let histories = desk
-                .log
-                .log()
-                .map_err(ApiError::from_storage)?
-                .pending_approvals(MAX_LISTED, &mut served)
-                .map_err(ApiError::from_storage)?;
-            let mut log = desk.log.log().map_err(ApiError::from_storage)?;
-            let mut waiting = Vec::new();
-            for history in histories {
-                let recorded = recorded_effects(&mut log, &history.plan);
-                waiting.push((history, recorded));
-            }
-            drop(log);
-            (waiting, desk.max_list_bytes)
-        };
-        // Built out of the lock: answers, plans and executions do not wait for it.
+        let desk = self.lock()?;
+        let max_list_bytes = desk.max_list_bytes;
+        let roots: Vec<AbsPath> = desk
+            .gates
+            .iter()
+            .map(|gate| gate.work_root().clone())
+            .collect();
         let mut page = Pending {
             approvals: Vec::new(),
             more: false,
         };
         // The envelope of the response and `"more":false`.
         let mut used = 128;
-        for (history, recorded) in waiting {
-            let Some(Event::ApprovalRequested(requested)) = history.events.last() else {
-                continue;
-            };
-            let data = requested.data();
-            let shown = Shown::of(recorded, &data.action_id, max_list_bytes);
-            let effects = shown.effects();
-            let item = json!({
-                "action_id": data.action_id.as_str(),
-                "approval_id": data.approval_id.as_str(),
-                "plan_hash": data.plan_hash.as_str(),
-                "risk": data.risk,
-                "summary": data.summary.as_str(),
-                "requested_at": requested.ts().as_str(),
-                "expires_at": data.expires_at.as_str(),
-                "not_approvable": shown.reasons(history.plan.fields()),
-                "plan": history.plan.to_json(),
-                "effects_hash": effects.map(|(_, hash)| hash),
-                "effects": effects.map(|(effects, _)| effects),
-                "effects_error": match &shown {
-                    Shown::Refused(code) => Some(code.as_str()),
-                    _ => None,
-                },
+        let mut failed = None;
+        // One action at a time, and each record weighed before it is read: what the lock
+        // holds and the time it is held grow with the ceiling of the page, not with how many
+        // actions wait.
+        let visited = desk
+            .log
+            .log()
+            .map_err(ApiError::from_storage)?
+            .visit_pending_approvals(MAX_LISTED, &mut |entry, reads| {
+                let history = match entry {
+                    StoredPending::History(history) => history,
+                    StoredPending::Unreadable(action_id) => {
+                        // Never silent: the owner is told that actions were left out.
+                        log::warn!("pending approval of {action_id} not readable; not listed");
+                        page.more = true;
+                        return Visit::Skip;
+                    }
+                };
+                // Only what a gate here can answer; the rest belongs to another session folder
+                // and never takes a place in the page.
+                if !root_of(&history).is_some_and(|root| roots.contains(&root)) {
+                    return Visit::Skip;
+                }
+                let Some(Event::ApprovalRequested(requested)) = history.events.last() else {
+                    return Visit::Skip;
+                };
+                let size = effects_size(reads, &history.plan);
+                // A record that cannot fit in what is left waits for a later page, unread.
+                if let Ok(Some(size)) = size
+                    && !page.approvals.is_empty()
+                    && size <= max_list_bytes / 2
+                    && used + size > max_list_bytes
+                {
+                    page.more = true;
+                    return Visit::Stop;
+                }
+                let shown = Shown::read(reads, &history.plan, size, max_list_bytes);
+                let effects = shown.effects();
+                let data = requested.data();
+                let item = json!({
+                    "action_id": data.action_id.as_str(),
+                    "approval_id": data.approval_id.as_str(),
+                    "plan_hash": data.plan_hash.as_str(),
+                    "risk": data.risk,
+                    "summary": data.summary.as_str(),
+                    "requested_at": requested.ts().as_str(),
+                    "expires_at": data.expires_at.as_str(),
+                    "not_approvable": shown.reasons(history.plan.fields()),
+                    "plan": history.plan.to_json(),
+                    "effects_hash": effects.map(|(_, hash)| hash),
+                    "effects": effects.map(|(effects, _)| effects),
+                    "effects_error": match &shown {
+                        Shown::Refused(code) => Some(code.as_str()),
+                        _ => None,
+                    },
+                });
+                let Ok(size) = serde_json::to_vec(&item).map(|bytes| bytes.len() + 1) else {
+                    failed = Some(ApiError::Storage);
+                    return Visit::Stop;
+                };
+                // The oldest action is always listed, so that the page never stays empty.
+                if !page.approvals.is_empty() && used + size > max_list_bytes {
+                    page.more = true;
+                    return Visit::Stop;
+                }
+                used += size;
+                page.approvals.push(item);
+                Visit::Take
             });
-            let size = serde_json::to_vec(&item)
-                .map_err(|_| ApiError::Storage)?
-                .len()
-                + 1;
-            // The oldest action is always listed, so that the page never stays empty.
-            if !page.approvals.is_empty() && used + size > max_list_bytes {
-                page.more = true;
-                break;
-            }
-            used += size;
-            page.approvals.push(item);
+        drop(desk);
+        visited.map_err(ApiError::from_storage)?;
+        match failed {
+            Some(error) => Err(error),
+            None => Ok(page),
         }
-        Ok(page)
     }
 
     fn answer(
@@ -463,14 +500,11 @@ impl ApprovalControl for ApprovalDesk {
         // The record of effects the listing showed: an approval commits to its hash. Denying
         // never depends on it.
         let shown = match answer.decision {
-            Decision::Approve => Shown::of(
-                recorded_effects(
-                    &mut *desk.log.log().map_err(ApiError::from_storage)?,
-                    &history.plan,
-                ),
-                &action_id,
-                desk.max_list_bytes,
-            ),
+            Decision::Approve => {
+                let log = desk.log.log().map_err(ApiError::from_storage)?;
+                let size = effects_size(&*log, &history.plan);
+                Shown::read(&*log, &history.plan, size, desk.max_list_bytes)
+            }
             Decision::Deny => Shown::Nothing,
         };
         let effects_hash = shown.effects().map(|(_, hash)| hash.to_owned());
@@ -1809,5 +1843,91 @@ mod tests {
             panic!("expected the served request: {pending:?}");
         };
         assert_eq!(item["action_id"], action.as_str());
+    }
+
+    /// The records of effects this thread asked the log for while `run` ran.
+    fn records_read<R>(run: impl FnOnce() -> R) -> (R, usize) {
+        let before = crate::gate::RECORDS_READ.with(std::cell::Cell::get);
+        let result = run();
+        let after = crate::gate::RECORDS_READ.with(std::cell::Cell::get);
+        (result, after - before)
+    }
+
+    #[test]
+    fn the_list_reads_records_up_to_its_ceiling_not_for_every_waiting_action() {
+        let mut reads = Vec::new();
+        for waiting in [4, 8] {
+            let mut bench = Bench::new();
+            let gate = bench.gate("quarantine_enabled = false");
+            for at in 0..waiting {
+                let name = format!("act-{at:02}");
+                purge_in(&mut bench, &gate, &name, &format!("cache-{at:02}"));
+            }
+            let log = bench.log.take().unwrap();
+            let unbounded = desk_with(log, vec![gate], usize::MAX);
+            let all = unbounded.pending(&session()).unwrap();
+            assert_eq!(all.approvals.len(), waiting);
+            let one = serde_json::to_vec(&all.approvals[0]).unwrap().len();
+            let Desk { log, gates, .. } = unbounded.inner.into_inner().unwrap();
+
+            // Room for two actions: the third record is never read.
+            let desk = desk_with(log, gates, 128 + 2 * (one + 1) + 16);
+            let (page, read) = records_read(|| desk.pending(&session()).unwrap());
+            assert!(page.more);
+            assert_eq!(page.approvals.len(), 2);
+            reads.push(read);
+        }
+        assert_eq!(
+            reads[0], reads[1],
+            "records read grow with the waiting actions"
+        );
+        assert!(reads[0] <= 3, "{} records read for a page of two", reads[0]);
+    }
+
+    #[test]
+    fn a_record_larger_than_half_the_list_is_never_read() {
+        let mut bench = Bench::new();
+        let gate = bench.gate("quarantine_enabled = false");
+        let (action, approval, hash, _) = purge(&mut bench, &gate, "act-wide");
+        let desk = desk_with(bench.log.take().unwrap(), vec![gate], 64);
+        let session = session();
+        let (pending, read) = records_read(|| desk.pending(&session).unwrap());
+        assert_eq!(read, 0);
+        assert!(
+            only(&pending.approvals)["not_approvable"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("effects_not_listed"))
+        );
+        let approve = params(&action, &approval, &hash, "approve");
+        let (answer, read) = records_read(|| desk.answer(&session, &approve, &new_id().unwrap()));
+        assert_eq!(answer, Err(ApiError::ApprovalNotApprovable));
+        assert_eq!(read, 0);
+    }
+
+    #[test]
+    fn an_unreadable_request_is_left_out_and_the_list_says_so() {
+        let mut bench = Bench::new();
+        let gate = bench.gate(OVER_LIMIT);
+        let (broken, _, _) = bench.waiting(&gate, "act-broken");
+        // More requests than a history holds: written by no gate of this core.
+        {
+            let mut log = bench.log.as_mut().unwrap().log().unwrap();
+            let requested = log.load(&broken).unwrap().events[1].to_json();
+            for extra in 0..4_usize {
+                let approval = format!("appr-extra-{extra}");
+                let mut json = requested.clone();
+                json["id"] = json!(new_id().unwrap());
+                json["stream"] = json!(format!("approval/{approval}"));
+                json["data"]["approval_id"] = json!(approval);
+                let event = Event::from_json(json).unwrap();
+                GateJournal::append(&mut *log, &broken, 2 + extra, &event).unwrap();
+            }
+        }
+        let (fine, _, _) = bench.waiting(&gate, "act-fine");
+        let desk = bench.desk(vec![gate]);
+        let page = desk.pending(&session()).unwrap();
+        assert_eq!(only(&page.approvals)["action_id"], fine.as_str());
+        assert!(page.more);
     }
 }
