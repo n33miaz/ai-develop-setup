@@ -7,29 +7,21 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+ads-private-dir.workspace = true
 ads-core = { path = "../core" }
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
 
+[dev-dependencies]
+ads-private-dir = { workspace = true, features = ["test-support"] }
+
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, features = ["process"] }
 
 [target.'cfg(windows)'.dependencies]
-windows = { workspace = true, features = [
-  "Wdk_Foundation",
-  "Wdk_Storage_FileSystem",
-  "Win32_Foundation",
-  "Win32_Security",
-  "Win32_Security_Authorization",
-  "Win32_Storage_FileSystem",
-  "Win32_System_IO",
-  "Win32_System_Threading",
-  "Win32_System_Console",
-] }
+windows = { workspace = true, features = ["Win32_System_Console"] }
 
-# Copia dos lints do workspace com `unsafe_code` em "deny" no lugar de "forbid": as chamadas do sistema
-# ficam num unico modulo (`private::win`), que libera o lint. Ver docs/unsafe.md.
 [lints.rust]
 unsafe_code = "deny"
 

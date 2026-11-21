@@ -1,6 +1,6 @@
 //! Supervises the daemon and terminal host for one installation.
 
-mod private;
+mod console;
 mod supervisor;
 
 use std::{
@@ -234,7 +234,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         }
         shell
     });
-    private::install_console_handler()?;
+    console::install_console_handler()?;
     supervisor::run(&config, &control, daemon, host, shell)?;
     Ok(ExitCode::SUCCESS)
 }

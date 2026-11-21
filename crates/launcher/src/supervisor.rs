@@ -10,10 +10,9 @@ use std::{
 
 use serde::Serialize;
 
-use crate::{
-    Config,
-    private::{self, ControlDir, Identity, Signal},
-};
+use ads_private_dir::{ControlDir, Identity, Signal};
+
+use crate::{Config, console};
 
 #[derive(Default, Serialize)]
 struct ProcessState {
@@ -250,7 +249,7 @@ impl Window {
                     .write_all(b"Q")
             };
             #[cfg(unix)]
-            let request = private::request_close;
+            let request = console::request_close;
             close_child(child, self.timeout, self.poll, request, report)?;
             self.child = None;
             #[cfg(windows)]
@@ -410,7 +409,7 @@ pub(crate) fn run(
     let mut restarting = false;
     loop {
         if !stopping {
-            stopping = private::console_stop_requested()
+            stopping = console::console_stop_requested()
                 || publication.signal("consume stop signal", &control, stop) == Some(true);
         }
         let stopped = if stopping {
@@ -503,7 +502,7 @@ impl Process {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::private;
+    use ads_private_dir as private;
     use serde_json::Value;
     use std::fs;
     use std::path::PathBuf;
@@ -1337,7 +1336,7 @@ pub(crate) mod tests {
             return;
         }
 
-        private::install_console_handler().unwrap();
+        console::install_console_handler().unwrap();
         let dir = TestDir::new();
         let control = dir.0.clone();
         let host_release = dir.0.join("release-host");
@@ -1346,7 +1345,7 @@ pub(crate) mod tests {
         let shell = held_window(&dir.0);
         let worker = thread::spawn(move || run(&config(), &control, daemon, host, Some(shell)));
         until(|| window_running(&dir.0).then_some(()));
-        private::generate_console_interrupt().unwrap();
+        console::generate_console_interrupt().unwrap();
         let now = Instant::now();
         while !worker.is_finished() && now.elapsed() < Duration::from_secs(5) {
             thread::sleep(Duration::from_millis(5));

@@ -1,5 +1,8 @@
 # Caminho absoluto do banco de auditoria canônico no daemon.
 # Quando omitido, usa %LOCALAPPDATA%/ads/audit.db no Windows.
+# Use uma pasta privada em disco local, fora de todas as raízes de [workdirs].
+# O daemon cria uma pasta nova com acesso exclusivo à conta atual. Em pasta
+# existente, a conta atual deve ser a dona e só ela e SYSTEM podem ter acesso.
 # audit_database_path = 'D:/dados/ads/audit.db'
 # Camada sobreposta em tempo de abertura; mudanças valem ao reabrir.
 # Padrão recomendado: 5 s; intervalo permitido: 0..=60000 ms.
