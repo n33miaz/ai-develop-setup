@@ -2,9 +2,45 @@
 
 Tempos medidos na API do GitHub a partir de `startedAt` e `completedAt` de cada job. Os jobs atuais estão no [workflow de CI](../.github/workflows/ci.yml); o alvo do modo expresso é chegar ao `ci-ok` em até 5 minutos.
 
-## Por job, em 20/11/2026
+## Por job, em 21/11/2026
 
-Base: as dez últimas execuções verdes de push na `develop` (de 21:00 a 22:31 UTC) e as oito últimas execuções verdes de PR. Os jobs condicionais só rodam quando uma entrada deles muda, por isso a coluna de execuções diz em quantas das dez cada um rodou.
+Base: as dez últimas execuções verdes de push na `develop` (de 01:40 a 06:41 UTC) e as dez últimas execuções verdes de PR (de 04:14 a 06:41 UTC), todas depois de o `shell-check` passar a abrir a janela real da casca contra o daemon. Desde então o `shell-check` roda `npm ci` e o build da interface, `cargo test -p ads-shell`, o build de três binários e a janela, e o filtro dele cobre núcleo, armazenamento, daemon, `ptyhost`, launcher, adaptadores, contratos e `ui/`, por isso roda em quase todo push. Os jobs condicionais só rodam quando uma entrada deles muda; a coluna de execuções diz em quantas das dez de push cada um rodou.
+
+| Job | Runner | Execuções (de 10) | Duração |
+|---|---|---|---|
+| `changes` | Ubuntu | 10 | 4 a 12 s |
+| `secrets` | Ubuntu | 10 | 7 a 16 s |
+| `commits` | Ubuntu | só em PR | 46 a 61 s (nos 10 PRs) |
+| `terms` | Ubuntu | 0 (desligado) | não roda |
+| `contracts` | Ubuntu | 4 | 22 a 28 s |
+| `ui` | Ubuntu | 3 | 69 a 95 s |
+| `rust` | Ubuntu | 10 | 105 a 184 s |
+| `shell-check` | Windows | 8 | 135 a 243 s |
+| `pty-windows` | Windows | 7 | 154 a 238 s |
+| `fs-windows` | Windows | 6 | 73 a 161 s |
+| `storage-windows` | Windows | 7 | 81 a 161 s |
+| `vault-windows` | Windows | 6 | 66 a 115 s |
+| `launcher-windows` | Windows | 7 | 76 a 139 s |
+| `ci-ok` | Ubuntu | 10 | 2 a 5 s |
+
+- Do início da execução ao fim do `ci-ok`: de 138 a 260 s nos pushes da `develop` (mediana de cerca de 214 s) e de 136 a 263 s nos PRs (mediana de cerca de 225 s). Nessas vinte execuções o alvo de 5 minutos se cumpre, com cerca de 40 s de folga no pior caso, contra cerca de 1 minuto antes da janela.
+- O alvo não se cumpriu em 2 das 12 execuções verdes de push desde a entrada da janela. Na 44847882720 (o push que a trouxe), 329 s: o cache Rust do `shell-check` veio só por chave parcial e o cache do npm não existia, e o job levou 276 s; o `pty-windows` esperou 96 s por um runner e terminou por último, aos 323 s. Na 44851035577, 360 s: os jobs começaram até 190 s depois do início da execução, por fila de runners, e o `shell-check` em si levou 167 s. A fila de runners fica fora do controle do repositório.
+- Caminho crítico: o `shell-check` e o `pty-windows` estão empatados. O último job a terminar foi o `pty-windows` em 5 dos 10 pushes, o `shell-check` em 3 e o `rust` em 2 (os dois sem jobs Windows); nos PRs, o `shell-check` em 6 de 10, o `pty-windows` em 3 e o `rust` em 1. As faixas dos dois jobs Windows se sobrepõem quase inteiras.
+- Passos do `shell-check` com cache: compilar a interface (`npm ci` e build), 65 a 68 s; testes da casca, 35 a 40 s; build dos três binários do teste de conexão, 38 a 42 s; abrir a janela e autenticar, 8 a 9 s; restaurar o cache Rust, 22 a 25 s; instalar a toolchain, 11 a 12 s; Node, 10 a 16 s. Só na `develop`, salvar o cache Rust soma de 26 a 28 s ao fim.
+- Passos do `pty-windows` com cache: lint, 24 a 32 s; testes do `ptyhost`, 28 a 37 s; testes do cliente do daemon, 39 a 51 s; parâmetros de abertura das ferramentas, 27 a 34 s. Só na `develop`, salvar o cache soma cerca de 33 s.
+- Por isso push e PR não se comparam direto: o push paga o salvamento do cache, o PR paga o job `commits` (que roda em paralelo). Num PR (44873191388) o `ci-ok` só começou 47 s depois do fim do último job, também por fila.
+- Os jobs Windows rodam em paralelo; somar os tempos não dá o tempo da execução.
+
+### Opções para recuperar folga (não aplicadas)
+
+- Rodar a janela real e o build dos três binários (cerca de 50 s) só quando mudam `crates/shell/`, `ui/` ou `tools/smoke_desktop.py`, mantendo o filtro amplo para o build da interface e os testes da casca. O teste de conexão também depende do daemon e do `ptyhost`: com o filtro estreito, uma mudança neles que quebre a conexão passa sem a janela. O ganho no `ci-ok` só aparece quando o `pty-windows` não é o último a terminar.
+- Dividir o `shell-check` em dois jobs Windows paralelos (testes da casca; interface, binários e janela). Cada um paga de novo a preparação (cerca de 1 minuto entre toolchain, cache e Node), e são mais runners Windows disputando a fila.
+- Evitar compilar a interface no `shell-check` quando `ui/` não mudou, reaproveitando uma compilação anterior. Exige guardar o resultado entre execuções e conferir que ele corresponde ao commit.
+- Encurtar o `pty-windows` junto: sem isso, os cortes no `shell-check` deixam o `pty-windows` como caminho crítico com o mesmo teto de cerca de 4 minutos.
+
+## Antes da janela, em 20/11/2026
+
+Base: as dez últimas execuções verdes de push na `develop` (de 21:00 a 22:31 UTC) e as oito últimas execuções verdes de PR, antes de o `shell-check` abrir a janela real. A coluna de execuções diz em quantas das dez cada job rodou.
 
 | Job | Runner | Execuções (de 10) | Duração |
 |---|---|---|---|
@@ -23,9 +59,8 @@ Base: as dez últimas execuções verdes de push na `develop` (de 21:00 a 22:31 
 | `launcher-windows` | Windows | 5 | 82 a 152 s |
 | `ci-ok` | Ubuntu | 10 | 2 a 5 s |
 
-- Do início da execução ao fim do `ci-ok`: de 148 a 242 s nos pushes da `develop` (cerca de 3 min no meio da faixa) e de 148 a 195 s nos PRs. O alvo de 5 minutos se cumpre, com cerca de 1 minuto de folga no pior caso medido.
-- Caminho crítico: o `pty-windows`, que tem o filtro mais amplo (núcleo, daemon, armazenamento, contratos e adaptadores), rodou nas dez e foi o job mais longo em 9 das 10 execuções de push, empatado com o `rust` numa delas. Na outra, o mais longo foi o `launcher-windows`. O `rust` vem logo atrás, de 114 a 178 s.
-- Os jobs Windows rodam em paralelo; somar os tempos não dá o tempo da execução.
+- Do início da execução ao fim do `ci-ok`: de 148 a 242 s nos pushes da `develop` e de 148 a 195 s nos PRs.
+- O job mais longo foi o `pty-windows`, que então tinha o filtro mais amplo, em 9 das 10 execuções de push (empatado com o `rust` numa delas); na outra, o `launcher-windows`.
 
 ## Retrato inicial, em 14/11/2026
 
