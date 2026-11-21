@@ -10,7 +10,7 @@ A contagem só sobe com justificativa aqui.
 | `ads-adapter-fs` | 4 | chamadas da API do Windows para abrir, mover e apagar por identificador aberto, listadas abaixo; no Linux as mesmas operações vêm do `rustix`, sem `unsafe` |
 | `ads-testkit` | 7 | só de teste, fora de qualquer binário do produto; listados abaixo |
 | `ads-adapter-vault` | 6 | operações por nome no cofre do Windows e tratamento da memória devolvida |
-| `ads-launcher` | 23 | chamadas da API do Windows para criar a pasta de controle e seus arquivos só do usuário, conferir dono e lista de acesso, operar relativo à pasta aberta e receber interrupções do console (5 blocos só nos testes) |
+| `ads-launcher` | 24 | chamadas da API do Windows para criar a pasta de controle e seus arquivos só do usuário, conferir dono e lista de acesso, operar relativo à pasta aberta, receber interrupções do console e ler o horário de início do próprio processo (5 blocos só nos testes) |
 | `ads-shell` | 2 | retirar e fechar a entrada padrão herdada antes de iniciar a WebView |
 | `ads-storage` | 0 | SQLite e cifra pelas APIs seguras das dependências; herda `forbid` |
 | demais | 0 | nenhum |
@@ -87,6 +87,7 @@ A biblioteca padrão não cria pasta nem arquivo com lista de acesso própria, n
 | `security` | 4 | `GetSecurityInfo` (dono e lista de acesso), `GetAclInformation`, `GetAce`, leitura do cabeçalho da entrada | conferir o dono e cada entrada da lista de acesso da pasta, da trava e de cada sinal, no identificador aberto |
 | `access_list_text`, `canonical_access_list` e `descriptor_text` (só testes) | 3 | `GetSecurityInfo`, conversões de descritor de segurança | comparar a lista de acesso com a forma de escrita do Windows, incluindo proteção, herança e abreviação de identificadores |
 | `install_console_handler` | 1 | `SetConsoleCtrlHandler` | registrar o retorno de chamada que marca a parada em uma variável atômica |
+| `process_started` | 1 | `GetProcessTimes` com `GetCurrentProcess` | ler o horário de início do próprio processo, para separar um sinal `stop` deixado por uma execução anterior de um criado depois do início |
 | `generate_console_interrupt` (só testes) | 2 | `SetConsoleCtrlHandler`, `GenerateConsoleCtrlEvent` | habilitar e gerar Ctrl+C dentro de um console isolado para verificar a limpeza |
 
 ## `ads-shell` (`crates/shell/src/stdin.rs`)

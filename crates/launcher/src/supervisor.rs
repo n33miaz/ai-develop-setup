@@ -884,19 +884,19 @@ pub(crate) mod tests {
         let state = dir.0.join(&settings.state_file);
         // Any file written now is dated before this start.
         let started = SystemTime::now() + private::STALE_SIGNAL_MARGIN + Duration::from_secs(60);
+        let host_release = dir.0.join("release-host");
+        let daemon = fixture(Some(&dir.0.join("release-daemon")));
+        let host = fixture(Some(&host_release));
         let (interrupt, interrupted) = std::sync::mpsc::channel();
         let worker = thread::spawn(move || {
-            run_with_interrupt(
-                &settings,
-                &dir.0,
-                fixture(None),
-                fixture(None),
-                None,
-                started,
-                || interrupted.try_recv().is_ok(),
-            )
+            run_with_interrupt(&settings, &dir.0, daemon, host, None, started, || {
+                interrupted.try_recv().is_ok()
+            })
         });
-        until(|| state_value(&state).filter(|state| state["daemon"]["pid"].is_u64()));
+        until(|| {
+            state_value(&state)
+                .filter(|state| state["daemon"]["pid"].is_u64() && state["ptyhost"]["pid"].is_u64())
+        });
         fs::write(&stop, []).unwrap();
         until(|| (!stop.exists()).then_some(()));
         thread::sleep(Duration::from_millis(200));
@@ -907,6 +907,7 @@ pub(crate) mod tests {
         assert_eq!(state_value(&state).unwrap()["stopped"], false);
         interrupt.send(()).unwrap();
         worker.join().unwrap().unwrap();
+        fs::write(host_release, []).unwrap();
     }
 
     #[test]
@@ -971,24 +972,22 @@ pub(crate) mod tests {
             .open(&stop)
             .unwrap();
         let started = SystemTime::now();
+        let host_release = dir.0.join("release-host");
+        let daemon = fixture(Some(&dir.0.join("release-daemon")));
+        let host = fixture(Some(&host_release));
         let (interrupt, interrupted) = std::sync::mpsc::channel();
         let worker = thread::spawn(move || {
-            run_with_interrupt(
-                &settings,
-                &dir.0,
-                fixture(None),
-                fixture(None),
-                None,
-                started,
-                || interrupted.try_recv().is_ok(),
-            )
+            run_with_interrupt(&settings, &dir.0, daemon, host, None, started, || {
+                interrupted.try_recv().is_ok()
+            })
         });
         until(|| {
             assert!(
                 !worker.is_finished(),
                 "launcher exited before starting its children"
             );
-            state_value(&state).filter(|state| state["daemon"]["pid"].is_u64())
+            state_value(&state)
+                .filter(|state| state["daemon"]["pid"].is_u64() && state["ptyhost"]["pid"].is_u64())
         });
         interrupt.send(()).unwrap();
         until(|| worker.is_finished().then_some(()));
@@ -1003,6 +1002,7 @@ pub(crate) mod tests {
         );
         assert!(stop.exists());
         drop(blocked_signal);
+        fs::write(host_release, []).unwrap();
     }
 
     #[test]
