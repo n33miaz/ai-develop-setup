@@ -35,6 +35,25 @@ struct Exit {
     status: String,
 }
 
+impl From<ExitStatus> for Exit {
+    fn from(status: ExitStatus) -> Self {
+        Self {
+            code: status.code(),
+            status: status.to_string(),
+        }
+    }
+}
+
+/// The desktop window as published: it is not restarted on its own, only replaced for a new
+/// daemon, so it has no retry counters.
+#[derive(Default, Serialize)]
+struct ShellState {
+    pid: Option<u32>,
+    starts: u64,
+    last_exit: Option<Exit>,
+    last_error: Option<String>,
+}
+
 struct Process {
     command: Command,
     child: Option<Child>,
@@ -119,10 +138,7 @@ impl Process {
     fn record_exit(&mut self, status: ExitStatus) {
         self.child = None;
         self.state.pid = None;
-        self.state.last_exit = Some(Exit {
-            code: status.code(),
-            status: status.to_string(),
-        });
+        self.state.last_exit = Some(status.into());
     }
 
     fn stop(&mut self) -> io::Result<()> {
@@ -207,6 +223,7 @@ struct Window {
     close_pipe: Option<io::PipeWriter>,
     timeout: Duration,
     poll: Duration,
+    state: ShellState,
 }
 
 impl Window {
@@ -217,10 +234,21 @@ impl Window {
             close_pipe: None,
             timeout: Duration::from_millis(config.shell_close_timeout_ms),
             poll: Duration::from_millis(config.poll_ms),
+            state: ShellState::default(),
         }
     }
 
     fn start(&mut self, command: &mut Command, bootstrap: impl Into<Stdio>) -> io::Result<()> {
+        self.state.starts = self.state.starts.saturating_add(1);
+        let result = self.spawn(command, bootstrap);
+        match &result {
+            Ok(()) => self.state.pid = self.child.as_ref().map(Child::id),
+            Err(error) => self.state.last_error = Some(error.to_string()),
+        }
+        result
+    }
+
+    fn spawn(&mut self, command: &mut Command, bootstrap: impl Into<Stdio>) -> io::Result<()> {
         #[cfg(windows)]
         {
             let (reader, writer) = io::pipe()?;
@@ -254,14 +282,21 @@ impl Window {
             };
             #[cfg(unix)]
             let request = console::request_close;
-            close_child(child, self.timeout, self.poll, request, report)?;
-            self.child = None;
-            #[cfg(windows)]
-            {
-                self.close_pipe = None;
-            }
+            let status = close_child(child, self.timeout, self.poll, request, report)?;
+            self.exited(status);
         }
         Ok(())
+    }
+
+    /// Records the exit of the window, whether it closed by itself or on request.
+    fn exited(&mut self, status: ExitStatus) {
+        self.child = None;
+        #[cfg(windows)]
+        {
+            self.close_pipe = None;
+        }
+        self.state.pid = None;
+        self.state.last_exit = Some(status.into());
     }
 }
 
@@ -307,6 +342,7 @@ fn write_state(
     name: &str,
     daemon: &Process,
     host: &Process,
+    shell: Option<&ShellState>,
     stopped: bool,
     publication: &Publication,
 ) -> io::Result<()> {
@@ -319,6 +355,7 @@ fn write_state(
         state_write_error: Option<&'a str>,
         daemon: &'a ProcessState,
         ptyhost: &'a ProcessState,
+        shell: Option<&'a ShellState>,
     }
     let bytes = serde_json::to_vec(&State {
         launcher_pid: std::process::id(),
@@ -328,6 +365,7 @@ fn write_state(
         state_write_error: publication.state_write_error.as_deref(),
         daemon: &daemon.state,
         ptyhost: &host.state,
+        shell,
     })
     .map_err(io::Error::other)?;
     control.publish(name, &bytes)
@@ -361,6 +399,7 @@ impl Publication {
     }
 
     fn close_shell(&mut self, window: &mut Window) -> bool {
+        self.dirty |= window.child.is_some();
         let result = window.close(|message| self.report(message));
         self.attempt("close shell", result).is_some()
     }
@@ -424,6 +463,9 @@ fn run_with_interrupt(
 ) -> io::Result<()> {
     let control = ControlDir::open(control, &Identity::current()?)?;
     let _lock = open_lock(&control, &config.lock_file)?;
+    // The daemon opens its lock by path; checking it here refuses one left open to other
+    // accounts, which could hold it and keep every daemon of this installation from starting.
+    drop(control.lock_file(crate::DAEMON_LOCK_FILE)?);
     let state = config.state_file.as_str();
     let stop = config.stop_file.as_str();
     let restart = config.restart_file.as_str();
@@ -449,7 +491,16 @@ fn run_with_interrupt(
         control.dated_signal(stop, stale_before, true),
     ) == Some(true);
     // Publish before starting children so an unusable state path fails early.
-    if let Err(error) = write_state(&control, state, &daemon, &host, false, &publication) {
+    let desktop = shell.is_some();
+    if let Err(error) = write_state(
+        &control,
+        state,
+        &daemon,
+        &host,
+        desktop.then_some(&window.state),
+        false,
+        &publication,
+    ) {
         publication.signal("consume stop signal", &control, stop);
         return Err(error);
     }
@@ -489,16 +540,12 @@ fn run_with_interrupt(
             let daemon_changed = !restarting
                 && publication.attempt("check daemon", daemon.tick(config)) == Some(true);
             if let Some(window_process) = &mut window.child
-                && publication
+                && let Some(status) = publication
                     .attempt("check shell", Child::try_wait(window_process))
                     .flatten()
-                    .is_some()
             {
-                window.child = None;
-                #[cfg(windows)]
-                {
-                    window.close_pipe = None;
-                }
+                window.exited(status);
+                publication.dirty = true;
             }
             if daemon.state.gave_up {
                 // No daemon will follow to replace the window: it would stay disconnected.
@@ -510,12 +557,21 @@ fn run_with_interrupt(
                 && publication.close_shell(&mut window)
             {
                 publication.attempt("start shell", window.start(shell, daemon_output));
+                publication.dirty = true;
             }
             publication.dirty |= host_changed || daemon_changed;
             false
         };
         if publication.dirty {
-            match write_state(&control, state, &daemon, &host, stopped, &publication) {
+            match write_state(
+                &control,
+                state,
+                &daemon,
+                &host,
+                desktop.then_some(&window.state),
+                stopped,
+                &publication,
+            ) {
                 Ok(()) => {
                     publication.dirty = false;
                     if stopped {
@@ -1077,7 +1133,12 @@ pub(crate) mod tests {
     /// Asserts the exact access list of the folder and of the lock and state files: protected,
     /// with the user's entry alone, inherited by new files only from the folder.
     fn assert_private(control: &Path, settings: &Config, local: &Identity) {
-        let files = [&settings.lock_file, &settings.state_file].map(|name| control.join(name));
+        let files = [
+            settings.lock_file.as_str(),
+            settings.state_file.as_str(),
+            crate::DAEMON_LOCK_FILE,
+        ]
+        .map(|name| control.join(name));
         #[cfg(windows)]
         {
             let folder =
@@ -1193,6 +1254,24 @@ pub(crate) mod tests {
         let dir = TestDir::new();
         let settings = config();
         let lock = dir.0.join(&settings.lock_file);
+        fs::write(&lock, []).unwrap();
+        open_to_everyone(&lock);
+        let stop = dir.0.join(&settings.stop_file);
+        fs::write(&stop, []).unwrap();
+        let daemon = Command::new(dir.0.join("missing-daemon"));
+        let host = Command::new(dir.0.join("missing-host"));
+        let error = run(&settings, &dir.0, daemon, host, None).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(error.to_string().contains("another account"), "{error}");
+        assert!(stop.exists());
+        assert!(!dir.0.join(&settings.state_file).exists());
+    }
+
+    #[test]
+    fn refuses_a_daemon_lock_other_accounts_can_use() {
+        let dir = TestDir::new();
+        let settings = config();
+        let lock = dir.0.join(crate::DAEMON_LOCK_FILE);
         fs::write(&lock, []).unwrap();
         open_to_everyone(&lock);
         let stop = dir.0.join(&settings.stop_file);
@@ -1492,6 +1571,54 @@ pub(crate) mod tests {
             previous_closed,
             "the replacement started before the previous shell exited"
         );
+    }
+
+    /// Runs a desktop installation whose window is `shell` until `state.json` satisfies
+    /// `published`, then stops it and returns that state.
+    fn shell_state(shell: Command, published: impl Fn(&Value) -> bool) -> Value {
+        let dir = TestDir::new();
+        let host_release = dir.0.join("release-host");
+        let (control, daemon) = (dir.0.clone(), desktop_daemon(&dir.0));
+        let host = fixture(Some(&host_release));
+        let worker = thread::spawn(move || run(&config(), &control, daemon, host, Some(shell)));
+        let state =
+            until(|| state_value(&dir.0.join("state.json")).filter(|state| published(state)));
+        fs::write(dir.0.join("stop"), []).unwrap();
+        worker.join().unwrap().unwrap();
+        fs::write(dir.0.join("release-daemon"), []).unwrap();
+        fs::write(host_release, []).unwrap();
+        state
+    }
+
+    #[test]
+    fn publishes_a_shell_that_fails_to_start() {
+        let missing = Command::new(TestDir::new().0.join("missing-shell"));
+        let state = shell_state(missing, |state| state["shell"]["starts"] == 1);
+        assert!(state["shell"]["pid"].is_null(), "{state}");
+        assert!(state["shell"]["last_error"].is_string(), "{state}");
+        assert!(state["daemon"]["pid"].is_u64(), "{state}");
+    }
+
+    #[test]
+    fn publishes_the_exit_of_the_shell() {
+        let state = shell_state(fixture(None), |state| {
+            state["shell"]["last_exit"].is_object()
+        });
+        assert_eq!(state["shell"]["starts"], 1, "{state}");
+        assert!(state["shell"]["pid"].is_null(), "{state}");
+        assert_eq!(state["shell"]["last_exit"]["code"], 0, "{state}");
+    }
+
+    #[test]
+    fn publishes_no_shell_in_browser_mode() {
+        let dir = TestDir::new();
+        let settings = config();
+        fs::write(dir.0.join(&settings.stop_file), []).unwrap();
+        let daemon = Command::new(dir.0.join("missing-daemon"));
+        let host = Command::new(dir.0.join("missing-host"));
+        run(&settings, &dir.0, daemon, host, None).unwrap();
+        let state = state_value(&dir.0.join(&settings.state_file)).unwrap();
+        assert_eq!(state.get("shell"), Some(&Value::Null), "{state}");
     }
 
     fn desktop_daemon(dir: &Path) -> Command {

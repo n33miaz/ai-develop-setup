@@ -25,7 +25,10 @@ roda, a pasta e as pastas acima dela também não podem ser renomeadas.
 Uma trava de sistema operacional limita a execução a um lançador por pasta de
 controle e fica ativa enquanto ele roda.
 Os arquivos de trava são reutilizados após a saída. O daemon supervisionado
-mantém sua própria trava (`daemon.lock`) na mesma pasta. Ao sair pelo sinal
+mantém sua própria trava (`daemon.lock`) na mesma pasta. Ao iniciar, o lançador
+cria essa trava privada quando falta e recusa a partida se a existente for de
+outra conta ou der acesso a ela, já que outra conta poderia segurá-la e impedir
+todo daemon da instalação de iniciar. Ao sair pelo sinal
 `stop`, o lançador encerra o daemon. Na saída do supervisor que passa pela
 limpeza de processos, ele também tenta encerrá-lo. Se o lançador
 for encerrado à força, o daemon pode continuar vivo, mas outro daemon da mesma
@@ -36,8 +39,9 @@ O lançador inicia o host destacado e o daemon. No Windows, coloque também
 `ads-shell.exe` ao lado do lançador. O modo desktop liga a saída de inicialização
 do daemon diretamente à entrada padrão da casca por um pipe anônimo. O Rust
 da casca autentica a conexão e encaminha mensagens à janela por IPC. Se a casca
-sair pela bandeja ou falhar, o daemon e o host continuam sob supervisão. Use o
-sinal `restart` para abrir outra janela com a nova credencial.
+sair pela bandeja ou falhar, o daemon e o host continuam sob supervisão e o
+lançador não a reabre sozinho. Use o sinal `restart` para abrir outra janela com
+a nova credencial.
 
 O lançador fecha a casca que abriu no sinal `stop`, em Ctrl+C ou Ctrl+Break no
 console do Windows, quando desiste do daemon depois de `crash_window_limit`
@@ -99,7 +103,9 @@ Para voltar a tentar após a desistência do host, reinicie o lançador.
 O JSON `state.json` é substituído atomicamente. Ele traz o PID do lançador e,
 para cada filho, o PID acompanhado ou `null`, o número de novas tentativas,
 os reinícios solicitados, as falhas na janela móvel, o indicador de desistência,
-a última saída e o último erro ao iniciar. Saídas e falhas ao iniciar contam
+a última saída e o último erro ao iniciar. No modo desktop, `shell` traz o PID
+da janela ou `null`, quantas vezes ela foi aberta, a última saída e o último
+erro ao abri-la; no modo navegador, `shell` é `null`. Saídas e falhas ao iniciar contam
 para `crash_window_limit` dentro de `crash_window_ms`. Use essas chaves
 no lugar de `rapid_exit_limit` e `rapid_exit_ms` em configurações antigas. A espera cresce até
 `restart_max_ms`. O campo `stopped` marca a parada solicitada.

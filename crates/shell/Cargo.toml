@@ -10,6 +10,8 @@ build = "build.rs"
 [features]
 desktop-smoke = []
 
+# Copia dos lints do workspace com `unsafe_code` em "deny" no lugar de "forbid": as chamadas do sistema
+# ficam num unico modulo (`stdin`), que libera o lint. Ver docs/unsafe.md.
 [lints.rust]
 unsafe_code = "deny"
 
