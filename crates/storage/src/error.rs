@@ -32,6 +32,8 @@ pub enum StorageError {
     KeyUnavailable,
     AnchorUnavailable,
     AnchorMissing,
+    NonCanonicalDatabase,
+    DuplicateDatabaseIdentity,
     AnchorMismatch,
     /// The chain could not be authenticated after an external commit.
     HistoryChanged {

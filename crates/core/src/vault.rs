@@ -9,13 +9,25 @@ use zeroize::Zeroizing;
 pub enum SecretName {
     StorageKey,
     AuditAnchor,
+    AuditDatabase,
+    AuditAnchorFor([u8; 32]),
 }
 
 impl SecretName {
-    pub const fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> std::borrow::Cow<'static, str> {
         match self {
-            Self::StorageKey => "storage-key",
-            Self::AuditAnchor => "audit-anchor",
+            Self::StorageKey => "storage-key".into(),
+            Self::AuditAnchor => "audit-anchor".into(),
+            Self::AuditDatabase => "audit-database".into(),
+            Self::AuditAnchorFor(id) => {
+                use fmt::Write;
+                let mut name = String::with_capacity("audit-anchor-".len() + 64);
+                name.push_str("audit-anchor-");
+                for byte in id {
+                    write!(name, "{byte:02x}").expect("writing to String cannot fail");
+                }
+                name.into()
+            }
         }
     }
 }
@@ -25,9 +37,27 @@ impl TryFrom<&str> for SecretName {
 
     fn try_from(name: &str) -> Result<Self, Self::Error> {
         match name {
-            name if name == Self::StorageKey.as_str() => Ok(Self::StorageKey),
-            name if name == Self::AuditAnchor.as_str() => Ok(Self::AuditAnchor),
-            _ => Err(VaultError::InvalidName),
+            "storage-key" => Ok(Self::StorageKey),
+            "audit-anchor" => Ok(Self::AuditAnchor),
+            "audit-database" => Ok(Self::AuditDatabase),
+            _ => {
+                let id = name
+                    .strip_prefix("audit-anchor-")
+                    .ok_or(VaultError::InvalidName)?;
+                if id.len() != 64
+                    || !id
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                {
+                    return Err(VaultError::InvalidName);
+                }
+                let mut bytes = [0; 32];
+                for (index, byte) in bytes.iter_mut().enumerate() {
+                    *byte = u8::from_str_radix(&id[index * 2..][..2], 16)
+                        .map_err(|_| VaultError::InvalidName)?;
+                }
+                Ok(Self::AuditAnchorFor(bytes))
+            }
         }
     }
 }
@@ -94,8 +124,13 @@ mod tests {
 
     #[test]
     fn accepts_only_exact_product_names() {
-        for name in [SecretName::StorageKey, SecretName::AuditAnchor] {
-            assert_eq!(SecretName::try_from(name.as_str()), Ok(name));
+        for name in [
+            SecretName::StorageKey,
+            SecretName::AuditAnchor,
+            SecretName::AuditDatabase,
+            SecretName::AuditAnchorFor([0xab; 32]),
+        ] {
+            assert_eq!(SecretName::try_from(name.as_str().as_ref()), Ok(name));
         }
         for invalid in [
             "",
@@ -106,6 +141,11 @@ mod tests {
             "urn:ads:vault:storage-key:1",
             "ads-test-storage-key",
             "other",
+            "audit-anchor-a",
+            concat!(
+                "audit-anchor-",
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+            ),
         ] {
             assert_eq!(SecretName::try_from(invalid), Err(VaultError::InvalidName));
         }

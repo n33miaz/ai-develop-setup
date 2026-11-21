@@ -1,10 +1,12 @@
 use crate::StorageError;
 use serde::Deserialize;
+use std::path::{Path, PathBuf};
 
 const DEFAULTS: &str = include_str!("../../../defaults/storage.toml");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StorageConfig {
+    audit_database_path: Option<PathBuf>,
     pub(crate) busy_timeout_ms: u32,
     pub(crate) inspection_max_bytes: usize,
     pub(crate) integrity_check_on_open: bool,
@@ -28,6 +30,7 @@ pub enum VerifyOnAppend {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Layer {
+    audit_database_path: Option<PathBuf>,
     busy_timeout_ms: Option<u32>,
     inspection_max_bytes: Option<usize>,
     integrity_check_on_open: Option<bool>,
@@ -83,7 +86,18 @@ impl StorageConfig {
             Some("always") => VerifyOnAppend::Always,
             _ => return Err(StorageError::Configuration),
         };
+        let audit_database_path = over.audit_database_path.or(base.audit_database_path);
+        if audit_database_path.as_ref().is_some_and(|path| {
+            !path.is_absolute()
+                || path.file_name().is_none()
+                || path
+                    .components()
+                    .any(|part| matches!(part, std::path::Component::ParentDir))
+        }) {
+            return Err(StorageError::Configuration);
+        }
         Ok(Self {
+            audit_database_path,
             busy_timeout_ms,
             verify_on_append,
             inspection_max_bytes: over
@@ -113,6 +127,10 @@ impl StorageConfig {
                 .filter(|n| (1..=10_000).contains(n))
                 .ok_or(StorageError::Configuration)?,
         })
+    }
+
+    pub fn audit_database_path(&self) -> Option<&Path> {
+        self.audit_database_path.as_deref()
     }
 
     pub fn busy_timeout_ms(&self) -> u32 {

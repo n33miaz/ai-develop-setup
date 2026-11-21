@@ -2,8 +2,8 @@
 use crate::{
     AuditStore, StorageConfig, StorageError,
     anchor::{
-        AnchorStore, COMMITMENT_VERSION, Commitment, GENESIS, POSITION, REGISTERED_KEYS,
-        ReanchorPlan,
+        AnchorStore, COMMITMENT_VERSION, Commitment, DatabaseId, GENESIS, POSITION,
+        REGISTERED_KEYS, ReanchorPlan,
     },
     cipher::{self, AssociatedData, ChainKey, Ciphertext, KeyId, KeyProvider, SecretKey},
     config::VerifyOnAppend,
@@ -375,12 +375,48 @@ fn commitment(tx: &rusqlite::Connection) -> Result<Commitment, StorageError> {
     Ok(result)
 }
 
+fn database_id(tx: &Transaction<'_>, actual: &Commitment) -> Result<DatabaseId, StorageError> {
+    let genesis: DatabaseId = actual[GENESIS].try_into().expect("genesis is 32 bytes");
+    if genesis != [0; 32] {
+        return Ok(genesis);
+    }
+    // Version 3 logs retained the zero genesis. Their authenticated first link is stable.
+    let first: Vec<u8> = tx
+        .query_row("SELECT chain FROM event WHERE position = 1", [], |row| {
+            row.get(0)
+        })
+        .optional()?
+        .ok_or(StorageError::AnchorMismatch)?;
+    if first.len() != 32 {
+        return Err(StorageError::Corrupt);
+    }
+    let mut hash = Sha256::new();
+    hash.update(b"urn:ads:storage:legacy-database-id:1");
+    hash.update(first);
+    Ok(hash.finalize().into())
+}
+
 fn recovery_plan(
-    tx: &rusqlite::Connection,
+    tx: &Transaction<'_>,
     keys: &dyn KeyProvider,
     anchor: &dyn AnchorStore,
 ) -> Result<ReanchorPlan, StorageError> {
-    let previous = anchor.read()?;
+    check_log_schema(tx)?;
+    let proposed = commitment(tx)?;
+    let id = database_id(tx, &proposed)?;
+    let mut previous = anchor.recovery_anchor(id)?;
+    if previous.previous_id.is_none() && previous.commitment == Some(proposed) {
+        previous.previous_id = Some(id);
+    }
+    if previous.previous_id == Some(id)
+        && previous
+            .previous_location
+            .zip(previous.proposed_location)
+            .is_some_and(|(old, new)| old != new)
+        && previous.commitment != Some(proposed)
+    {
+        return Err(StorageError::AnchorMismatch);
+    }
     verify_in(tx, keys)?;
     let unused: bool = tx.query_row(
         "SELECT EXISTS (SELECT 1 FROM cipher_key AS k
@@ -392,8 +428,9 @@ fn recovery_plan(
         return Err(StorageError::AnchorMismatch);
     }
     Ok(ReanchorPlan {
+        id,
         previous,
-        proposed: commitment(tx)?,
+        proposed,
     })
 }
 
@@ -474,7 +511,7 @@ impl EventLog {
         keys: Box<dyn KeyProvider + Send>,
         anchor: Box<dyn AnchorStore>,
     ) -> Result<Self, StorageError> {
-        let create = anchor.read()?.is_none();
+        let create = anchor.can_create()?;
         let mut log = Self::open_store(path, config, keys, create)?;
         let tx = log
             .store
@@ -484,17 +521,26 @@ impl EventLog {
         // `migrate` checked the schema in another transaction; this one covers
         // the window between them, under the lock the chain is verified in.
         check_log_schema(&tx)?;
-        let stored = anchor.read()?;
         let actual = commitment(&tx)?;
-        match stored {
+        let database = database_id(&tx, &actual)?;
+        let stored = anchor.read(database)?;
+        let expected = match stored {
+            Some(expected) => Some(expected),
+            None => anchor.legacy()?,
+        };
+        match expected {
             Some(expected) if expected == actual => {}
             Some(_) => return Err(StorageError::AnchorMismatch),
-            None if empty_log(&tx)? => anchor.store(&actual)?,
+            None if empty_log(&tx)? && anchor.can_create()? => {}
             None => return Err(StorageError::AnchorMissing),
         }
         let (id, _) = log.keys.current()?;
         check_registered(&tx, &*log.keys, &id)?;
         verify_in(&tx, &*log.keys)?;
+        if stored.is_none() {
+            anchor.store(database, &actual)?;
+        }
+        anchor.bind(database)?;
         tx.commit()?;
         log.anchor = Some(anchor);
         log.verified_data_version = version;
@@ -508,7 +554,7 @@ impl EventLog {
         keys: Box<dyn KeyProvider + Send>,
         anchor: &dyn AnchorStore,
     ) -> Result<ReanchorPlan, StorageError> {
-        anchor.read()?;
+        anchor.can_create()?;
         let mut log = Self::open_store(path, config, keys, false)?;
         let tx = log
             .store
@@ -525,7 +571,7 @@ impl EventLog {
         anchor: &dyn AnchorStore,
         confirmed: ReanchorPlan,
     ) -> Result<(), StorageError> {
-        anchor.read()?;
+        anchor.can_create()?;
         let mut log = Self::open_store(path, config, keys, false)?;
         let tx = log
             .store
@@ -534,7 +580,7 @@ impl EventLog {
         if recovery_plan(&tx, &*log.keys, anchor)? != confirmed {
             return Err(StorageError::AnchorMismatch);
         }
-        anchor.store(&confirmed.proposed)?;
+        anchor.recover(&confirmed)?;
         tx.commit()?;
         Ok(())
     }
@@ -641,7 +687,7 @@ impl EventLog {
             .store
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        if let Some(anchor) = &self.anchor {
+        let database = if let Some(anchor) = &self.anchor {
             let always = self.config.verify_on_append == VerifyOnAppend::Always;
             if always {
                 // Drop cached pages so every check below reads what the file
@@ -649,8 +695,10 @@ impl EventLog {
                 tx.pragma_query_value(None, "shrink_memory", |_| Ok(()))
                     .optional()?;
             }
-            match anchor.read()? {
-                Some(expected) if expected == commitment(&tx)? => {}
+            let actual = commitment(&tx)?;
+            let database = database_id(&tx, &actual)?;
+            match anchor.read(database)? {
+                Some(expected) if expected == actual => {}
                 Some(_) => return Err(StorageError::AnchorMismatch),
                 None => return Err(StorageError::AnchorMissing),
             }
@@ -668,7 +716,10 @@ impl EventLog {
                 })?;
                 self.verified_data_version = version;
             }
-        }
+            Some((anchor, database))
+        } else {
+            None
+        };
         if seq != head_in(&tx, stream)? + 1 {
             return Err(StorageError::Conflict);
         }
@@ -741,10 +792,10 @@ impl EventLog {
                 row.chain,
             ],
         )?;
-        if let Some(anchor) = &self.anchor {
+        if let Some((anchor, database)) = database {
             // Publish under the SQLite writer lock. A failed SQLite commit leaves a
             // mismatch that requires owner recovery instead of accepting an older head.
-            anchor.store(&commitment(&tx)?)?;
+            anchor.store(database, &commitment(&tx)?)?;
         }
         tx.commit()?;
         Ok(Position(position))

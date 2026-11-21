@@ -292,51 +292,89 @@ mod tests {
             event
         };
 
-        drop(open());
-        let c = Connection::open(&path).unwrap();
-        let update_trigger: Option<String> = c
-            .query_row(
-                "SELECT (SELECT sql FROM sqlite_schema WHERE name = 'log_genesis_no_update')",
-                [],
-                |r| r.get(0),
+        let prepare_v3 = |path: &std::path::Path| {
+            let open =
+                || crate::EventLog::open_unanchored(path, &config, Box::new(TestKeys)).unwrap();
+            drop(open());
+            let c = Connection::open(path).unwrap();
+            let update_trigger: Option<String> = c
+                .query_row(
+                    "SELECT (SELECT sql FROM sqlite_schema WHERE name = 'log_genesis_no_update')",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            c.execute_batch(
+                "DROP TRIGGER IF EXISTS log_genesis_no_update;
+                 UPDATE log_genesis SET link = zeroblob(32);",
             )
             .unwrap();
-        c.execute_batch(
-            "DROP TRIGGER IF EXISTS log_genesis_no_update;
-             UPDATE log_genesis SET link = zeroblob(32);",
-        )
-        .unwrap();
-        if let Some(sql) = update_trigger {
-            c.execute_batch(&sql).unwrap();
+            if let Some(sql) = update_trigger {
+                c.execute_batch(&sql).unwrap();
+            }
+            drop(c);
+
+            let mut log = open();
+            log.append(&event(1)).unwrap();
+            log.append(&event(2)).unwrap();
+            assert_eq!(log.verify_chain(), Ok(2));
+            drop(log);
+
+            let c = Connection::open(path).unwrap();
+            let old_trigger = expected_schema(3)
+                .unwrap()
+                .into_iter()
+                .find(|(_, name, _, _)| name == "event_append_order")
+                .unwrap()
+                .3
+                .unwrap();
+            c.execute_batch("DROP TRIGGER event_append_order; DROP TABLE log_genesis;")
+                .unwrap();
+            c.execute_batch(&old_trigger).unwrap();
+            c.pragma_update(None, "user_version", 3).unwrap();
+            assert_eq!(schema(&c).unwrap(), expected_schema(3).unwrap());
+            let first_link: Vec<u8> = c
+                .query_row("SELECT prev_chain FROM event WHERE position = 1", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            assert_eq!(first_link, [0; 32]);
+            drop(c);
+        };
+        prepare_v3(&path);
+        let second = crate::open::tests::test_directory().join("audit.db");
+        prepare_v3(&second);
+
+        struct Unbound;
+        impl crate::anchor::AnchorStore for Unbound {
+            fn can_create(&self) -> Result<bool, StorageError> {
+                Ok(true)
+            }
+
+            fn read(
+                &self,
+                _: crate::anchor::DatabaseId,
+            ) -> Result<Option<crate::anchor::Commitment>, StorageError> {
+                Ok(None)
+            }
+
+            fn store(
+                &self,
+                _: crate::anchor::DatabaseId,
+                _: &crate::anchor::Commitment,
+            ) -> Result<(), StorageError> {
+                unreachable!()
+            }
         }
-        drop(c);
-
-        let mut log = open();
-        log.append(&event(1)).unwrap();
-        log.append(&event(2)).unwrap();
-        assert_eq!(log.verify_chain(), Ok(2));
-        drop(log);
-
-        let c = Connection::open(&path).unwrap();
-        let old_trigger = expected_schema(3)
-            .unwrap()
-            .into_iter()
-            .find(|(_, name, _, _)| name == "event_append_order")
-            .unwrap()
-            .3
-            .unwrap();
-        c.execute_batch("DROP TRIGGER event_append_order; DROP TABLE log_genesis;")
-            .unwrap();
-        c.execute_batch(&old_trigger).unwrap();
-        c.pragma_update(None, "user_version", 3).unwrap();
-        assert_eq!(schema(&c).unwrap(), expected_schema(3).unwrap());
-        let first_link: Vec<u8> = c
-            .query_row("SELECT prev_chain FROM event WHERE position = 1", [], |r| {
-                r.get(0)
-            })
-            .unwrap();
-        assert_eq!(first_link, [0; 32]);
-        drop(c);
+        let identity = |path: &std::path::Path| {
+            crate::EventLog::plan_reanchor(path, &config, Box::new(TestKeys), &Unbound)
+                .unwrap()
+                .summary()
+                .proposed_id
+        };
+        let first_id = identity(&path);
+        assert_ne!(first_id, [0; 32]);
+        assert_ne!(first_id, identity(&second));
 
         let mut log = open();
         assert_eq!(log.verify_chain(), Ok(2));
@@ -345,6 +383,8 @@ mod tests {
         assert_eq!(stored[1].event, event(2));
         assert_eq!(log.append(&event(3)).unwrap().get(), 3);
         assert_eq!(log.verify_chain(), Ok(3));
+        drop(log);
+        assert_eq!(identity(&path), first_id);
     }
 
     #[test]

@@ -120,15 +120,73 @@ pub fn evaluate(
         return Ok(outcome);
     }
 
-    let Some(rule) = policy.rules.iter().find(|rule| {
+    let Some((rule, ranked)) = rank(policy, task, profile, candidates) else {
+        return Ok(outcome);
+    };
+    let Some(preferred) = ranked.first() else {
+        return Ok(outcome);
+    };
+    let Some(selected) = ranked
+        .iter()
+        .find(|candidate| quota_block(policy, &candidate.route, quota, now_secs).is_none())
+    else {
+        return Ok(outcome);
+    };
+
+    let route = &selected.route;
+    outcome.proposed = Some(EventRoutingProposedV1Data {
+        task_id: task.task_id.clone(),
+        mode,
+        rule_id: Some(rule.id.clone()),
+        tier: route.tier.clone(),
+        harness: route.harness.clone(),
+        provider: route.provider.clone(),
+        model: route.model.clone(),
+        effort: route.effort.clone(),
+    });
+    if mode == Mode::Auto {
+        outcome.decided = Some(decided(task, mode, Some(rule.id.clone()), route)?);
+    }
+    if let Some(code) = quota_block(policy, &preferred.route, quota, now_secs) {
+        outcome.fallback = Some(fallback(task, &preferred.route, route, code)?);
+    }
+    Ok(outcome)
+}
+
+/// Candidates allowed by the first matching rule, in routing order, without quota checks.
+/// Empty when no rule matches.
+pub fn ranked<'a>(
+    policy: &RoutingPolicy,
+    task: &RecordTaskPacketV1,
+    profile: &TaskProfile<'_>,
+    candidates: &'a [Candidate],
+) -> Vec<&'a Candidate> {
+    rank(policy, task, profile, candidates).map_or_else(Vec::new, |(_, ranked)| ranked)
+}
+
+/// Whether the latest quota observation leaves the route usable.
+pub fn available(
+    policy: &RoutingPolicy,
+    route: &Route,
+    quota: &[QuotaObservation],
+    now_secs: u64,
+) -> bool {
+    quota_block(policy, route, quota, now_secs).is_none()
+}
+
+fn rank<'p, 'a>(
+    policy: &'p RoutingPolicy,
+    task: &RecordTaskPacketV1,
+    profile: &TaskProfile<'_>,
+    candidates: &'a [Candidate],
+) -> Option<(&'p Rule, Vec<&'a Candidate>)> {
+    let rule = policy.rules.iter().find(|rule| {
         rule.kind.as_ref().is_none_or(|kind| kind == profile.kind)
             && rule.size.is_none_or(|size| size == profile.size)
             && rule
                 .sensitivity
                 .is_none_or(|class| class == profile.sensitivity)
-    }) else {
-        return Ok(outcome);
-    };
+    })?;
     let mut ranked: Vec<_> = candidates
         .iter()
         .filter_map(|candidate| {
@@ -158,34 +216,10 @@ pub fn evaluate(
             route.effort.as_ref().map(|effort| effort.as_str()),
         )
     });
-    let Some((_, preferred)) = ranked.first() else {
-        return Ok(outcome);
-    };
-    let Some((_, selected)) = ranked
-        .iter()
-        .find(|(_, candidate)| quota_block(policy, &candidate.route, quota, now_secs).is_none())
-    else {
-        return Ok(outcome);
-    };
-
-    let route = &selected.route;
-    outcome.proposed = Some(EventRoutingProposedV1Data {
-        task_id: task.task_id.clone(),
-        mode,
-        rule_id: Some(rule.id.clone()),
-        tier: route.tier.clone(),
-        harness: route.harness.clone(),
-        provider: route.provider.clone(),
-        model: route.model.clone(),
-        effort: route.effort.clone(),
-    });
-    if mode == Mode::Auto {
-        outcome.decided = Some(decided(task, mode, Some(rule.id.clone()), route)?);
-    }
-    if let Some(code) = quota_block(policy, &preferred.route, quota, now_secs) {
-        outcome.fallback = Some(fallback(task, &preferred.route, route, code)?);
-    }
-    Ok(outcome)
+    Some((
+        rule,
+        ranked.into_iter().map(|(_, candidate)| candidate).collect(),
+    ))
 }
 
 fn quota_block(
