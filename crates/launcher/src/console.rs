@@ -5,8 +5,11 @@ use std::io;
 mod win;
 
 #[cfg(unix)]
+use rustix::process::{Pid, Signal, kill_process};
+#[cfg(unix)]
 use std::process::Child;
 
+/// Sends SIGTERM to a child the caller still holds unreaped.
 #[cfg(unix)]
 pub(crate) fn request_close(child: &Child) -> io::Result<()> {
     Ok(kill_process(Pid::from_child(child), Signal::TERM)?)

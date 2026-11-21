@@ -127,9 +127,11 @@ version = "0.0.0"
 dependencies = [
  "ads-core",
  "ads-private-dir",
+ "rustix",
  "serde",
  "serde_json",
  "toml 1.2.1+spec-1.1.0",
+ "windows",
 ]
 
 [[package]]
