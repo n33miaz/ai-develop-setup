@@ -417,8 +417,28 @@ pub fn reanchor(
     confirmed: ReanchorPlan,
     workdirs: &[PathBuf],
 ) -> Result<(), StorageError> {
-    let (path, anchor) = canonical_anchor(path, config, false, OsVault, workdirs)?;
-    let _binding = lock_binding(&vault_directory()?)?;
+    reanchor_in(
+        &vault_directory()?,
+        path,
+        config,
+        keys,
+        confirmed,
+        OsVault,
+        workdirs,
+    )
+}
+
+fn reanchor_in<V: Vault + Send>(
+    vault_dir: &Path,
+    path: &Path,
+    config: &StorageConfig,
+    keys: Box<dyn KeyProvider + Send>,
+    confirmed: ReanchorPlan,
+    vault: V,
+    workdirs: &[PathBuf],
+) -> Result<(), StorageError> {
+    let (path, anchor) = canonical_anchor(path, config, false, vault, workdirs)?;
+    let _binding = lock_binding(vault_dir)?;
     EventLog::reanchor(&path, config, keys, &anchor, confirmed)
 }
 
@@ -1024,12 +1044,174 @@ mod tests {
     }
 
     #[test]
-    fn binding_lock_serializes_distinct_database_paths() {
+    fn binding_lock_contends_on_the_same_lock_file() {
         let directory = fixture();
         let first = lock_binding(&directory).unwrap();
         assert_eq!(lock_binding(&directory).unwrap_err(), StorageError::Busy);
         drop(first);
         assert!(lock_binding(&directory).is_ok());
+    }
+
+    /// Set to the shared root when this test binary runs as the process that pins first.
+    #[cfg(windows)]
+    const PINNING_ROOT: &str = "ADS_TEST_PINNING_ROOT";
+
+    /// Holds the pin of a fresh database until the other process says to go on.
+    #[cfg(windows)]
+    struct PausedVault {
+        inner: MemoryVault,
+        root: PathBuf,
+    }
+
+    #[cfg(windows)]
+    impl Vault for PausedVault {
+        fn store(&self, name: SecretName, secret: &Secret) -> Result<(), VaultError> {
+            if matches!(name, SecretName::AuditDatabase) {
+                fs::write(self.root.join("pinning"), b"").unwrap();
+                wait_for(&self.root.join("release"));
+            }
+            self.inner.store(name, secret)
+        }
+
+        fn read(&self, name: SecretName) -> Result<Option<Secret>, VaultError> {
+            self.inner.read(name)
+        }
+
+        fn remove(&self, name: SecretName) -> Result<(), VaultError> {
+            self.inner.remove(name)
+        }
+    }
+
+    #[cfg(windows)]
+    fn wait_for(path: &Path) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while !path.exists() {
+            assert!(std::time::Instant::now() < deadline, "{path:?} never came");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    /// Ends the first process if an assertion fails while it waits.
+    #[cfg(windows)]
+    struct Reaped(std::process::Child);
+
+    #[cfg(windows)]
+    impl Drop for Reaped {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    #[cfg(windows)]
+    fn vault_contents(vault: &MemoryVault) -> BTreeMap<String, Vec<u8>> {
+        vault
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(name, secret)| (name.clone(), secret.expose().to_vec()))
+            .collect()
+    }
+
+    /// The first process of `pin_is_serialized_across_processes_and_database_paths`.
+    #[cfg(windows)]
+    #[test]
+    fn pinning_process() {
+        let Some(root) = std::env::var_os(PINNING_ROOT).map(PathBuf::from) else {
+            return;
+        };
+        let path = root.join("first").join("audit.db");
+        let vault = PausedVault {
+            inner: MemoryVault::default(),
+            root: root.clone(),
+        };
+        let log = open_product_in(
+            &root.join("ads"),
+            &path,
+            &configured_for(&path),
+            Box::new(Keys),
+            vault,
+            None,
+            &[],
+        );
+        assert!(log.is_ok(), "the first process pins its database");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn pin_is_serialized_across_processes_and_database_paths() {
+        let root = fixture();
+        let vault_dir = root.join("ads");
+
+        // A confirmed move of another database, planned before the first process pins.
+        let old = root.join("old").join("audit.db");
+        let moved = root.join("moved").join("audit.db");
+        let moved_config = configured_for(&moved);
+        let moving = MemoryVault::default();
+        drop(open_configured(&old, &configured_for(&old), &moving).unwrap());
+        fs::create_dir(moved.parent().unwrap()).unwrap();
+        fs::copy(&old, &moved).unwrap();
+        let (path, anchor) =
+            canonical_anchor(&moved, &moved_config, false, moving.clone(), &[]).unwrap();
+        let plan = || EventLog::plan_reanchor(&path, &moved_config, Box::new(Keys), &anchor);
+        let before_move = vault_contents(&moving);
+
+        let mut first = Reaped(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "audit::tests::pinning_process",
+                    "--test-threads=1",
+                ])
+                .env(PINNING_ROOT, &root)
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        wait_for(&root.join("pinning"));
+
+        // While the first process pins, a second database path waits for it.
+        let second = root.join("second").join("audit.db");
+        let opening = MemoryVault::default();
+        let open_second = |vault: &MemoryVault| {
+            open_product_in(
+                &vault_dir,
+                &second,
+                &configured_for(&second),
+                Box::new(Keys),
+                vault.clone(),
+                None,
+                &[],
+            )
+        };
+        assert!(matches!(
+            open_second(&opening),
+            Err(ProductLogError::Storage(StorageError::Busy))
+        ));
+        assert!(vault_contents(&opening).is_empty());
+        assert!(!second.exists());
+        let move_now = |vault: &MemoryVault| {
+            reanchor_in(
+                &vault_dir,
+                &moved,
+                &moved_config,
+                Box::new(Keys),
+                plan().unwrap(),
+                vault.clone(),
+                &[],
+            )
+        };
+        assert_eq!(move_now(&moving), Err(StorageError::Busy));
+        assert_eq!(vault_contents(&moving), before_move);
+
+        fs::write(root.join("release"), b"").unwrap();
+        assert!(first.0.wait().unwrap().success());
+
+        drop(open_second(&opening).unwrap());
+        assert!(vault_contents(&opening).contains_key("audit-database"));
+        move_now(&moving).unwrap();
+        assert_ne!(vault_contents(&moving), before_move);
     }
 
     #[test]
