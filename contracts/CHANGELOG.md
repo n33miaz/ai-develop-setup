@@ -10,7 +10,8 @@ Controle da fila pela API local.
   - Comandos `queue.get`, `queue.start` e `queue.stop`: estendem `command.request:1` com `params` fechado em `queue_id` e `_meta`. `queue.get` só lê.
   - Resposta `queue.get.response`: `result` fechado com `queue_id` e `state` (`stopped` ou `enabled`).
 - Versão nova, convivendo com a `:1` e a `:2`: `local-api.server-message:3`, que aceita também a resposta de `queue.get`. O núcleo passa a escrever a `:3`.
-- `local-api.error-code:1` ganha `QUEUE_NOT_CONFIGURED` (`-32015`) e `QUEUE_ALREADY_ENABLED` (`-32016`). Mudança compatível: o código da resposta (`command.response:2`) já é qualquer inteiro, então todo leitor continua lendo a resposta, e o catálogo só acrescenta nomes. O dourado inválido de código desconhecido passa a usar `-32099`.
+- Versão nova, convivendo com a `:1`: `local-api.error-code:2`, com os códigos da `:1` mais `QUEUE_NOT_CONFIGURED` (`-32015`) e `QUEUE_ALREADY_ENABLED` (`-32016`). O núcleo passa a emitir a `:2`; a `:1`, fechada, continua recusando os dois números.
+- `queue.stop` não passa pela cache de idempotência: expressa o estado desejado, e `replayed` diz se a fila já estava parada.
 
 ## 2026-11-20
 

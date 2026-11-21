@@ -122,7 +122,7 @@ política `[env]`; o daemon guarda só o resultado, sem as variáveis negadas.
 ## Comandos, limites e recuperação
 
 Os nomes, valores e significados dos erros emitidos pela API local estão no
-[contrato de códigos de erro](../../contracts/schemas/contract.local-api.error-code.v1.schema.json).
+[contrato de códigos de erro](../../contracts/schemas/contract.local-api.error-code.v2.schema.json).
 
 | Nome | Código na resposta |
 |---|---|
@@ -183,20 +183,31 @@ recebe `REMOTE_ORIGIN_REFUSED`.
   o `ts` do relógio do daemon e o id do comando em `cause`. A fila já ligada
   recebe `QUEUE_ALREADY_ENABLED` e nada é gravado. Se a gravação falhar, a fila
   continua parada e a resposta é `INTERNAL_ERROR`, sem derrubar o serviço.
-- `queue.stop` é sempre aceito. A fila ligada para antes de o evento ser
+- `queue.stop` expressa o estado desejado e é sempre aceito. Ele não consulta
+  a cache de idempotência: repetir uma parada antiga depois de religar a fila a
+  para de novo, e uma chave já usada por outro comando não impede a parada.
+  `replayed` é `false` quando esta parada desligou a fila e `true` quando ela
+  já estava parada (nada é gravado). A fila ligada para antes de o evento ser
   gravado (`queue.stopped` com `reason: owner`), então nenhuma tarefa nova é
   admitida mesmo se a gravação falhar. Nesse caso a resposta é
   `INTERNAL_ERROR`, embora a fila tenha parado, e a parada que faltou é gravada
-  antes da próxima mudança, com o id do comando de parada em `cause` e o `ts`
-  do momento da gravação. A fila já parada responde aceito sem evento novo.
+  antes da próxima mudança feita pelo mesmo processo, com o id do comando de
+  parada em `cause` e o `ts` do momento da gravação. Se o processo terminar
+  antes, a causa se perde: a próxima abertura grava a parada como
+  `reason: restart`, com o daemon como ator.
 - Fila que o daemon não serve, ou daemon sem fila ligada, recebe
   `QUEUE_NOT_CONFIGURED`.
 
 `queue::LoggedQueue::open` liga uma fila ao stream `queue/<id>` do log ancorado:
 cria a fila parada (`queue.created`) se o stream está vazio, recusa um stream
 criado por outro dono e, a cada abertura, restaura a fila parada e grava
-`queue.stopped` com `reason: restart` se o log dizia ligada. O aparelho é
-`AuthenticatedDevice::local_owner`, que só produz o canal da interface local.
+`queue.stopped` com `reason: restart` se o log dizia ligada. Um processo mantém
+no máximo um handle por fila (a segunda abertura recebe `AlreadyOpen`); a
+composição compartilha esse handle com todos os consumidores. Dono e aparelho
+(`QueueOwner`) são dados da configuração do núcleo; agir na fila exige ainda a
+prova de sessão `auth::LocalSession`, que só `Token::open_session` emite ao
+conferir o token do `auth.hello`, e a transição usa
+`ads_core::queue::change_local_queue_state`, sem fabricar `AuthenticatedDevice`.
 `LocalApi::with_queue` entrega a fila à API. O executável ainda não abre o log
 ancorado, porque falta o provedor de chaves do cofre; até lá ele serve
 `queue::DisabledQueue`, que recusa os três comandos com `QUEUE_NOT_CONFIGURED`.

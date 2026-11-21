@@ -37,6 +37,7 @@ pub mod common_ulid_v1;
 pub mod common_workdir_alias_v1;
 pub mod contract_harness_adapter_v1;
 pub mod contract_local_api_error_code_v1;
+pub mod contract_local_api_error_code_v2;
 pub mod contract_local_api_server_message_v1;
 pub mod contract_local_api_server_message_v2;
 pub mod contract_local_api_server_message_v3;
@@ -152,6 +153,7 @@ pub use common_ulid_v1::*;
 pub use common_workdir_alias_v1::*;
 pub use contract_harness_adapter_v1::*;
 pub use contract_local_api_error_code_v1::*;
+pub use contract_local_api_error_code_v2::*;
 pub use contract_local_api_server_message_v1::*;
 pub use contract_local_api_server_message_v2::*;
 pub use contract_local_api_server_message_v3::*;
@@ -301,6 +303,10 @@ pub const SCHEMAS: &[(&str, &str)] = &[
     (
         "contract.local-api.error-code.v1",
         "urn:ads:contract:local-api.error-code:1",
+    ),
+    (
+        "contract.local-api.error-code.v2",
+        "urn:ads:contract:local-api.error-code:2",
     ),
     (
         "contract.local-api.server-message.v1",
@@ -630,6 +636,9 @@ pub fn reencode(id: &str, value: Value) -> Option<Result<Value, serde_json::Erro
         }
         "urn:ads:contract:local-api.error-code:1" => {
             support::reencode::<ContractLocalApiErrorCodeV1>(value)
+        }
+        "urn:ads:contract:local-api.error-code:2" => {
+            support::reencode::<ContractLocalApiErrorCodeV2>(value)
         }
         "urn:ads:contract:local-api.server-message:1" => {
             support::reencode::<ContractLocalApiServerMessageV1>(value)

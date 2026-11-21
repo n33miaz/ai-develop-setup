@@ -157,11 +157,16 @@ impl Channel {
 
 /// Device, the owner it is registered to and channel, established by the authentication boundary.
 ///
-/// Any public function of this crate can be called by every crate that depends on it, and the
-/// dependency matrix keeps the authentication layer out of this crate, so no constructor here can
-/// tell the authentication layer from a caller that copies a device id out of a request. The only
-/// constructor, [`AuthenticatedDevice::local_owner`], therefore yields the local interface channel
-/// and nothing else: remote and tray devices arrive with the device registry.
+/// There is deliberately no public constructor. Any public function of this crate can be called
+/// by every crate that depends on it, and the dependency matrix keeps the authentication layer
+/// out of this crate, so no constructor here could tell the authentication layer from a caller
+/// that copies a device id out of a request. The constructor arrives together with that layer.
+///
+/// ```compile_fail
+/// use ads_contracts::CommonIdV1;
+/// let id = CommonIdV1::new("owner-01").unwrap();
+/// let _ = ads_core::queue::AuthenticatedDevice::local_owner(id.clone(), id);
+/// ```
 pub struct AuthenticatedDevice {
     device_id: CommonIdV1,
     owner_id: CommonIdV1,
@@ -169,17 +174,6 @@ pub struct AuthenticatedDevice {
 }
 
 impl AuthenticatedDevice {
-    /// The owner acting through the local interface, for the composition that authenticated the
-    /// connection itself (the per-run token of the local API). Both ids come from the core's own
-    /// configuration and log, never from the request.
-    pub fn local_owner(device_id: CommonIdV1, owner_id: CommonIdV1) -> Self {
-        Self {
-            device_id,
-            owner_id,
-            via: Channel::LocalUi,
-        }
-    }
-
     pub fn device_id(&self) -> &CommonIdV1 {
         &self.device_id
     }
@@ -387,10 +381,31 @@ pub fn change_queue_state<'a>(
     next: RecordTaskQueueV1State,
 ) -> Result<(RecordTaskQueueV1, QueueStateEvent, &'a AuthenticatedDevice), QueueRefusal> {
     let device = device.ok_or(QueueRefusal::Unauthenticated)?;
-    if device.owner_id != queue.owner_id {
+    let (updated, event) = owner_transition(queue, &device.owner_id, device.via, next)?;
+    Ok((updated, event, device))
+}
+
+/// The same transition for the owner acting through the local interface, whose connection the
+/// composition already authenticated. It takes the owner id as data and yields no
+/// `AuthenticatedDevice`, so it opens no other owner-only policy; the channel is always `LocalUi`.
+pub fn change_local_queue_state(
+    queue: &RecordTaskQueueV1,
+    owner_id: &CommonIdV1,
+    next: RecordTaskQueueV1State,
+) -> Result<(RecordTaskQueueV1, QueueStateEvent), QueueRefusal> {
+    owner_transition(queue, owner_id, Channel::LocalUi, next)
+}
+
+fn owner_transition(
+    queue: &RecordTaskQueueV1,
+    owner_id: &CommonIdV1,
+    via: Channel,
+    next: RecordTaskQueueV1State,
+) -> Result<(RecordTaskQueueV1, QueueStateEvent), QueueRefusal> {
+    if *owner_id != queue.owner_id {
         return Err(QueueRefusal::NotOwner);
     }
-    if next == Enabled && device.via.enabled_via().is_none() {
+    if next == Enabled && via.enabled_via().is_none() {
         return Err(QueueRefusal::RemoteEnable);
     }
     if queue.state == next {
@@ -399,19 +414,19 @@ pub fn change_queue_state<'a>(
     let event = match next {
         Enabled => QueueStateEvent::Enabled(EventQueueEnabledV1Data {
             queue_id: queue.id.clone(),
-            owner_id: device.owner_id.clone(),
-            via: device.via.enabled_via().ok_or(QueueRefusal::RemoteEnable)?,
+            owner_id: owner_id.clone(),
+            via: via.enabled_via().ok_or(QueueRefusal::RemoteEnable)?,
         }),
         Stopped => QueueStateEvent::Stopped(EventQueueStoppedV1Data {
             queue_id: queue.id.clone(),
             reason: EventQueueStoppedV1DataReason::Owner,
-            owner_id: Some(device.owner_id.clone()),
-            via: Some(device.via.stopped_via()),
+            owner_id: Some(owner_id.clone()),
+            via: Some(via.stopped_via()),
         }),
     };
     let mut updated = queue.clone();
     updated.state = next;
-    Ok((updated, event, device))
+    Ok((updated, event))
 }
 
 /// One event of the `queue/<id>` stream, borrowed for replay.

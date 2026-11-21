@@ -1,22 +1,22 @@
 //! Composição dos comandos da API local autenticada com o host de terminais.
 
-use crate::auth::{Token, permits_upgrade};
+use crate::auth::{LocalSession, Token, permits_upgrade};
 use crate::events::{Closing, EventLog, Poll, Stream};
 use crate::pty_client::{ClientError, ErrorCode, Event, PtyClient};
 use crate::queue::{DisabledQueue, QueueControl};
 use ads_contracts::{
-    CommandSessionOpenV1Params, ContractLocalApiErrorCodeV1CapacityExceeded as CapacityExceeded,
-    ContractLocalApiErrorCodeV1Conflict as Conflict,
-    ContractLocalApiErrorCodeV1HarnessNotConfigured as HarnessNotConfigured,
-    ContractLocalApiErrorCodeV1InternalError as InternalError,
-    ContractLocalApiErrorCodeV1InvalidParams as InvalidParams,
-    ContractLocalApiErrorCodeV1MethodNotFound as MethodNotFound,
-    ContractLocalApiErrorCodeV1QueueAlreadyEnabled as QueueAlreadyEnabled,
-    ContractLocalApiErrorCodeV1QueueNotConfigured as QueueNotConfigured,
-    ContractLocalApiErrorCodeV1RemoteOriginRefused as RemoteOriginRefused,
-    ContractLocalApiErrorCodeV1SessionClosePending as SessionClosePending,
-    ContractLocalApiErrorCodeV1SessionSetupFailed as SessionSetupFailed,
-    ContractLocalApiErrorCodeV1SubscriptionReplayUnavailable as SubscriptionReplayUnavailable,
+    CommandSessionOpenV1Params, ContractLocalApiErrorCodeV2CapacityExceeded as CapacityExceeded,
+    ContractLocalApiErrorCodeV2Conflict as Conflict,
+    ContractLocalApiErrorCodeV2HarnessNotConfigured as HarnessNotConfigured,
+    ContractLocalApiErrorCodeV2InternalError as InternalError,
+    ContractLocalApiErrorCodeV2InvalidParams as InvalidParams,
+    ContractLocalApiErrorCodeV2MethodNotFound as MethodNotFound,
+    ContractLocalApiErrorCodeV2QueueAlreadyEnabled as QueueAlreadyEnabled,
+    ContractLocalApiErrorCodeV2QueueNotConfigured as QueueNotConfigured,
+    ContractLocalApiErrorCodeV2RemoteOriginRefused as RemoteOriginRefused,
+    ContractLocalApiErrorCodeV2SessionClosePending as SessionClosePending,
+    ContractLocalApiErrorCodeV2SessionSetupFailed as SessionSetupFailed,
+    ContractLocalApiErrorCodeV2SubscriptionReplayUnavailable as SubscriptionReplayUnavailable,
 };
 use ads_ptyhost::wire::{
     Notification, OpenParams, ResizeParams, SessionId, SessionParams, WriteParams,
@@ -250,6 +250,8 @@ impl Launcher for DisabledLauncher {
 
 struct Request {
     command: Value,
+    /// Proof that the connection passed `auth.hello`; the queue controls require it.
+    session: Arc<LocalSession>,
     reply: oneshot::Sender<Result<Reply, ApiError>>,
 }
 struct Reply {
@@ -301,11 +303,26 @@ struct Service {
     generations: u64,
 }
 impl Service {
-    async fn command(&mut self, command: &Value, deadline: Instant) -> Result<Reply, ApiError> {
+    async fn command(
+        &mut self,
+        command: &Value,
+        session: &LocalSession,
+        deadline: Instant,
+    ) -> Result<Reply, ApiError> {
         let method = command["method"].as_str().ok_or(ApiError::Invalid)?;
         let params = &command["params"];
         if params["_meta"]["origin"] != "local" {
             return Err(ApiError::Remote);
+        }
+        if method == "queue.stop" {
+            // Parar expressa o estado desejado: uma chave já vista não pode devolver aceite com a fila ligada.
+            let queue_id = queue_id(params)?;
+            let cause = command["id"].as_str().ok_or(ApiError::Invalid)?;
+            let stopped_now = self.queue.stop(session, &queue_id, cause)?;
+            return Ok(Reply {
+                replayed: !stopped_now,
+                stream: None,
+            });
         }
         let key = params["_meta"]["idempotency_key"]
             .as_str()
@@ -321,9 +338,14 @@ impl Service {
         };
         let mut stream = None;
         if !replayed {
-            stream = self
-                .execute(method, params, command["id"].as_str(), deadline)
-                .await?;
+            if method == "queue.start" {
+                let cause = command["id"].as_str().ok_or(ApiError::Invalid)?;
+                self.queue.start(session, &queue_id(params)?, cause)?;
+            } else {
+                stream = self
+                    .execute(method, params, command["id"].as_str(), deadline)
+                    .await?;
+            }
             self.keys.push_back(Entry {
                 key: key.to_owned(),
                 digest,
@@ -452,16 +474,6 @@ impl Service {
                         params["after_seq"].as_u64().ok_or(ApiError::Invalid)?,
                     )
                     .map(Some);
-            }
-            "queue.start" | "queue.stop" => {
-                let queue_id = serde_json::from_value(params["queue_id"].clone())
-                    .map_err(|_| ApiError::Invalid)?;
-                let cause = cause.ok_or(ApiError::Invalid)?;
-                if method == "queue.start" {
-                    self.queue.start(&queue_id, cause)?;
-                } else {
-                    self.queue.stop(&queue_id, cause)?;
-                }
             }
             _ => return Err(ApiError::Method),
         }
@@ -1074,7 +1086,7 @@ impl LocalApi {
                 },
                 Some(request) = incoming.recv() => {
                     let deadline = Instant::now() + Duration::from_millis(config.host_timeout_ms);
-                    let result = service.command(&request.command, deadline).await;
+                    let result = service.command(&request.command, &request.session, deadline).await;
                     // Um comando sem resposta do host pode ter executado; encerrar impede repetir efeito incerto.
                     if let Err(ApiError::Unavailable | ApiError::HostTimeout) = result {
                         let _ = request.reply.send(Err(ApiError::Unavailable));
@@ -1144,6 +1156,9 @@ fn response(id: &Value, result: Result<bool, ApiError>) -> Value {
             json!({"jsonrpc": "2.0", "id": id, "error": {"code": error.code(), "message": error.message()}})
         }
     }
+}
+fn queue_id(params: &Value) -> Result<ads_contracts::CommonIdV1, ApiError> {
+    serde_json::from_value(params["queue_id"].clone()).map_err(|_| ApiError::Invalid)
 }
 fn validate_command(value: Value) -> Result<Value, ApiError> {
     let method = value["method"].as_str().ok_or(ApiError::Invalid)?;
@@ -1255,24 +1270,22 @@ async fn connection(
                 .and_then(|v| validate_command(v).ok()),
             _ => None,
         };
-        let valid = hello.as_ref().is_some_and(|v| {
-            v["method"] == "auth.hello"
-                && v["params"]["_meta"]["origin"] == "local"
-                && v["params"]["token"]
-                    .as_str()
-                    .is_some_and(|s| token.matches(s))
-        });
-        if !valid {
+        let session = hello
+            .as_ref()
+            .filter(|v| v["method"] == "auth.hello" && v["params"]["_meta"]["origin"] == "local")
+            .and_then(|v| v["params"]["token"].as_str())
+            .and_then(|s| token.open_session(s));
+        let Some(session) = session else {
             let _ = timeout(
                 Duration::from_millis(config.send_timeout_ms),
                 ws.close(None),
             )
             .await;
             return Err(ApiError::Invalid);
-        }
-        Ok(hello)
+        };
+        Ok((hello, Arc::new(session)))
     };
-    let mut hello = hello.await?;
+    let (mut hello, session) = hello.await?;
     let id = consume_hello(&mut hello)?;
     let _authenticated = authenticated
         .try_acquire_owned()
@@ -1329,7 +1342,7 @@ async fn connection(
                         let state = if command["params"]["_meta"]["origin"] == "local" {
                             serde_json::from_value(queue_id.clone())
                                 .map_err(|_| ApiError::Invalid)
-                                .and_then(|id| queue.state(&id))
+                                .and_then(|id| queue.state(&session, &id))
                         } else {
                             Err(ApiError::Remote)
                         };
@@ -1367,7 +1380,11 @@ async fn connection(
                     let after = command["params"]["after_seq"].as_u64().unwrap_or(0);
                     let (reply, answer) = oneshot::channel();
                     commands
-                        .send(Request { command, reply })
+                        .send(Request {
+                            command,
+                            session: session.clone(),
+                            reply,
+                        })
                         .await
                         .map_err(|_| ApiError::Unavailable)?;
                     hooks.queued_commands.fetch_add(1, Ordering::AcqRel);

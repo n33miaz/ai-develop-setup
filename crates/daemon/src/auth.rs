@@ -34,6 +34,13 @@ impl Token {
         self.0.as_bytes().ct_eq(candidate.as_bytes()).into()
     }
 
+    /// The session proof of a connection whose `auth.hello` carried this token; nothing else
+    /// issues one.
+    pub fn open_session(&self, candidate: &str) -> Option<LocalSession> {
+        self.matches(candidate)
+            .then_some(LocalSession { _sealed: () })
+    }
+
     pub fn desktop_bootstrap(&self, port: u16) -> String {
         format!("{port} {}", self.0)
     }
@@ -45,6 +52,17 @@ impl Token {
             self.0
         )
     }
+}
+
+/// Proof that a connection presented the run token in `auth.hello`. Only [`Token::open_session`]
+/// issues it, so the owner-only controls of the local API take it instead of trusting ids:
+///
+/// ```compile_fail
+/// let _ = ads_daemon::auth::LocalSession { _sealed: () };
+/// ```
+#[derive(Debug)]
+pub struct LocalSession {
+    _sealed: (),
 }
 
 pub fn permits_upgrade(request: &Request, port: u16, browser_origins: Option<&[String]>) -> bool {

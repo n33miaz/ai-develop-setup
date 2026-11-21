@@ -20,8 +20,6 @@ pub enum ContractLocalApiErrorCodeV1 {
     Conflict(ContractLocalApiErrorCodeV1Conflict),
     SessionClosePending(ContractLocalApiErrorCodeV1SessionClosePending),
     SessionSetupFailed(ContractLocalApiErrorCodeV1SessionSetupFailed),
-    QueueNotConfigured(ContractLocalApiErrorCodeV1QueueNotConfigured),
-    QueueAlreadyEnabled(ContractLocalApiErrorCodeV1QueueAlreadyEnabled),
 }
 
 /// O método solicitado é desconhecido.
@@ -259,54 +257,6 @@ impl Serialize for ContractLocalApiErrorCodeV1SessionSetupFailed {
 }
 
 impl<'de> Deserialize<'de> for ContractLocalApiErrorCodeV1SessionSetupFailed {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        support::expect_i64(deserializer, Self::VALUE).map(|()| Self)
-    }
-}
-
-/// O núcleo não serve a fila pedida: nenhuma fila ligada ao log de auditoria ou id de fila desconhecido.
-///
-/// `$defs.queue_not_configured` in `urn:ads:contract:local-api.error-code:1`.
-///
-/// Always `-32015`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub struct ContractLocalApiErrorCodeV1QueueNotConfigured;
-
-impl ContractLocalApiErrorCodeV1QueueNotConfigured {
-    pub const VALUE: i64 = -32015;
-}
-
-impl Serialize for ContractLocalApiErrorCodeV1QueueNotConfigured {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_i64(Self::VALUE)
-    }
-}
-
-impl<'de> Deserialize<'de> for ContractLocalApiErrorCodeV1QueueNotConfigured {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        support::expect_i64(deserializer, Self::VALUE).map(|()| Self)
-    }
-}
-
-/// A fila já está ligada; ligar de novo não registra nada.
-///
-/// `$defs.queue_already_enabled` in `urn:ads:contract:local-api.error-code:1`.
-///
-/// Always `-32016`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub struct ContractLocalApiErrorCodeV1QueueAlreadyEnabled;
-
-impl ContractLocalApiErrorCodeV1QueueAlreadyEnabled {
-    pub const VALUE: i64 = -32016;
-}
-
-impl Serialize for ContractLocalApiErrorCodeV1QueueAlreadyEnabled {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_i64(Self::VALUE)
-    }
-}
-
-impl<'de> Deserialize<'de> for ContractLocalApiErrorCodeV1QueueAlreadyEnabled {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         support::expect_i64(deserializer, Self::VALUE).map(|()| Self)
     }

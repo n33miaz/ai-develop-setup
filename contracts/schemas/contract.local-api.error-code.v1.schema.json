@@ -33,12 +33,6 @@
     },
     {
       "$ref": "#/$defs/session_setup_failed"
-    },
-    {
-      "$ref": "#/$defs/queue_not_configured"
-    },
-    {
-      "$ref": "#/$defs/queue_already_enabled"
     }
   ],
   "examples": [
@@ -94,16 +88,6 @@
       "type": "integer",
       "const": -32014,
       "description": "A preparação falhou após a abertura do terminal e o fechamento foi agendado."
-    },
-    "queue_not_configured": {
-      "type": "integer",
-      "const": -32015,
-      "description": "O núcleo não serve a fila pedida: nenhuma fila ligada ao log de auditoria ou id de fila desconhecido."
-    },
-    "queue_already_enabled": {
-      "type": "integer",
-      "const": -32016,
-      "description": "A fila já está ligada; ligar de novo não registra nada."
     }
   }
 }
