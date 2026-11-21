@@ -67,11 +67,11 @@ impl fmt::Display for StorageError {
             ),
             Self::Full => write!(
                 f,
-                "storage: Full: the disk is full, or the database passes inspection_max_bytes                  at open; free space and retry, or raise inspection_max_bytes"
+                "storage: Full: the disk is full, or the database passes inspection_max_bytes at open; free space and retry, or raise inspection_max_bytes"
             ),
             Self::QueueFull => write!(
                 f,
-                "storage: QueueFull: the queue reached queue_max_events; raise queue_max_events                  in storage.toml and reopen, or create another queue"
+                "storage: QueueFull: the queue reached queue_max_events; raise queue_max_events in storage.toml and reopen, or create another queue"
             ),
             _ => write!(f, "storage: {self:?}"),
         }
@@ -176,6 +176,8 @@ mod tests {
         let queue_full = StorageError::QueueFull.to_string();
         assert!(full.contains("free space") && !full.contains("queue_max_events"));
         assert!(queue_full.contains("raise queue_max_events") && !queue_full.contains("disk"));
+        assert!(!full.contains("  "), "{full}");
+        assert!(!queue_full.contains("  "), "{queue_full}");
         assert_eq!(StorageError::Busy.to_string(), "storage: Busy");
         assert_eq!(
             StorageError::from(rusqlite::Error::QueryReturnedNoRows),

@@ -1121,6 +1121,9 @@ fn journal_error(error: StorageError) -> JournalError {
     match error {
         StorageError::Conflict | StorageError::Constraint => JournalError::Conflict,
         StorageError::AnchorMismatch
+        | StorageError::AnchorMissing
+        | StorageError::DuplicateDatabaseIdentity
+        | StorageError::NonCanonicalDatabase
         | StorageError::ChainBroken { .. }
         | StorageError::HistoryChanged { .. }
         | StorageError::Corrupt
