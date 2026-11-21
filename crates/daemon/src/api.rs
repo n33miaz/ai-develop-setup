@@ -1,22 +1,31 @@
 //! Composição dos comandos da API local autenticada com o host de terminais.
 
+use crate::approvals::{ApprovalControl, DisabledApprovals};
 use crate::auth::{LocalSession, Token, permits_upgrade};
 use crate::events::{Closing, EventLog, Poll, Stream};
 use crate::pty_client::{ClientError, ErrorCode, Event, PtyClient};
 use crate::queue::{DisabledQueue, QueueControl};
 use ads_contracts::{
-    CommandSessionOpenV1Params, ContractLocalApiErrorCodeV2CapacityExceeded as CapacityExceeded,
-    ContractLocalApiErrorCodeV2Conflict as Conflict,
-    ContractLocalApiErrorCodeV2HarnessNotConfigured as HarnessNotConfigured,
-    ContractLocalApiErrorCodeV2InternalError as InternalError,
-    ContractLocalApiErrorCodeV2InvalidParams as InvalidParams,
-    ContractLocalApiErrorCodeV2MethodNotFound as MethodNotFound,
-    ContractLocalApiErrorCodeV2QueueAlreadyEnabled as QueueAlreadyEnabled,
-    ContractLocalApiErrorCodeV2QueueNotConfigured as QueueNotConfigured,
-    ContractLocalApiErrorCodeV2RemoteOriginRefused as RemoteOriginRefused,
-    ContractLocalApiErrorCodeV2SessionClosePending as SessionClosePending,
-    ContractLocalApiErrorCodeV2SessionSetupFailed as SessionSetupFailed,
-    ContractLocalApiErrorCodeV2SubscriptionReplayUnavailable as SubscriptionReplayUnavailable,
+    CommandApprovalAnswerV1Params, CommandSessionOpenV1Params,
+    ContractLocalApiErrorCodeV3ApprovalAlreadyAnswered as ApprovalAlreadyAnswered,
+    ContractLocalApiErrorCodeV3ApprovalNotApprovable as ApprovalNotApprovable,
+    ContractLocalApiErrorCodeV3ApprovalNotConfigured as ApprovalNotConfigured,
+    ContractLocalApiErrorCodeV3ApprovalNotFound as ApprovalNotFound,
+    ContractLocalApiErrorCodeV3ApprovalOutOfOrder as ApprovalOutOfOrder,
+    ContractLocalApiErrorCodeV3ApprovalPolicyChanged as ApprovalPolicyChanged,
+    ContractLocalApiErrorCodeV3ApprovalStale as ApprovalStale,
+    ContractLocalApiErrorCodeV3CapacityExceeded as CapacityExceeded,
+    ContractLocalApiErrorCodeV3Conflict as Conflict,
+    ContractLocalApiErrorCodeV3HarnessNotConfigured as HarnessNotConfigured,
+    ContractLocalApiErrorCodeV3InternalError as InternalError,
+    ContractLocalApiErrorCodeV3InvalidParams as InvalidParams,
+    ContractLocalApiErrorCodeV3MethodNotFound as MethodNotFound,
+    ContractLocalApiErrorCodeV3QueueAlreadyEnabled as QueueAlreadyEnabled,
+    ContractLocalApiErrorCodeV3QueueNotConfigured as QueueNotConfigured,
+    ContractLocalApiErrorCodeV3RemoteOriginRefused as RemoteOriginRefused,
+    ContractLocalApiErrorCodeV3SessionClosePending as SessionClosePending,
+    ContractLocalApiErrorCodeV3SessionSetupFailed as SessionSetupFailed,
+    ContractLocalApiErrorCodeV3SubscriptionReplayUnavailable as SubscriptionReplayUnavailable,
 };
 use ads_ptyhost::wire::{
     Notification, OpenParams, ResizeParams, SessionId, SessionParams, WriteParams,
@@ -56,8 +65,22 @@ pub enum ApiError {
     /// No queue bound to the audit log, or a queue id it does not serve.
     QueueNotConfigured,
     QueueAlreadyEnabled,
-    /// The audit log refused a queue event; unlike `Unavailable`, the service keeps running.
+    /// The audit log refused a queue or gate record; unlike `Unavailable`, the service keeps running.
     Storage,
+    /// No gate bound to the audit log.
+    ApprovalNotConfigured,
+    /// No action of a gate served here with that id, or no approval asked for it.
+    ApprovalNotFound,
+    /// The action no longer waits for an answer.
+    ApprovalAlreadyAnswered,
+    /// Another approval or plan hash than the action's, or a validity that is over.
+    ApprovalStale,
+    /// The policy or the clock tolerance changed since the plan; an approval became a denial.
+    ApprovalPolicyChanged,
+    /// The core clock is before the last step of the action; nothing was decided.
+    ApprovalOutOfOrder,
+    /// The record does not fix the concrete effect of the plan: the API does not approve it.
+    ApprovalNotApprovable,
 }
 impl ApiError {
     pub fn code(self) -> i64 {
@@ -74,6 +97,13 @@ impl ApiError {
             Self::Unavailable | Self::HostTimeout | Self::Storage => InternalError::VALUE,
             Self::QueueNotConfigured => QueueNotConfigured::VALUE,
             Self::QueueAlreadyEnabled => QueueAlreadyEnabled::VALUE,
+            Self::ApprovalNotConfigured => ApprovalNotConfigured::VALUE,
+            Self::ApprovalNotFound => ApprovalNotFound::VALUE,
+            Self::ApprovalAlreadyAnswered => ApprovalAlreadyAnswered::VALUE,
+            Self::ApprovalStale => ApprovalStale::VALUE,
+            Self::ApprovalPolicyChanged => ApprovalPolicyChanged::VALUE,
+            Self::ApprovalOutOfOrder => ApprovalOutOfOrder::VALUE,
+            Self::ApprovalNotApprovable => ApprovalNotApprovable::VALUE,
             Self::Host(code) => code.number(),
         }
     }
@@ -94,6 +124,13 @@ impl ApiError {
             Self::QueueNotConfigured => "queue not configured",
             Self::QueueAlreadyEnabled => "queue already enabled",
             Self::Storage => "service unavailable",
+            Self::ApprovalNotConfigured => "approvals not configured",
+            Self::ApprovalNotFound => "approval not found",
+            Self::ApprovalAlreadyAnswered => "approval already answered",
+            Self::ApprovalStale => "approval stale",
+            Self::ApprovalPolicyChanged => "policy changed since the plan",
+            Self::ApprovalOutOfOrder => "clock before the last step",
+            Self::ApprovalNotApprovable => "approval not allowed for this plan",
         }
     }
 }
@@ -294,6 +331,7 @@ struct Service {
     host: PtyClient,
     launcher: Arc<dyn Launcher>,
     queue: Arc<dyn QueueControl>,
+    approvals: Arc<dyn ApprovalControl>,
     config: ApiConfig,
     log: Arc<Mutex<EventLog>>,
     sessions: HashMap<String, Session>,
@@ -331,7 +369,7 @@ impl Service {
             serde_json::to_vec(&json!([method, params])).map_err(|_| ApiError::Invalid)?,
         )
         .into();
-        let replayed = match self.keys.iter().find(|e| e.key == key) {
+        let mut replayed = match self.keys.iter().find(|e| e.key == key) {
             Some(entry) if entry.digest == digest => true,
             Some(_) => return Err(ApiError::Conflict),
             None => false,
@@ -341,6 +379,12 @@ impl Service {
             if method == "queue.start" {
                 let cause = command["id"].as_str().ok_or(ApiError::Invalid)?;
                 self.queue.start(session, &queue_id(params)?, cause)?;
+            } else if method == "approval.answer" {
+                let cause = command["id"].as_str().ok_or(ApiError::Invalid)?;
+                let answer: CommandApprovalAnswerV1Params =
+                    serde_json::from_value(params.clone()).map_err(|_| ApiError::Invalid)?;
+                // A key this cache no longer holds may still be in the log.
+                replayed = self.approvals.answer(session, &answer, cause)?;
             } else {
                 stream = self
                     .execute(method, params, command["id"].as_str(), deadline)
@@ -1000,6 +1044,7 @@ impl LocalApi {
             host,
             launcher,
             queue: Arc::new(DisabledQueue),
+            approvals: Arc::new(DisabledApprovals),
             config: config.clone(),
             log,
             sessions: HashMap::new(),
@@ -1022,6 +1067,12 @@ impl LocalApi {
     /// `QUEUE_NOT_CONFIGURED`.
     pub fn with_queue(mut self, queue: Arc<dyn QueueControl>) -> Self {
         self.service.queue = queue;
+        self
+    }
+    /// Serves `approval.list` and `approval.answer` from `approvals`; without it they answer
+    /// `APPROVAL_NOT_CONFIGURED`.
+    pub fn with_approvals(mut self, approvals: Arc<dyn ApprovalControl>) -> Self {
+        self.service.approvals = approvals;
         self
     }
     #[doc(hidden)]
@@ -1061,6 +1112,7 @@ impl LocalApi {
             .port();
         let log = service.log.clone();
         let queue = service.queue.clone();
+        let approvals = service.approvals.clone();
         let permits = Arc::new(Semaphore::new(config.max_connections));
         let admitter = Admitter {
             listener: &listener,
@@ -1097,10 +1149,10 @@ impl LocalApi {
                 }
                 admission = &mut accepting => {
                     accepting.set(admitter.admit());
-                    let (token, config, commands, log, hooks, catalog, queue) = (token.clone(), config.clone(), commands.clone(), log.clone(), hooks.clone(), catalog.clone(), queue.clone());
+                    let (token, config, commands, log, hooks, catalog, queue, approvals) = (token.clone(), config.clone(), commands.clone(), log.clone(), hooks.clone(), catalog.clone(), queue.clone(), approvals.clone());
                     let authenticated = permits.clone();
                     connections.spawn(async move {
-                        let _ = connection(admission, port, token, config, commands, log, (authenticated, hooks, catalog, queue)).await;
+                        let _ = connection(admission, port, token, config, commands, log, (authenticated, hooks, catalog, queue, approvals)).await;
                     });
                 }
                 Some(_) = connections.join_next(), if !connections.is_empty() => (),
@@ -1174,6 +1226,8 @@ fn validate_command(value: Value) -> Result<Value, ApiError> {
             | "queue.get"
             | "queue.start"
             | "queue.stop"
+            | "approval.list"
+            | "approval.answer"
     ) {
         return Err(ApiError::Method);
     }
@@ -1189,6 +1243,15 @@ fn consume_hello(hello: &mut Option<Value>) -> Result<Value, ApiError> {
     Ok(id)
 }
 
+/// What every connection shares: the authenticated slots, the hooks, the catalog and the owner controls.
+type Shared = (
+    Arc<Semaphore>,
+    Arc<TestHooks>,
+    Arc<Value>,
+    Arc<dyn QueueControl>,
+    Arc<dyn ApprovalControl>,
+);
+
 #[allow(clippy::result_large_err)] // A assinatura do callback é definida pela biblioteca WebSocket.
 async fn connection(
     admission: Admission,
@@ -1197,12 +1260,7 @@ async fn connection(
     config: Arc<ApiConfig>,
     commands: mpsc::Sender<Request>,
     log: Arc<Mutex<EventLog>>,
-    (authenticated, hooks, catalog, queue): (
-        Arc<Semaphore>,
-        Arc<TestHooks>,
-        Arc<Value>,
-        Arc<dyn QueueControl>,
-    ),
+    (authenticated, hooks, catalog, queue, approvals): Shared,
 ) -> Result<(), ApiError> {
     use tokio_tungstenite::tungstenite::handshake::server::{Request as HttpRequest, Response};
     let ws_config = WebSocketConfig::default()
@@ -1371,6 +1429,22 @@ async fn connection(
                         send(&mut ws, reply, &config).await?;
                         continue;
                     }
+                    if command["method"] == "approval.list" {
+                        // Só leitura, como queue.get: fora da cache de idempotência, origem conferida aqui.
+                        let pending = if command["params"]["_meta"]["origin"] == "local" {
+                            approvals.pending(&session)
+                        } else {
+                            Err(ApiError::Remote)
+                        };
+                        let reply = match pending {
+                            Ok(approvals) => {
+                                json!({"jsonrpc": "2.0", "id": id, "result": {"approvals": approvals}})
+                            }
+                            Err(error) => response(&id, Err(error)),
+                        };
+                        send(&mut ws, reply, &config).await?;
+                        continue;
+                    }
                     let subscribe = command["method"] == "events.subscribe";
                     let stream = command["params"]["stream"]
                         .as_str()
@@ -1505,7 +1579,7 @@ async fn send<S>(ws: &mut S, value: Value, config: &ApiConfig) -> Result<(), Api
 where
     S: futures_util::Sink<Message> + Unpin,
 {
-    let value = checked("urn:ads:contract:local-api.server-message:3", value)?;
+    let value = checked("urn:ads:contract:local-api.server-message:4", value)?;
     timeout(
         Duration::from_millis(config.send_timeout_ms),
         ws.send(Message::Text(value.to_string().into())),

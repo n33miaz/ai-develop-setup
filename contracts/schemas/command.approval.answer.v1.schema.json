@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:command:approval.answer:1",
+  "title": "Responder uma aprovação",
+  "description": "Aprova ou nega uma ação que aguarda o dono, pelo id da ação e da aprovação e pelo hash do plano que o dono viu. O dono e o aparelho vêm do núcleo, nunca do pedido. A resposta é command.response:2.",
+  "allOf": [
+    {
+      "$ref": "urn:ads:command:request:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "method",
+        "params"
+      ],
+      "properties": {
+        "method": {
+          "const": "approval.answer"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action_id",
+            "approval_id",
+            "plan_hash",
+            "decision",
+            "_meta"
+          ],
+          "properties": {
+            "action_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "approval_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "plan_hash": {
+              "$ref": "urn:ads:common:sha256:1"
+            },
+            "decision": {
+              "enum": [
+                "approve",
+                "deny"
+              ]
+            },
+            "_meta": true
+          }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "jsonrpc": "2.0",
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAD",
+      "method": "approval.answer",
+      "params": {
+        "action_id": "act-03",
+        "approval_id": "appr-03",
+        "plan_hash": "sha256:5486cc58827bffeb2204a994db3d77fe6c8f2c863eb73de6e2a60802784293cb",
+        "decision": "approve",
+        "_meta": {
+          "idempotency_key": "01ARZ3NDEKTSV4RRFFQ69G5FAE",
+          "origin": "local"
+        }
+      }
+    }
+  ]
+}

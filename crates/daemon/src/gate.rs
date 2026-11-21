@@ -207,6 +207,11 @@ impl SessionGate {
         })
     }
 
+    /// The session folder whose actions this gate answers for.
+    pub fn work_root(&self) -> &AbsPath {
+        &self.root
+    }
+
     /// The executor with the session policy, to check what it refuses on its own.
     #[cfg(test)]
     pub(crate) fn executor_mut(&mut self) -> &mut Executor {

@@ -19,7 +19,7 @@ pub struct Executor {
     pub(crate) fence: Fence,
     pub(crate) policy: GatePolicy,
     pub(crate) limits: Limits,
-    probe: Option<Box<dyn Probe>>,
+    probe: Option<Box<dyn Probe + Send>>,
     /// The actions this executor already took a permit for. A second line of defence only:
     /// it is forgotten with the executor. The record that lasts is the one of the journal.
     spent: HashSet<String>,
@@ -68,7 +68,7 @@ impl Executor {
     }
 
     /// Has `probe` told about every mutation, before it and right before its system call.
-    pub fn with_probe(mut self, probe: Box<dyn Probe>) -> Self {
+    pub fn with_probe(mut self, probe: Box<dyn Probe + Send>) -> Self {
         self.probe = Some(probe);
         self
     }
@@ -177,7 +177,10 @@ impl Executor {
             floor: &floor,
             private: private.as_deref(),
             work: job.work,
-            probe: self.probe.as_deref_mut(),
+            probe: self
+                .probe
+                .as_deref_mut()
+                .map(|probe| probe as &mut (dyn Probe + 'static)),
             limits: &self.limits,
             laid: Vec::new(),
             holding: None,

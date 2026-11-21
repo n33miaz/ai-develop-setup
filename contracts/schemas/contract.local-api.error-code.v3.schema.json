@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:contract:local-api.error-code:3",
+  "title": "Código de erro da API local",
+  "description": "Códigos que a API local atribui às próprias respostas JSON-RPC. A versão 3 acrescenta à :2 os códigos das aprovações do portão de ações; a :2 e a :1 continuam valendo para quem só conhece os códigos anteriores.",
+  "anyOf": [
+    {
+      "$ref": "#/$defs/method_not_found"
+    },
+    {
+      "$ref": "#/$defs/invalid_params"
+    },
+    {
+      "$ref": "#/$defs/internal_error"
+    },
+    {
+      "$ref": "#/$defs/capacity_exceeded"
+    },
+    {
+      "$ref": "#/$defs/subscription_replay_unavailable"
+    },
+    {
+      "$ref": "#/$defs/remote_origin_refused"
+    },
+    {
+      "$ref": "#/$defs/harness_not_configured"
+    },
+    {
+      "$ref": "#/$defs/conflict"
+    },
+    {
+      "$ref": "#/$defs/session_close_pending"
+    },
+    {
+      "$ref": "#/$defs/session_setup_failed"
+    },
+    {
+      "$ref": "#/$defs/queue_not_configured"
+    },
+    {
+      "$ref": "#/$defs/queue_already_enabled"
+    },
+    {
+      "$ref": "#/$defs/approval_not_configured"
+    },
+    {
+      "$ref": "#/$defs/approval_not_found"
+    },
+    {
+      "$ref": "#/$defs/approval_already_answered"
+    },
+    {
+      "$ref": "#/$defs/approval_stale"
+    },
+    {
+      "$ref": "#/$defs/approval_policy_changed"
+    },
+    {
+      "$ref": "#/$defs/approval_out_of_order"
+    },
+    {
+      "$ref": "#/$defs/approval_not_approvable"
+    }
+  ],
+  "examples": [
+    -32601
+  ],
+  "$defs": {
+    "method_not_found": {
+      "type": "integer",
+      "const": -32601,
+      "description": "O método solicitado é desconhecido."
+    },
+    "invalid_params": {
+      "type": "integer",
+      "const": -32602,
+      "description": "O comando ou seus parâmetros são inválidos para a API local."
+    },
+    "internal_error": {
+      "type": "integer",
+      "const": -32603,
+      "description": "O serviço está indisponível, inclusive quando o prazo do host se esgota."
+    },
+    "capacity_exceeded": {
+      "type": "integer",
+      "const": -32003,
+      "description": "Um limite de capacidade foi atingido."
+    },
+    "subscription_replay_unavailable": {
+      "type": "integer",
+      "const": -32004,
+      "description": "O replay solicitado está indisponível ou o stream foi invalidado ou descartado."
+    },
+    "remote_origin_refused": {
+      "type": "integer",
+      "const": -32010,
+      "description": "A API local recusou um comando de origem remota."
+    },
+    "harness_not_configured": {
+      "type": "integer",
+      "const": -32011,
+      "description": "A ferramenta solicitada não tem programa configurado."
+    },
+    "conflict": {
+      "type": "integer",
+      "const": -32012,
+      "description": "A chave de idempotência conflita com outro pedido ou o id da sessão está reservado."
+    },
+    "session_close_pending": {
+      "type": "integer",
+      "const": -32013,
+      "description": "O fechamento automático esgotou as tentativas e ainda depende de um session.close."
+    },
+    "session_setup_failed": {
+      "type": "integer",
+      "const": -32014,
+      "description": "A preparação falhou após a abertura do terminal e o fechamento foi agendado."
+    },
+    "queue_not_configured": {
+      "type": "integer",
+      "const": -32015,
+      "description": "O núcleo não serve a fila pedida: nenhuma fila ligada ao log de auditoria ou id de fila desconhecido."
+    },
+    "queue_already_enabled": {
+      "type": "integer",
+      "const": -32016,
+      "description": "A fila já está ligada; ligar de novo não registra nada."
+    },
+    "approval_not_configured": {
+      "type": "integer",
+      "const": -32017,
+      "description": "O núcleo não serve aprovações: nenhum portão ligado ao log de auditoria."
+    },
+    "approval_not_found": {
+      "type": "integer",
+      "const": -32018,
+      "description": "Nenhuma ação conhecida do portão com esse id, ou a ação não tem essa aprovação."
+    },
+    "approval_already_answered": {
+      "type": "integer",
+      "const": -32019,
+      "description": "A ação não aguarda mais resposta: já foi aprovada, negada, expirou ou terminou."
+    },
+    "approval_stale": {
+      "type": "integer",
+      "const": -32020,
+      "description": "O hash do plano não é o da ação em espera, ou a validade da aprovação acabou (o portão registra a expiração). A resposta fica registrada."
+    },
+    "approval_policy_changed": {
+      "type": "integer",
+      "const": -32021,
+      "description": "A política ou a tolerância do relógio mudou desde o plano: o portão registrou a negação."
+    },
+    "approval_out_of_order": {
+      "type": "integer",
+      "const": -32022,
+      "description": "O relógio do núcleo está antes do último passo da ação; nada foi decidido e a resposta pode ser repetida."
+    },
+    "approval_not_approvable": {
+      "type": "integer",
+      "const": -32023,
+      "description": "A API não deixa aprovar esta ação: o efeito concreto não está fixado no plano registrado. Negar continua permitido. A resposta fica registrada."
+    }
+  }
+}

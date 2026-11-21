@@ -1,0 +1,23 @@
+{
+  "01-missing-meta.json": {
+    "rule": "O _meta do envelope é obrigatório.",
+    "keyword": "required",
+    "instancePath": "/params",
+    "params": {
+      "missingProperty": "_meta"
+    }
+  },
+  "02-extra-param.json": {
+    "rule": "params é fechado: o dono vem do núcleo, nunca do pedido.",
+    "keyword": "additionalProperties",
+    "instancePath": "/params",
+    "params": {
+      "additionalProperty": "owner_id"
+    }
+  },
+  "03-other-method.json": {
+    "rule": "O método é fixo.",
+    "keyword": "const",
+    "instancePath": "/method"
+  }
+}
