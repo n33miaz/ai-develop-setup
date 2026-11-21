@@ -1945,12 +1945,20 @@ fn replay_queue_rebuilds_every_task_record_in_one_pass() {
         Some("Conferir documentação")
     );
     assert_eq!(tasks[2].tool, Some(id("tool-a")));
-    for task in tasks {
+    for (position, task) in tasks.iter().enumerate() {
         assert_eq!(task.queue_id, id("queue-01"));
         assert_eq!(task.workspace_alias.as_str(), "docs");
         assert!(task.branch.is_none() && task.pull_request.is_none());
         let json = serde_json::to_value(task).unwrap();
-        assert!(json["title"].is_string() || json["title"].is_null());
+        // An older creation writes both keys as an explicit `null`, never leaves them out.
+        for key in ["title", "tool"] {
+            let value = json.get(key);
+            if position < 2 {
+                assert_eq!(value, Some(&serde_json::Value::Null), "{key}");
+            } else {
+                assert!(value.is_some_and(serde_json::Value::is_string), "{key}");
+            }
+        }
         assert_eq!(
             serde_json::from_value::<RecordQueueTaskV3>(json).unwrap(),
             *task
@@ -2027,9 +2035,74 @@ fn replay_queue_applies_the_task_checks_to_every_task() {
         Err(ReplayRefusal::TaskCreation)
     );
 
+    // A task created twice under distinct requests refuses the stream for every task, also
+    // when the replay follows another one.
+    let mut twice = Stream::new()
+        .admit("task-01", 2)
+        .admit("task-02", 2)
+        .admit("task-03", 2)
+        .numbered();
+    twice[2]["data"]["task_id"] = "task-01".into();
+    let twice = typed(twice);
+    for task in ["task-01", "task-02", "task-03"] {
+        assert_eq!(
+            replay_task(
+                &id(task),
+                twice.iter().map(Owned::as_log),
+                registry,
+                Some(&policy())
+            )
+            .map(|t| t.state),
+            Err(ReplayRefusal::TaskCreation),
+            "{task}"
+        );
+    }
+    assert_eq!(
+        replay_queue(twice.iter().map(Owned::as_log), registry, Some(&policy())),
+        Err(ReplayRefusal::TaskCreation)
+    );
+
     let empty = typed(Stream::new().numbered());
     let queue = replay_queue(empty.iter().map(Owned::as_log), registry, Some(&policy())).unwrap();
     assert!(queue.tasks.is_empty());
+}
+
+#[test]
+fn a_clock_rewind_never_dates_the_record_update_before_its_creation() {
+    // (creation ts, change ts, expected updated_at)
+    for (created, changed, updated) in [
+        (
+            "2030-01-02T03:04:03Z",
+            "2030-01-02T03:04:01Z",
+            "2030-01-02T03:04:03Z",
+        ),
+        // A shorter text is not an earlier instant: `05Z` sorts after `05.5Z` as text.
+        (
+            "2030-01-02T03:04:03.5Z",
+            "2030-01-02T03:04:03Z",
+            "2030-01-02T03:04:03.5Z",
+        ),
+        (
+            "2030-01-02T03:04:03.5Z",
+            "2030-01-02T03:04:03.500001Z",
+            "2030-01-02T03:04:03.500001Z",
+        ),
+    ] {
+        let mut values = Stream::new()
+            .enabled(OWNER_DEVICE)
+            .admit("task-01", 2)
+            .change(DAEMON, "queued", "running", 1)
+            .numbered();
+        values[2]["ts"] = created.into();
+        values[3]["ts"] = changed.into();
+        let events = typed(values);
+        let queue =
+            replay_queue(events.iter().map(Owned::as_log), registry, Some(&policy())).unwrap();
+        let task = &queue.tasks[0];
+        assert_eq!(task.state, Running);
+        assert_eq!(task.created_at.as_str(), created);
+        assert_eq!(task.updated_at.as_str(), updated, "{created} {changed}");
+    }
 }
 
 #[test]
