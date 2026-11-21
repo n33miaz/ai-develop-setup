@@ -24,6 +24,8 @@ use ads_contracts::{
     RecordTaskQueueV1Version,
 };
 
+use crate::timestamp::epoch_seconds;
+
 use CommonQueueTaskStateV1::{Cancelled, Done, Failed, Queued, Review, Running};
 use RecordTaskQueueV1State::{Enabled, Stopped};
 
@@ -161,6 +163,12 @@ impl Channel {
 /// by every crate that depends on it, and the dependency matrix keeps the authentication layer
 /// out of this crate, so no constructor here could tell the authentication layer from a caller
 /// that copies a device id out of a request. The constructor arrives together with that layer.
+///
+/// ```compile_fail
+/// use ads_contracts::CommonIdV1;
+/// let id = CommonIdV1::new("owner-01").unwrap();
+/// let _ = ads_core::queue::AuthenticatedDevice::local_owner(id.clone(), id);
+/// ```
 pub struct AuthenticatedDevice {
     device_id: CommonIdV1,
     owner_id: CommonIdV1,
@@ -375,10 +383,31 @@ pub fn change_queue_state<'a>(
     next: RecordTaskQueueV1State,
 ) -> Result<(RecordTaskQueueV1, QueueStateEvent, &'a AuthenticatedDevice), QueueRefusal> {
     let device = device.ok_or(QueueRefusal::Unauthenticated)?;
-    if device.owner_id != queue.owner_id {
+    let (updated, event) = owner_transition(queue, &device.owner_id, device.via, next)?;
+    Ok((updated, event, device))
+}
+
+/// The same transition for the owner acting through the local interface, whose connection the
+/// composition already authenticated. It takes the owner id as data and yields no
+/// `AuthenticatedDevice`, so it opens no other owner-only policy; the channel is always `LocalUi`.
+pub fn change_local_queue_state(
+    queue: &RecordTaskQueueV1,
+    owner_id: &CommonIdV1,
+    next: RecordTaskQueueV1State,
+) -> Result<(RecordTaskQueueV1, QueueStateEvent), QueueRefusal> {
+    owner_transition(queue, owner_id, Channel::LocalUi, next)
+}
+
+fn owner_transition(
+    queue: &RecordTaskQueueV1,
+    owner_id: &CommonIdV1,
+    via: Channel,
+    next: RecordTaskQueueV1State,
+) -> Result<(RecordTaskQueueV1, QueueStateEvent), QueueRefusal> {
+    if *owner_id != queue.owner_id {
         return Err(QueueRefusal::NotOwner);
     }
-    if next == Enabled && device.via.enabled_via().is_none() {
+    if next == Enabled && via.enabled_via().is_none() {
         return Err(QueueRefusal::RemoteEnable);
     }
     if queue.state == next {
@@ -387,19 +416,19 @@ pub fn change_queue_state<'a>(
     let event = match next {
         Enabled => QueueStateEvent::Enabled(EventQueueEnabledV1Data {
             queue_id: queue.id.clone(),
-            owner_id: device.owner_id.clone(),
-            via: device.via.enabled_via().ok_or(QueueRefusal::RemoteEnable)?,
+            owner_id: owner_id.clone(),
+            via: via.enabled_via().ok_or(QueueRefusal::RemoteEnable)?,
         }),
         Stopped => QueueStateEvent::Stopped(EventQueueStoppedV1Data {
             queue_id: queue.id.clone(),
             reason: EventQueueStoppedV1DataReason::Owner,
-            owner_id: Some(device.owner_id.clone()),
-            via: Some(device.via.stopped_via()),
+            owner_id: Some(owner_id.clone()),
+            via: Some(via.stopped_via()),
         }),
     };
     let mut updated = queue.clone();
     updated.state = next;
-    Ok((updated, event, device))
+    Ok((updated, event))
 }
 
 /// One event of the `queue/<id>` stream, borrowed for replay.
@@ -894,22 +923,6 @@ fn instant(ts: &CommonTimestampV1) -> (&str, u32) {
     (seconds, micros)
 }
 
-/// Seconds since 1970-01-01T00:00:00Z, ignoring the fraction.
-fn epoch_seconds(ts: &CommonTimestampV1) -> Option<i64> {
-    let text = ts.as_str();
-    let number = |from: usize, to: usize| text.get(from..to)?.parse::<i64>().ok();
-    let (year, month, day) = (number(0, 4)?, number(5, 7)?, number(8, 10)?);
-    let (hour, minute, second) = (number(11, 13)?, number(14, 16)?, number(17, 19)?);
-    // Days from the civil date, counting years from March so that February is last.
-    let year = if month <= 2 { year - 1 } else { year };
-    let era = year.div_euclid(400);
-    let year_of_era = year - era * 400;
-    let day_of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
-    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
-    let days = era * 146_097 + day_of_era - 719_468;
-    Some(days * 86_400 + hour * 3_600 + minute * 60 + second)
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TaskOrigin<'a> {
     Manual(&'a CommonIdV1),
@@ -1239,7 +1252,10 @@ fn check_admission<'a>(
         return Err(Refusal::AttemptCeiling);
     }
     let manual = created.origin.is_manual();
-    let (Some(stamp), Some(clock)) = (epoch_seconds(created.ts), epoch_seconds(inputs.now)) else {
+    let (Some(stamp), Some(clock)) = (
+        epoch_seconds(created.ts.as_str()),
+        epoch_seconds(inputs.now.as_str()),
+    ) else {
         return Err(Refusal::UnreadableInstant);
     };
     let seconds = |value: u64| i64::try_from(value).unwrap_or(i64::MAX);
@@ -1255,7 +1271,7 @@ fn check_admission<'a>(
             return Err(Refusal::AnchorAfterCandidate);
         }
         Some(anchor) => {
-            let at = epoch_seconds(&anchor.at).ok_or(Refusal::UnreadableInstant)?;
+            let at = epoch_seconds(anchor.at.as_str()).ok_or(Refusal::UnreadableInstant)?;
             if at > latest_now {
                 return Err(Refusal::AnchorAheadOfClock);
             }
@@ -1287,7 +1303,7 @@ fn check_admission<'a>(
         }
         // The anchor moves only covered creations still ahead of the clock, so an old anchor
         // never takes an ordinary creation out of the window.
-        let then = epoch_seconds(prior.ts).map(|then| match anchor {
+        let then = epoch_seconds(prior.ts.as_str()).map(|then| match anchor {
             Some((through, at)) if prior.seq <= through && then > latest_now => then.min(at),
             _ => then,
         });

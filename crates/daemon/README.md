@@ -17,7 +17,7 @@ envia `auth.hello` antes de encaminhar mensagens da janela.
 
 ## Portão de ações de arquivo
 
-`ToolLauncher::session_gate` recebe os parâmetros que abriram a sessão no host, com o apelido já resolvido, e vincula o portão e o executor da cerca a todos os diretórios de `[workdirs]`. `SessionGate::plan` usa a pasta da sessão, inspeciona os alvos dentro dos limites de `defaults/fs-executor.toml` e grava os fatos de repositório no log ancorado. Se a inspeção falhar, o plano é recusado antes da gravação. As operações `inspect`, `apply` e `execute` só aceitam ações da raiz da sessão. Quem chama fornece a estimativa e cumpre os pré-requisitos de aprovação antes de chamar `SessionGate::execute`. O portão grava `action.started` antes de chamar o executor. Ao terminar, o daemon tenta gravar o resultado e devolve separadamente o relatório da operação e o status dessa gravação. Um início confirmado continua consumido mesmo se o resultado não puder ser gravado. A composição está disponível em Rust. A API local ainda não expõe comandos de execução de arquivos. Os instantes e identificadores de `start` e `finish` vêm de quem chama, e só o `ts` decide a validade da aprovação: quando a API existir, o daemon deve carimbar `ts` e `id` ele mesmo. Os itens da issue #26 que seguem abertos estão no [portão do núcleo](../core/README.md#máquina-de-estados).
+`ToolLauncher::session_gate` recebe os parâmetros que abriram a sessão no host, com o apelido já resolvido, e vincula o portão e o executor da cerca a todos os diretórios de `[workdirs]`. Recebe também o `ProductLog`, que só `audit::open_product` cria: o log de auditoria aberto junto com o estado do produto que ele usa. Esse estado é o banco como configurado, com `-wal`, `-shm` e `-journal`, a pasta do cofre e da trava `audit-binding.lock` e, quando o daemon segura a trava do lançador (`InstanceLock`, de `--instance-lock`), a pasta dela. Cada caminho entra na grafia configurada, na resolvida no disco e, para cada link ou junção no caminho, na do próprio link no lugar real: remover um deles quebraria o caminho configurado. Pode faltar uma entrada que ainda não foi criada (um arquivo auxiliar do SQLite, o banco antes da primeira abertura); link cujo destino não existe, destino de link escrito com `..`, caminho de rede ou mais de 32 links recusam a abertura. Esses caminhos são sempre negados como alvo, no plano e de novo na execução. O portão só aceita o `ProductLog` com o mesmo estado com que foi montado; outro devolve `JournalError::PolicyChanged`. `SessionGate::plan` usa a pasta da sessão, inspeciona os alvos dentro dos limites de `defaults/fs-executor.toml` e grava os fatos de repositório no log ancorado. Se a inspeção falhar, o plano é recusado antes da gravação. As operações `inspect`, `apply` e `execute` só aceitam ações da raiz da sessão. Quem chama fornece a estimativa e cumpre os pré-requisitos de aprovação antes de chamar `SessionGate::execute`. O portão grava `action.started` antes de chamar o executor. Ao terminar, o daemon tenta gravar o resultado e devolve separadamente o relatório da operação e o status dessa gravação. Um início confirmado continua consumido mesmo se o resultado não puder ser gravado. A composição está disponível em Rust. A API local ainda não expõe comandos de execução de arquivos. Os instantes e identificadores de `start` e `finish` vêm de quem chama, e só o `ts` decide a validade da aprovação: quando a API existir, o daemon deve carimbar `ts` e `id` ele mesmo. Os itens da issue #26 que seguem abertos estão no [portão do núcleo](../core/README.md#máquina-de-estados).
 
 ## Abrir Claude ou Codex no navegador
 
@@ -122,7 +122,7 @@ política `[env]`; o daemon guarda só o resultado, sem as variáveis negadas.
 ## Comandos, limites e recuperação
 
 Os nomes, valores e significados dos erros emitidos pela API local estão no
-[contrato de códigos de erro](../../contracts/schemas/contract.local-api.error-code.v1.schema.json).
+[contrato de códigos de erro](../../contracts/schemas/contract.local-api.error-code.v2.schema.json).
 
 | Nome | Código na resposta |
 |---|---|
@@ -136,6 +136,8 @@ Os nomes, valores e significados dos erros emitidos pela API local estão no
 | `CONFLICT` | `-32012` |
 | `SESSION_CLOSE_PENDING` | `-32013` |
 | `SESSION_SETUP_FAILED` | `-32014` |
+| `QUEUE_NOT_CONFIGURED` | `-32015` |
+| `QUEUE_ALREADY_ENABLED` | `-32016` |
 
 `api::Launcher::prepare` recebe os parâmetros gerados de `session.open` (ferramenta,
 apelido de pasta, identificador e tamanho) e devolve `OpenParams` do ptyhost.
@@ -160,10 +162,55 @@ para reler a configuração), e não confere o disco: uma ferramenta listada ain
 pode receber `INVALID_PARAMS` em `session.open` se o programa ou a pasta não existir.
 Como só lê, não passa pela cache de idempotência: repetir a chave devolve a
 lista de novo, nunca `replayed`. `api::Launcher::catalog` fornece a lista; o
-padrão é vazio, como em `DisabledLauncher`. A resposta é a única mensagem
-que precisa da `local-api.server-message:2`; quem não envia `harness.list`
-continua recebendo só mensagens da `:1`. Um daemon anterior ao comando o recusa
+padrão é vazio, como em `DisabledLauncher`. Essa resposta exige a
+`local-api.server-message:2`; quem não envia `harness.list` nem `queue.get`
+continua recebendo só mensagens da `:1`. O daemon escreve a `:3`. Um daemon anterior ao comando o recusa
 com `METHOD_NOT_FOUND`, e a interface mostra que o daemon precisa ser atualizado.
+
+## Fila de tarefas
+
+A fila nasce parada e só o dono a liga. `queue.get`, `queue.start` e
+`queue.stop` nomeiam a fila em `params.queue_id` e não aceitam mais nenhum
+campo: o dono e o aparelho vêm do daemon, nunca do pedido. Valem as mesmas
+conferências dos outros comandos: só depois de `auth.hello`, e origem remota
+recebe `REMOTE_ORIGIN_REFUSED`.
+
+- `queue.get` responde `{"queue_id": ..., "state": "stopped" | "enabled"}`
+  ([`command.queue.get.response:1`](../../contracts/README.md#api-local)). Só lê
+  e, como `harness.list`, fica fora da cache de idempotência.
+- `queue.start` liga a fila só depois de gravar `queue.enabled` no log de
+  auditoria ancorado, com o aparelho local como ator, o dono, `via: local_ui`,
+  o `ts` do relógio do daemon e o id do comando em `cause`. A fila já ligada
+  recebe `QUEUE_ALREADY_ENABLED` e nada é gravado. Se a gravação falhar, a fila
+  continua parada e a resposta é `INTERNAL_ERROR`, sem derrubar o serviço.
+- `queue.stop` expressa o estado desejado e é sempre aceito. Ele não consulta
+  a cache de idempotência: repetir uma parada antiga depois de religar a fila a
+  para de novo, e uma chave já usada por outro comando não impede a parada.
+  `replayed` é `false` quando esta parada desligou a fila e `true` quando ela
+  já estava parada (nada é gravado). A fila ligada para antes de o evento ser
+  gravado (`queue.stopped` com `reason: owner`), então nenhuma tarefa nova é
+  admitida mesmo se a gravação falhar. Nesse caso a resposta é
+  `INTERNAL_ERROR`, embora a fila tenha parado, e a parada que faltou é gravada
+  antes da próxima mudança feita pelo mesmo processo, com o id do comando de
+  parada em `cause` e o `ts` do momento da gravação. Se o processo terminar
+  antes, a causa se perde: a próxima abertura grava a parada como
+  `reason: restart`, com o daemon como ator.
+- Fila que o daemon não serve, ou daemon sem fila ligada, recebe
+  `QUEUE_NOT_CONFIGURED`.
+
+`queue::LoggedQueue::open` liga uma fila ao stream `queue/<id>` do log ancorado:
+cria a fila parada (`queue.created`) se o stream está vazio, recusa um stream
+criado por outro dono e, a cada abertura, restaura a fila parada e grava
+`queue.stopped` com `reason: restart` se o log dizia ligada. Um processo mantém
+no máximo um handle por fila (a segunda abertura recebe `AlreadyOpen`); a
+composição compartilha esse handle com todos os consumidores. Dono e aparelho
+(`QueueOwner`) são dados da configuração do núcleo; agir na fila exige ainda a
+prova de sessão `auth::LocalSession`, que só o laço de conexão emite, dentro
+do crate, ao conferir o token do `auth.hello`, e a transição usa
+`ads_core::queue::change_local_queue_state`, sem fabricar `AuthenticatedDevice`.
+`LocalApi::with_queue` entrega a fila à API. O executável ainda não abre o log
+ancorado, porque falta o provedor de chaves do cofre; até lá ele serve
+`queue::DisabledQueue`, que recusa os três comandos com `QUEUE_NOT_CONFIGURED`.
 
 Padrões em [defaults/daemon.toml](../../defaults/daemon.toml), aplicados ao iniciar:
 

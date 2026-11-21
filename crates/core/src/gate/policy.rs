@@ -28,16 +28,20 @@ pub enum Protection {
     /// A path written in the other style than the user home (`/c/...` against `C:\...`): it
     /// may be another spelling of a protected folder, and text alone cannot tell.
     OtherPathStyle,
+    /// The state of the product itself (audit database, vault lock, launcher control folder),
+    /// as the caller bound it with [`GatePolicy::with_product_paths`].
+    ProductData,
 }
 
 impl Protection {
-    pub const ALL: [Protection; 6] = [
+    pub const ALL: [Protection; 7] = [
         Self::FilesystemRoot,
         Self::UserHome,
         Self::UserHomeAncestor,
         Self::UserProfile,
         Self::SystemDir,
         Self::OtherPathStyle,
+        Self::ProductData,
     ];
 
     /// The detail of a rule code: `protected.<this>`.
@@ -49,6 +53,7 @@ impl Protection {
             Self::UserProfile => "user_profile",
             Self::SystemDir => "system_dir",
             Self::OtherPathStyle => "other_path_style",
+            Self::ProductData => "product_data",
         }
     }
 }
@@ -102,12 +107,14 @@ pub struct GatePolicy {
     user_home: AbsPath,
     allowed_roots: Vec<AbsPath>,
     work_roots: Option<Vec<AbsPath>>,
+    product_paths: Vec<AbsPath>,
     windows_system_dirs: Vec<String>,
     posix_system_dirs: Vec<AbsPath>,
     windows_user_parents: Vec<String>,
     posix_user_parents: Vec<AbsPath>,
     approval_item_limit: u64,
     approval_byte_limit: u64,
+    gate_clock_rewind_seconds: u64,
     quarantine_enabled: bool,
     quarantine_dir: Vec<String>,
 }
@@ -122,6 +129,8 @@ struct Layer {
     posix_user_parents: Option<Vec<String>>,
     approval_item_limit: Option<u64>,
     approval_byte_limit: Option<u64>,
+    #[serde(alias = "clock_rewind_seconds")]
+    gate_clock_rewind_seconds: Option<u64>,
     quarantine_enabled: Option<bool>,
     quarantine_dir: Option<String>,
 }
@@ -199,6 +208,7 @@ impl GatePolicy {
         let policy = Self {
             user_home,
             work_roots: None,
+            product_paths: Vec::new(),
             allowed_roots: paths(
                 "allowed_roots",
                 pick("allowed_roots", over.allowed_roots, base.allowed_roots)?,
@@ -239,6 +249,11 @@ impl GatePolicy {
                 "approval_item_limit",
                 over.approval_item_limit,
                 base.approval_item_limit,
+            )?,
+            gate_clock_rewind_seconds: pick(
+                "gate_clock_rewind_seconds",
+                over.gate_clock_rewind_seconds,
+                base.gate_clock_rewind_seconds,
             )?,
             approval_byte_limit: pick(
                 "approval_byte_limit",
@@ -311,6 +326,23 @@ impl GatePolicy {
         self
     }
 
+    /// Adds the files and folders that hold the state of the product itself. The list only
+    /// grows. A target that is one of them, is inside one or holds one is denied, and so is a
+    /// work root or a move destination inside one. Pass every spelling the caller knows
+    /// (as configured and as resolved on disk): the rules compare text only.
+    pub fn with_product_paths(mut self, paths: impl IntoIterator<Item = AbsPath>) -> Self {
+        for path in paths {
+            if !self.product_paths.contains(&path) {
+                self.product_paths.push(path);
+            }
+        }
+        self
+    }
+
+    pub fn product_paths(&self) -> &[AbsPath] {
+        &self.product_paths
+    }
+
     pub(crate) fn work_roots(&self) -> Option<&[AbsPath]> {
         self.work_roots.as_deref()
     }
@@ -331,6 +363,10 @@ impl GatePolicy {
         self.approval_byte_limit
     }
 
+    pub fn gate_clock_rewind_seconds(&self) -> u64 {
+        self.gate_clock_rewind_seconds
+    }
+
     pub fn quarantine_enabled(&self) -> bool {
         self.quarantine_enabled
     }
@@ -343,6 +379,17 @@ impl GatePolicy {
     /// Why `path` may never be the target of an action, if it may not. Case is ignored in both
     /// styles: a deny rule must not be dodged by changing case.
     pub fn protection(&self, path: &AbsPath) -> Option<Protection> {
+        self.protection_of(path, true)
+    }
+
+    /// Why nothing may be placed in `path` nor done from it (a work root, a move destination),
+    /// if so: [`Self::protection`], except that a folder merely holding product state is not
+    /// protected for that, since only what is inside the product paths must not change.
+    pub(crate) fn place_protection(&self, path: &AbsPath) -> Option<Protection> {
+        self.protection_of(path, false)
+    }
+
+    fn protection_of(&self, path: &AbsPath, holding_product: bool) -> Option<Protection> {
         if path.is_root() {
             return Some(Protection::FilesystemRoot);
         }
@@ -381,9 +428,22 @@ impl GatePolicy {
                 }
             }
         }
+        let product = self.product_paths.iter().any(|product| {
+            path.is_loosely_within(product) || (holding_product && product.is_loosely_within(path))
+        });
+        if product {
+            return Some(Protection::ProductData);
+        }
         // Last on purpose: the rules above name the reason when they can.
         (path.style() != self.user_home.style()).then_some(Protection::OtherPathStyle)
     }
+}
+
+pub(super) fn default_gate_clock_rewind_seconds() -> u64 {
+    parse(DEFAULTS_TOML)
+        .expect("valid bundled gate policy")
+        .gate_clock_rewind_seconds
+        .expect("bundled gate clock tolerance")
 }
 
 fn parse(text: &str) -> Result<Layer, PolicyError> {

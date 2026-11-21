@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:command:queue.stop:1",
+  "title": "Parar a fila",
+  "description": "O dono para a fila. Parar expressa o estado desejado e é sempre aceito: o núcleo não consulta a cache de idempotência, então repetir um queue.stop antigo depois de religar a fila a para de novo, e uma chave já usada por outro comando não impede a parada. A resposta é command.response:2 com replayed true quando a fila já estava parada (nada foi gravado) e false quando esta parada a desligou e anexou queue.stopped com reason owner. A fila para antes da gravação; se a gravação falhar, a resposta é INTERNAL_ERROR com a fila parada, e o evento é gravado antes da próxima mudança feita pelo mesmo processo, com o id deste comando em cause.",
+  "allOf": [
+    {
+      "$ref": "urn:ads:command:request:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "method",
+        "params"
+      ],
+      "properties": {
+        "method": {
+          "const": "queue.stop"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "queue_id",
+            "_meta"
+          ],
+          "properties": {
+            "queue_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "_meta": true
+          }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "jsonrpc": "2.0",
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAD",
+      "method": "queue.stop",
+      "params": {
+        "queue_id": "queue-01",
+        "_meta": {
+          "idempotency_key": "01ARZ3NDEKTSV4RRFFQ69G5FAE",
+          "origin": "local"
+        }
+      }
+    }
+  ]
+}

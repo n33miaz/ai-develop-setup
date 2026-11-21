@@ -1,0 +1,31 @@
+{
+  "01-unknown-state.json": {
+    "rule": "A fila só está parada ou ligada.",
+    "keyword": "enum",
+    "instancePath": "/result/state"
+  },
+  "02-extra-field.json": {
+    "rule": "result é fechado: só a fila e o estado.",
+    "keyword": "additionalProperties",
+    "instancePath": "/result",
+    "params": {
+      "additionalProperty": "owner_id"
+    }
+  },
+  "03-missing-queue-id.json": {
+    "rule": "A resposta nomeia a fila.",
+    "keyword": "required",
+    "instancePath": "/result",
+    "params": {
+      "missingProperty": "queue_id"
+    }
+  },
+  "04-with-accepted.json": {
+    "rule": "A resposta de queue.get e a de um comando com efeito não se misturam.",
+    "keyword": "additionalProperties",
+    "instancePath": "/result",
+    "params": {
+      "additionalProperty": "accepted"
+    }
+  }
+}

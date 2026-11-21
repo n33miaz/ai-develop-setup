@@ -6,21 +6,24 @@ const LABEL: Record<ConnectionState, MessageKey> = {
   disconnected: 'connection.disconnected',
   connecting: 'connection.connecting',
   connected: 'connection.connected',
+  incompatible: 'connection.incompatibleDesktop',
+  relaunch_required: 'connection.relaunchDesktop',
 }
 
 /** Estado da conexão com o núcleo. A forma do ponto muda com o estado, para não depender só de cor. */
 export function ConnectionStatus({ state }: { state: ConnectionState }) {
   const t = useT()
+  const actionable = state === 'incompatible' || state === 'relaunch_required'
   const label = `${t('connection.label')}: ${t(LABEL[state])}`
   return (
     <p
-      className={[styles.status, styles[state]].join(' ')}
+      className={[styles.status, styles[actionable ? 'disconnected' : state]].join(' ')}
       role="status"
       aria-label={label}
       data-state={state}
     >
       <span className={styles.dot} aria-hidden="true" />
-      <span className={styles.text} aria-hidden="true">
+      <span className={styles.text} data-actionable={actionable} aria-hidden="true">
         {label}
       </span>
     </p>

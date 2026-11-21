@@ -112,3 +112,9 @@ HTTPS, incluindo o manifesto, os ícones e o service worker.
 Ao receber o aviso de atualização, recarregue a página. O acesso remoto ao
 núcleo ainda não existe. No celular, uma interface servida por HTTPS pode
 ser instalada e aberta no modo de exemplo.
+
+Na compilação da interface de desktop, `VITE_DESKTOP_RETRY_INITIAL_MS` (250)
+e `VITE_DESKTOP_RETRY_MAX_MS` (5000) configuram a espera inicial e máxima
+para retentar a conexão após falhas transitórias. Use inteiros positivos de
+até 2147483647 ms. Valores inválidos usam o padrão e a espera inicial respeita
+o teto.

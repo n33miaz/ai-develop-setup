@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:command:queue.get.response:1",
+  "title": "Resposta de queue.get",
+  "description": "Resposta JSON-RPC 2.0 aceita de queue.get: a fila pedida e o estado dela no núcleo. A recusa volta como command.response:2 com error.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "jsonrpc",
+    "id",
+    "result"
+  ],
+  "properties": {
+    "jsonrpc": {
+      "const": "2.0"
+    },
+    "id": {
+      "$ref": "urn:ads:common:ulid:1"
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "queue_id",
+        "state"
+      ],
+      "properties": {
+        "queue_id": {
+          "$ref": "urn:ads:common:id:1"
+        },
+        "state": {
+          "enum": [
+            "stopped",
+            "enabled"
+          ]
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "jsonrpc": "2.0",
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAD",
+      "result": {
+        "queue_id": "queue-01",
+        "state": "stopped"
+      }
+    }
+  ]
+}

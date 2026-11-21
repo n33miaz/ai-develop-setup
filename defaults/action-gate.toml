@@ -4,7 +4,9 @@
 #
 # O que NAO e parametro, porque vale sempre: alvo que e raiz de unidade ou `/`, a pasta do usuario ou um
 # ancestral dela, a propria raiz de trabalho, raiz de repositorio e qualquer alvo fora das raizes permitidas
-# sao negados. A pasta do usuario nao fica neste arquivo: quem chama o nucleo a informa.
+# sao negados. A pasta do usuario nao fica neste arquivo: quem chama o nucleo a informa. O estado do
+# proprio produto (banco de auditoria, pasta do cofre e da trava, pasta de controle do lancador) tambem
+# e sempre negado como alvo; os caminhos vem da configuracao do armazenamento e do lancador.
 #
 # As quatro listas de pastas protegidas so crescem: a camada do usuario ACRESCENTA entradas as daqui,
 # nunca tira. As demais chaves sao substituidas pelo valor da camada.
@@ -63,6 +65,11 @@ posix_user_parents = ["/home", "/Users"]
 # Com a quarentena ligada, o apagar simples vira mover para a quarentena e por isso tambem e medido.
 approval_item_limit = 500
 approval_byte_limit = 104857600
+
+# Recuo máximo entre eventos consecutivos da ação, em segundos.
+# Zero preserva a ordem estrita. Aumente só para acomodar ajustes do relógio.
+# Esta tolerância é independente da configuração da fila.
+gate_clock_rewind_seconds = 0
 
 # Quarentena por padrao: apagar e apagar recursivo viram "mover para a pasta de quarentena", e e esse
 # plano reescrito que recebe o hash, a aprovacao e a execucao. false: apaga de verdade.
