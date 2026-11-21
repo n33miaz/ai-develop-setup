@@ -5,14 +5,14 @@
 //! never following a link. What comes back is the open entry and its identity, not a path:
 //! whoever mutates does it through what is open (see `sys`).
 
-use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::{fs, io};
 
 use ads_core::gate::{AbsPath, PathStyle};
 
 use crate::reason::{Reason, Stop};
 pub use crate::sys::Kind;
-use crate::sys::{self, Crossing, Meta, Node};
+use crate::sys::{self, Crossing, Meta, Node, VolumeFacts};
 
 /// A path split into the volume it starts at and its names.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -330,6 +330,8 @@ pub struct Fence {
     frame: Frame,
     root: Node,
     home: Meta,
+    /// What the volume of the fence said about itself, or why the query failed.
+    volume: Result<VolumeFacts, Stop>,
 }
 
 impl Fence {
@@ -350,7 +352,29 @@ impl Fence {
         if home.kind != Some(Kind::Dir) {
             return Err(FenceError::NotADirectory);
         }
-        Ok(Self { frame, root, home })
+        let volume = root.volume().map_err(unclassified_volume);
+        Ok(Self {
+            frame,
+            root,
+            home,
+            volume,
+        })
+    }
+
+    /// Takes what the volume said as unsaid, as on a volume nothing here can classify. Only
+    /// ever stricter: for tests of the refusal.
+    pub(crate) fn forget_volume(&mut self) {
+        self.volume = Err(unclassified_volume(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "volume classification unavailable",
+        )));
+    }
+
+    /// Refuses `what` unless an object deleted and recreated under the same name gets another
+    /// identity on the volume of the fence: what depends on telling the two apart is not done
+    /// where they cannot be told apart.
+    pub(crate) fn stable_identity(&self, what: &str) -> Result<(), Stop> {
+        require_stable_identity(self.volume.as_ref(), what)
     }
 
     /// The fence as a plan writes it (`C:\work`, `/work`).
@@ -593,6 +617,32 @@ impl Fence {
     }
 }
 
+fn unclassified_volume(error: io::Error) -> Stop {
+    Stop::new(
+        Reason::IdentityUnstable,
+        format!("the system did not say what the volume of the fence is: {error}"),
+    )
+    .with_cause(error)
+}
+
+fn require_stable_identity(volume: Result<&VolumeFacts, &Stop>, what: &str) -> Result<(), Stop> {
+    match volume {
+        Ok(volume) if volume.stable() => Ok(()),
+        Ok(volume) => Err(Stop::new(
+            Reason::IdentityUnstable,
+            format!(
+                "{what}: the volume of the fence ({volume}) does not tell a recreated \
+                 object from the one it replaced"
+            ),
+        )),
+        Err(stop) => {
+            let mut stop = stop.clone();
+            stop.detail = format!("{what}: {}", stop.detail);
+            Err(stop)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -606,6 +656,23 @@ mod tests {
         assert_eq!(error.to_string(), "the fence cannot be resolved: missing");
         let cause = error.source().unwrap().downcast_ref::<io::Error>().unwrap();
         assert_eq!(cause.kind(), io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn an_unstable_volume_refusal_has_readable_spacing() {
+        let volume = VolumeFacts::Linux {
+            magic: 0xef53,
+            birth: false,
+        };
+        let stop = require_stable_identity(Ok(&volume), "a restore").unwrap_err();
+        assert_eq!(stop.reason, Reason::IdentityUnstable);
+        assert_eq!(
+            stop.detail,
+            format!(
+                "a restore: the volume of the fence ({volume}) {}",
+                "does not tell a recreated object from the one it replaced"
+            )
+        );
     }
 
     // Pure: nothing here looks at the disk.

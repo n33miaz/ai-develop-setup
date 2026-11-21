@@ -44,7 +44,7 @@ Um caminho é resolvido de novo pelo sistema a cada chamada. Conferir um caminho
 - **Cerca pedida através de link é aceita.** A resolução troca o link pelos nomes reais antes da travessia, e o texto publicado é esse caminho real, não o pedido: os planos têm de escrever os caminhos com ele (outra grafia é `E_FS_OUTSIDE_FENCE`). Quem escolhe a cerca é quem constrói o executor, e o que ele recebe é a pasta real que o texto nomeia; recusar seria só recusar quem chega por um atalho. O que é recusado é o link que aparece no caminho **depois** da resolução.
 - **Texto e identificador durante a construção.** No Windows cada pasta do caminho é segurada no lugar assim que é aberta, e procurada de novo sob o nome na pasta de cima, segurada: até a travessia acabar, nenhuma pode ser renomeada nem movida, e o texto nomeia a pasta aberta. Nos dois sistemas os nomes são percorridos uma segunda vez a partir da raiz do volume, e cada um tem de ser o objeto da primeira travessia (`NotPlain` se não). No Linux, onde nada segura, isso vê uma pasta do caminho deslocada durante a travessia e não devolvida antes da segunda; uma pasta deslocada e devolvida entre as duas não é vista. Depois da construção as pastas acima da cerca são soltas: quem troca a própria cerca depois disso está fora do modelo (ver [Modelo de ameaça](#modelo-de-ameaça)).
 - Todo o resto é aberto por **um nome só**, relativo à pasta aberta antes (`openat` com `O_NOFOLLOW` no Linux; `NtCreateFile` com pasta raiz e `FILE_OPEN_REPARSE_POINT` no Windows). Um link é aberto como link, nunca seguido. Nome com separador, `.`, `..` ou fluxo alternativo (`:`) não é nome.
-- O que vale é a **identidade** do que foi aberto (dispositivo e inode; no Windows, volume e identificador de arquivo de 128 bits), lida do próprio identificador. A grafia do caminho só serve para chegar lá.
+- O que vale é a **identidade** do que foi aberto (no Linux, dispositivo e inode com o instante de criação, quando o `statx` o informa; no Windows, volume e identificador de arquivo de 128 bits), lida do próprio identificador. A grafia do caminho só serve para chegar lá. Até onde essa identidade separa um objeto recriado do que ele substituiu depende do sistema de arquivos: ver [Identidade por sistema de arquivos](#identidade-por-sistema-de-arquivos).
 - Criar, mover e apagar são feitos **sobre o que está aberto**: criação relativa à pasta aberta do destino; mover e apagar pelo identificador da própria entrada no Windows (`NtSetInformationFile`), e por nome dentro da pasta aberta no Linux (`renameat2`, `unlinkat`), com a identidade conferida logo antes.
 
 **Um identificador fixa o objeto, não o lugar.** Uma pasta aberta continua podendo ser renomeada ou movida por outro processo, e as operações relativas a ela vão junto. No Windows o executor a segura: abre a pasta sem conceder a outros o direito de apagar, e enquanto esse identificador existe o sistema recusa renomear ou mover a pasta e as pastas acima dela. No Linux não existe como segurar. Essa diferença decide onde o executor apaga de verdade (ver [Apagar de verdade](#apagar-de-verdade)).
@@ -60,8 +60,9 @@ Um caminho é resolvido de novo pelo sistema a cada chamada. Conferir um caminho
 7. **Onde cada alvo cai de verdade.** O veredito julga a pasta que recebe os alvos; o executor julga o lugar final de cada um: estritamente dentro da raiz de trabalho, fora de pasta protegida pela política e, no disco, pela mesma abertura sem link. Na **restauração**, o lugar de cada item do manifesto é julgado **pelo próprio portão** (um plano de mover só aquele item para a pasta de origem, classificado com a política confiável): valem as regras de entrada de um mover, inclusive `destination_entry_reserved` (a entrada criada não pode ser a raiz de trabalho, uma raiz permitida ou a quarentena, nem conter uma delas). Isso é feito para todos os itens antes de olhar o disco de qualquer um; a regra não é copiada aqui.
 8. **Tamanho do manifesto.** O manifesto da leva é montado e medido antes de qualquer alteração; maior que `max_manifest_bytes` é recusa (`E_FS_MANIFEST_TOO_LARGE`).
 9. **Apagar de verdade** só passa onde o parâmetro `definitive_delete` permite (ver abaixo).
-10. **Efeitos aprovados.** Quando a execução traz o registro de efeitos concretos que a aprovação cobriu (`Executor::execute_approved`), o que estas conferências acharam (cada passo, cada entrada com identidade e tamanho e, na restauração, o resumo do manifesto) tem de ser esse registro, igual; qualquer diferença é recusa (`E_FS_EFFECTS_CHANGED`). O que é comparado é o nome, o tipo, a identidade do objeto no volume e, de arquivo, o tamanho: entrada nova ou que sumiu, objeto trocado por outro com o mesmo nome e tamanho, link ou junção trocados. Conteúdo reescrito no mesmo objeto, com o mesmo tamanho, e datas não entram. Ver [Efeitos concretos](#efeitos-concretos).
-11. Alvos sobrepostos, curinga, sobrescrever, limpar não rastreados, mover que não seja para a quarentena nem restauração, e alvo que é a pasta privada do executor ou a contém: recusa. Ver [o que não é executado](#o-que-não-é-executado).
+10. **Identidade estável.** Apagar de verdade e restaurar só passam num volume cuja identidade separa um objeto recriado do que ele substituiu; FAT, exFAT, compartilhamento de rede e todo sistema de arquivos que o executor não sabe classificar são recusa (`E_FS_IDENTITY_UNSTABLE`), no ensaio e na execução. A quarentena continua disponível. A [recuperação manual](#restauração) usa os itens preservados na leva. Ver [Identidade por sistema de arquivos](#identidade-por-sistema-de-arquivos).
+11. **Efeitos aprovados.** Quando a execução traz o registro de efeitos concretos que a aprovação cobriu (`Executor::execute_approved`), o que estas conferências acharam (cada passo, cada entrada com identidade e tamanho e, na restauração, o resumo do manifesto) tem de ser esse registro, igual; qualquer diferença é recusa (`E_FS_EFFECTS_CHANGED`). O que é comparado é o nome, o tipo, a identidade do objeto no volume e, de arquivo, o tamanho: entrada nova ou que sumiu, objeto preexistente movido ou ligado para o nome aprovado, link ou junção trocados e, onde a identidade é estável, objeto apagado e recriado com o mesmo nome e tamanho. Conteúdo reescrito no mesmo objeto, com o mesmo tamanho, e datas não entram. Ver [Efeitos concretos](#efeitos-concretos).
+12. Alvos sobrepostos, curinga, sobrescrever, limpar não rastreados, mover que não seja para a quarentena nem restauração, e alvo que é a pasta privada do executor ou a contém: recusa. Ver [o que não é executado](#o-que-não-é-executado).
 
 Qualquer recusa aqui acontece com o disco intacto (`Failure.stage == Checks`).
 
@@ -71,11 +72,34 @@ Qualquer recusa aqui acontece com o disco intacto (`Failure.stage == Checks`).
 
 O daemon grava esse registro depois do plano e o compromete na aprovação; `Executor::execute_approved` (e `execute_with_effects`, com um `Journal`) recebe o registro aprovado, refaz o ensaio depois de consumir a licença e, antes da primeira alteração, recusa com `E_FS_EFFECTS_CHANGED` se não achar o mesmo. A comparação é estrutural, campo a campo. O registro é medido e resumido na forma canônica (`Effects::to_bytes`): JSON compacto, sem espaços, com as chaves de cada objeto em ordem de bytes.
 
+## Identidade por sistema de arquivos
+
+O executor descobre uma vez, ao abrir a cerca, o sistema de arquivos dela (no Windows, `NtQueryVolumeInformationFile`: nome do sistema, abertura por identificador e marca de dispositivo remoto; no Linux, `fstatfs` e se o `statx` informa o instante de criação). Toda entrada admitida está nesse volume e nessa montagem (item 4). A garantia de "outro objeto sob o mesmo nome é outra identidade" é esta:
+
+| Volume | Objeto preexistente movido ou ligado para o nome | Objeto apagado e recriado sob o nome | Apagar de verdade e restaurar |
+|---|---|---|---|
+| Windows, NTFS local | detectado | detectado: o identificador traz o número de sequência do registro da MFT, que sobe quando o registro é reaproveitado | permitidos |
+| Windows, ReFS local (Dev Drive) | detectado | detectado: o identificador de 128 bits não é reaproveitado | permitidos |
+| Linux, ext2/3/4, xfs, btrfs, tmpfs, f2fs ou zfs, com instante de criação no `statx` | detectado | detectado pelo instante de criação, que entra na identidade junto com o inode: um inode liberado e entregue na hora a um objeto novo volta com outro instante | permitidos (apagar de verdade conforme `definitive_delete`) |
+| FAT, exFAT (os dois sistemas) | não garantido: no Windows o identificador vem da posição da entrada na pasta, e um nome recriado ou renomeado para a entrada liberada herda o identificador; no Linux o número de inode do vfat e do exfat também não é guardado no disco | não garantido | recusados (`E_FS_IDENTITY_UNSTABLE`) |
+| Compartilhamento de rede ou sistema de arquivos remoto | não garantido | não garantido | recusados |
+| Qualquer outro, inclusive Linux sem instante de criação, overlay, FUSE, 9p (`/mnt/c` do WSL), ntfs3, ou volume que não respondeu | não garantido | não garantido | recusados |
+
+No Windows, a classificação usa o nome informado pelo sistema de arquivos. Um sistema de arquivos em modo usuário pode se apresentar como NTFS.
+
+O que continua sem detecção mesmo onde a identidade é estável:
+
+- **Linux:** um objeto recriado no mesmo inode e no mesmo tique do relógio do núcleo que carimbou o objeto aprovado (o instante de criação tem a resolução do relógio grosso do núcleo, de alguns milissegundos). O objeto aprovado existia antes do ensaio e a troca acontece depois da aprovação, então isso pede o relógio voltar (privilégio de administrador). O tempo de mudança de metadados (`ctime`) e a contagem de links (`nlink`) não entram: o próprio executor muda os dois (renomear muda o `ctime` no ext4; esvaziar uma pasta muda o `nlink` dela), e a conferência depois de cada movimento passaria a falhar. O número de geração do inode (`FS_IOC_GETVERSION`) não é lido: pede `ioctl` num descritor que o executor abre sem acesso (`O_PATH`).
+- **NTFS:** em tese, um registro da MFT que dê a volta nos 65 536 valores da sequência. Só troca o objeto aprovado por um objeto recém-criado, o que equivale a conteúdo reescrito no mesmo objeto, que já fica fora.
+- **Nos dois:** conteúdo reescrito no mesmo objeto com o mesmo tamanho, e datas (item 11).
+
+Nos volumes marcados "recusados", a troca pode passar despercebida. O executor permite a quarentena e recusa, ainda no ensaio, a restauração e a exclusão definitiva, inclusive a purga. Os itens podem ser [copiados manualmente](#restauração).
+
 ## Alterações
 
 Só `disk.rs` altera o disco: criar pasta (falha se existe), criar arquivo novo (falha se existe), mover e remover uma entrada. Não há exclusão nem criação recursiva da biblioteca. Cada operação alcança a entrada de novo a partir da cerca e confere: estritamente abaixo do piso (a raiz de trabalho; na purga, a pasta de quarentena; e a pasta de espera da própria execução), nenhum link no caminho e, na entrada, **o mesmo objeto do inventário, com o mesmo tamanho**.
 
-- **Só o que foi aprovado.** Um arquivo trocado por outro com o mesmo nome é recusa, e um arquivo que cresceu ou encolheu mantendo a identidade (escrito direto ou por outro hardlink) também (`E_FS_CHANGED`). Antes de mover uma árvore, e de novo antes de esvaziá-la, ela inteira é comparada com o inventário: nomes, identidades e tamanhos. O tamanho é conferido uma última vez na hora de remover cada entrada (no Windows, no identificador dela; no Linux, pelo nome dentro da pasta aberta).
+- **Só o que foi aprovado.** Um arquivo trocado por outro com o mesmo nome é recusa (objeto apagado e recriado, só onde a identidade é estável: ver [Identidade por sistema de arquivos](#identidade-por-sistema-de-arquivos)), e um arquivo que cresceu ou encolheu mantendo a identidade (escrito direto ou por outro hardlink) também (`E_FS_CHANGED`). Antes de mover uma árvore, e de novo antes de esvaziá-la, ela inteira é comparada com o inventário: nomes, identidades e tamanhos. O tamanho é conferido uma última vez na hora de remover cada entrada (no Windows, no identificador dela; no Linux, pelo nome dentro da pasta aberta).
 - **Mover nunca substitui.** A recusa de destino existente é do próprio sistema, na mesma chamada que move (`RENAME_NOREPLACE`; no Windows, renomear sem substituição). Sistema de arquivos sem essa primitiva recusa o movimento.
 - **Um movimento feito é dito como feito.** Depois de o sistema aceitar o movimento, o que chegou é conferido (no Linux, por nome; no Windows o identificador movido já é a prova) e as duas pastas são sincronizadas de qualquer jeito. Se a conferência falha, o passo sai "não verificado" (`E_FS_MOVE_UNVERIFIED`): o alvo saiu do lugar e o relatório não promete onde ele está.
 - **Durabilidade.** Depois de cada criação, movimento e remoção, a pasta envolvida é sincronizada (as duas, no movimento). Um passo só conta como feito depois disso; se a alteração foi feita e a sincronização falhou, sai como não confirmado (`E_FS_UNCONFIRMED`), nunca como feito.
@@ -99,9 +123,11 @@ Mover para dentro de `<raiz de trabalho>/<quarantine_dir>` é quarentena. O dest
 
 ### Restauração
 
-Restaurar é uma ação como as outras, com licença: `fs.move` de **uma** pasta de leva para a raiz de trabalho. Cada item do manifesto que ainda está em `items` volta ao lugar de origem; as pastas de origem que sumiram são recriadas uma a uma. O lugar de cada item é julgado pelo portão (item 7 acima). Lugar de origem ocupado recusa a restauração inteira antes do primeiro movimento, e o que aparecer no lugar depois dessa conferência não é substituído. Item que não está mais na quarentena aparece no relatório como ausente. Sem nenhum item presente, recusa.
+Em volumes com identidade estável, restaurar exige licença: `fs.move` de **uma** pasta de leva para a raiz de trabalho. Cada item do manifesto que ainda está em `items` volta ao lugar de origem; as pastas de origem que sumiram são recriadas uma a uma. O lugar de cada item é julgado pelo portão (item 7 acima). Lugar de origem ocupado recusa a restauração inteira antes do primeiro movimento, e o que aparecer no lugar depois dessa conferência não é substituído. Item que não está mais na quarentena aparece no relatório como ausente. Sem nenhum item presente, recusa.
 
 O manifesto é lido pela pasta aberta da leva, do arquivo que foi aberto: link não é seguido, tem de ser arquivo regular e a leitura para em `max_manifest_bytes`. Lido do disco é dado, não instrução: versão, identificadores e cada nome são validados; o caminho original tem de ser exatamente a raiz de trabalho mais o lugar do item em `items`; a ação do manifesto tem de ser a da pasta.
+
+Em volumes sem identidade estável, consulte o caminho original de cada item no [manifesto da leva](#quarentena). Localize o item em `<destino>/<action_id>/items/<caminho relativo à raiz de trabalho>`, confira seu conteúdo e copie-o para a origem se ela estiver livre. Se o caminho já estiver ocupado, copie para outro local sem sobrescrever. Preserve a cópia na leva até conferir o que foi recuperado.
 
 ### Apagar de verdade
 
@@ -149,8 +175,8 @@ O executor para na primeira falha: não desfaz e não continua. `Failure.stage` 
 O que uma nova execução encontra depois de uma interrupção:
 
 - **A mesma ação nunca roda de novo**: o diário recusa, e a pasta da ação (na quarentena ou na pasta privada) já existe.
-- **Quarentena que parou antes de o manifesto estar gravado e sincronizado**: nenhum alvo saiu do lugar. A pasta da leva fica, sem itens, com ou sem um manifesto incompleto; uma restauração dela é recusada (`E_FS_MANIFEST_INVALID` ou `E_FS_NOTHING_TO_RESTORE`) e ela sai pela purga.
-- **Quarentena que parou depois**: cada alvo está inteiro em exatamente um lugar, o de origem ou `items`. A restauração da leva devolve o que foi e marca o resto como ausente; pode ser repetida até terminar.
+- **Quarentena que parou antes de o manifesto estar gravado e sincronizado**: nenhum alvo saiu do lugar. A pasta da leva fica, sem itens, com ou sem um manifesto incompleto; uma restauração dela é recusada (`E_FS_MANIFEST_INVALID` ou `E_FS_NOTHING_TO_RESTORE`) e pode ser removida por purga onde ela é permitida.
+- **Quarentena que parou depois**: cada alvo está inteiro em exatamente um lugar, o de origem ou `items`. Em volumes com identidade estável, a restauração devolve os itens presentes, marca os demais como ausentes e pode ser repetida até terminar. Nos demais volumes, use a recuperação manual.
 - **Restauração interrompida**: retomada por outra restauração da mesma leva.
 - **Apagar definitivo interrompido**: com o passo `Held`, o que sobrou da árvore está em `<private_dir>/<action_id>/<n>`, e o relatório diz o caminho. Com o passo `Unverified`, a árvore foi mandada para esse caminho e a chegada não foi conferida: é o primeiro lugar a olhar, não um lugar prometido. Não volta sozinho para o lugar de origem. Uma ação nova de apagar com esse caminho como alvo termina o serviço; a pasta privada em si, ou uma pasta que a contém, nunca é alvo.
 
@@ -160,7 +186,7 @@ O evento `action.failed` leva só o código (é o contrato); o relatório é dev
 
 ## Modelo de ameaça
 
-O que é garantido, por tipo de adversário. "Dentro da cerca" quer dizer: nenhuma entrada fora da pasta aberta como cerca é criada, movida, lida ou apagada pelo executor.
+O que é garantido, por tipo de adversário. "Dentro da cerca" quer dizer: nenhuma entrada fora da pasta aberta como cerca é criada, movida, lida ou apagada pelo executor. Tudo que depende de identidade ("mesmas identidades", "outro objeto com o mesmo nome") vale com o alcance da [tabela por sistema de arquivos](#identidade-por-sistema-de-arquivos): num volume sem identidade estável só a quarentena roda, e lá um objeto apagado e recriado sob o mesmo nome, ou renomeado para a entrada liberada (FAT/exFAT), pode passar despercebido e ir para a quarentena no lugar do aprovado. A recuperação nesse volume é [manual](#restauração).
 
 **(a) Agente descuidado, sem concorrência** (o plano está errado, mal escrito ou desatualizado; ninguém mexe no disco durante a execução). Garantido nos dois sistemas:
 
@@ -168,17 +194,17 @@ O que é garantido, por tipo de adversário. "Dentro da cerca" quer dizer: nenhu
 - só é movido ou apagado o que foi levantado: mesmas entradas, mesmas identidades, mesmos tamanhos; mais itens ou bytes do que o aprovado é recusa;
 - nada é sobrescrito: toda criação é exclusiva e todo movimento recusa destino existente;
 - repositório (no alvo ou abaixo dele) não é apagado nem posto em quarentena sem a política dizer; a restauração não cria nem cobre pasta reservada;
-- uma execução que para diz exatamente o que mudou, e o que foi para a quarentena volta por uma restauração.
+- uma execução que para diz exatamente o que mudou, e a recuperação de itens em quarentena segue as condições da [restauração](#restauração).
 
 **(b) Processo concorrente não hostil** (outra ferramenta, um editor, uma compilação, usando caminhos, sem intenção de enganar). Além do item (a):
 
 - trocas feitas antes da última conferência são vistas e viram recusa (entrada nova, entrada que sumiu, outro objeto com o mesmo nome, arquivo que mudou de tamanho, link no caminho);
 - trocas feitas depois da última conferência, **no Windows**, não redirecionam a operação: mover e apagar agem no identificador aberto da própria entrada, então acontecem no objeto aberto ou falham;
-- **no Linux**, `renameat2` e `unlinkat` agem sobre o nome dentro da pasta aberta, não sobre um objeto aberto. Uma ferramenta comum que troca a entrada sob o nome entre a comparação de identidade e a chamada (renomeia o arquivo antigo e publica outro com o mesmo nome, como faz uma compilação) faz o movimento levar a entrada nova. O que se garante é a **detecção depois**: a conferência da chegada, pelo nome no destino, não acha o objeto aprovado e o passo sai "não verificado" (`E_FS_MOVE_UNVERIFIED`). A consequência é recuperável: a outra entrada foi para a quarentena (restaurável) ou, numa restauração, voltou para a raiz de trabalho; nada foi apagado nem sobrescrito. Com `definitive_delete = "isolated"` não há essa garantia para a remoção: uma entrada publicada sob o nome entre a última conferência e o `unlinkat` é apagada no lugar da aprovada, sem detecção e sem volta (é por isso que o padrão no Linux não apaga);
+- **no Linux**, `renameat2` e `unlinkat` agem sobre o nome dentro da pasta aberta, não sobre um objeto aberto. Uma ferramenta comum que troca a entrada sob o nome entre a comparação de identidade e a chamada (renomeia o arquivo antigo e publica outro com o mesmo nome, como faz uma compilação) faz o movimento levar a entrada nova. O que se garante é a **detecção depois**: a conferência da chegada, pelo nome no destino, não acha o objeto aprovado e o passo sai "não verificado" (`E_FS_MOVE_UNVERIFIED`). A consequência é recuperável: a outra entrada foi para a quarentena (com [recuperação](#restauração) conforme o volume) ou, numa restauração, voltou para a raiz de trabalho; nada foi apagado nem sobrescrito. Com `definitive_delete = "isolated"` não há essa garantia para a remoção: uma entrada publicada sob o nome entre a última conferência e o `unlinkat` é apagada no lugar da aprovada, sem detecção e sem volta (é por isso que o padrão no Linux não apaga);
 - um destino que aparece no último instante não é substituído;
 - uma árvore a apagar é tirada do alcance dos caminhos (movida para a pasta de espera) antes da primeira remoção, e comparada de novo lá.
 
-Não garantido em (b): o que outro processo escreve num arquivo entre a última conferência de tamanho e a chamada vai junto (para a quarentena, restaurável; ou é apagado, onde o executor apaga); entradas criadas dentro de uma árvore entre a comparação e o movimento vão junto com ela.
+Não garantido em (b): o que outro processo escreve num arquivo entre a última conferência de tamanho e a chamada vai junto (para a quarentena, com [recuperação](#restauração) conforme o volume; ou é apagado, onde o executor apaga); entradas criadas dentro de uma árvore entre a comparação e o movimento vão junto com ela.
 
 **(c) Processo hostil, do mesmo usuário, com permissão de escrita dentro da cerca**, agindo durante a execução:
 
@@ -192,6 +218,7 @@ Não garantido em (b): o que outro processo escreve num arquivo entre a última 
 - **Entradas criadas numa árvore entre a comparação com o inventário e o movimento.** Vão junto com a árvore (para a quarentena ou para a pasta de espera, onde a segunda comparação as recusa antes de qualquer remoção).
 - **Contenção de quarentena e restauração contra processo hostil** (item (c)): a pasta de origem ou de destino, e no Windows a própria entrada movida, podem ser movidas entre a abertura e a chamada. No Windows daria para segurá-las e reivindicar a entrada sem conceder o direito de apagar, como no apagar; não foi feito nesta entrega.
 - **Apagar definitivo no Linux sob concorrência hostil.** Não há primitiva que segure uma pasta no lugar; o padrão é recusar. Consequência: no Linux o executor não esvazia a quarentena.
+- **Volume FAT, exFAT ou de rede real.** A recusa é testada pela função de decisão com respostas sintéticas do sistema e pela execução com o volume tratado como não classificado (`Executor::with_unclassified_volume`, que só deixa mais estrito); formatar ou montar um volume desses pede privilégio. Também não foi conferido se `FileDispositionInformationEx` com semântica POSIX é aceito em FAT/exFAT: com a recusa acima, essa chamada não é alcançada lá.
 - **Montagem real.** A recusa de montagem é testada pela função de decisão com respostas sintéticas do sistema; a coleta pelo `statx` só é exercitada no caso "mesma montagem". Montar de verdade pede privilégio.
 - **Corte de energia real.** Garante-se a ordem das sincronizações (`fsync` de pasta no Linux, `FlushFileBuffers` no Windows), testada pela sequência de chamadas; nenhum teste corta a energia.
 - **Letra de unidade remapeada no Windows** (`subst`, mapeamento por usuário): a raiz do volume é aberta pelo caminho `\\?\C:\`, e quem pode remapear a letra muda o que ela é.
@@ -243,13 +270,14 @@ Um código nunca muda de sentido; motivo novo ganha código novo.
 | `E_FS_UNCONFIRMED` | a alteração foi feita, mas o sistema não confirmou que está no disco |
 | `E_FS_TOO_DEEP` | árvore ou caminho inspecionado no planejamento mais fundo que `max_depth` |
 | `E_FS_PLAN_ENTRY_LIMIT` | inspeção do plano excede `max_plan_entries` ao examinar alvos e listar nomes, inclusive os que um curinga não seleciona |
-| `E_FS_EFFECTS_CHANGED` | o que as conferências acharam não é o registro de efeitos aprovado: entrada nova ou removida, outro objeto sob o mesmo nome (identidade), outro tamanho de arquivo, manifesto mudado |
+| `E_FS_EFFECTS_CHANGED` | o que as conferências acharam não é o registro de efeitos aprovado: entrada nova ou removida, outro objeto sob o mesmo nome (identidade, com o alcance da [tabela por sistema de arquivos](#identidade-por-sistema-de-arquivos)), outro tamanho de arquivo, manifesto mudado |
 | `E_FS_EFFECTS_TOO_LARGE` | o registro de efeitos de um ensaio passaria de `max_effects_bytes` |
+| `E_FS_IDENTITY_UNSTABLE` | apagar de verdade ou restaurar num volume cuja identidade não separa um objeto recriado do que ele substituiu: FAT, exFAT, rede ou sistema de arquivos não classificado |
 | `E_FS_IO` | o sistema operacional recusou a operação |
 
 ## O que não é executado
 
-Recusado inteiro, por falta de definição (o caminho mais restritivo): alvo com curinga; `fs.overwrite`; `fs.clean_untracked`; `fs.move` para destino que não seja a quarentena nem uma restauração; alvo em raiz permitida fora da raiz de trabalho; alvo que contém um repositório abaixo do primeiro nível; alvo que é a pasta privada do executor ou a contém; apagar definitivo no Linux (no padrão); no Windows, caminho escrito em caixa diferente da que está no disco; sistema que não seja Linux nem Windows de 64 bits.
+Recusado inteiro, por falta de definição (o caminho mais restritivo): alvo com curinga; `fs.overwrite`; `fs.clean_untracked`; `fs.move` para destino que não seja a quarentena nem uma restauração; alvo em raiz permitida fora da raiz de trabalho; alvo que contém um repositório abaixo do primeiro nível; alvo que é a pasta privada do executor ou a contém; apagar definitivo no Linux (no padrão); apagar definitivo e restauração em volume sem identidade estável; no Windows, caminho escrito em caixa diferente da que está no disco; sistema que não seja Linux nem Windows de 64 bits.
 
 ## Testes
 
@@ -259,6 +287,7 @@ O executor dos testes usa `definitive_delete = "isolated"`, para os testes de ap
 
 | Arquivo | O que prova |
 |---|---|
+| `tests/effects.rs` | efeitos aprovados: entrada a mais, item a mais no manifesto, objeto preexistente movido para o nome, link trocado, arquivo apagado e recriado com o mesmo tamanho (no Linux, cenário com reaproveitamento imediato de inode, ignorado por padrão), e volume não classificado recusando purga e restauração e ainda fazendo quarentena |
 | `tests/sys.rs` | a camada de sistema sozinha: abrir sem seguir link, identidade, grafia, leitura limitada; criar, mover sem substituir e apagar pelo que está aberto; uma pasta segurada não sai do lugar (Windows) e uma só aberta sai (os dois) |
 | `tests/fence.rs` | a cerca, só com conferências (`rehearse`, `measure`): nenhuma alteração |
 | `tests/execute.rs` | quarentena, restauração, apagar, falha no meio, ordem com o log |

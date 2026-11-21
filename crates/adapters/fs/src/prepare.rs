@@ -619,6 +619,7 @@ fn delete_job(
         }
         DefinitiveDelete::Contained | DefinitiveDelete::Isolated => {}
     }
+    fence.stable_identity("a definitive delete")?;
 
     // A tree is not emptied where it is: it goes, whole, to a folder made for this
     // execution, and is removed there.
@@ -864,6 +865,7 @@ fn restore_job(
             format!("{} is not a quarantine batch", batch.text),
         ));
     }
+    fence.stable_identity("a restore")?;
 
     let invalid =
         |what: &str| Stop::new(Reason::ManifestInvalid, format!("{}: {what}", batch.text));

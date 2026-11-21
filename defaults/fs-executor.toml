@@ -23,6 +23,9 @@ max_plan_entries = 10000
 #   "contained" (padrao): so apaga onde o sistema segura a pasta no lugar (Windows). No Linux TODO apagar
 #                definitivo e recusado (E_FS_DELETE_UNCONTAINED): la o executor so faz quarentena e
 #                restauracao, e a quarentena nao e esvaziada por ele.
+# Em qualquer modo, apagar de verdade e restaurar so rodam em volume com identidade estavel (NTFS/ReFS
+# locais; no Linux ext4, xfs, btrfs, tmpfs, f2fs e zfs com instante de criacao); FAT, exFAT, rede e
+# sistema nao classificado recusam (E_FS_IDENTITY_UNSTABLE).
 #   "isolated":  apaga nos dois sistemas. No Linux fica o risco acima, contra um processo do mesmo usuario
 #                que mova pastas durante a exclusao; o executor reconfere o caminho antes de cada remocao,
 #                o que estreita a janela e nao a fecha. Use so onde nenhum outro processo mexe na arvore.

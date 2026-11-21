@@ -5,7 +5,7 @@
 use std::io;
 use std::path::Path;
 
-use super::{Error, Identity, Meta};
+use super::{Error, Identity, Meta, VolumeFacts};
 
 pub const HOLDS: bool = false;
 
@@ -32,6 +32,10 @@ impl Node {
     }
 
     pub fn meta(&self) -> io::Result<Meta> {
+        match self.never {}
+    }
+
+    pub fn volume(&self) -> io::Result<VolumeFacts> {
         match self.never {}
     }
 

@@ -279,7 +279,11 @@ recebe `REMOTE_ORIGIN_REFUSED`. O dono e o aparelho vêm do daemon
   `E_EFFECTS_UNRECORDABLE`; se nem isso for gravado, fica um aviso no log do
   processo. O que o executor compara é nome, tipo, identidade no volume e, de
   arquivo, tamanho: conteúdo reescrito no mesmo objeto, com o mesmo tamanho, e
-  datas não entram.
+  datas não entram. Objeto apagado e recriado sob o mesmo nome só é visto onde a
+  identidade do volume é estável; nos outros volumes (FAT, exFAT, rede, não
+  classificado) o ensaio de apagar de verdade e de restaurar é recusado com
+  `E_FS_IDENTITY_UNSTABLE` ([identidade por sistema de
+  arquivos](../adapters/fs/README.md#identidade-por-sistema-de-arquivos)).
 - A API só aprova ação cujo efeito concreto está fixado. `not_approvable`
   (`approvals::not_approvable`) lista por que não: `estimate_unknown` (sem
   estimativa e sem efeitos gravados), `wildcard_target` (alvo com curinga, que o
