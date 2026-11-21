@@ -60,7 +60,7 @@ Um caminho é resolvido de novo pelo sistema a cada chamada. Conferir um caminho
 7. **Onde cada alvo cai de verdade.** O veredito julga a pasta que recebe os alvos; o executor julga o lugar final de cada um: estritamente dentro da raiz de trabalho, fora de pasta protegida pela política e, no disco, pela mesma abertura sem link. Na **restauração**, o lugar de cada item do manifesto é julgado **pelo próprio portão** (um plano de mover só aquele item para a pasta de origem, classificado com a política confiável): valem as regras de entrada de um mover, inclusive `destination_entry_reserved` (a entrada criada não pode ser a raiz de trabalho, uma raiz permitida ou a quarentena, nem conter uma delas). Isso é feito para todos os itens antes de olhar o disco de qualquer um; a regra não é copiada aqui.
 8. **Tamanho do manifesto.** O manifesto da leva é montado e medido antes de qualquer alteração; maior que `max_manifest_bytes` é recusa (`E_FS_MANIFEST_TOO_LARGE`).
 9. **Apagar de verdade** só passa onde o parâmetro `definitive_delete` permite (ver abaixo).
-10. **Efeitos aprovados.** Quando a execução traz o registro de efeitos concretos que a aprovação cobriu (`Executor::execute_approved`), o que estas conferências acharam (cada passo, cada entrada com identidade e tamanho e, na restauração, o resumo do manifesto) tem de ser esse registro, igual; qualquer diferença é recusa (`E_FS_EFFECTS_CHANGED`). Ver [Efeitos concretos](#efeitos-concretos).
+10. **Efeitos aprovados.** Quando a execução traz o registro de efeitos concretos que a aprovação cobriu (`Executor::execute_approved`), o que estas conferências acharam (cada passo, cada entrada com identidade e tamanho e, na restauração, o resumo do manifesto) tem de ser esse registro, igual; qualquer diferença é recusa (`E_FS_EFFECTS_CHANGED`). O que é comparado é o nome, o tipo, a identidade do objeto no volume e, de arquivo, o tamanho: entrada nova ou que sumiu, objeto trocado por outro com o mesmo nome e tamanho, link ou junção trocados. Conteúdo reescrito no mesmo objeto, com o mesmo tamanho, e datas não entram. Ver [Efeitos concretos](#efeitos-concretos).
 11. Alvos sobrepostos, curinga, sobrescrever, limpar não rastreados, mover que não seja para a quarentena nem restauração, e alvo que é a pasta privada do executor ou a contém: recusa. Ver [o que não é executado](#o-que-não-é-executado).
 
 Qualquer recusa aqui acontece com o disco intacto (`Failure.stage == Checks`).
@@ -69,7 +69,7 @@ Qualquer recusa aqui acontece com o disco intacto (`Failure.stage == Checks`).
 
 `Executor::rehearse_effects` faz todas as conferências acima para um plano, como se a aprovação que ele pede já existisse, sem mudar nada, e devolve o registro `record.action-effects:1` (`Effects`): cada passo do relatório com o alvo, o efeito, o lugar na quarentena e o inventário do objeto (nomes abaixo do alvo, tipo, tamanho de arquivo e identidade `<volume>:<arquivo>`) e, na restauração, o SHA-256 dos bytes do manifesto lido. Um item do manifesto que não está na quarentena entra sem entradas, então ele reaparecer também é diferença. As pastas que a execução cria antes do primeiro alvo não entram: outra ação pode criá-las no meio, sem mudar o que é movido ou apagado. A inspeção dos alvos respeita `max_plan_entries`, e registro maior que `max_effects_bytes` é recusa (`E_FS_EFFECTS_TOO_LARGE`), sem registro nenhum.
 
-O daemon grava esse registro depois do plano e o compromete na aprovação; `Executor::execute_approved` (e `execute_with_effects`, com um `Journal`) recebe o registro aprovado, refaz o ensaio depois de consumir a licença e, antes da primeira alteração, recusa com `E_FS_EFFECTS_CHANGED` se não achar o mesmo. A comparação é estrutural, campo a campo.
+O daemon grava esse registro depois do plano e o compromete na aprovação; `Executor::execute_approved` (e `execute_with_effects`, com um `Journal`) recebe o registro aprovado, refaz o ensaio depois de consumir a licença e, antes da primeira alteração, recusa com `E_FS_EFFECTS_CHANGED` se não achar o mesmo. A comparação é estrutural, campo a campo. O registro é medido e resumido na forma canônica (`Effects::to_bytes`): JSON compacto, sem espaços, com as chaves de cada objeto em ordem de bytes.
 
 ## Alterações
 
@@ -243,7 +243,7 @@ Um código nunca muda de sentido; motivo novo ganha código novo.
 | `E_FS_UNCONFIRMED` | a alteração foi feita, mas o sistema não confirmou que está no disco |
 | `E_FS_TOO_DEEP` | árvore ou caminho inspecionado no planejamento mais fundo que `max_depth` |
 | `E_FS_PLAN_ENTRY_LIMIT` | inspeção do plano excede `max_plan_entries` ao examinar alvos e listar nomes, inclusive os que um curinga não seleciona |
-| `E_FS_EFFECTS_CHANGED` | o que as conferências acharam não é o registro de efeitos aprovado: entrada nova, removida ou trocada, outro tamanho, manifesto mudado |
+| `E_FS_EFFECTS_CHANGED` | o que as conferências acharam não é o registro de efeitos aprovado: entrada nova ou removida, outro objeto sob o mesmo nome (identidade), outro tamanho de arquivo, manifesto mudado |
 | `E_FS_EFFECTS_TOO_LARGE` | o registro de efeitos de um ensaio passaria de `max_effects_bytes` |
 | `E_FS_IO` | o sistema operacional recusou a operação |
 

@@ -149,3 +149,65 @@ fn a_record_over_the_ceiling_is_refused() {
     assert_eq!(refused.reason, Reason::EffectsTooLarge, "{refused}");
     assert!(sandbox.path("work/cache/a.txt").is_file());
 }
+
+/// Rehearses a purge of `cache`, lets `change` act on the tree, and expects the execution
+/// approved with the rehearsal to stop before the disk, with `kept` still there.
+fn changed_after_the_approval(
+    sandbox: &Sandbox,
+    change: impl FnOnce(),
+    kept: &[std::path::PathBuf],
+) {
+    let policy = sandbox.policy(QUARANTINE_OFF);
+    let mut executor = sandbox.executor(QUARANTINE_OFF);
+    let flow = through_gate(&policy, purge(sandbox, "act-1"));
+    let approved = executor
+        .rehearse_effects(&id("act-1"), flow.permit.plan())
+        .unwrap();
+    change();
+    let failure = execute(&mut executor, flow, &approved).unwrap_err();
+    assert_eq!(failure.reason, Reason::EffectsChanged, "{failure}");
+    assert_eq!(failure.stage, Stage::Checks);
+    assert!(failure.report.untouched());
+    for path in kept {
+        assert!(fs::symlink_metadata(path).is_ok(), "{}", path.display());
+    }
+}
+
+#[test]
+fn a_file_swapped_for_another_of_the_same_name_and_size_stops_the_purge() {
+    let sandbox = Sandbox::new("effects-swap");
+    let seen = sandbox.file("work/cache/seen.txt", "seen");
+    // Made beside the tree, so that both objects exist at once and have distinct identities.
+    let other = sandbox.file("work/other.txt", "SEEN");
+    changed_after_the_approval(
+        &sandbox,
+        || fs::rename(&other, &seen).unwrap(),
+        std::slice::from_ref(&seen),
+    );
+    assert_eq!(fs::read_to_string(&seen).unwrap(), "SEEN");
+}
+
+#[test]
+fn a_link_swapped_for_another_of_the_same_name_stops_the_purge() {
+    let sandbox = Sandbox::new("effects-link");
+    sandbox.dir("work/cache");
+    let first = sandbox.dir("work/first");
+    let second = sandbox.dir("work/second");
+    let link = sandbox.path("work/cache/link");
+    if !common::folder_link(&link, &first) {
+        return;
+    }
+    let swap = {
+        let link = link.clone();
+        move || {
+            // A junction is removed as a folder, a symbolic link as a file; the target stays.
+            if cfg!(windows) {
+                fs::remove_dir(&link).unwrap();
+            } else {
+                fs::remove_file(&link).unwrap();
+            }
+            assert!(common::folder_link(&link, &second));
+        }
+    };
+    changed_after_the_approval(&sandbox, swap, &[link, first]);
+}

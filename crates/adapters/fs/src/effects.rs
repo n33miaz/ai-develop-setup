@@ -95,9 +95,12 @@ impl Effects {
         }
     }
 
-    /// The record as it is stored and hashed.
+    /// The canonical form of the record, the one that is measured and hashed: compact JSON
+    /// with the keys of every object in byte order (see the contract).
     pub fn to_bytes(&self) -> Vec<u8> {
-        serde_json::to_vec(self).expect("a record of effects is plain data")
+        // A `Value` keeps its keys sorted; the record holds only text, integers and lists.
+        let value = serde_json::to_value(self).expect("a record of effects is plain data");
+        serde_json::to_vec(&value).expect("a record of effects is plain data")
     }
 
     /// Larger than `max_effects_bytes` is refused: the rehearsal records nothing.
@@ -132,5 +135,39 @@ fn flatten(seen: &Seen, path: &mut Vec<String>, out: &mut Vec<EffectEntry>) {
         path.push(name.clone());
         flatten(child, path, out);
         path.pop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_canonical_form_sorts_the_keys_and_has_no_spaces() {
+        let effects = Effects {
+            version: EFFECTS_VERSION,
+            action_id: "act-1".to_owned(),
+            plan_hash: "sha256:00".to_owned(),
+            manifest: None,
+            steps: vec![EffectStep {
+                target: "/w/a".to_owned(),
+                effect: EffectKind::Delete,
+                stored: None,
+                entries: vec![EffectEntry {
+                    path: vec![],
+                    kind: ItemKind::File,
+                    bytes: 3,
+                    id: "1:2".to_owned(),
+                }],
+            }],
+        };
+        assert_eq!(
+            String::from_utf8(effects.to_bytes()).unwrap(),
+            concat!(
+                r#"{"action_id":"act-1","manifest":null,"plan_hash":"sha256:00","#,
+                r#""steps":[{"effect":"delete","entries":[{"bytes":3,"id":"1:2","kind":"file","#,
+                r#""path":[]}],"stored":null,"target":"/w/a"}],"version":1}"#
+            )
+        );
     }
 }

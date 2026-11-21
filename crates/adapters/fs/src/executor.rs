@@ -224,7 +224,7 @@ impl Executor {
                 return Err(Failure::before_anything(Stop::new(
                     Reason::EffectsChanged,
                     format!(
-                        "approved for {} entries in {} steps; found {} entries in {} steps,                          or other ones",
+                        "approved for {} entries in {} steps; found {} entries in {} steps, or other ones",
                         approved.entries(),
                         approved.steps.len(),
                         found.entries(),
