@@ -30,6 +30,7 @@ import { sessionInput } from './api/session'
 import styles from './App.module.css'
 import { ConnectionStatus } from './components/ConnectionStatus'
 import { Sidebar } from './components/Sidebar/Sidebar'
+import { UsagePanel } from './components/UsagePanel/UsagePanel'
 import { eventByteSource, staticByteSource } from './components/Terminal/byteSource'
 import { Terminal } from './components/Terminal/Terminal'
 import { useT, type MessageKey, type Translate } from './i18n'
@@ -42,6 +43,7 @@ import {
   type SessionView,
 } from './model/views'
 import { sampleEvents, sampleOutput, type SampleEvents } from './sample/data'
+import { sampleUsage } from './sample/usage'
 import type { ThemePreference } from './theme/theme'
 import { useTheme } from './theme/useTheme'
 import type { SessionEvent } from './api'
@@ -623,6 +625,7 @@ export function App({
 
       <p className={styles.notice}>{t(live ? 'notice.live' : 'notice.wip')}</p>
       <UpdateNotice className={styles.notice} />
+      <UsagePanel tools={live ? null : sampleUsage} />
       <div className={styles.body}>
         <Sidebar
           id={sidebarId}
