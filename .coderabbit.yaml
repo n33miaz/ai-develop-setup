@@ -8,6 +8,21 @@ reviews:
   high_level_summary_in_walkthrough: false
   collapse_walkthrough: true
   review_status: false
+  # No prompt blocks for coding tools in review comments or in the review body.
+  enable_prompt_for_ai_agents: false
+  # No action checkboxes (fix comments, unit tests, CI fixes, conflict resolution).
+  # The "Explain Change" button has no configuration option.
+  finishing_touches:
+    autofix:
+      enabled: false
+    unit_tests:
+      enabled: false
+    simplify:
+      enabled: false
+    fix_ci:
+      enabled: false
+    resolve_merge_conflict:
+      enabled: false
   auto_review:
     enabled: true
     drafts: false
