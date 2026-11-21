@@ -32,6 +32,10 @@ Base: as dez últimas execuções verdes de push na `develop` (de 01:40 a 06:41 
 - Por isso push e PR não se comparam direto: parte dos pushes paga o salvamento do cache, e o PR paga o job `commits` (que roda em paralelo). Num PR (44873191388) o `ci-ok` só começou 47 s depois do fim do último job (o `pty-windows`, aos 213 s); de novo, os horários mostram o intervalo, sem registrar a causa.
 - Os jobs Windows rodam em paralelo; somar os tempos não dá o tempo da execução.
 
+### Lint da casca
+
+Desde o fim da amostra acima, o `shell-check` roda `cargo clippy -p ads-shell --all-targets` antes dos testes da casca, em série com os demais passos. Nas seis primeiras execuções verdes com o passo (pushes 44900418240 e 44902766285; PRs 44900034328, 44901649324, 44902756290 e 44902832474), o lint levou de 48 a 69 s, praticamente empatado com a compilação da interface (56 a 65 s) como passo mais longo do job. O `shell-check` inteiro levou de 219 a 267 s, contra 135 a 243 s na amostra acima. Do início da execução ao fim do `ci-ok`, de 233 a 282 s; o `shell-check` foi o último job a terminar em 5 das 6, e a folga para o alvo de 5 minutos caiu para cerca de 18 s no pior caso.
+
 ### Opções para recuperar folga (não aplicadas)
 
 - Rodar a janela real e o build dos três binários (de 29 a 58 s na amostra) só quando mudam `crates/shell/`, `ui/` ou `tools/smoke_desktop.py`, mantendo o filtro amplo para o build da interface e os testes da casca. O teste de conexão também depende do daemon e do `ptyhost`: com o filtro estreito, uma mudança neles que quebre a conexão passa sem a janela. O ganho no `ci-ok` só existe quando o `shell-check` é o último a terminar, e para no fim da próxima dependência do `ci-ok`. Tirando esses passos de cada uma das 17 execuções da amostra com `shell-check`, o ganho seria zero em 5 dos 8 pushes e em 3 dos 9 PRs, e de 5 a 58 s nas demais.
