@@ -153,7 +153,8 @@ cifradas de novo e reencadeadas com a chave; descartá-las exigiria apagar
 tabelas numa migração que só acrescenta. Nenhum produtor gravou na versão 2,
 então só arquivos de teste a usam.
 
-Formato da linha. Cada linha leva `format` (hoje 1). Os dados associados são o
+Formato da linha. Cada linha leva `format`: 1 nos eventos comuns e 3 nas
+linhas do diário do portão. Os dados associados são o
 rótulo `urn:ads:storage:event-row`, o `format` e todas as colunas em claro,
 inclusive `position`, `action_id`, `approval_id` e `prev_chain`; o `key_id` a
 cifra acrescenta sozinha. A leitura recusa formato desconhecido antes de decifrar.
@@ -161,8 +162,11 @@ Uma coluna em claro nova entra como `format` 2, com a sua lista de campos, sem
 mudar o significado das linhas 1: não há dois formatos distinguidos por limite
 de `position` nem por data.
 
+Atualizado em 21/11/2026: o diário do portão (PR #195) usa o `format` 3, que
+cifra o registro do plano junto do primeiro evento; o `format` 2 não é usado.
+
 `action_id` e `approval_id` ficam em claro para os índices únicos do portão
-(uso único da licença), que entram com a ponte. Saem do `data` dos eventos
+(uso único da licença), criados na versão 5 do esquema. Saem do `data` dos eventos
 `action.*` e `approval.*`; o id da família tem de ser o do stream
 (`contracts/README.md`, stream e entidade) e o tipo, da mesma família do stream.
 Fora dessas famílias ficam nulos. `CHECK` no esquema repete as três regras:
@@ -245,8 +249,8 @@ inteira sob o lock de escrita ([log de eventos](../../crates/storage/README.md#l
 O daemon fornece a âncora do cofre e usa o caminho absoluto `audit_database_path`
 da configuração de armazenamento. Quando omitido, usa `%LOCALAPPDATA%/ads/audit.db`
 no Windows. Para transferir um banco ancorado para outro caminho, o dono confirma
-um plano de recuperação com o mesmo compromisso. As invariantes do portão e a ligação com o
-executor ficam para entregas seguintes.
+um plano de recuperação com o mesmo compromisso. O diário do portão (`GateJournal`) e a ligação com
+o executor de arquivos estão no armazenamento e no daemon (PR #195).
 
 ## Riscos, demonstração e reversão
 
@@ -262,8 +266,10 @@ passava pela imagem; sem a imagem, 198 ms e 4 ms. Um de 200 MiB, antes recusado
 com `Full` no padrão, abre em cerca de 0,6 s com integridade e 3 ms sem ela.
 Falhas por categoria serão medidas quando a composição existir.
 
-Não há garantia contra troca concorrente do caminho por outro processo; a pasta
-por usuário e a trava de instância pertencem à composição futura. Backup e
+Não há garantia contra troca concorrente do caminho por outro processo. A pasta
+por usuário vem de `audit::canonical_path`, a fixação no cofre é serializada
+entre processos por `audit-binding.lock` (`lock_binding`, PR #187) e a trava de
+instância do daemon é `InstanceLock` (PR #229). Backup e
 restauração completa ainda dependem do log. Para reverter a proposta de arquivo,
 criar migração explícita com backup e demonstração de atomicidade; nunca reduzir
 user_version nem dividir invariantes entre arquivos WAL. As tabelas futuras devem

@@ -1,8 +1,6 @@
 # 0026. Operating system vault for product secrets
 
-Status: proposta em 20/11/2026, aguardando ratificação do mantenedor
-
-Em vigor no código, pendente de ratificação pelo mantenedor.
+Status: proposta em 20/11/2026, em vigor no código, aguardando ratificação do mantenedor
 
 ## Contexto
 
