@@ -282,9 +282,8 @@ describe('desktop client selection', () => {
     first.close()
     const second = factory(false)
     second.addEventListener('open', () => opened.push('second'))
-    await vi.waitFor(() => {
-      expect(calls).toHaveLength(1)
-    })
+    for (let turn = 0; turn < 10; turn++) await Promise.resolve()
+    expect(calls).toEqual([firstConnect])
     finishFirst?.()
     await vi.waitFor(() => {
       expect(opened).toEqual(['second'])

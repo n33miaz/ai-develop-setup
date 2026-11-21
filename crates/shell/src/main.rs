@@ -213,10 +213,15 @@ mod tests {
             .split(';')
             .map(|directive| directive.split_whitespace().collect())
             .collect();
+        // A browser applies only the first occurrence of a repeated directive.
         for name in ["frame-src", "object-src"] {
-            assert!(
-                directives.contains(&vec![name, "'none'"]),
-                "{name} 'none' missing from {csp}"
+            let first = directives
+                .iter()
+                .find(|directive| directive.first() == Some(&name));
+            assert_eq!(
+                first.map(Vec::as_slice),
+                Some([name, "'none'"].as_slice()),
+                "{name} must first appear as 'none' in {csp}"
             );
         }
     }
