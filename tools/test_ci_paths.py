@@ -2,6 +2,7 @@
 
 import re
 import shlex
+import textwrap
 import unittest
 
 from check_deps import ROOT, load_metadata, relative_dir
@@ -11,7 +12,10 @@ WINDOWS_MODULE = re.compile(r"(?:^|/)(?:win|windows)(?:\.rs$|/)")
 UNSAFE_CODE = re.compile(r"\bunsafe\s*(?:\{|fn\b|impl\b|extern\b)")
 RUN_KEY = re.compile(r"^( *)(- )?run:(?: +(.*))?$")
 ASSIGNMENT = re.compile(r"^[A-Za-z_]\w*=")
-OPERATORS = {";", "&", "&&", "|", "||"}
+SHELL_TOKEN = re.compile(
+    r"(?P<separator>\n|[;&|]+)|[ \t]+|\\\n|#[^\n]*|"
+    r"""(?P<word>(?:\\[\s\S]|'[^'\n]*'|"(?:\\[^\n]|[^"\\\n])*"|[^ \t\n;&|<>()'"\\\x60])+)""",
+)
 
 
 def windows_unsafe_crates(packages, metadata):
@@ -34,54 +38,64 @@ def windows_jobs(workflow):
 
 
 def run_commands(job):
-    """The commands the `run` steps of `job` execute, without YAML or shell comments."""
+    """Read plain and block run scalars from conventional Windows job steps."""
     lines = job.splitlines()
-    script = []
     at = 0
     while at < len(lines):
         key = RUN_KEY.match(lines[at])
         at += 1
         if not key or not key[3]:
-            # Not a step, or `defaults.run`, whose value is a mapping.
             continue
-        value = re.sub(r"(?:^|\s+)#.*$", "", key[3]).strip()
-        if not value.startswith(("|", ">")):
-            script.append(value)
-            continue
+        value = key[3].strip()
+        block = re.fullmatch(r"([|>])[-+]?(?:\s+#.*)?", value)
         indent = len(key[1]) + len(key[2] or "")
-        while at < len(lines) and (not lines[at].strip() or len(lines[at]) - len(lines[at].lstrip()) > indent):
-            script.append(lines[at])
+        body = []
+        while at < len(lines):
+            line = lines[at]
+            width = len(line) - len(line.lstrip(" "))
+            if line.strip() and width <= indent:
+                break
+            body.append(line)
             at += 1
-    commands = []
-    pending = ""
-    for line in script:
-        line = re.sub(r"(?:^|\s+)#.*$", "", line.strip())
-        if line.endswith("\\"):
-            pending += line[:-1] + " "
+        if not block:
+            if value.startswith(("|", ">", "'", '"', "*", "&", "!", "{", "[", "%", "@", "`")):
+                raise ValueError(f"unsupported YAML run scalar: {value}")
+            if any(line.strip() and not line.lstrip().startswith("#") for line in body):
+                raise ValueError("unsupported YAML run scalar: multiline plain text")
+            yield from simple_commands(re.split(r"\s+#", value, maxsplit=1)[0])
             continue
-        command = (pending + line).strip()
-        pending = ""
-        commands.extend(simple_commands(command))
-    return commands
 
-
-def simple_commands(line):
-    """The words of each command `line` runs, split at shell operators outside quotes."""
-    lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
-    lexer.whitespace_split = True
-    lexer.commenters = ""
-    try:
-        words = list(lexer)
-    except ValueError:
-        # Unbalanced quotes: nothing here counts as run.
-        return []
-    commands = [[]]
-    for word in words:
-        if word in OPERATORS:
-            commands.append([])
+        body = textwrap.dedent("\n".join(body)).split("\n")
+        if block[1] == ">":
+            if any(line.startswith((" ", "\t")) for line in body):
+                raise ValueError("unsupported YAML run scalar: indented content in folded block")
+            # Each empty line in a folded block preserves one line break.
+            script = re.sub(
+                r"\n+", lambda breaks: " " if len(breaks[0]) == 1 else breaks[0][1:],
+                "\n".join(body).strip("\n"),
+            )
+            yield from simple_commands(script)
         else:
-            commands[-1].append(word)
-    return [command for command in commands if command]
+            yield from simple_commands("\n".join(body))
+
+
+def simple_commands(script):
+    """Tokenize simple shell commands before removing their quotes."""
+    command = []
+    at = 0
+    while at < len(script):
+        token = SHELL_TOKEN.match(script, at)
+        if not token:
+            raise ValueError(f"unsupported shell syntax in YAML run: {script[at:]!r}")
+        at = token.end()
+        if token.lastgroup == "separator":
+            if command:
+                yield command
+                command = []
+        elif token.lastgroup == "word":
+            command.extend(shlex.split(token[0].replace("\\\n", ""), comments=False))
+    if command:
+        yield command
 
 
 def cargo_commands(job):
@@ -182,6 +196,34 @@ class WindowsPathFiltersTest(unittest.TestCase):
             cargo_commands(printed),
             [("test", {"ads-launcher"}), ("test", {"ads-launcher"})],
         )
+
+    def test_folded_run_is_one_command(self):
+        job = """    steps:
+      - run: >-
+          cargo test --locked
+          -p ads-private-dir
+
+          cargo clippy -p ads-launcher
+        """
+        self.assertEqual(
+            cargo_commands(job), [("test", {"ads-private-dir"}), ("clippy", {"ads-launcher"})]
+        )
+
+    def test_shell_quotes_survive_comments_and_operators(self):
+        job = """    steps:
+      - run: |
+          echo "label # text" && cargo test -p ads-private-dir # -p ignored
+          echo "&&" cargo clippy -p ignored
+          cargo test -p ads-launcher \\
+          # -p ignored
+        """
+        self.assertEqual(
+            cargo_commands(job), [("test", {"ads-private-dir"}), ("test", {"ads-launcher"})]
+        )
+
+    def test_unsupported_run_scalar_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "unsupported YAML run"):
+            cargo_commands("      - run: *shared_script")
 
     def test_filters_cover_transitive_workspace_dependencies(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
