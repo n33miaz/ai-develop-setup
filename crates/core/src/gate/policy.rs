@@ -101,6 +101,7 @@ impl fmt::Display for PolicyError {
 pub struct GatePolicy {
     user_home: AbsPath,
     allowed_roots: Vec<AbsPath>,
+    work_roots: Option<Vec<AbsPath>>,
     windows_system_dirs: Vec<String>,
     posix_system_dirs: Vec<AbsPath>,
     windows_user_parents: Vec<String>,
@@ -197,6 +198,7 @@ impl GatePolicy {
 
         let policy = Self {
             user_home,
+            work_roots: None,
             allowed_roots: paths(
                 "allowed_roots",
                 pick("allowed_roots", over.allowed_roots, base.allowed_roots)?,
@@ -300,6 +302,17 @@ impl GatePolicy {
                     })
                 }),
         }
+    }
+
+    /// Binds the policy to the trusted roots from the session launcher configuration.
+    /// An empty list denies every work root.
+    pub fn with_work_roots(mut self, roots: Vec<AbsPath>) -> Self {
+        self.work_roots = Some(roots);
+        self
+    }
+
+    pub(crate) fn work_roots(&self) -> Option<&[AbsPath]> {
+        self.work_roots.as_deref()
     }
 
     pub fn user_home(&self) -> &AbsPath {

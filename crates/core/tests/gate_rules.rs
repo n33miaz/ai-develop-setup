@@ -873,6 +873,18 @@ fn recursive_delete_above_a_limit_requires_approval() {
 }
 
 #[test]
+fn unconfigured_work_roots_are_denied() {
+    let plan = plan(Op::Overwrite, POSIX_ROOT, &["/home/user-a/work/proj/file"]);
+    let policy = GatePolicy::defaults(&HostFacts {
+        user_home: POSIX_HOME,
+    })
+    .unwrap();
+    for policy in [policy.clone(), policy.with_work_roots(Vec::new())] {
+        denied_by(&classify(&plan, &policy), Rule::WorkRootUnknown);
+    }
+}
+
+#[test]
 fn limits_come_from_the_policy() {
     let target = ["/home/user-a/work/proj/build"];
     let plan = plan(Op::DeleteRecursive, POSIX_ROOT, &target);
@@ -1063,6 +1075,53 @@ fn classification_is_deterministic() {
     assert_eq!(classify(&asked, &policy), classify(&asked, &policy));
 }
 
+#[test]
+fn a_declared_root_cannot_reclassify_another_quarantine() {
+    use ads_core::gate::AbsPath;
+
+    let outer = "/work";
+    let inner = "/work/nested";
+    let policy = policy(POSIX_HOME, "").with_work_roots(
+        [outer, inner]
+            .into_iter()
+            .map(|root| AbsPath::parse(root).unwrap())
+            .collect(),
+    );
+    for (root, target) in [
+        (outer, "/work/nested/.ads/quarantine/batch"),
+        (outer, "/work/nested"),
+        ("/work/nested/.ads", "/work/nested/.ads/quarantine/batch"),
+    ] {
+        let verdict = classify(&plan(Op::DeleteRecursive, root, &[target]), &policy);
+        denied_by(&verdict, Rule::QuarantineOfOtherRoot);
+        assert_eq!(verdict.has(Rule::WorkRootUnknown), root != outer);
+    }
+    let purge = classify(
+        &plan(
+            Op::DeleteRecursive,
+            inner,
+            &["/work/nested/.ads/quarantine/batch"],
+        ),
+        &policy,
+    );
+    needs_approval_by(&purge, Rule::QuarantinePurge);
+}
+
+#[test]
+fn repository_metadata_is_protected_as_target_and_destination() {
+    denied_by(
+        &posix(Op::Delete, &["/home/user-a/work/proj/.GIT/config"]),
+        Rule::RepositoryMetadata,
+    );
+    denied_by(
+        &posix(
+            move_to("/home/user-a/work/proj/.git/objects"),
+            &["/home/user-a/work/proj/file"],
+        ),
+        Rule::RepositoryMetadata,
+    );
+}
+
 // ---- Rule codes -------------------------------------------------------------------------------
 
 /// The codes are part of the contract: they go into `action.denied` and into the action plan
@@ -1086,6 +1145,9 @@ fn every_rule_has_its_stable_code() {
         "allowed_root_itself",
         "outside_allowed_roots",
         "repository_root",
+        "repository_metadata",
+        "work_root_unknown",
+        "quarantine_of_other_root",
         "quarantine_itself",
         "destination_outside_allowed_roots",
         "destination_inside_target",
@@ -1112,7 +1174,7 @@ fn every_rule_has_its_stable_code() {
     assert_eq!(codes_of(Decision::Denied), denied);
     assert_eq!(codes_of(Decision::RequiresApproval), approval);
     assert!(codes_of(Decision::Allowed).is_empty());
-    assert_eq!(Rule::all().len(), 32);
+    assert_eq!(Rule::all().len(), 35);
 
     assert_eq!(
         Rule::Protected(Protection::UserHome).code().as_str(),

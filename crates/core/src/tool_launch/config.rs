@@ -369,6 +369,11 @@ impl<H: Harness> ToolConfig<H> {
         self.workdirs.keys().map(String::as_str)
     }
 
+    /// The configured working folders, including aliases of the same folder.
+    pub fn workdirs(&self) -> impl Iterator<Item = &Cwd> {
+        self.workdirs.values()
+    }
+
     pub fn profile(&self, alias: &CommonIdV1) -> Option<&ProfileBinding> {
         self.profiles.get(alias.as_str())
     }

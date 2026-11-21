@@ -374,12 +374,14 @@ mod tests {
     fn file_execution_uses_the_anchored_gate() {
         use std::{fs, num::NonZeroU64, path::PathBuf};
 
-        use ads_adapter_fs::Executor;
+        use crate::api::Launcher;
+        use crate::tool_launcher::ToolLauncher;
         use ads_core::gate::{
-            AbsPath, ActionPlan, Actor, ActorKind, DataClass, Estimate, EventMeta, GatePolicy,
-            HostFacts, Id, JournalError, JournalGate, OperationRequest, PlanRequest, State,
-            TargetRequest, Timestamp, Ulid,
+            Actor, ActorKind, Command, DataClass, Estimate, EventMeta, GateJournal, GatePolicy,
+            HostFacts, Id, JournalError, OperationRequest, PlanRequest, State, TargetRequest,
+            Timestamp, Ulid,
         };
+        use ads_core::tool_launch::{DiskProbe, HostRules};
         use ads_storage::cipher::{CipherError, KeyId, SecretKey};
 
         struct FixtureKey;
@@ -418,26 +420,60 @@ mod tests {
         let work = child("work");
         let target = format!("{work}{}example.txt", std::path::MAIN_SEPARATOR);
         let policy = GatePolicy::defaults(&HostFacts { user_home: &home }).unwrap();
-        let mut executor = Executor::new(&fence, policy.clone()).unwrap();
-        let facts = executor
-            .measure(
-                &AbsPath::parse(&work).unwrap(),
-                &AbsPath::parse(&target).unwrap(),
+        let program = ads_adapter_claude::HARNESS_ID;
+        let launcher = ToolLauncher::from_toml_str(
+            &format!("[workdirs]\nworkspace = '{work}'\nother = '{fence_path}'\n[tools.{program}]\nprogram = '{target}'"),
+            HostRules::host(),
+            std::iter::empty::<(&str, &str)>(),
+            DiskProbe,
+            DiskProbe,
+        ).unwrap();
+        let opened = launcher
+            .prepare(
+                &serde_json::from_value(serde_json::json!({
+                    "session_id": "example",
+                    "harness": program,
+                    "workdir_alias": "workspace",
+                    "cols": 80,
+                    "rows": 24,
+                    "_meta": {"origin": "local", "idempotency_key": "01ARZ3NDEKTSV4RRFFQ69G5FAB"}
+                }))
+                .unwrap(),
             )
             .unwrap();
-        let plan = ActionPlan::normalize(&PlanRequest {
+        let mut gate = launcher
+            .session_gate(&opened, policy.clone(), &fence)
+            .unwrap();
+        let open_in = |cwd| {
+            let mut params = opened.clone();
+            params.cwd = Some(cwd);
+            params
+        };
+        assert!(
+            launcher
+                .session_gate(
+                    &open_in(child("unconfigured").try_into().unwrap()),
+                    policy.clone(),
+                    &fence
+                )
+                .is_err()
+        );
+        let mut other = launcher
+            .session_gate(
+                &open_in(fence_path.to_owned().try_into().unwrap()),
+                policy,
+                &fence,
+            )
+            .unwrap();
+        let request = PlanRequest {
             operation: OperationRequest::Delete,
-            work_root: work,
+            work_root: child("forged"),
             targets: vec![TargetRequest {
                 path: target,
-                repo_root: facts.repo_root,
+                repo_root: false,
             }],
-            estimate: Some(Estimate {
-                items: facts.items,
-                bytes: facts.bytes,
-            }),
-        })
-        .unwrap();
+            estimate: Some(Estimate { items: 1, bytes: 7 }),
+        };
         let meta = |seq| EventMeta {
             seq: NonZeroU64::new(seq).unwrap(),
             id: Ulid::new(format!("01J{seq:023}")).unwrap(),
@@ -459,19 +495,82 @@ mod tests {
         )
         .unwrap();
         let id = Id::new("example").unwrap();
-        JournalGate::new(&policy, &mut log)
-            .plan(id.clone(), &plan, meta(1))
-            .unwrap();
-        let result =
-            crate::gate::execute(&mut log, &policy, &mut executor, &id, meta(2), meta(3)).unwrap();
+        gate.plan(&mut log, id.clone(), request, meta(1)).unwrap();
+        assert_eq!(
+            log.load(&id).unwrap().plan.fields().work_root.as_str(),
+            work
+        );
+        assert_eq!(other.inspect(&mut log, &id), Err(JournalError::Missing));
+        assert_eq!(
+            other.apply(
+                &mut log,
+                &id,
+                Command::Fail {
+                    error_code: ads_adapter_fs::Reason::Io.error_code()
+                },
+                meta(2)
+            ),
+            Err(JournalError::Missing),
+        );
+        assert!(matches!(
+            other.execute(&mut log, &id, meta(2), meta(3)),
+            Err(JournalError::Missing)
+        ));
+        assert!(file.is_file());
+        assert_eq!(log.verify_chain(), Ok(1));
+        let result = gate.execute(&mut log, &id, meta(2), meta(3)).unwrap();
         assert!(result.operation.is_ok(), "{:?}", result.operation);
         assert_eq!(result.recorded.unwrap().state, State::Executed);
         assert!(!file.exists());
         assert_eq!(log.verify_chain(), Ok(3));
         assert!(matches!(
-            crate::gate::execute(&mut log, &policy, &mut executor, &id, meta(4), meta(5)),
+            gate.execute(&mut log, &id, meta(4), meta(5)),
             Err(JournalError::Transition)
         ));
+
+        let project = fence.join("work/pack/project");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(project.join(".git"), "gitdir: elsewhere").unwrap();
+        let denied_id = Id::new("repository").unwrap();
+        let pack = format!("{work}{}pack", std::path::MAIN_SEPARATOR);
+        let request = PlanRequest {
+            operation: OperationRequest::DeleteRecursive,
+            work_root: child("forged"),
+            targets: vec![TargetRequest {
+                path: pack.clone(),
+                repo_root: false,
+            }],
+            estimate: None,
+        };
+        let mut denied_meta = meta(6);
+        denied_meta.seq = NonZeroU64::MIN;
+        assert_eq!(
+            gate.plan(&mut log, denied_id.clone(), request, denied_meta)
+                .unwrap()
+                .state,
+            State::Denied
+        );
+        let history = log.load(&denied_id).unwrap();
+        let repo = format!("{pack}{}project", std::path::MAIN_SEPARATOR);
+        assert!(
+            history
+                .plan
+                .fields()
+                .targets
+                .iter()
+                .any(|target| target.repo_root
+                    && target.pattern.is_none()
+                    && target.path.as_str() == repo)
+        );
+        assert_eq!(
+            gate.inspect(&mut log, &denied_id).unwrap().state,
+            State::Denied
+        );
+        assert!(matches!(
+            gate.execute(&mut log, &denied_id, meta(7), meta(8)),
+            Err(JournalError::Transition)
+        ));
+        assert!(project.join(".git").is_file());
     }
 
     #[test]

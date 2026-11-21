@@ -56,7 +56,7 @@ Um caminho é resolvido de novo pelo sistema a cada chamada. Conferir um caminho
 3. **Resolução.** Cada nome é aberto a partir da cerca. Link simbólico, junção ou qualquer ponto de reanálise no meio do caminho é recusa; no último nome é "o alvo é um link", e o que ele aponta nunca é olhado. No Windows o nome tem de ser exatamente o que a pasta lista: outra caixa ou o nome curto (8.3) é recusa, então o texto que o portão julgou é a entrada que será aberta, também em pasta sensível a maiúsculas.
 4. **Volume e montagem.** Entrada em outro volume é recusa. No Linux, entrada em outra montagem também, inclusive montagem do mesmo dispositivo (bind mount): a identificação de montagem e a marca de raiz de montagem vêm do `statx`; kernel ou sistema de arquivos que não informa as duas recusa tudo. No Windows, volume montado em pasta é ponto de reanálise: visto como link, nunca atravessado. Acima da cerca, no caminho da raiz do volume até ela, montagem é permitida.
 5. **Fatos e inventário.** O executor percorre a árvore de cada alvo por identificadores abertos (sem seguir link; um link conta um), conta itens e bytes com soma verificada (estouro é recusa) e registra o inventário: a identidade, o tipo e, para arquivo, o tamanho de cada entrada. O plano é julgado mais uma vez com os fatos reais. Veredito mais duro que o declarado é recusa; com aprovação, mais itens ou mais bytes do que a estimativa aprovada também.
-6. **Repositórios.** `.git` no nível do alvo é o fato "raiz de repositório", julgado pela política. `.git` (pasta, ou o arquivo de uma worktree) em qualquer profundidade abaixo disso é recusa (`E_FS_NESTED_REPOSITORY`), para apagar e para quarentena. O nome é comparado sem distinguir caixa: `.GIT` conta.
+6. **Repositórios.** A inspeção usa os identificadores da cerca e a mesma árvore que a execução confere. Inclui cada raiz de repositório ou worktree encontrada como alvo com `repo_root = true`. Um curinga também inspeciona as entradas que pode alcançar e inclui um alvo concreto se alcançar `.git`. A política nega pelos códigos `repository_root` e `repository_metadata`. O executor confere esses fatos de novo antes de alterar o disco. A comparação de `.git` ignora caixa.
 7. **Onde cada alvo cai de verdade.** O veredito julga a pasta que recebe os alvos; o executor julga o lugar final de cada um: estritamente dentro da raiz de trabalho, fora de pasta protegida pela política e, no disco, pela mesma abertura sem link. Na **restauração**, o lugar de cada item do manifesto é julgado **pelo próprio portão** (um plano de mover só aquele item para a pasta de origem, classificado com a política confiável): valem as regras de entrada de um mover, inclusive `destination_entry_reserved` (a entrada criada não pode ser a raiz de trabalho, uma raiz permitida ou a quarentena, nem conter uma delas). Isso é feito para todos os itens antes de olhar o disco de qualquer um; a regra não é copiada aqui.
 8. **Tamanho do manifesto.** O manifesto da leva é montado e medido antes de qualquer alteração; maior que `max_manifest_bytes` é recusa (`E_FS_MANIFEST_TOO_LARGE`).
 9. **Apagar de verdade** só passa onde o parâmetro `definitive_delete` permite (ver abaixo).
@@ -219,7 +219,7 @@ Um código nunca muda de sentido; motivo novo ganha código novo.
 | `E_FS_APPROVAL_MISSING` | a política confiável exige aprovação e a licença não traz |
 | `E_FS_QUARANTINE_BYPASSED` | apagar de verdade o que a política manda para a quarentena |
 | `E_FS_FACTS_CONTRADICT_PLAN` | o disco contradiz o declarado de um jeito que muda o veredito |
-| `E_FS_NESTED_REPOSITORY` | a árvore de um alvo contém um repositório |
+| `E_FS_NESTED_REPOSITORY` | defesa em profundidade contra repositório aninhado. A reclassificação normalmente recusa antes com `E_FS_FACTS_CONTRADICT_PLAN` e a regra `repository_root` |
 | `E_FS_OVERFLOW` | uma contagem de itens ou de bytes não cabe em 64 bits |
 | `E_FS_ACTION_ID_UNUSABLE` | o `action_id` não serve de nome de pasta |
 | `E_FS_DESTINATION_TAKEN` | a pasta da ação (na quarentena ou na pasta privada), ou um lugar dentro dela, já existe |
@@ -233,7 +233,8 @@ Um código nunca muda de sentido; motivo novo ganha código novo.
 | `E_FS_DELETE_UNCONTAINED` | apagar definitivo onde o sistema não segura a pasta no lugar, ou com `definitive_delete = "refuse"` |
 | `E_FS_DISPLACED` | uma pasta que estava sendo esvaziada não está mais onde o executor a pôs |
 | `E_FS_UNCONFIRMED` | a alteração foi feita, mas o sistema não confirmou que está no disco |
-| `E_FS_TOO_DEEP` | árvore mais funda que `max_depth` |
+| `E_FS_TOO_DEEP` | árvore ou caminho inspecionado no planejamento mais fundo que `max_depth` |
+| `E_FS_PLAN_ENTRY_LIMIT` | inspeção do plano excede `max_plan_entries` ao examinar alvos e listar nomes, inclusive os que um curinga não seleciona |
 | `E_FS_IO` | o sistema operacional recusou a operação |
 
 ## O que não é executado

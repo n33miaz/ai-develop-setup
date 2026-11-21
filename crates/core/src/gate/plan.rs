@@ -33,8 +33,8 @@ pub enum OperationRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TargetRequest {
     pub path: String,
-    /// The caller found this path to be the root of a repository or worktree. It comes in as
-    /// data because the core does no I/O.
+    /// A known repository or worktree root. The core does no I/O; the file adapter adds
+    /// roots it observes, and a supplied true value can only make the decision stricter.
     pub repo_root: bool,
 }
 

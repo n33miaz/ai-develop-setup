@@ -4,8 +4,8 @@
 use std::num::NonZeroU64;
 
 use ads_core::gate::{
-    ActionPlan, Actor, ActorKind, DataClass, Estimate, EventMeta, GatePolicy, HostFacts, Id,
-    OperationRequest, PlanRequest, TargetRequest, Timestamp, Ulid, Verdict, classify,
+    AbsPath, ActionPlan, Actor, ActorKind, DataClass, Estimate, EventMeta, GatePolicy, HostFacts,
+    Id, OperationRequest, PlanRequest, TargetRequest, Timestamp, Ulid, Verdict, classify,
 };
 
 pub const WIN_HOME: &str = "C:\\Users\\user-a";
@@ -19,7 +19,13 @@ pub const SMALL: Option<Estimate> = Some(Estimate {
 });
 
 pub fn policy(home: &str, overrides: &str) -> GatePolicy {
-    GatePolicy::from_toml_str(overrides, &HostFacts { user_home: home }).unwrap()
+    GatePolicy::from_toml_str(overrides, &HostFacts { user_home: home })
+        .unwrap()
+        .with_work_roots(
+            [WIN_ROOT, POSIX_ROOT, "/work/proj", r"C:\work\proj"]
+                .map(|path| AbsPath::parse(path).unwrap())
+                .to_vec(),
+        )
 }
 
 pub fn request(operation: OperationRequest, work_root: &str, targets: &[&str]) -> PlanRequest {

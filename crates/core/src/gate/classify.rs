@@ -23,6 +23,9 @@ pub enum Rule {
     /// The target is not strictly inside the work root or an allowed root.
     OutsideAllowedRoots,
     RepositoryRoot,
+    RepositoryMetadata,
+    WorkRootUnknown,
+    QuarantineOfOtherRoot,
     /// The target is the quarantine folder or contains it.
     QuarantineItself,
     DestinationProtected(Protection),
@@ -62,6 +65,9 @@ impl Rule {
             Self::AllowedRootItself,
             Self::OutsideAllowedRoots,
             Self::RepositoryRoot,
+            Self::RepositoryMetadata,
+            Self::WorkRootUnknown,
+            Self::QuarantineOfOtherRoot,
             Self::QuarantineItself,
             Self::DestinationOutsideAllowedRoots,
             Self::DestinationInsideTarget,
@@ -88,6 +94,9 @@ impl Rule {
             Self::AllowedRootItself => "allowed_root_itself".to_owned(),
             Self::OutsideAllowedRoots => "outside_allowed_roots".to_owned(),
             Self::RepositoryRoot => "repository_root".to_owned(),
+            Self::RepositoryMetadata => "repository_metadata".to_owned(),
+            Self::WorkRootUnknown => "work_root_unknown".to_owned(),
+            Self::QuarantineOfOtherRoot => "quarantine_of_other_root".to_owned(),
             Self::QuarantineItself => "quarantine_itself".to_owned(),
             Self::DestinationOutsideAllowedRoots => "destination_outside_allowed_roots".to_owned(),
             Self::DestinationInsideTarget => "destination_inside_target".to_owned(),
@@ -110,6 +119,9 @@ impl Rule {
             | Self::AllowedRootItself
             | Self::OutsideAllowedRoots
             | Self::RepositoryRoot
+            | Self::RepositoryMetadata
+            | Self::WorkRootUnknown
+            | Self::QuarantineOfOtherRoot
             | Self::QuarantineItself
             | Self::DestinationProtected(_)
             | Self::DestinationOutsideAllowedRoots
@@ -298,6 +310,32 @@ fn judge(plan: &ActionPlan, policy: &GatePolicy) -> Vec<Finding> {
     if let Some(protection) = policy.protection(work_root) {
         find(Rule::WorkRootProtected(protection), work_root);
     }
+    let same_root = |root: &AbsPath| root.is_within(work_root) && work_root.is_within(root);
+    let roots = policy.work_roots().unwrap_or_default();
+    if !roots.iter().any(same_root) {
+        find(Rule::WorkRootUnknown, work_root);
+    }
+    let other_quarantines: Vec<_> = roots
+        .iter()
+        .filter(|root| !same_root(root))
+        .map(|root| policy.quarantine_root(root))
+        .collect();
+    let repository_metadata = |path: &AbsPath| {
+        path.components()
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case(".git"))
+    };
+    let in_other_quarantine = |path: &AbsPath| {
+        other_quarantines
+            .iter()
+            .any(|root| path.is_loosely_within(root))
+    };
+    let overlaps_other_quarantine = |path: &AbsPath| {
+        in_other_quarantine(path)
+            || other_quarantines
+                .iter()
+                .any(|root| root.is_loosely_within(path))
+    };
     let strictly_allowed = |path: &AbsPath| {
         path.is_strictly_within(work_root)
             || policy
@@ -332,6 +370,12 @@ fn judge(plan: &ActionPlan, policy: &GatePolicy) -> Vec<Finding> {
         if !strictly_allowed(scope) {
             find(Rule::OutsideAllowedRoots, subject);
         }
+        if repository_metadata(scope) {
+            find(Rule::RepositoryMetadata, subject);
+        }
+        if overlaps_other_quarantine(scope) {
+            find(Rule::QuarantineOfOtherRoot, subject);
+        }
         if target.is_repo_root() {
             find(Rule::RepositoryRoot, subject);
         }
@@ -348,6 +392,12 @@ fn judge(plan: &ActionPlan, policy: &GatePolicy) -> Vec<Finding> {
     }
 
     if let Operation::Move { destination } = plan.operation() {
+        if repository_metadata(destination) {
+            find(Rule::RepositoryMetadata, destination);
+        }
+        if in_other_quarantine(destination) {
+            find(Rule::QuarantineOfOtherRoot, destination);
+        }
         if let Some(protection) = policy.protection(destination) {
             find(Rule::DestinationProtected(protection), destination);
         }
@@ -384,6 +434,9 @@ fn judge(plan: &ActionPlan, policy: &GatePolicy) -> Vec<Finding> {
                         continue;
                     };
                     let entry = destination.join(std::slice::from_ref(name));
+                    if overlaps_other_quarantine(&entry) {
+                        find(Rule::QuarantineOfOtherRoot, &entry);
+                    }
                     if let Some(protection) = policy.protection(&entry) {
                         find(Rule::DestinationProtected(protection), &entry);
                     }
@@ -410,6 +463,11 @@ fn judge(plan: &ActionPlan, policy: &GatePolicy) -> Vec<Finding> {
                         may_name(pattern, name)
                             .then(|| destination.join(std::slice::from_ref(name)))
                     };
+                    for path in &other_quarantines {
+                        if let Some(entry) = named(path) {
+                            find(Rule::QuarantineOfOtherRoot, &entry);
+                        }
+                    }
                     for path in &reserved {
                         if let Some(entry) = named(path) {
                             find(Rule::DestinationEntryReserved, &entry);
@@ -456,7 +514,7 @@ fn judge(plan: &ActionPlan, policy: &GatePolicy) -> Vec<Finding> {
 
 /// Whether a wildcard (`*` any run of characters, `?` any one) could name `name` on some file
 /// system: case is ignored either way. For deny rules only.
-fn may_name(pattern: &str, name: &str) -> bool {
+pub fn may_name(pattern: &str, name: &str) -> bool {
     // No recursion and no blow-up: both texts come from the request and have no size limit
     // here. On a mismatch the last `*` takes one more character and the match resumes there.
     fn matches(pattern: &[char], name: &[char]) -> bool {

@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use super::{
-    Action, ActionPlan, ActionPlanRecord, ActionSnapshot, Command, Event, EventMeta,
+    AbsPath, Action, ActionPlan, ActionPlanRecord, ActionSnapshot, Command, Event, EventMeta,
     ExecutionPermit, GatePolicy, Id, OperationRequest, PlanOperation, PlanRequest, TargetRequest,
     Verdict, classify,
 };
@@ -85,11 +85,22 @@ impl StartedExecution {
 pub struct JournalGate<'a> {
     policy: &'a GatePolicy,
     journal: &'a mut dyn GateJournal,
+    work_root: Option<&'a AbsPath>,
 }
 
 impl<'a> JournalGate<'a> {
     pub fn new(policy: &'a GatePolicy, journal: &'a mut dyn GateJournal) -> Self {
-        Self { policy, journal }
+        Self {
+            policy,
+            journal,
+            work_root: None,
+        }
+    }
+
+    /// Restricts access to actions with the session folder recorded in their plan.
+    pub fn for_work_root(mut self, root: &'a AbsPath) -> Self {
+        self.work_root = Some(root);
+        self
     }
 
     pub fn plan(
@@ -98,6 +109,7 @@ impl<'a> JournalGate<'a> {
         plan: &ActionPlan,
         meta: EventMeta,
     ) -> Result<ActionSnapshot, JournalError> {
+        check_work_root(self.work_root, plan)?;
         let (action, first, record) =
             Action::plan(action_id.clone(), &classify(plan, self.policy), meta)
                 .map_err(|_| JournalError::Transition)?;
@@ -108,7 +120,7 @@ impl<'a> JournalGate<'a> {
 
     pub fn inspect(&mut self, action_id: &Id) -> Result<ActionSnapshot, JournalError> {
         let history = self.journal.load(action_id)?;
-        let (action, _) = load_action(self.policy, action_id, &history)?;
+        let (action, _) = load_action(self.policy, self.work_root, action_id, &history)?;
         Ok(action.snapshot())
     }
 
@@ -119,11 +131,12 @@ impl<'a> JournalGate<'a> {
         meta: EventMeta,
     ) -> Result<ActionSnapshot, JournalError> {
         let policy = self.policy;
+        let work_root = self.work_root;
         let mut input = Some((command, meta));
         let mut next = None;
         self.journal.transition(action_id, &mut |history| {
             let (command, meta) = input.take().ok_or(JournalError::Transition)?;
-            let (action, _) = load_action(policy, action_id, history)?;
+            let (action, _) = load_action(policy, work_root, action_id, history)?;
             let (action, event) = action
                 .apply(command, meta)
                 .map_err(|_| JournalError::Transition)?;
@@ -140,11 +153,12 @@ impl<'a> JournalGate<'a> {
         meta: EventMeta,
     ) -> Result<StartedExecution, JournalError> {
         let policy = self.policy;
+        let work_root = self.work_root;
         let mut input = Some(meta);
         let mut started = None;
         self.journal.transition(action_id, &mut |history| {
             let meta = input.take().ok_or(JournalError::Transition)?;
-            let (action, verdict) = load_action(policy, action_id, history)?;
+            let (action, verdict) = load_action(policy, work_root, action_id, history)?;
             let (_, permit, event) = action
                 .authorize(verdict.plan(), meta)
                 .map_err(|_| JournalError::Transition)?;
@@ -179,8 +193,16 @@ fn validate_envelopes(events: &[Event]) -> Result<(), JournalError> {
     Ok(())
 }
 
+fn check_work_root(root: Option<&AbsPath>, plan: &ActionPlan) -> Result<(), JournalError> {
+    if root.is_some_and(|root| root != plan.work_root()) {
+        return Err(JournalError::Missing);
+    }
+    Ok(())
+}
+
 fn load_action(
     policy: &GatePolicy,
+    work_root: Option<&AbsPath>,
     action_id: &Id,
     history: &GateHistory,
 ) -> Result<(Action, Verdict), JournalError> {
@@ -224,6 +246,7 @@ fn load_action(
         }),
     })
     .map_err(|_| JournalError::Integrity)?;
+    check_work_root(work_root, &plan)?;
     let verdict = classify(&plan, policy);
     let (mut action, expected, checked_record) =
         Action::plan(action_id.clone(), &verdict, first.meta())

@@ -5,9 +5,11 @@ use ads_adapter_claude as claude;
 use ads_adapter_codex as codex;
 use ads_contracts::CommandSessionOpenV1Params;
 use ads_core::child_env::EnvPolicy;
+use ads_core::gate::{AbsPath, GatePolicy};
 use ads_core::tool_launch::{HostRules, process_env};
 use ads_ptyhost::wire::OpenParams;
 use std::collections::BTreeMap;
+use std::path::Path;
 
 pub struct ToolLauncher<C, X> {
     claude: claude::ClaudeConfig,
@@ -163,6 +165,44 @@ where
             harnesses,
             workdir_aliases: self.claude.workdir_aliases().map(str::to_owned).collect(),
         }
+    }
+}
+
+impl<C, X> ToolLauncher<C, X>
+where
+    C: claude::Probe,
+    X: codex::Probe,
+{
+    /// Binds actions to the working folder used to open this session on the host.
+    pub fn session_gate(
+        &self,
+        opened: &OpenParams,
+        policy: GatePolicy,
+        fence: &Path,
+    ) -> Result<crate::gate::SessionGate, String> {
+        let cwd = opened
+            .cwd
+            .as_ref()
+            .ok_or("session has no configured working folder")?;
+        let root = AbsPath::parse(cwd.as_str()).map_err(|error| error.to_string())?;
+        // A configured path may be an alias on disk as well. Protect both spellings.
+        let mut roots = Vec::new();
+        for dir in self.claude.workdirs() {
+            for path in [
+                Some(dir.as_str().to_owned()),
+                self.claude_probe.resolve_workdir(dir.as_str()),
+                self.codex_probe.resolve_workdir(dir.as_str()),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                let path = AbsPath::parse(&path).map_err(|error| error.to_string())?;
+                if !roots.contains(&path) {
+                    roots.push(path);
+                }
+            }
+        }
+        crate::gate::SessionGate::new(root, roots, policy, fence)
     }
 }
 

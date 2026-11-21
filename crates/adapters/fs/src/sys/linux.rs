@@ -120,6 +120,10 @@ impl Node {
 
     /// The names in this folder, sorted.
     pub fn names(&self) -> io::Result<Vec<String>> {
+        self.names_limited(usize::MAX)
+    }
+
+    pub fn names_limited(&self, limit: usize) -> io::Result<Vec<String>> {
         let mut names = Vec::new();
         for entry in Dir::new(self.readable()?)? {
             let entry = entry?;
@@ -128,6 +132,9 @@ impl Node {
             })?;
             if name != "." && name != ".." {
                 names.push(name.to_owned());
+                if names.len() > limit {
+                    break;
+                }
             }
         }
         names.sort();
