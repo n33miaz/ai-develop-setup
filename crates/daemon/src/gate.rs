@@ -2,8 +2,9 @@
 
 use std::{
     ffi::OsString,
+    fs,
     io::ErrorKind,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 use ads_adapter_fs::{Executor, Failure, Report, Stop};
@@ -11,40 +12,40 @@ use ads_core::gate::{
     AbsPath, ActionPlan, ActionSnapshot, Command, EventMeta, GatePolicy, Id, JournalError,
     JournalGate, PlanError, PlanRequest,
 };
-use ads_storage::{EventLog, StorageConfig, StorageError};
+use ads_storage::EventLog;
+
+use crate::audit::ProductLog;
 
 /// Suffixes SQLite gives the files beside the database; losing one loses committed history.
 const DATABASE_SIDECARS: [&str; 3] = ["-wal", "-shm", "-journal"];
 
-/// The files and folders that hold the state of the product itself, taken from its
-/// configuration: no action of a session may touch them, whatever the user policy says.
+/// Links followed while resolving one product path before it is refused.
+const MAX_LINKS: usize = 32;
+
+/// The files and folders that hold the state of the product itself: no action of a session
+/// may touch them, whatever the user policy says. Built only with the log it protects
+/// ([`crate::audit::open_product`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProductState {
     paths: Vec<AbsPath>,
 }
 
 impl ProductState {
-    /// The audit database (`audit_database_path`, or its place in the vault folder) with its
-    /// side files, the vault folder that holds the binding lock and, when the daemon was
-    /// started by the launcher, its control folder (the folder of `--instance-lock`). Each
-    /// path is kept as configured and as resolved on disk. Refuses what it cannot resolve.
-    pub fn from_config(
-        storage: &StorageConfig,
+    /// The audit database as configured, with its side files, the vault folder that holds the
+    /// binding lock and, when the daemon was started by the launcher, the folder of the
+    /// instance lock it holds. Refuses what it cannot resolve.
+    pub(crate) fn resolve(
+        database: &Path,
+        vault_dir: &Path,
         control_dir: Option<&Path>,
     ) -> Result<Self, String> {
-        let database = crate::audit::canonical_path(storage).map_err(|error| error.to_string())?;
-        let mut sources = vec![database.clone()];
+        let mut sources = vec![database.to_path_buf()];
         for suffix in DATABASE_SIDECARS {
             let mut name = OsString::from(database.as_os_str());
             name.push(suffix);
             sources.push(PathBuf::from(name));
         }
-        match crate::audit::vault_directory() {
-            Ok(vault) => sources.push(vault),
-            // Only where the vault does not exist; the audit log does not open there either.
-            Err(StorageError::AnchorUnavailable) if !cfg!(windows) => {}
-            Err(error) => return Err(error.to_string()),
-        }
+        sources.push(vault_dir.to_path_buf());
         sources.extend(control_dir.map(Path::to_path_buf));
         let mut paths = Vec::new();
         for source in &sources {
@@ -62,43 +63,108 @@ impl ProductState {
     }
 }
 
-/// `path` as written and as the system resolves it: the deepest folder that exists is
-/// resolved (links, short names, case) and the rest is appended.
+/// Every spelling under which `path` is protected: as written, as the system resolves it, and
+/// each link met on the way, at its real place, since removing one breaks the path. A missing
+/// entry is accepted (a file not created yet) and ends the walk; a link whose target is
+/// missing or written with `..` is refused, as is a chain longer than [`MAX_LINKS`].
 fn spellings(path: &Path) -> Result<Vec<AbsPath>, String> {
-    if !path.is_absolute() {
-        return Err(format!("product path is not absolute: {}", path.display()));
-    }
-    // The resolved spelling of a Windows path carries the `\\?\` prefix; a share is refused.
-    let parse = |path: &Path| {
-        let text = path
-            .to_str()
-            .ok_or_else(|| format!("product path is not valid text: {}", path.display()))?;
-        let text = match text.strip_prefix(r"\\?\") {
-            Some(rest) if rest.starts_with(r"UNC\") => {
-                return Err(format!("product path is on a network share: {text}"));
-            }
-            Some(rest) => rest,
-            None => text,
-        };
-        AbsPath::parse(text).map_err(|error| format!("{text}: {error}"))
-    };
-    let mut found = vec![parse(path)?];
-    for existing in path.ancestors() {
-        let resolved = match std::fs::canonicalize(existing) {
-            Ok(resolved) => resolved,
-            Err(error) if error.kind() == ErrorKind::NotFound => continue,
-            Err(error) => return Err(format!("{}: {error}", existing.display())),
-        };
-        let rest = path
-            .strip_prefix(existing)
-            .map_err(|error| error.to_string())?;
-        let resolved = parse(&resolved.join(rest))?;
-        if !found.contains(&resolved) {
-            found.push(resolved);
+    let failed = |at: &Path, error: std::io::Error| format!("{}: {error}", at.display());
+    let mut found = Vec::new();
+    let mut push = |path: AbsPath| {
+        if !found.contains(&path) {
+            found.push(path);
         }
-        break;
+    };
+    push(spelling(path)?);
+    let mut current = path.to_path_buf();
+    for _ in 0..=MAX_LINKS {
+        if !current.is_absolute() {
+            return Err(format!(
+                "product path is not absolute: {}",
+                current.display()
+            ));
+        }
+        let mut walked = PathBuf::new();
+        let mut components = current.components();
+        let mut existing = current.clone();
+        let mut next = None;
+        while let Some(component) = components.next() {
+            walked.push(component);
+            match component {
+                Component::Prefix(_) | Component::RootDir => continue,
+                Component::Normal(_) => {}
+                _ => {
+                    return Err(format!(
+                        "product path is not normalized: {}",
+                        current.display()
+                    ));
+                }
+            }
+            let meta = match fs::symlink_metadata(&walked) {
+                Ok(meta) => meta,
+                Err(error) if error.kind() == ErrorKind::NotFound => {
+                    existing = walked.parent().unwrap_or(&walked).to_path_buf();
+                    break;
+                }
+                Err(error) => return Err(failed(&walked, error)),
+            };
+            // Junctions and the other name surrogates count as links here.
+            if !meta.file_type().is_symlink() {
+                continue;
+            }
+            let parent = walked.parent().unwrap_or(&walked);
+            let real_parent = fs::canonicalize(parent).map_err(|error| failed(parent, error))?;
+            if let Some(name) = walked.file_name() {
+                push(spelling(&real_parent.join(name))?);
+            }
+            let target = fs::read_link(&walked).map_err(|error| failed(&walked, error))?;
+            if target
+                .components()
+                .any(|part| matches!(part, Component::ParentDir))
+            {
+                return Err(format!("link target uses `..`: {}", walked.display()));
+            }
+            let target = real_parent.join(target);
+            match fs::symlink_metadata(&target) {
+                Ok(_) => {}
+                Err(error) if error.kind() == ErrorKind::NotFound => {
+                    return Err(format!("link target is missing: {}", walked.display()));
+                }
+                Err(error) => return Err(failed(&target, error)),
+            }
+            next = Some(target.join(components.as_path()));
+            break;
+        }
+        match next {
+            Some(target) => current = target,
+            None => {
+                let rest = current
+                    .strip_prefix(&existing)
+                    .map_err(|error| error.to_string())?;
+                let resolved =
+                    fs::canonicalize(&existing).map_err(|error| failed(&existing, error))?;
+                push(spelling(&resolved.join(rest))?);
+                return Ok(found);
+            }
+        }
     }
-    Ok(found)
+    Err(format!("too many links: {}", path.display()))
+}
+
+/// The text of `path` as the gate compares it. The resolved spelling of a Windows path
+/// carries the `\\?\` prefix; a network share is refused.
+fn spelling(path: &Path) -> Result<AbsPath, String> {
+    let text = path
+        .to_str()
+        .ok_or_else(|| format!("product path is not valid text: {}", path.display()))?;
+    let text = match text.strip_prefix(r"\\?\") {
+        Some(rest) if rest.starts_with(r"UNC\") => {
+            return Err(format!("product path is on a network share: {text}"));
+        }
+        Some(rest) => rest,
+        None => text,
+    };
+    AbsPath::parse(text).map_err(|error| format!("{text}: {error}"))
 }
 
 #[derive(Debug)]
@@ -108,9 +174,12 @@ pub enum PlanActionError {
     Journal(JournalError),
 }
 
+/// Binds actions to one session folder and to the audit log the gate was built for: a log
+/// that carries another product state is refused with [`JournalError::PolicyChanged`].
 pub struct SessionGate {
     root: AbsPath,
     policy: GatePolicy,
+    product: ProductState,
     executor: Executor,
 }
 
@@ -119,9 +188,10 @@ impl SessionGate {
         root: AbsPath,
         roots: Vec<AbsPath>,
         policy: GatePolicy,
-        product: &ProductState,
+        product: &ProductLog,
         fence: &Path,
     ) -> Result<Self, String> {
+        let product = product.state().clone();
         if !roots.contains(&root) {
             return Err("session working folder is no longer configured".to_owned());
         }
@@ -132,17 +202,32 @@ impl SessionGate {
         Ok(Self {
             root,
             policy,
+            product,
             executor,
         })
     }
 
+    /// The executor with the session policy, to check what it refuses on its own.
+    #[cfg(test)]
+    pub(crate) fn executor_mut(&mut self) -> &mut Executor {
+        &mut self.executor
+    }
+
+    fn bound<'a>(&self, log: &'a mut ProductLog) -> Result<&'a mut EventLog, JournalError> {
+        if log.state() != &self.product {
+            return Err(JournalError::PolicyChanged);
+        }
+        Ok(log.log())
+    }
+
     pub fn plan(
         &self,
-        log: &mut EventLog,
+        log: &mut ProductLog,
         action_id: Id,
         mut request: PlanRequest,
         meta: EventMeta,
     ) -> Result<ActionSnapshot, PlanActionError> {
+        let log = self.bound(log).map_err(PlanActionError::Journal)?;
         request.work_root = self.root.to_string();
         let plan = ActionPlan::normalize(&request).map_err(PlanActionError::Invalid)?;
         let observed = self
@@ -156,19 +241,21 @@ impl SessionGate {
 
     pub fn inspect(
         &self,
-        log: &mut EventLog,
+        log: &mut ProductLog,
         action_id: &Id,
     ) -> Result<ActionSnapshot, JournalError> {
+        let log = self.bound(log)?;
         self.journal(log).inspect(action_id)
     }
 
     pub fn apply(
         &self,
-        log: &mut EventLog,
+        log: &mut ProductLog,
         action_id: &Id,
         command: Command,
         meta: EventMeta,
     ) -> Result<ActionSnapshot, JournalError> {
+        let log = self.bound(log)?;
         self.journal(log).apply(action_id, command, meta)
     }
 
@@ -180,11 +267,12 @@ impl SessionGate {
     /// A failed outcome write preserves the operation report and leaves the start spent.
     pub fn execute(
         &mut self,
-        log: &mut EventLog,
+        log: &mut ProductLog,
         action_id: &Id,
         start: EventMeta,
         mut finish: EventMeta,
     ) -> Result<ExecutionOutcome, JournalError> {
+        let log = self.bound(log)?;
         let mut gate = JournalGate::new(&self.policy, log).for_work_root(&self.root);
         if finish.ts.is_before(&start.ts) {
             finish.ts = start.ts.clone();

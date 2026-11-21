@@ -179,7 +179,7 @@ where
         &self,
         opened: &OpenParams,
         policy: GatePolicy,
-        product: &crate::gate::ProductState,
+        product: &crate::audit::ProductLog,
         fence: &Path,
     ) -> Result<crate::gate::SessionGate, String> {
         let cwd = opened
