@@ -1041,29 +1041,46 @@ pub(crate) mod tests {
         assert!(!stop.exists());
     }
 
-    #[cfg(windows)]
-    #[test]
-    fn reports_leftover_stop_removed_while_running_then_honors_new_one() {
-        use std::os::windows::fs::OpenOptionsExt;
-        let dir = TestDir::new();
+    /// Stops the launcher of a test and releases its children when the test ends, also when an
+    /// assertion fails midway: the fixtures would otherwise wait for their release forever.
+    struct Release {
+        interrupt: std::sync::mpsc::Sender<()>,
+        files: Vec<PathBuf>,
+    }
+
+    impl Drop for Release {
+        fn drop(&mut self) {
+            let _ = self.interrupt.send(());
+            for file in &self.files {
+                let _ = fs::write(file, []);
+            }
+        }
+    }
+
+    /// A leftover `stop` that startup could not remove: `prepare` runs on the launcher thread
+    /// before it starts, and `unblock` once both children run. The leftover must be discarded
+    /// and a new `stop` must still be honored.
+    fn leftover_stop_is_discarded_then_new_one_honored(
+        dir: &Path,
+        prepare: impl FnOnce() + Send + 'static,
+        unblock: impl FnOnce(),
+    ) {
         let settings = config();
-        let stop = dir.0.join(&settings.stop_file);
-        let state = dir.0.join(&settings.state_file);
-        // Without delete sharing the leftover cannot be removed at startup.
-        let blocked_signal = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .share_mode(3)
-            .open(&stop)
-            .unwrap();
+        let stop = dir.join(&settings.stop_file);
+        let state = dir.join(&settings.state_file);
         let started = SystemTime::now() + STALE_SIGNAL_MARGIN + Duration::from_secs(60);
-        let host_release = dir.0.join("release-host");
-        let daemon = fixture(Some(&dir.0.join("release-daemon")));
+        let (daemon_release, host_release) = (dir.join("release-daemon"), dir.join("release-host"));
+        let daemon = fixture(Some(&daemon_release));
         let host = fixture(Some(&host_release));
         let (interrupt, interrupted) = std::sync::mpsc::channel();
+        let release = Release {
+            interrupt,
+            files: vec![daemon_release, host_release],
+        };
+        let control = dir.to_path_buf();
         let worker = thread::spawn(move || {
-            run_with_interrupt(&settings, &dir.0, daemon, host, None, started, || {
+            prepare();
+            run_with_interrupt(&settings, &control, daemon, host, None, started, || {
                 interrupted.try_recv().is_ok()
             })
         });
@@ -1071,7 +1088,7 @@ pub(crate) mod tests {
             state_value(&state)
                 .filter(|state| state["daemon"]["pid"].is_u64() && state["ptyhost"]["pid"].is_u64())
         });
-        drop(blocked_signal);
+        unblock();
         let discarded = until(|| {
             state_value(&state).filter(|state| {
                 state["last_error"]
@@ -1086,17 +1103,52 @@ pub(crate) mod tests {
             thread::sleep(Duration::from_millis(5));
         }
         let honored = worker.is_finished();
-        let _ = interrupt.send(());
+        drop(release);
         worker.join().unwrap().unwrap();
-        fs::write(host_release, []).unwrap();
         assert!(
             still_running,
             "the leftover stop must not stop the launcher"
         );
         assert_eq!(discarded["stopped"], false);
         assert!(honored, "a new stop must stop the launcher");
-        assert_eq!(state_value(&state).unwrap()["stopped"], true);
+        let stopped = state_value(&state).unwrap();
+        assert_eq!(stopped["stopped"], true);
         assert!(!stop.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn reports_leftover_stop_removed_while_running_then_honors_new_one() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = TestDir::new();
+        // Without delete sharing the leftover cannot be removed at startup.
+        let blocked_signal = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .share_mode(3)
+            .open(dir.0.join(config().stop_file))
+            .unwrap();
+        leftover_stop_is_discarded_then_new_one_honored(&dir.0, || {}, || drop(blocked_signal));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reports_leftover_stop_removed_while_running_then_honors_new_one() {
+        let dir = TestDir::new();
+        let stop = dir.0.join(config().stop_file);
+        fs::write(&stop, []).unwrap();
+        // Swapping the file between its check and its removal makes the startup removal fail;
+        // the replacement is as old as the leftover for this run.
+        let moved = dir.0.join("moved-stop");
+        let swap = move || {
+            fs::rename(&stop, &moved).unwrap();
+            fs::write(&stop, []).unwrap();
+        };
+        let prepare = move || {
+            private::BEFORE_REMOVE.with(|hook| *hook.borrow_mut() = Some(Box::new(swap)));
+        };
+        leftover_stop_is_discarded_then_new_one_honored(&dir.0, prepare, || {});
     }
 
     #[test]
