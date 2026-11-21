@@ -1,0 +1,17 @@
+{
+  "missing-limit.json": {
+    "rule": "Os limites da fila seguem o contrato.",
+    "keyword": "required",
+    "instancePath": ""
+  },
+  "zero-window.json": {
+    "rule": "Os limites da fila seguem o contrato.",
+    "keyword": "minimum",
+    "instancePath": "/window_seconds"
+  },
+  "excess-attempts.json": {
+    "rule": "Os limites da fila seguem o contrato.",
+    "keyword": "maximum",
+    "instancePath": "/attempt_limit"
+  }
+}

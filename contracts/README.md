@@ -322,7 +322,7 @@ essa prova antes de enviar `auth.hello` na mesma conexão.
 
 ## Fila contínua
 
-A criação fica registrada em `queue.created`, sempre em `stopped`. Na partida, o núcleo restaura toda fila em `stopped`, inclusive se o retrato persistido ou o último evento de estado da fila indicar `enabled`. Se qualquer um dos dois indicar `enabled`, ele anexa `queue.stopped` com `reason: restart`. Assim, uma queda entre anexar `queue.enabled` e gravar o retrato também fica registrada. Uma nova ativação precisa de `queue.enabled` após a partida.
+A criação fica registrada em `queue.created:2`, sempre em `stopped`, com a política inicial obrigatória. A `:1` continua legível e registra apenas a criação parada. A criação na `:2` e as mudanças em `queue.policy_changed:1` usam o mesmo tipo `common.queue-policy:1`. Na partida, o núcleo restaura toda fila em `stopped`, inclusive se o retrato persistido ou o último evento de estado da fila indicar `enabled`. Se qualquer um dos dois indicar `enabled`, ele anexa `queue.stopped` com `reason: restart`. Assim, uma queda entre anexar `queue.enabled` e gravar o retrato também fica registrada. Uma nova ativação precisa de `queue.enabled` após a partida.
 
 `owner_id` identifica a pessoa dona da fila, e `actor.id` identifica o aparelho que agiu. O cadastro de aparelhos autenticados liga cada aparelho a um dono. Por isso o PC e o celular do mesmo dono são aceitos, e o aparelho de outro dono é recusado. Essa ligação é dado de cadastro, conferido pelo núcleo e não pelo Schema. Em `queue.created`, `queue.enabled` e na parada pelo dono, o ator é um `device` e `data.owner_id` repete o dono cadastrado da fila. A ativação aceita só `local_ui` e `tray`. Criação, parada e aceite de tarefa também aceitam `remote_device`, reservado para um futuro transporte autenticado e assinado.
 
@@ -368,6 +368,7 @@ O manifesto (`urn:ads:record:update-manifest:1`) é assinado no CI. A assinatura
 | `urn:ads:common:actor:1` | Quem causou um evento ou uma decisão: um aparelho, um agente de IA ou o próprio daemon. |
 | `urn:ads:common:queue-task-state:1` | Estado de uma tarefa da fila. |
 | `urn:ads:common:queue-task-origin:1` | Origem de uma tarefa da fila: pedido manual, issue ou regra de bug com alvo. |
+| `urn:ads:common:queue-policy:1` | Limites de admissão e prazo de confirmação do host da fila. |
 | `urn:ads:common:queue-task-title:1` | Título de uma tarefa da fila, no alfabeto fixo descrito em [fila contínua](#fila-contínua). |
 | `urn:ads:common:workdir-alias:1` | Apelido cadastrado de uma pasta de trabalho, no lugar do caminho. |
 
@@ -444,6 +445,7 @@ Os dez comandos estendem `urn:ads:command:request:1` com `allOf`, fixam `method`
 | `urn:ads:event:queue.task_state_changed:1` | Histórico de mudanças de estado, com as regras originais de canal. |
 | `urn:ads:event:queue.task_state_changed:2` | As novas mudanças exigem `via` para ator aparelho e recusam o campo para os demais. O daemon pode registrar `reason: host_unconfirmed` em `running → cancelled` após vencer o prazo de recuperação. |
 | `urn:ads:event:queue.created:1` | A fila foi criada parada. |
+| `urn:ads:event:queue.created:2` | A fila foi criada parada com a política inicial completa. |
 | `urn:ads:event:queue.enabled:1` | O dono ligou a fila. |
 | `urn:ads:event:queue.stopped:1` | A fila parou, pelo dono ou pelo daemon, com o motivo. |
 

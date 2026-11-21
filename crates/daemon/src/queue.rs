@@ -9,7 +9,8 @@ use ads_contracts::{
     RecordTaskQueueV1Version,
 };
 use ads_core::queue::{
-    QueueRefusal, QueueStateEvent, QueueStreamEvent, change_local_queue_state, restore_stopped,
+    DEFAULT_POLICY, QueuePolicy, QueueRefusal, QueueStateEvent, QueueStreamEvent,
+    change_local_queue_state, new_local_stopped, restore_stopped,
 };
 use ads_storage::{EventLog, StorageError, queue::queue_stream};
 use serde_json::{Value, json};
@@ -123,6 +124,17 @@ impl LoggedQueue {
         queue_id: CommonIdV1,
         owner: QueueOwner,
     ) -> Result<Self, QueueOpenError> {
+        let policy = toml::from_str(DEFAULT_POLICY).expect("bundled queue policy is valid");
+        Self::open_with_policy(log, queue_id, owner, &policy)
+    }
+
+    /// Uses the supplied policy when creating a queue.
+    pub fn open_with_policy(
+        log: EventLog,
+        queue_id: CommonIdV1,
+        owner: QueueOwner,
+        initial_policy: &QueuePolicy,
+    ) -> Result<Self, QueueOpenError> {
         if !held().insert(queue_id.as_str().to_owned()) {
             return Err(QueueOpenError::AlreadyOpen);
         }
@@ -141,20 +153,23 @@ impl LoggedQueue {
             owner,
             pending_stop: None,
         };
-        let inner = Self::restore(inner).map_err(release)?;
+        let inner = Self::restore(inner, initial_policy).map_err(release)?;
         Ok(Self {
             inner: Mutex::new(inner),
         })
     }
 
-    fn restore(mut inner: Inner) -> Result<Inner, QueueOpenError> {
+    fn restore(mut inner: Inner, initial_policy: &QueuePolicy) -> Result<Inner, QueueOpenError> {
         let stored = inner.log.read_queue(&inner.record.id)?;
         if stored.is_empty() {
-            let data = json!({
-                "queue_id": inner.record.id, "owner_id": inner.record.owner_id,
-                "via": "local_ui", "state": "stopped"
-            });
-            inner.append("created", true, data, None)?;
+            let (record, created) = new_local_stopped(
+                inner.record.id.clone(),
+                &inner.owner.owner_id,
+                initial_policy,
+            );
+            let data = serde_json::to_value(created).map_err(|_| QueueOpenError::Contract)?;
+            inner.append_at(1, "created:2", true, data, None)?;
+            inner.record = record;
             return Ok(inner);
         }
         let mut last = None;
@@ -165,7 +180,12 @@ impl LoggedQueue {
                         return Err(QueueOpenError::ForeignOwner);
                     }
                 }
-                Ok(QueueStreamEvent::Created(_)) | Err(_) => {
+                Ok(QueueStreamEvent::CreatedV2(created)) if index == 0 => {
+                    if created.data.owner_id != inner.record.owner_id {
+                        return Err(QueueOpenError::ForeignOwner);
+                    }
+                }
+                Ok(QueueStreamEvent::Created(_) | QueueStreamEvent::CreatedV2(_)) | Err(_) => {
                     return Err(QueueOpenError::Unreadable);
                 }
                 _ if index == 0 => return Err(QueueOpenError::Unreadable),
@@ -178,7 +198,7 @@ impl LoggedQueue {
         inner.record = record;
         if let Some(data) = stop {
             let data = serde_json::to_value(data).map_err(|_| QueueOpenError::Contract)?;
-            inner.append("stopped", false, data, None)?;
+            inner.append("stopped:1", false, data, None)?;
         }
         Ok(inner)
     }
@@ -204,12 +224,24 @@ impl Inner {
     ) -> Result<(), QueueOpenError> {
         let stream = queue_stream(&self.record.id);
         let seq = self.log.head(&stream)? + 1;
+        self.append_at(seq, kind, by_device, data, cause)
+    }
+
+    fn append_at(
+        &mut self,
+        seq: u64,
+        kind: &str,
+        by_device: bool,
+        data: Value,
+        cause: Option<&str>,
+    ) -> Result<(), QueueOpenError> {
+        let stream = queue_stream(&self.record.id);
         let actor = if by_device {
             json!({"kind": "device", "id": self.owner.device_id})
         } else {
             json!({"kind": "daemon", "id": "core"})
         };
-        let schema = format!("urn:ads:event:queue.{kind}:1");
+        let schema = format!("urn:ads:event:queue.{kind}");
         let value = json!({
             "id": new_id().map_err(|_| QueueOpenError::Contract)?, "type": schema,
             "ts": now_ts().map_err(|_| QueueOpenError::Contract)?, "stream": stream.as_str(),
@@ -231,8 +263,8 @@ impl Inner {
 
     fn append_change(&mut self, event: QueueStateEvent, cause: &str) -> Result<(), ApiError> {
         let (kind, data) = match event {
-            QueueStateEvent::Enabled(data) => ("enabled", serde_json::to_value(data)),
-            QueueStateEvent::Stopped(data) => ("stopped", serde_json::to_value(data)),
+            QueueStateEvent::Enabled(data) => ("enabled:1", serde_json::to_value(data)),
+            QueueStateEvent::Stopped(data) => ("stopped:1", serde_json::to_value(data)),
         };
         let data = data.map_err(|_| ApiError::Storage)?;
         self.append(kind, true, data, Some(cause))

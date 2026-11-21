@@ -1,7 +1,8 @@
 //! A queue written to the anchored log, read back after reopening and replayed into task records.
 
 use ads_contracts::{CommonIdV1, CommonQueueTaskStateV1, CommonTimestampV1, EventEnvelopeV1};
-use ads_core::queue::{QueueStreamEvent, replay_queue, replay_task};
+use ads_core::queue::{QueuePolicy, QueueStreamEvent, replay_queue, replay_task};
+use ads_daemon::queue::{LoggedQueue, QueueOwner};
 use ads_storage::{
     EventLog, StorageConfig, StorageError,
     anchor::{AnchorStore, Commitment, DatabaseId},
@@ -36,6 +37,7 @@ impl Fixture {
 impl Drop for Fixture {
     fn drop(&mut self) {
         for name in [
+            "queue.toml",
             "audit.db",
             "audit.db-wal",
             "audit.db-shm",
@@ -205,7 +207,7 @@ fn queue_records_are_rebuilt_from_the_log_after_reopening() {
         .collect();
     assert_eq!(stored.len(), events.len());
 
-    let queue = replay_queue(stored.iter().map(QueueStreamEvent::as_log), owner_at, None).unwrap();
+    let queue = replay_queue(stored.iter().map(QueueStreamEvent::as_log), owner_at).unwrap();
     let [first, second, done, queued] = &queue.tasks[..] else {
         panic!("four tasks: {:?}", queue.tasks);
     };
@@ -247,7 +249,6 @@ fn queue_records_are_rebuilt_from_the_log_after_reopening() {
             &task.id,
             stored.iter().map(QueueStreamEvent::as_log),
             owner_at,
-            None,
         )
         .unwrap();
         assert_eq!(
@@ -256,4 +257,56 @@ fn queue_records_are_rebuilt_from_the_log_after_reopening() {
         );
         assert_eq!(alone.policy, queue.policy);
     }
+}
+
+#[test]
+fn lowering_queue_toml_keeps_the_stored_queue_readable() {
+    let fixture = Fixture::new("queue-initial-policy");
+    let config_path = fixture.dir.join("queue.toml");
+    let load_policy = || -> QueuePolicy {
+        toml::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap()
+    };
+    std::fs::write(&config_path, "attempt_limit = 3\nadmission_limit = 1000\n").unwrap();
+    let initial = load_policy();
+    let anchor = Anchor::default();
+    let open_queue = |policy: &QueuePolicy| {
+        LoggedQueue::open_with_policy(
+            open(&fixture.db(), &anchor),
+            id("queue-01"),
+            QueueOwner {
+                owner_id: id("owner-01"),
+                device_id: id("device-01"),
+            },
+            policy,
+        )
+        .unwrap()
+    };
+    drop(open_queue(&initial));
+    let mut log = open(&fixture.db(), &anchor);
+    let mut task = creation("task-01", 1, None);
+    task["attempt_limit"] = initial.attempt_limit.get().into();
+    log.append(&envelope(2, "task_created:1", DEVICE, task))
+        .unwrap();
+    drop(log);
+
+    std::fs::write(&config_path, "attempt_limit = 2\nadmission_limit = 1000\n").unwrap();
+    let lowered = load_policy();
+    assert!(lowered.attempt_limit.get() < initial.attempt_limit.get());
+    drop(open_queue(&lowered));
+    let log = open(&fixture.db(), &anchor);
+    let stored: Vec<_> = log
+        .read_queue(&id("queue-01"))
+        .unwrap()
+        .iter()
+        .map(|stored| QueueStreamEvent::from_envelope(&stored.event).unwrap())
+        .collect();
+    let queue = replay_queue(stored.iter().map(QueueStreamEvent::as_log), owner_at).unwrap();
+    assert_eq!(queue.policy, Some(initial));
+    let [task] = &queue.tasks[..] else {
+        panic!("expected one task");
+    };
+    assert_eq!(task.id, id("task-01"));
+    assert_eq!(task.state, CommonQueueTaskStateV1::Queued);
+    assert_eq!(task.attempts.get(), 0);
+    assert_eq!(task.attempt_limit.get(), 3);
 }

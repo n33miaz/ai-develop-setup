@@ -26,6 +26,7 @@ pub mod common_actor_v1;
 pub mod common_base64_v1;
 pub mod common_data_class_v1;
 pub mod common_id_v1;
+pub mod common_queue_policy_v1;
 pub mod common_queue_task_origin_v1;
 pub mod common_queue_task_state_v1;
 pub mod common_queue_task_title_v1;
@@ -66,6 +67,7 @@ pub mod event_host_alert_raised_v1;
 pub mod event_host_sample_recorded_v1;
 pub mod event_queue_clock_reanchored_v1;
 pub mod event_queue_created_v1;
+pub mod event_queue_created_v2;
 pub mod event_queue_enabled_v1;
 pub mod event_queue_policy_changed_v1;
 pub mod event_queue_stopped_v1;
@@ -142,6 +144,7 @@ pub use common_actor_v1::*;
 pub use common_base64_v1::*;
 pub use common_data_class_v1::*;
 pub use common_id_v1::*;
+pub use common_queue_policy_v1::*;
 pub use common_queue_task_origin_v1::*;
 pub use common_queue_task_state_v1::*;
 pub use common_queue_task_title_v1::*;
@@ -182,6 +185,7 @@ pub use event_host_alert_raised_v1::*;
 pub use event_host_sample_recorded_v1::*;
 pub use event_queue_clock_reanchored_v1::*;
 pub use event_queue_created_v1::*;
+pub use event_queue_created_v2::*;
 pub use event_queue_enabled_v1::*;
 pub use event_queue_policy_changed_v1::*;
 pub use event_queue_stopped_v1::*;
@@ -278,6 +282,7 @@ pub const SCHEMAS: &[(&str, &str)] = &[
     ("common.base64.v1", "urn:ads:common:base64:1"),
     ("common.data-class.v1", "urn:ads:common:data-class:1"),
     ("common.id.v1", "urn:ads:common:id:1"),
+    ("common.queue-policy.v1", "urn:ads:common:queue-policy:1"),
     (
         "common.queue-task-origin.v1",
         "urn:ads:common:queue-task-origin:1",
@@ -402,6 +407,7 @@ pub const SCHEMAS: &[(&str, &str)] = &[
         "urn:ads:event:queue.clock_reanchored:1",
     ),
     ("event.queue.created.v1", "urn:ads:event:queue.created:1"),
+    ("event.queue.created.v2", "urn:ads:event:queue.created:2"),
     ("event.queue.enabled.v1", "urn:ads:event:queue.enabled:1"),
     (
         "event.queue.policy_changed.v1",
@@ -622,6 +628,7 @@ pub fn reencode(id: &str, value: Value) -> Option<Result<Value, serde_json::Erro
         "urn:ads:common:base64:1" => support::reencode::<CommonBase64V1>(value),
         "urn:ads:common:data-class:1" => support::reencode::<CommonDataClassV1>(value),
         "urn:ads:common:id:1" => support::reencode::<CommonIdV1>(value),
+        "urn:ads:common:queue-policy:1" => support::reencode::<CommonQueuePolicyV1>(value),
         "urn:ads:common:queue-task-origin:1" => support::reencode::<CommonQueueTaskOriginV1>(value),
         "urn:ads:common:queue-task-state:1" => support::reencode::<CommonQueueTaskStateV1>(value),
         "urn:ads:common:queue-task-title:1" => support::reencode::<CommonQueueTaskTitleV1>(value),
@@ -690,6 +697,7 @@ pub fn reencode(id: &str, value: Value) -> Option<Result<Value, serde_json::Erro
             support::reencode::<EventQueueClockReanchoredV1>(value)
         }
         "urn:ads:event:queue.created:1" => support::reencode::<EventQueueCreatedV1>(value),
+        "urn:ads:event:queue.created:2" => support::reencode::<EventQueueCreatedV2>(value),
         "urn:ads:event:queue.enabled:1" => support::reencode::<EventQueueEnabledV1>(value),
         "urn:ads:event:queue.policy_changed:1" => {
             support::reencode::<EventQueuePolicyChangedV1>(value)

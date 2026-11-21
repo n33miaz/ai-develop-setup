@@ -9,6 +9,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use super::common_actor_v1::CommonActorV1;
 use super::common_data_class_v1::CommonDataClassV1;
 use super::common_id_v1::CommonIdV1;
+use super::common_queue_policy_v1::CommonQueuePolicyV1;
 use super::common_timestamp_v1::CommonTimestampV1;
 use super::common_ulid_v1::CommonUlidV1;
 use crate::support;
@@ -177,7 +178,7 @@ pub struct EventQueuePolicyChangedV1Data {
     pub queue_id: CommonIdV1,
     pub owner_id: CommonIdV1,
     pub via: EventQueuePolicyChangedV1DataVia,
-    pub policy: EventQueuePolicyChangedV1DataPolicy,
+    pub policy: CommonQueuePolicyV1,
 }
 
 /// `data.via` in `urn:ads:event:queue.policy_changed:1`.
@@ -198,62 +199,5 @@ impl EventQueuePolicyChangedV1DataVia {
             Self::Tray => "tray",
             Self::RemoteDevice => "remote_device",
         }
-    }
-}
-
-/// `data.policy` in `urn:ads:event:queue.policy_changed:1`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct EventQueuePolicyChangedV1DataPolicy {
-    pub attempt_limit: EventQueuePolicyChangedV1DataPolicyAttemptLimit,
-    pub admission_limit: NonZeroU64,
-    pub window_seconds: NonZeroU64,
-    pub window_admissions: NonZeroU64,
-    pub manual_window_admissions: NonZeroU64,
-    pub bug_rule_window_admissions: NonZeroU64,
-    pub clock_skew_seconds: u64,
-    pub clock_rewind_seconds: u64,
-    pub host_confirm_seconds: NonZeroU64,
-}
-
-/// `data.policy.attempt_limit` in `urn:ads:event:queue.policy_changed:1`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
-#[serde(try_from = "u16")]
-pub struct EventQueuePolicyChangedV1DataPolicyAttemptLimit(u16);
-
-impl EventQueuePolicyChangedV1DataPolicyAttemptLimit {
-    pub fn new(value: u16) -> Result<Self, ContractError> {
-        if (1..=10).contains(&value) {
-            Ok(Self(value))
-        } else {
-            Err(ContractError::new(
-                "EventQueuePolicyChangedV1DataPolicyAttemptLimit",
-                value.to_string(),
-            ))
-        }
-    }
-
-    pub fn get(self) -> u16 {
-        self.0
-    }
-}
-
-impl TryFrom<u16> for EventQueuePolicyChangedV1DataPolicyAttemptLimit {
-    type Error = ContractError;
-
-    fn try_from(value: u16) -> Result<Self, ContractError> {
-        Self::new(value)
-    }
-}
-
-impl From<EventQueuePolicyChangedV1DataPolicyAttemptLimit> for u16 {
-    fn from(value: EventQueuePolicyChangedV1DataPolicyAttemptLimit) -> u16 {
-        value.0
-    }
-}
-
-impl Serialize for EventQueuePolicyChangedV1DataPolicyAttemptLimit {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.0.serialize(serializer)
     }
 }

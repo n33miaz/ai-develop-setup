@@ -375,17 +375,17 @@ Riscos da troca de conta por pasta de perfil ([ADR 0022](adr/0022-account-profil
 - **Dono.** Núcleo e contratos.
 - **Limite.** O título da tarefa aceita marca combinante que não segue uma letra ou um número. O apelido e a origem já são os tipos comuns em `queue.task_created:3` e `:4` e em `record.queue-task:2` e `:3`, e o título é o tipo comum em `queue.task_created:4` e `record.queue-task:3`; as versões anteriores repetem as mesmas regras, conferidas contra os tipos comuns por `tools/corpus.test.mjs`.
 - **Plano.** Exigir que marcas combinantes sigam letra ou número em uma versão futura do registro e da criação. Até lá, preservar a leitura das versões existentes.
-- **Tarefas sem título.** Uma tarefa criada pelas versões 1 a 3 de `queue.task_created` não registrou título nem ferramenta, e o registro reconstruído (`record.queue-task:3`) traz `null` nos dois. Não há como recuperar esses valores do log; a interface mostra a ausência em vez de um valor inventado. O daemon ainda não gravou nenhuma fila, então nenhum banco real tem uma tarefa assim.
+- **Tarefas sem título.** Uma tarefa criada pelas versões 1 a 3 de `queue.task_created` não registrou título nem ferramenta, e o registro reconstruído (`record.queue-task:3`) traz `null` nos dois. Não há como recuperar esses valores do log; a interface mostra a ausência em vez de um valor inventado. O daemon ainda não grava tarefas, então nenhum banco real tem uma tarefa assim.
 
 ## Perda do contexto de admissão da fila
 
-- **Descrição.** A política inicial de uma fila antiga pode se perder se o dono ainda não tinha registrado a política no stream.
-- **Impacto.** Sem os dados históricos íntegros, o núcleo pode recusar o replay e a retomada de uma tarefa em execução.
+- **Descrição.** Um trecho legado anterior à primeira política gravada pode ter limites históricos desconhecidos.
+- **Impacto.** O replay reconstrói as tarefas desse trecho, mas não valida os limites de admissão que não foram registrados.
 - **Dono.** Núcleo e produtor da fila.
-- **Teto.** A fila afetada. Cada nova admissão fica sujeita aos limites vigentes em [queue.toml](../defaults/queue.toml).
-- **Mitigação existente.** O replay deriva as mudanças de política dos eventos do dono, usa o `ts` de cada criação e de cada reancoragem coberto pela cadeia HMAC e valida cada admissão com a política da época.
-- **Plano B.** Manter a fila parada e a tarefa em `running` sem nova tentativa. Recuperar do backup íntegro o stream e, quando necessária, a política inicial antes de repetir o replay e conferir a sessão no host.
-- **O que falta.** Integrar a gravação condicional das mudanças do dono ao produtor conforme o [README do núcleo](../crates/core/README.md#fila-contínua).
+- **Teto.** O trecho legado da fila afetada. O teto de tentativas de cada tarefa continua verificável pelo seu evento de criação.
+- **Mitigação existente.** Filas novas registram a política inicial no primeiro evento. O replay aplica os limites gravados em ordem, e o teste de reabertura cobre uma redução no arquivo de configuração.
+- **Plano B.** Para admitir tarefas numa fila sem política gravada, o dono registra os limites a aplicar dali em diante. Se a cadeia do log falhar, manter a fila parada e recuperar um backup íntegro.
+- **O que falta.** Integrar ao produtor a gravação condicional conforme o [README do núcleo](../crates/core/README.md#fila-contínua).
 
 ## Stream da fila no teto de eventos
 
@@ -395,7 +395,7 @@ Riscos da troca de conta por pasta de perfil ([ADR 0022](adr/0022-account-profil
 - **Teto.** `queue_max_events` (padrão 100000, até 10000000) por fila; a leitura nunca recusa pelo tamanho.
 - **Mitigação existente.** Uma parada da fila ainda entra, então a partida registra a parada de uma fila cheia; o armazenamento recusa a segunda e qualquer outra versão. `QueueFull` é distinto de `Full` (disco cheio), e a mensagem de cada um diz o que fazer. Testes `a_lowered_cap_keeps_the_queue_history_readable` e `over_the_cap_only_one_replayable_stop_enters` em `crates/storage/src/queue_tests.rs`.
 - **Plano B.** O dono sobe `queue_max_events` e reabre, ou cria outra fila. Ao subir `admission_limit`, manter `queue_max_events` acima de `admission_limit` x `attempt_limit` x cerca de 4 eventos por tentativa (padrão: 1000 x 2 x 4 = 8000, folga de cerca de 12x).
-- **O que falta.** O daemon ainda não grava a fila; a interface precisa mostrar a mensagem de `QueueFull` ao dono quando a ligação existir.
+- **O que falta.** A interface precisa mostrar a mensagem de `QueueFull` ao dono quando a ligação existir.
 
 ## Memória da leitura do stream da fila
 
@@ -412,7 +412,7 @@ Riscos da troca de conta por pasta de perfil ([ADR 0022](adr/0022-account-profil
 - **Descrição.** No replay, o relógio de cada criação é o próprio `ts` gravado, então `AheadOfClock` não dispara. Um produtor com a chave da cadeia HMAC, por erro ou de propósito, pode gravar uma criação com carimbo adiantado, e o replay a aceita. A admissão ao vivo recusaria essa criação.
 - **Impacto.** A criação adiantada deixa de contar as admissões anteriores na própria janela e passa a ocupar a janela das seguintes. Se o adiantamento passar de `clock_rewind_seconds`, as admissões ao vivo seguintes são recusadas com `BehindLastAdmission`: a fila trava em vez de abrir.
 - **Dono.** Produtor da fila.
-- **Teto.** `admission_limit` em [queue.toml](../defaults/queue.toml), que não depende de horário, e o teto de tentativas de cada tarefa.
+- **Teto.** `admission_limit` da política gravada, que independe de horário, e o teto de tentativas de cada tarefa.
 - **Mitigação existente (implementada e testada).** A admissão ao vivo recusa com `AheadOfClock` o `ts` mais de `clock_skew_seconds` adiante do `now` informado pelo produtor. O replay confere a ordem dos carimbos entre si e a âncora. A âncora do dono (`reanchor_admission_clock`) faz as criações cobertas que estão adiante do relógio contarem no instante da âncora. Ver o [README do núcleo](../crates/core/README.md#fila-contínua).
 - **Plano B.** O dono reancora a fila para retomar a admissão. Se o histórico estiver adulterado, manter a fila parada e recuperar o stream do backup íntegro antes de repetir o replay.
 - **O que falta.** O daemon ainda não chama a admissão ao vivo nem o replay da fila. O replay não detecta o carimbo adiantado sozinho; a detecção vem de `BehindLastAdmission` na admissão seguinte.

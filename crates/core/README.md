@@ -33,9 +33,9 @@ Na partida, `restore_running_task` decide o destino da tarefa cujo último estad
 
 Hoje o daemon não adota sessões antigas ao reiniciar, então `Kept` ainda não acontece na prática.
 
-O armazenamento devolve o stream como envelopes (`EventLog::read_queue`). `QueueStreamEvent::from_envelope` lê cada um no contrato do seu tipo, entre as onze versões que o replay aceita, e recusa tipo desconhecido (`UnknownType`) ou envelope fora do contrato (`Invalid`); `as_log` entrega a forma emprestada que o replay lê.
+O armazenamento devolve o stream como envelopes (`EventLog::read_queue`). `QueueStreamEvent::from_envelope` lê cada um no contrato do seu tipo, entre as versões que o replay aceita, e recusa tipo desconhecido (`UnknownType`) ou envelope fora do contrato (`Invalid`); `as_log` entrega a forma emprestada que o replay lê.
 
-O replay (`replay_task`) recebe o stream inteiro da fila, a partir de `queue.created` com `seq` 1 e sem buraco, uma consulta ao cadastro de aparelhos no instante de cada evento, e a política inicial, quando disponível. Ele devolve o estado, o saldo, a última âncora e a política vigente, ou o motivo da recusa (`ReplayRefusal`). Além da ordem e do saldo, ele confere:
+O replay (`replay_task`) recebe o stream inteiro da fila, a partir de `queue.created` com `seq` 1 e sem buraco, e uma consulta ao cadastro de aparelhos no instante de cada evento. Ele devolve o estado, o saldo, a última âncora e a política vigente, ou o motivo da recusa (`ReplayRefusal`). Além da ordem e do saldo, ele confere:
 - todo evento é da fila e do stream `queue/<id>`;
 - todo ator que é aparelho pertencia ao dono da fila naquele instante;
 - a criação, a ativação, a parada pelo dono e a mudança de política vêm de um aparelho do dono e repetem o dono da fila;
@@ -48,7 +48,9 @@ O replay (`replay_task`) recebe o stream inteiro da fila, a partir de `queue.cre
 
 O agente e o daemon continuam podendo reprovar e cancelar tarefas. O replay confere a coerência dos atores que o log declara, não a autenticidade deles: o log não é assinado por aparelho, e uma linha forjada é recusada pela cadeia HMAC do armazenamento ([ADR 0021](../../docs/adr/0021-storage-atomic-file-and-cipher.md)). O replay recusa erro do produtor e log montado de forma errada nas conferências acima, mas não compara o `ts` de uma criação com o relógio real (ver abaixo).
 
-O replay confere cada criação, inclusive as de outras tarefas, com a política vigente naquele ponto do stream. Para filas sem um evento de política antes da primeira admissão, passe a configuração carregada na criação da fila. Um evento inicial com a política completa antes da primeira admissão torna essa configuração dispensável para validar as criações. Se a primeira criação vier antes da primeira política disponível, o replay devolve `MissingInitialPolicy`. Para uma fila antiga, recupere a configuração original do backup.
+Na criação da fila, `new_stopped` (ou `new_local_stopped` para o dono autenticado pela composição local) entrega o registro parado e os dados de `queue.created:2`, que exigem a política completa. O produtor anexa esse evento no `seq` 1, com o aparelho autenticado como ator, antes de usar a fila. O replay confere as admissões contra a política gravada vigente em cada ponto do stream.
+
+Para `queue.created:1`, a política é desconhecida até o primeiro `queue.policy_changed:1`. Nesse trecho o replay reconstrói as tarefas e confere os vínculos, atores, origens únicas, carimbos e transições com o teto gravado em cada tarefa, sem revalidar os limites desconhecidos. As admissões desse trecho continuam contando no histórico quando uma política passa a vigorar. Se o replay devolver política ausente, o produtor requer que o dono grave uma política antes de admitir tarefas novas.
 
 O dono altera a política por um aparelho autenticado. `change_queue_policy` confere o dono e o último `seq` observado. O produtor anexa `queue.policy_changed:1` com o aparelho autenticado como ator e condiciona o append ao mesmo `seq`. O evento fica coberto pela cadeia HMAC. A política entra em vigor após o append e vale para admissões posteriores. O replay confere o dono do aparelho no cadastro e aplica a política na ordem do stream. Cada tarefa conserva o teto de tentativas gravado na sua criação.
 
@@ -56,7 +58,7 @@ O replay usa o `ts` do envelope de cada criação como relógio daquela admissã
 
 O cadastro responde pelo dono do aparelho em cada instante. Um aparelho mantém o dono que tinha quando agiu, e a revogação é uma marca com data: ela recusa os atos posteriores sem apagar os anteriores. O produtor usa o estado e o saldo reconstituídos antes de autorizar novas transições e reserva a origem na mesma operação que anexa a criação.
 
-[queue.toml](../../defaults/queue.toml) fornece os limites. O integrador pode passar uma política diferente com `QueuePolicy`. Chave ausente num arquivo anterior assume o valor de `queue.toml`. A admissão (`can_admit_task`) recebe a política, o relógio, o dono da fila, o aparelho que pediu e a âncora de relógio em `AdmissionContext`. Ela devolve o motivo da recusa (`AdmissionRefusal`), para a interface poder explicá-lo. A admissão recusa:
+[queue.toml](../../defaults/queue.toml) fornece os limites para filas novas. Chaves opcionais ausentes usam os padrões distribuídos. Nas filas existentes o produtor usa a política reconstruída do log. A admissão (`can_admit_task`) recebe a política, o relógio, o dono da fila, o aparelho que pediu e a âncora de relógio em `AdmissionContext`. Ela devolve o motivo da recusa (`AdmissionRefusal`), para a interface poder explicá-lo. A admissão recusa:
 - criação com teto de tentativas acima do configurado;
 - pedido manual que não foi criado por um aparelho do dono da fila, com `actor.id` igual ao do aparelho;
 - `task_id` já usado em qualquer fila;
