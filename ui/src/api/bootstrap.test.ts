@@ -68,11 +68,51 @@ describe('client selection', () => {
 })
 
 describe('desktop client selection', () => {
-  it('uses scoped IPC for commands and reconnects without exchanging credentials', async () => {
-    type Frame = { kind: 'message'; text: string } | { kind: 'closed' }
-    class Channel {
-      onmessage: (frame: Frame) => void = () => undefined
+  type Frame = { kind: 'message'; text: string } | { kind: 'closed' }
+  class Channel {
+    onmessage: (frame: Frame) => void = () => undefined
+  }
+
+  it('retries transient failures with increasing delays up to the configured cap', async () => {
+    vi.useFakeTimers()
+    const invoke = vi.fn(() => Promise.resolve())
+    for (let failure = 0; failure < 3; failure++) {
+      invoke.mockRejectedValueOnce('desktop connection retry')
     }
+    const { client } = selectDesktopClient({ core: { invoke, Channel } }, {}, '25', '50')
+    try {
+      const connecting = client.connect()
+      await vi.advanceTimersByTimeAsync(24)
+      expect(invoke).toHaveBeenCalledTimes(1)
+      expect(client.getState()).toBe('connecting')
+      await vi.advanceTimersByTimeAsync(1)
+      expect(invoke).toHaveBeenCalledTimes(2)
+      await vi.advanceTimersByTimeAsync(49)
+      expect(invoke).toHaveBeenCalledTimes(2)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(invoke).toHaveBeenCalledTimes(3)
+      await vi.advanceTimersByTimeAsync(50)
+      expect(invoke).toHaveBeenCalledTimes(4)
+      await expect(connecting).resolves.toBeUndefined()
+      expect(client.getState()).toBe('connected')
+    } finally {
+      client.disconnect()
+      vi.useRealTimers()
+    }
+  })
+
+  it.each([
+    ['desktop protocol incompatible', 'incompatible'],
+    ['desktop relaunch required', 'relaunch_required'],
+  ])('reports %s as %s', async (reason, state) => {
+    const invoke = vi.fn(() => Promise.resolve()).mockRejectedValueOnce(reason)
+    const { client } = selectDesktopClient({ core: { invoke, Channel } }, {})
+    expect(client.getState()).toBe('disconnected')
+    await expect(client.connect()).rejects.toMatchObject({ code: 'not_connected' })
+    expect(client.getState()).toBe(state)
+  })
+
+  it('uses scoped IPC for commands and reconnects without exchanging credentials', async () => {
     let frames: Channel
     const invoke = vi.fn((command: string, args: Record<string, unknown>) => {
       if (command === 'desktop_connect') frames = args.frames as Channel

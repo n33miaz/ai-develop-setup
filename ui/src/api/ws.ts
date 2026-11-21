@@ -132,7 +132,7 @@ export function createCoreClient(
     state = next
     for (const listener of [...listeners]) listener(next)
   }
-  function disconnect() {
+  function disconnect(next: ConnectionState = 'disconnected') {
     const previous = socket
     socket = null
     connecting = null
@@ -143,7 +143,7 @@ export function createCoreClient(
     expired.clear()
     for (const request of pending.values()) request.reject(unavailable())
     pending.clear()
-    setState('disconnected')
+    setState(next)
     previous?.close()
   }
   /** Encerra o stream inteiro: o núcleo termina juntas as assinaturas da mesma encarnação. */
@@ -225,7 +225,12 @@ export function createCoreClient(
           reject(unavailable())
         }
         current.addEventListener('close', fail)
-        current.addEventListener('error', fail)
+        current.addEventListener('error', (event) => {
+          if (socket !== current) return
+          const reason: unknown = event instanceof CustomEvent ? event.detail : undefined
+          if (reason === 'incompatible' || reason === 'relaunch_required') disconnect(reason)
+          else fail()
+        })
         current.addEventListener('open', () => {
           if (socket !== current) return
           const connected = () => {
@@ -324,7 +329,9 @@ export function createCoreClient(
       })
       return attempt
     },
-    disconnect,
+    disconnect: () => {
+      disconnect()
+    },
     send(command) {
       if (state !== 'connected') return Promise.reject(unavailable())
       if (command.method === 'harness.list') return Promise.reject(new Error('use listHarnesses'))
