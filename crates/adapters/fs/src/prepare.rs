@@ -506,8 +506,13 @@ fn check_facts(
     let (items, bytes) = total(targets.iter().map(|target| &target.facts))?;
     let real = Estimate { items, bytes };
     let real_plan = with_repository_targets(fence, plan, targets, Some(real))?;
-    let judged = classify(&real_plan, policy)
-        .map_err(|error| Stop::caused_by(Reason::PolicyDenies, error))?;
+    let judged = classify(&real_plan, policy).map_err(|error| {
+        Stop::new(
+            Reason::FactsClassificationBudget,
+            "repository facts on disk exceed the gate classification work budget",
+        )
+        .with_cause(error)
+    })?;
     if judged.decision() > declared {
         let codes: Vec<String> = judged
             .findings()

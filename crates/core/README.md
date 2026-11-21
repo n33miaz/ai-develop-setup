@@ -289,12 +289,13 @@ O destino de "mover" é a pasta que recebe os alvos. O que o mover cria ou subst
 O registro do plano cita toda regra que disparou, com o caminho, uma entrada por alvo. O evento `action.denied` cita só os códigos das regras que negam, cada um uma vez, na ordem em que dispararam; as que só pedem aprovação ficam no registro.
 
 A chave `classification_match_steps` de [`defaults/action-gate.toml`](../../defaults/action-gate.toml)
-limita a comparação de alvos de um movimento, inclusive o movimento gerado para quarentena.
-Ela conta o trabalho de indexação dos nomes, as consultas e os passos do casamento de curingas.
-O padrão comporta uma ida à quarentena com 10 mil alvos de nomes curtos. Ao esgotar o orçamento,
-`classify` devolve `ClassificationBudgetExceeded` antes de emitir um veredito. A admissão
-recusa o plano sem gravar a ação ou emitir licença. Divida o lote ou use alvos literais quando
-o plano exceder o limite. A redução do teto também afeta a reclassificação no diário.
+limita a classificação de movimentos por passos determinísticos. O plano pedido e o movimento
+gerado para quarentena usam o mesmo orçamento. A contagem inclui a indexação de nomes, as
+comparações de prefixos de caminhos, o tamanho das entradas no destino e os passos do
+casamento de curingas. O padrão comporta 10 mil nomes literais de 100 bytes em destinos comuns.
+Ao esgotar o orçamento, `classify` devolve `ClassificationBudgetExceeded` antes de emitir um
+veredito. A admissão recusa o plano sem gravar a ação ou emitir licença. Divida o lote ao
+exceder o limite. A redução do teto também afeta a reclassificação no diário.
 Restaure a configuração anterior se precisar reabrir um plano salvo que exceda o novo teto.
 
 Quarentena por padrão: apagar e apagar recursivo saem do veredito reescritos como "mover para `<raiz de trabalho>/<quarantine_dir>/<16 primeiros hexadecimais do hash do plano pedido>`". É o plano reescrito que recebe o `plan_hash`, a aprovação e a execução.

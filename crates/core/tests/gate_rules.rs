@@ -1260,7 +1260,7 @@ fn wildcard_matching_stops_at_the_default_work_budget() {
 #[test]
 fn quarantine_classifies_ten_thousand_literal_targets_with_default_budget() {
     let paths: Vec<_> = (0..10_000)
-        .map(|index| format!("{POSIX_ROOT}/data/f{index:05}"))
+        .map(|index| format!("{POSIX_ROOT}/data/{}{index:05}", "n".repeat(95)))
         .collect();
     let targets: Vec<_> = paths.iter().map(String::as_str).collect();
     let mut request = request(Op::DeleteRecursive, POSIX_ROOT, &targets);
@@ -1274,4 +1274,81 @@ fn quarantine_classifies_ten_thousand_literal_targets_with_default_budget() {
     assert!(verdict.is_quarantined());
     needs_approval_by(&verdict, Rule::ItemLimitExceeded);
     assert_eq!(verdict.plan().targets().len(), 10_000);
+}
+
+#[test]
+fn deep_move_destination_consumes_the_literal_budget() {
+    let shallow = format!("{POSIX_ROOT}/out");
+    let deep = format!("{shallow}{}", "/a".repeat(1900));
+    let paths: Vec<_> = (0..100)
+        .map(|index| format!("{POSIX_ROOT}/data/f{index:03}"))
+        .collect();
+    let targets: Vec<_> = paths.iter().map(String::as_str).collect();
+    let policy = policy(POSIX_HOME, "classification_match_steps = 10000");
+
+    assert_eq!(
+        classify(&plan(move_to(&shallow), POSIX_ROOT, &targets), &policy)
+            .unwrap()
+            .decision(),
+        Decision::Allowed
+    );
+    assert!(matches!(
+        classify(&plan(move_to(&deep), POSIX_ROOT, &targets), &policy),
+        Err(ads_core::gate::ClassificationBudgetExceeded)
+    ));
+}
+
+#[test]
+fn literal_move_charges_for_indexing_and_building_destination_entries() {
+    let destination = format!("{POSIX_ROOT}/out");
+    let target = format!("{destination}/leaf");
+    let plan = plan(move_to(&destination), POSIX_ROOT, &[&target]);
+    let policy_at = |steps| {
+        policy(
+            POSIX_HOME,
+            &format!("quarantine_enabled = false\nclassification_match_steps = {steps}"),
+        )
+        .with_work_roots(vec![plan.work_root().clone()])
+    };
+    // Work root and target; five prefix components; four bytes indexed; one entry.
+    let cost = 2 + 5 + 4 + destination.len() + 1 + 4;
+
+    assert!(
+        classify(&plan, &policy_at(cost))
+            .unwrap()
+            .has(Rule::DestinationInsideTarget)
+    );
+    assert_eq!(
+        classify(&plan, &policy_at(cost - 1)),
+        Err(ads_core::gate::ClassificationBudgetExceeded)
+    );
+}
+
+#[test]
+fn quarantine_rewrite_uses_the_budget_left_by_the_requested_delete() {
+    let target = format!("{POSIX_ROOT}/leaf");
+    let asked = plan(Op::Delete, POSIX_ROOT, &[&target]);
+    let full = classify(&asked, &policy(POSIX_HOME, "")).unwrap();
+    let rewritten = full.plan();
+    let destination = rewritten.destination().unwrap().to_string();
+    // Six paths visited, five prefix components, and one entry.
+    let move_cost = 6 + 5 + destination.len() + 1 + 4;
+    let policy_at = |steps| policy(POSIX_HOME, &format!("classification_match_steps = {steps}"));
+
+    assert!(classify(rewritten, &policy_at(move_cost)).is_ok());
+    assert_eq!(
+        classify(rewritten, &policy_at(0)),
+        Err(ads_core::gate::ClassificationBudgetExceeded)
+    );
+    for steps in [0, move_cost] {
+        assert_eq!(
+            classify(&asked, &policy_at(steps)),
+            Err(ads_core::gate::ClassificationBudgetExceeded)
+        );
+    }
+    assert!(
+        classify(&asked, &policy_at(move_cost + 1))
+            .unwrap()
+            .is_quarantined()
+    );
 }

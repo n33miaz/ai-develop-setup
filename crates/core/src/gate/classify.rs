@@ -303,6 +303,7 @@ pub fn classify(
     if policy.quarantine_enabled() && deletes && !purge && strictest(&findings) != Decision::Denied
     {
         // The folder is named after the hash of the plan as asked, so two plans never share one.
+        budget.charge(plan.targets().len())?;
         let hash = plan.hash();
         let name = hash.as_str()["sha256:".len()..][..16].to_owned();
         let moved = plan.as_move_to(policy.quarantine_root(plan.work_root()).join(&[name]));
@@ -444,10 +445,17 @@ fn judge(
         if !allowed {
             find(Rule::DestinationOutsideAllowedRoots, destination);
         }
-        let into_itself = plan
-            .targets()
-            .iter()
-            .any(|target| destination.is_loosely_within(target.path().scope()));
+        let mut into_itself = false;
+        for target in plan.targets() {
+            let scope = target.path().scope();
+            if scope.depth() <= destination.depth() {
+                budget.charge(scope.depth())?;
+                if destination.is_loosely_within(scope) {
+                    into_itself = true;
+                    break;
+                }
+            }
+        }
         if into_itself {
             find(Rule::DestinationInsideTarget, destination);
         }
@@ -481,7 +489,12 @@ fn judge(
         let mut upper_names = HashSet::new();
         for (path, rule) in reserved_paths.chain(scope_and_rule) {
             budget.charge(1)?;
-            if let Some(name) = child_name(path, destination) {
+            if path.depth() <= destination.depth() {
+                continue;
+            }
+            budget.charge(destination.depth())?;
+            if path.is_loosely_within(destination) {
+                let name = &path.components()[destination.depth()];
                 budget.charge(name.len())?;
                 if seen_children.insert((rule, name)) {
                     candidates.push((rule, Some(name)));
@@ -492,6 +505,12 @@ fn judge(
                 }
             }
         }
+        // Copying or formatting an entry visits each component and its bytes.
+        let destination_work: usize = destination
+            .components()
+            .iter()
+            .map(|component| 1 + component.len())
+            .sum();
         let mut matched_patterns = HashSet::new();
         for target in plan.targets() {
             let scope = target.path().scope();
@@ -500,6 +519,7 @@ fn judge(
                     let Some(name) = scope.components().last() else {
                         continue;
                     };
+                    budget.charge(destination_work + 1 + name.len())?;
                     let entry = destination.join(std::slice::from_ref(name));
                     if overlaps_other_quarantine(&entry) {
                         find(Rule::QuarantineOfOtherRoot, &entry);
@@ -508,10 +528,10 @@ fn judge(
                         find(Rule::DestinationProtected(protection), &entry);
                     }
                     // On a target, inside one, or holding one: the tree of any target.
-                    budget.charge(1 + name.len())?;
                     let onto_a_target = into_itself
-                        || lower_names.contains(&name.to_lowercase())
-                        || upper_names.contains(&name.to_uppercase());
+                        || (!lower_names.is_empty()
+                            && (lower_names.contains(&name.to_lowercase())
+                                || upper_names.contains(&name.to_uppercase())));
                     if onto_a_target {
                         find(Rule::DestinationInsideTarget, &entry);
                     }
@@ -531,6 +551,7 @@ fn judge(
                         if let Some(name) = *candidate
                             && match_name(pattern, name, budget)?
                         {
+                            budget.charge(destination_work + 1 + name.len())?;
                             find(*rule, &destination.join(std::slice::from_ref(name)));
                             *candidate = None;
                         }
@@ -567,11 +588,6 @@ fn judge(
     }
 
     Ok(())
-}
-
-fn child_name<'a>(path: &'a AbsPath, destination: &AbsPath) -> Option<&'a String> {
-    (path.depth() > destination.depth() && path.is_loosely_within(destination))
-        .then(|| &path.components()[destination.depth()])
 }
 
 /// Whether a wildcard (`*` any run of characters, `?` any one) could name `name` on some file
