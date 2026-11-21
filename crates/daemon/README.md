@@ -175,8 +175,11 @@ pode receber `INVALID_PARAMS` em `session.open` se o programa ou a pasta não ex
 Como só lê, não passa pela cache de idempotência: repetir a chave devolve a
 lista de novo, nunca `replayed`. `api::Launcher::catalog` fornece a lista; o
 padrão é vazio, como em `DisabledLauncher`. Essa resposta exige a
-`local-api.server-message:2`; quem não envia `harness.list` nem `queue.get`
-continua recebendo só mensagens da `:1`. O daemon escreve a `:5`, que acrescenta a resposta de `approval.list` na `:2`. Um daemon anterior ao comando o recusa
+`local-api.server-message:2`; quem não envia `harness.list`, `queue.get` nem
+`approval.list` continua recebendo só mensagens da `:1`. O daemon escreve a `:5`,
+cuja resposta de `approval.list` é a `approval.list.response:2`: ela troca a da
+`:4` sem negociação de versão, então quem envia `approval.list` precisa aceitar a
+`:5`. Um daemon anterior ao comando o recusa
 com `METHOD_NOT_FOUND`, e a interface mostra que o daemon precisa ser atualizado.
 
 ## Fila de tarefas
