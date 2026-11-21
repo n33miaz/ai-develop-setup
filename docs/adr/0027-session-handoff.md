@@ -1,6 +1,6 @@
 # 0027. Session handoff
 
-Status: proposta
+Status: proposta em 20/11/2026, aguardando ratificação do mantenedor
 
 ## Contexto
 

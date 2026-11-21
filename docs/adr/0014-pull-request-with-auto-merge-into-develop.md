@@ -12,6 +12,7 @@ O fluxo é develop → homolog → main, e por enquanto a develop é a produçã
 - Develop é a branch padrão: PR obrigatório, check `ci-ok`, junção automática por rebase, histórico linear, sem push forçado, regra válida também para administrador, sem revisor humano obrigatório e sem exigir branch atualizada.
 - Homolog e main existem, protegidas e paradas, até o fim do período expresso.
 - Branch de trabalho `feature/<issue>-<assunto>` ou `fix/<issue>-<assunto>`, apagada depois da junção.
+- Nota de 21/11/2026: o fluxo também usa os prefixos `ci/` e `docs/`; a lista vigente está no [CONTRIBUTING.md](../../CONTRIBUTING.md#fluxo-de-branches).
 - Antes de juntar, confere-se o resultado da execução mais recente do commit exato.
 
 ## Condição de reversão
