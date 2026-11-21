@@ -198,17 +198,23 @@ recebe `REMOTE_ORIGIN_REFUSED`.
 - Fila que o daemon não serve, ou daemon sem fila ligada, recebe
   `QUEUE_NOT_CONFIGURED`.
 
-`queue::LoggedQueue::open` liga uma fila ao stream `queue/<id>` do log ancorado:
-cria a fila parada com a política inicial (`queue.created:2`) se o stream está vazio, recusa um stream
-criado por outro dono e, a cada abertura, restaura a fila parada e grava
-`queue.stopped` com `reason: restart` se o log dizia ligada. Um processo mantém
-no máximo um handle por fila (a segunda abertura recebe `AlreadyOpen`); a
-composição compartilha esse handle com todos os consumidores. `open` usa a política
-embutida em `defaults/queue.toml` para filas novas. `open_with_policy` aceita uma
-política fornecida pela composição. O carregamento de um arquivo do usuário está pendente. Dono e aparelho
-(`QueueOwner`) são dados da configuração do núcleo; agir na fila exige ainda a
-prova de sessão `auth::LocalSession`, que só o laço de conexão emite, dentro
-do crate, ao conferir o token do `auth.hello`, e a transição usa
+`queue::LoggedQueue::bind` liga uma fila já criada ao stream `queue/<id>` do log
+ancorado: recusa um stream criado por outro dono e, a cada abertura, restaura a
+fila parada e grava `queue.stopped` com `reason: restart` se o log dizia ligada.
+Com o stream vazio, `bind` recusa com `NotCreated` e não grava nada. Criar a fila
+(`queue.created:2`, com o aparelho do dono como ator e a política inicial) é ato
+do dono: `open` (política embutida em `defaults/queue.toml`) e `open_with_policy`
+(política fornecida pela composição) exigem a prova de sessão `auth::LocalSession`,
+a mesma de ligar e desligar; sem ela a chamada não compila. Num stream que já
+existe, as duas apenas ligam a fila e a política da criação continua valendo. Um
+processo mantém no máximo um handle por fila (a segunda abertura recebe
+`AlreadyOpen`); a composição compartilha esse handle com todos os consumidores.
+O carregamento de um arquivo do usuário está pendente. Dono e aparelho
+(`QueueOwner`) são dados da configuração do núcleo; criar e agir na fila exigem
+essa prova, que só o laço de conexão emite, dentro do crate, ao conferir o token
+do `auth.hello`. A prova sela a API da fila; quem tem o próprio `EventLog` grava
+abaixo dessa camada, e o replay confere a coerência dos atores, não a
+autenticidade deles (ver o README do núcleo). A transição usa
 `ads_core::queue::change_local_queue_state`, sem fabricar `AuthenticatedDevice`.
 `LocalApi::with_queue` entrega a fila à API. O executável ainda não abre o log
 ancorado, porque falta o provedor de chaves do cofre; até lá ele serve

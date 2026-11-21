@@ -2,6 +2,7 @@
 //! read back from the anchored log.
 
 use ads_contracts::{CommonIdV1, RecordTaskQueueV1State};
+use ads_core::queue::{DEFAULT_POLICY, QueuePolicy, new_local_stopped};
 use ads_daemon::api::{ApiConfig, ApiError, DisabledLauncher, LocalApi};
 use ads_daemon::auth::LocalSession;
 use ads_daemon::events::new_id;
@@ -118,7 +119,7 @@ impl Bench {
         }
     }
     fn open_as(&self, owner_id: &str) -> Result<LoggedQueue, QueueOpenError> {
-        LoggedQueue::open(
+        LoggedQueue::bind(
             open_log(&self.folder.db(), &self.anchor),
             id(&self.queue),
             QueueOwner {
@@ -127,8 +128,32 @@ impl Bench {
             },
         )
     }
+    /// Binds the queue, first writing its creation by the owner's device when the stream is empty.
     fn open(&self) -> Arc<LoggedQueue> {
+        if self.audit().is_empty() {
+            let policy: QueuePolicy = toml::from_str(DEFAULT_POLICY).unwrap();
+            let (_, created) = new_local_stopped(id(&self.queue), &id("owner-01"), &policy);
+            self.seed(1, "created:2", serde_json::to_value(created).unwrap());
+        }
         Arc::new(self.open_as("owner-01").unwrap())
+    }
+    /// Appends an event by the owner's device straight to the log.
+    fn seed(&self, seq: u64, kind: &str, data: Value) {
+        let event = serde_json::from_value(json!({
+            "id": new_id().unwrap(),
+            "type": format!("urn:ads:event:queue.{kind}"),
+            "ts": "2030-01-02T03:04:05Z",
+            "stream": format!("queue/{}", self.queue),
+            "seq": seq,
+            "actor": {"kind": "device", "id": "device-01"},
+            "cause": null,
+            "data_class": "internal",
+            "data": data,
+        }))
+        .unwrap();
+        open_log(&self.folder.db(), &self.anchor)
+            .append(&event)
+            .unwrap();
     }
     /// Opens again once the previous handle, held by aborted API tasks, is gone.
     async fn reopen(&self) -> Arc<LoggedQueue> {
@@ -544,26 +569,11 @@ async fn reopening_restores_the_queue_stopped_and_refuses_another_owner() {
 #[tokio::test]
 async fn opening_a_legacy_stream_restores_it_stopped_and_checks_the_owner() {
     let bench = Bench::new("queue-legacy");
-    let mut log = open_log(&bench.folder.db(), &bench.anchor);
     let owner = json!({"queue_id": bench.queue, "owner_id": "owner-01", "via": "local_ui"});
     let mut created = owner.clone();
     created["state"] = "stopped".into();
-    for (seq, kind, data) in [(1, "created:1", created), (2, "enabled:1", owner)] {
-        let event = serde_json::from_value(json!({
-            "id": new_id().unwrap(),
-            "type": format!("urn:ads:event:queue.{kind}"),
-            "ts": "2030-01-02T03:04:05Z",
-            "stream": format!("queue/{}", bench.queue),
-            "seq": seq,
-            "actor": {"kind": "device", "id": "device-01"},
-            "cause": null,
-            "data_class": "internal",
-            "data": data,
-        }))
-        .unwrap();
-        log.append(&event).unwrap();
-    }
-    drop(log);
+    bench.seed(1, "created:1", created);
+    bench.seed(2, "enabled:1", owner);
 
     assert!(matches!(
         bench.open_as("owner-02"),
@@ -589,6 +599,20 @@ fn a_process_holds_one_handle_per_queue() {
     assert_eq!(bench.kinds(), ["created:2"]);
     drop(first);
     drop(bench.open());
+}
+
+#[test]
+fn binding_an_empty_stream_without_a_session_creates_nothing() {
+    let bench = Bench::new("queue-no-session");
+    for _ in 0..2 {
+        assert!(matches!(
+            bench.open_as("owner-01"),
+            Err(QueueOpenError::NotCreated)
+        ));
+    }
+    assert!(bench.kinds().is_empty());
+    drop(bench.open());
+    assert_eq!(bench.kinds(), ["created:2"]);
 }
 
 #[test]
