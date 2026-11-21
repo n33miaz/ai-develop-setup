@@ -83,10 +83,15 @@ Crie o arquivo vazio `restart` na pasta de controle para reiniciar o daemon e
 zerar seu contador de falhas na janela móvel. Crie `stop` para encerrar o daemon,
 a janela da casca e o lançador. Um arquivo de sinal cujo dono não é a conta atual, ou que no
 Windows dá acesso a outra conta, fica no lugar, é ignorado e aparece em `last_error`.
-O sinal apagado é o mesmo arquivo conferido. O lançador descarta pedidos cuja
-data mais recente de criação ou alteração é mais de 2 segundos anterior ao início
-da execução (a folga cobre relógios de arquivo menos precisos).
-Se o descarte ocorrer na partida, ele aparece em `stop_pending_at_startup`.
+O sinal apagado é o mesmo arquivo conferido. Na partida, o lançador descarta um
+`stop` cuja data mais recente de criação ou alteração é mais de 2 segundos anterior
+ao início da execução (a folga cobre relógios de arquivo menos precisos); esse
+descarte aparece em `stop_pending_at_startup`. Com o lançador já rodando, todo `stop`
+que aparecer é honrado, qualquer que seja a data, inclusive depois de o relógio voltar
+ou de um arquivo antigo ser movido para a pasta. A exceção é um `stop` que não pôde
+ser conferido ou removido na partida: até ele sair da pasta, a regra da data continua
+valendo; se for antigo, é descartado quando a remoção volta a funcionar, e o descarte
+aparece em `last_error`.
 Um pedido criado enquanto o lançador está abrindo vale mesmo antes da primeira
 publicação. Para identificar o estado atual, compare `launcher_pid` com o PID
 do processo que você iniciou e confira se `stopped` é `false`.
