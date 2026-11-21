@@ -352,8 +352,9 @@ Riscos da troca de conta por pasta de perfil ([ADR 0022](adr/0022-account-profil
 ## Compatibilidade dos contratos da fila contínua
 
 - **Dono.** Núcleo e contratos.
-- **Limite.** O título da tarefa aceita marca combinante que não segue uma letra ou um número. O apelido e a origem já são os tipos comuns em `queue.task_created:3` e `record.queue-task:2`; as versões anteriores repetem as mesmas regras, conferidas contra os tipos comuns por `tools/corpus.test.mjs`.
+- **Limite.** O título da tarefa aceita marca combinante que não segue uma letra ou um número. O apelido e a origem já são os tipos comuns em `queue.task_created:3` e `:4` e em `record.queue-task:2` e `:3`, e o título é o tipo comum em `queue.task_created:4` e `record.queue-task:3`; as versões anteriores repetem as mesmas regras, conferidas contra os tipos comuns por `tools/corpus.test.mjs`.
 - **Plano.** Exigir que marcas combinantes sigam letra ou número em uma versão futura do registro e da criação. Até lá, preservar a leitura das versões existentes.
+- **Tarefas sem título.** Uma tarefa criada pelas versões 1 a 3 de `queue.task_created` não registrou título nem ferramenta, e o registro reconstruído (`record.queue-task:3`) traz `null` nos dois. Não há como recuperar esses valores do log; a interface mostra a ausência em vez de um valor inventado. O daemon ainda não gravou nenhuma fila, então nenhum banco real tem uma tarefa assim.
 
 ## Perda do contexto de admissão da fila
 

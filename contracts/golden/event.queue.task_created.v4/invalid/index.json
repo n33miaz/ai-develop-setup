@@ -1,0 +1,52 @@
+{
+  "manual-agent.json": {
+    "rule": "Origem manual exige um aparelho.",
+    "keyword": "const",
+    "instancePath": "/actor/kind"
+  },
+  "manual-daemon.json": {
+    "rule": "Origem manual exige um aparelho.",
+    "keyword": "const",
+    "instancePath": "/actor/kind"
+  },
+  "wrong-version.json": {
+    "rule": "O tipo identifica a versão do evento.",
+    "keyword": "const",
+    "instancePath": "/type"
+  },
+  "alias-upper.json": {
+    "rule": "O apelido segue o tipo comum de apelido.",
+    "keyword": "pattern",
+    "instancePath": "/data/workspace_alias"
+  },
+  "issue-zero.json": {
+    "rule": "A issue é um número positivo.",
+    "keyword": "minimum",
+    "instancePath": "/data/origin/ref"
+  },
+  "public.json": {
+    "rule": "O evento leva texto do usuário e nunca é public.",
+    "keyword": "enum",
+    "instancePath": "/data_class"
+  },
+  "title-missing.json": {
+    "rule": "O título é obrigatório.",
+    "keyword": "required",
+    "instancePath": "/data"
+  },
+  "tool-missing.json": {
+    "rule": "A ferramenta é obrigatória.",
+    "keyword": "required",
+    "instancePath": "/data"
+  },
+  "title-zwj.json": {
+    "rule": "O título segue o tipo comum de título.",
+    "keyword": "pattern",
+    "instancePath": "/data/title"
+  },
+  "title-null.json": {
+    "rule": "O título nunca é nulo na criação.",
+    "keyword": "type",
+    "instancePath": "/data/title"
+  }
+}

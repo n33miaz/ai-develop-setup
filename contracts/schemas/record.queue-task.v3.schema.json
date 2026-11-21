@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:record:queue-task:3",
+  "title": "Tarefa da fila",
+  "description": "Retrato versionado de uma tarefa, como o replay o reconstrói do log. A pasta é referida por apelido; o teto de tentativas inclui a primeira execução. title e tool são nulos quando a tarefa foi criada por queue.task_created anterior à :4, que não os registrava: o registro não inventa valor.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "id",
+    "queue_id",
+    "origin",
+    "title",
+    "workspace_alias",
+    "tool",
+    "state",
+    "attempts",
+    "attempt_limit",
+    "created_at",
+    "updated_at"
+  ],
+  "properties": {
+    "version": {
+      "const": 3
+    },
+    "id": {
+      "$ref": "urn:ads:common:id:1"
+    },
+    "queue_id": {
+      "$ref": "urn:ads:common:id:1"
+    },
+    "origin": {
+      "$ref": "urn:ads:common:queue-task-origin:1"
+    },
+    "title": {
+      "anyOf": [
+        {
+          "$ref": "urn:ads:common:queue-task-title:1"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "workspace_alias": {
+      "$ref": "urn:ads:common:workdir-alias:1"
+    },
+    "tool": {
+      "anyOf": [
+        {
+          "$ref": "urn:ads:common:id:1"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "state": {
+      "$ref": "urn:ads:common:queue-task-state:1"
+    },
+    "attempts": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "attempt_limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 10
+    },
+    "created_at": {
+      "$ref": "urn:ads:common:timestamp:1"
+    },
+    "updated_at": {
+      "$ref": "urn:ads:common:timestamp:1"
+    },
+    "branch": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^(feature|fix)/[a-z0-9][a-z0-9._-]*(/[a-z0-9][a-z0-9._-]*)*$",
+      "not": {
+        "pattern": "\\.\\.|\\.lock(/|$)|\\.(/|$)|(^|/)(con|prn|aux|nul|com[0-9]|lpt[0-9])(\\.|/|$)"
+      }
+    },
+    "pull_request": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    }
+  },
+  "examples": [
+    {
+      "version": 3,
+      "id": "task-01",
+      "queue_id": "queue-01",
+      "origin": {
+        "kind": "manual",
+        "request_id": "request-01"
+      },
+      "title": "Conferir documentação",
+      "workspace_alias": "docs",
+      "tool": "tool-a",
+      "state": "queued",
+      "attempts": 0,
+      "attempt_limit": 2,
+      "created_at": "2030-01-02T03:04:05Z",
+      "updated_at": "2030-01-02T03:04:05Z"
+    }
+  ]
+}

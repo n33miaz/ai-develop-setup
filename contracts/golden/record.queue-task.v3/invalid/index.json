@@ -1,0 +1,59 @@
+{
+  "02-negative-attempts.json": {
+    "rule": "A contagem começa em zero.",
+    "keyword": "minimum",
+    "instancePath": "/attempts"
+  },
+  "03-zero-limit.json": {
+    "rule": "O teto inclui ao menos a primeira tentativa.",
+    "keyword": "minimum",
+    "instancePath": "/attempt_limit"
+  },
+  "attempts-over-limit.json": {
+    "rule": "A contagem respeita o teto.",
+    "keyword": "crossRule",
+    "instancePath": "",
+    "messagePrefix": "attempts excede attempt_limit"
+  },
+  "updated-before-created.json": {
+    "rule": "A atualização sucede ou coincide com a criação.",
+    "keyword": "crossRule",
+    "instancePath": "",
+    "messagePrefix": "updated_at antecede created_at"
+  },
+  "title-zwj-letters.json": {
+    "rule": "O título recusa o ZWJ.",
+    "keyword": "anyOf",
+    "instancePath": "/title"
+  },
+  "title-leading-space.json": {
+    "rule": "O título não começa com espaço.",
+    "keyword": "anyOf",
+    "instancePath": "/title"
+  },
+  "wrong-version.json": {
+    "rule": "O version acompanha a versão da URN.",
+    "keyword": "const",
+    "instancePath": "/version"
+  },
+  "01-workspace-path.json": {
+    "rule": "A pasta é identificada por apelido, sem unidade nem separadores.",
+    "keyword": "pattern",
+    "instancePath": "/workspace_alias"
+  },
+  "title-missing.json": {
+    "rule": "O título é obrigatório, mesmo nulo.",
+    "keyword": "required",
+    "instancePath": ""
+  },
+  "tool-missing.json": {
+    "rule": "A ferramenta é obrigatória, mesmo nula.",
+    "keyword": "required",
+    "instancePath": ""
+  },
+  "title-empty.json": {
+    "rule": "Título ausente é null, nunca texto vazio.",
+    "keyword": "anyOf",
+    "instancePath": "/title"
+  }
+}
