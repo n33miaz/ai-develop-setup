@@ -13,7 +13,7 @@ A interface funciona no navegador servida pelo núcleo. A casca de desktop acres
 - Ela é cliente fino: carrega o mesmo bundle da PWA e usa o mesmo contrato da API local. O Rust autentica o WebSocket em loopback e encaminha as mensagens pelo IPC da janela principal (ADR 0020). Não contém política, banco nem PTY, e a regra de dependência impede que passe a conter.
 - Fechar, travar ou atualizar a casca não encerra sessão (ADR 0003).
 - A casca compila no CI; no PC do mantenedor a interface é desenvolvida no navegador.
-- Job próprio em runner Windows, que só roda quando a casca muda.
+- Job próprio em runner Windows, acionado por mudanças na casca, na interface, nos processos do teste de conexão e nas suas dependências e entradas de compilação.
 
 ## Condição de reversão
 Adiar a casca se o job dela mantiver a mediana do caminho bloqueante acima de 10 minutos depois dos cortes previstos na ADR 0013.

@@ -127,23 +127,42 @@ async fn connect_socket(
     result
 }
 
+fn is_smoke_reply(text: &str, request_id: Option<&str>) -> bool {
+    let Some(request_id) = request_id else {
+        return false;
+    };
+    serde_json::from_str::<Value>(text).is_ok_and(|reply| {
+        reply["jsonrpc"] == "2.0" && reply["id"] == request_id && reply.get("result").is_some()
+    })
+}
+
 async fn relay(
     mut socket: WebSocketStream<TcpStream>,
     mut requests: mpsc::Receiver<String>,
     frames: &Channel<Frame>,
     smoke: Option<AppHandle>,
 ) -> Result<(), ()> {
+    let mut smoke_request_id = None;
     loop {
         tokio::select! {
             request = requests.recv() => {
                 let Some(request) = request else { return Ok(()) };
+                if smoke.is_some()
+                    && let Ok(command) = serde_json::from_str::<Value>(&request)
+                    && command["method"] == "harness.list"
+                    && let Some(id) = command["id"].as_str()
+                {
+                    smoke_request_id = Some(id.to_owned());
+                }
                 timeout(DEADLINE, socket.send(Message::Text(request.into())))
                     .await.map_err(|_| ())?.map_err(|_| ())?;
             }
             message = socket.next() => match message {
                 Some(Ok(Message::Text(text))) => {
                     frames.send(Frame::Message(text.to_string())).map_err(|_| ())?;
-                    if let Some(app) = smoke {
+                    if let Some(app) = &smoke
+                        && is_smoke_reply(&text, smoke_request_id.as_deref())
+                    {
                         app.exit(0);
                         return Ok(());
                     }
@@ -234,6 +253,22 @@ mod tests {
         accept_hdr_async,
         tungstenite::handshake::server::{Request, Response},
     };
+
+    #[test]
+    fn smoke_requires_a_successful_reply_to_the_window_request() {
+        let reply = r#"{"jsonrpc":"2.0","id":"window","result":[]}"#;
+        assert!(!is_smoke_reply(reply, None));
+        assert!(!is_smoke_reply(reply, Some("other")));
+        assert!(!is_smoke_reply(
+            r#"{"jsonrpc":"2.0","method":"event","params":{}}"#,
+            Some("window")
+        ));
+        assert!(!is_smoke_reply(
+            r#"{"jsonrpc":"2.0","id":"window","error":{"code":-32603}}"#,
+            Some("window")
+        ));
+        assert!(is_smoke_reply(reply, Some("window")));
+    }
 
     fn bootstrap(listener: &TcpListener) -> Bootstrap {
         Bootstrap {

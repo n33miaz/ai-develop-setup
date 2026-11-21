@@ -34,5 +34,5 @@ nova porta e o novo token. Os parâmetros da janela ficam na
 [configuração do lançador](../launcher/README.md).
 
 O job `shell-check` empacota a interface e abre a janela real. A opção interna
-`--smoke-test` exige a feature `desktop-smoke` e encerra a casca após encaminhar a primeira resposta autenticada ao IPC.
+`--smoke-test` exige a feature `desktop-smoke` e encerra a casca após encaminhar pelo IPC a resposta bem-sucedida à consulta `harness.list` enviada pela janela.
 O teste verifica que daemon e host continuam ativos.

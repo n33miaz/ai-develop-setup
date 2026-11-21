@@ -40,6 +40,12 @@ class WindowsPathFiltersTest(unittest.TestCase):
                     f"ads-launcher has no Windows cargo {command}",
                 )
 
+        shell_job = next(job for job in windows_jobs if "    name: shell-check\n" in job)
+        self.assertRegex(
+            shell_job,
+            r"(?m)^        run: cargo clippy --locked -p ads-shell --all-targets -j 2 -- -D warnings$",
+        )
+
         for job in windows_jobs:
             output = re.search(r"needs\.changes\.outputs\.(\w+) == 'true'", job)
             self.assertIsNotNone(output, job)
@@ -59,14 +65,22 @@ class WindowsPathFiltersTest(unittest.TestCase):
                     visited.add(name)
                     package = packages[name]
                     folder = relative_dir(package["manifest_path"], metadata["workspace_root"])
-                    for path in (f"{folder}/Cargo.toml", f"{folder}/src/lib.rs"):
-                        self.assertRegex(path, path_filter, f"{variable} misses {name}")
+                    self.assertRegex(f"{folder}/Cargo.toml", path_filter, f"{variable} misses {name}")
+                    for source in (ROOT / folder).rglob("*.rs"):
+                        self.assertRegex(source.relative_to(ROOT).as_posix(), path_filter, f"{variable} misses {name}")
+                        for embedded in re.findall(
+                            r'\binclude_(?:str|bytes)!\s*\(\s*"([^"]+\.toml)"',
+                            source.read_text(encoding="utf-8"),
+                        ):
+                            path = (source.parent / embedded).resolve()
+                            if path.is_relative_to(ROOT / "defaults"):
+                                self.assertRegex(
+                                    path.relative_to(ROOT).as_posix(), path_filter, f"{variable} misses {name}"
+                                )
                     pending.update(
                         dep["name"]
                         for dep in package["dependencies"]
                         if dep.get("path") and dep["name"] in packages and dep["name"] not in visited
                     )
-                if output[1] == "launcher":
-                    self.assertRegex("defaults/launcher.toml", path_filter)
                 if "ads-contracts" in visited:
                     self.assertRegex("contracts/schemas/example.json", path_filter)

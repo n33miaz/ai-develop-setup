@@ -11,12 +11,14 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SCANNED = ("crates/daemon/src", "crates/core/src")
+SCANNED = ("crates/daemon/src", "crates/core/src", "crates/launcher/src", "crates/storage/src")
 
 # Ways to list the environment instead of asking for one name.
 FORBIDDEN = (
     re.compile(r"\benv\s*::\s*(vars|vars_os|Vars|VarsOs)\b"),
     re.compile(r"\buse\s+std\s*::\s*env\s*::\s*\{[^}]*\b(vars|vars_os|Vars|VarsOs)\b"),
+    re.compile(r"\buse\s+std\s*::\s*env\s+as\s+\w+"),
+    re.compile(r"\buse\s+std\s*::\s*env\s*::\s*(?:\*|\{[^}]*\*)"),
     re.compile(r"\bGetEnvironmentStrings\w*"),
     re.compile(r"\benviron\b"),
 )
@@ -173,6 +175,12 @@ class EnvEnumerationTests(unittest.TestCase):
         self.assertTrue(any(p.search(code) for p in FORBIDDEN))
         code = blank_comments_and_literals("use std::env::{var, var_os};\n")
         self.assertFalse(any(p.search(code) for p in FORBIDDEN))
+
+    def test_detector_rejects_environment_alias_and_glob_imports(self):
+        for code in ("use std::env as e; e::vars()", "use std::env::*; vars_os()",
+                     "use std::env::{var, *}; vars_os()"):
+            with self.subTest(code=code):
+                self.assertTrue(any(pattern.search(code) for pattern in FORBIDDEN))
 
     def test_out_of_line_test_modules_are_skipped(self):
         launch_mod = ROOT / "crates/core/src/tool_launch/mod.rs"
