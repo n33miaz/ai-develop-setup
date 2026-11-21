@@ -417,7 +417,7 @@ Os dez comandos estendem `urn:ads:command:request:1` com `allOf`, fixam `method`
 | `urn:ads:command:queue.get.response:1` | Resposta aceita de `queue.get`: o id da fila e o estado. |
 | `urn:ads:command:queue.start:1` | O dono liga a fila pela interface local; o núcleo registra `queue.enabled` antes de admitir tarefas. |
 | `urn:ads:command:queue.stop:1` | O dono para a fila; sempre aceito, e a fila já parada não ganha evento. |
-| `urn:ads:contract:local-api.server-message:3` | A `:2` mais a resposta de `queue.get`. É a que o núcleo escreve; a `:1` e a `:2` não são alteradas. |
+| `urn:ads:contract:local-api.server-message:3` | A `:2` mais a resposta de `queue.get`. Versão anterior à `:4`, sem alteração. |
 | `urn:ads:contract:local-api.error-code:1` | [Códigos da API local](schemas/contract.local-api.error-code.v1.schema.json) até `SESSION_SETUP_FAILED`, com nomes e significados. Recusas encaminhadas do host seguem o contrato [pty-host/1](#contrato-pty-host1). |
 | `urn:ads:contract:local-api.error-code:2` | [Códigos da API local](schemas/contract.local-api.error-code.v2.schema.json): os da `:1` mais `QUEUE_NOT_CONFIGURED` e `QUEUE_ALREADY_ENABLED`. Versão anterior à `:3`, sem alteração. |
 | `urn:ads:command:approval.list:1` | Pede, só para leitura, as ações do portão que aguardam a resposta do dono. |

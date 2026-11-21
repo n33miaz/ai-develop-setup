@@ -175,7 +175,7 @@ Como só lê, não passa pela cache de idempotência: repetir a chave devolve a
 lista de novo, nunca `replayed`. `api::Launcher::catalog` fornece a lista; o
 padrão é vazio, como em `DisabledLauncher`. Essa resposta exige a
 `local-api.server-message:2`; quem não envia `harness.list` nem `queue.get`
-continua recebendo só mensagens da `:1`. O daemon escreve a `:4`, que acrescenta a resposta de `approval.list`. Um daemon anterior ao comando o recusa
+continua recebendo só mensagens da `:1`. O daemon escreve a `:5`, que acrescenta a resposta de `approval.list` na `:2`. Um daemon anterior ao comando o recusa
 com `METHOD_NOT_FOUND`, e a interface mostra que o daemon precisa ser atualizado.
 
 ## Fila de tarefas
