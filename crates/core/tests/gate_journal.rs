@@ -133,25 +133,112 @@ fn journal_rejects_retroactive_start_without_appending() {
 }
 
 #[test]
-fn journal_replays_with_configured_tolerance() {
-    let mut journal = planned_journal();
+fn started_actions_close_after_lowering_clock_tolerance() {
     let tolerant = policy(POSIX_HOME, "gate_clock_rewind_seconds = 5");
-    let strict = policy(POSIX_HOME, "");
+    let strict = policy(POSIX_HOME, "gate_clock_rewind_seconds = 0");
     let action_id = id("action-1");
-    let mut start = meta("2030-01-02T03:04:00Z", 2);
-    start.id = Ulid::new("01ARZ3NDEKTSV4RRFFQ69G5FAC").unwrap();
+    for succeeded in [false, true] {
+        let mut journal = plan_journal(&tolerant);
+        let mut start = event_meta(2, 'C');
+        start.ts = at("2030-01-02T03:04:00Z");
+        let (permit, _) = JournalGate::new(&tolerant, &mut journal)
+            .authorize(&action_id, start)
+            .unwrap()
+            .into_parts();
 
-    let mut gate = JournalGate::new(&tolerant, &mut journal);
-    gate.authorize(&action_id, start).unwrap();
+        let mut gate = JournalGate::new(&strict, &mut journal);
+        let snapshot = gate.inspect(&action_id).unwrap();
+        assert_eq!(snapshot.state, State::Executing { approval_id: None });
+        assert_eq!(
+            snapshot.policy_warning,
+            Some(JournalError::HistoryOutOfOrder)
+        );
+
+        let error_code = ErrorCode::new("E_INTERRUPTED").unwrap();
+        let mut too_early = event_meta(3, 'D');
+        too_early.ts = at("2030-01-02T03:03:59Z");
+        assert_eq!(
+            gate.apply(
+                &action_id,
+                Command::Fail {
+                    error_code: error_code.clone()
+                },
+                too_early
+            ),
+            Err(JournalError::OutOfOrder)
+        );
+
+        let (command, expected) = if succeeded {
+            (Command::Executed { permit }, State::Executed)
+        } else {
+            (Command::Fail { error_code }, State::Failed)
+        };
+        let mut finish = event_meta(3, 'D');
+        finish.ts = at("2030-01-02T03:04:00Z");
+        assert_eq!(
+            gate.apply(&action_id, command, finish).unwrap().state,
+            expected
+        );
+        assert_eq!(gate.inspect(&action_id).unwrap().state, expected);
+        assert_eq!(journal.history.as_ref().unwrap().events.len(), 3);
+    }
+}
+
+#[test]
+fn pending_approval_expires_after_lowering_clock_tolerance() {
+    let tolerant = policy(
+        POSIX_HOME,
+        "approval_item_limit = 1\ngate_clock_rewind_seconds = 5",
+    );
+    let strict = policy(POSIX_HOME, "approval_item_limit = 1");
+    let action_id = id("action-1");
+    let mut journal = plan_journal(&tolerant);
+    let mut requested = event_meta(1, 'C');
+    requested.ts = at("2030-01-02T03:04:00Z");
+    let pending = JournalGate::new(&tolerant, &mut journal)
+        .apply(&action_id, request_approval(), requested)
+        .unwrap();
+
+    let mut gate = JournalGate::new(&strict, &mut journal);
+    let mut expired = event_meta(2, 'D');
+    expired.ts = at("2030-01-02T03:05:05Z");
+    let snapshot = gate
+        .apply(
+            &action_id,
+            Command::Expire {
+                action_id: action_id.clone(),
+                approval_id: id("approval-1"),
+                plan_hash: pending.plan_hash,
+            },
+            expired,
+        )
+        .unwrap();
+    assert_eq!(snapshot.state, State::ApprovalExpired);
     assert_eq!(
         gate.inspect(&action_id).unwrap().state,
-        State::Executing { approval_id: None }
+        State::ApprovalExpired
     );
+}
+
+#[test]
+fn gate_clock_tolerance_rejects_queue_key_and_values_above_ceiling() {
+    use ads_core::gate::{GatePolicy, HostFacts, PolicyError};
+
+    let host = HostFacts {
+        user_home: POSIX_HOME,
+    };
+    assert!(GatePolicy::from_toml_str("clock_rewind_seconds = 5", &host).is_err());
     assert_eq!(
-        JournalGate::new(&strict, &mut journal).inspect(&action_id),
-        Err(JournalError::HistoryOutOfOrder),
+        policy(POSIX_HOME, "gate_clock_rewind_seconds = 60").gate_clock_rewind_seconds(),
+        60
     );
-    assert_eq!(journal.history.as_ref().unwrap().events.len(), 2);
+    assert!(matches!(
+        GatePolicy::from_toml_str("gate_clock_rewind_seconds = 61", &host),
+        Err(PolicyError::Invalid {
+            key: "gate_clock_rewind_seconds",
+            ..
+        })
+    ));
 }
 
 #[test]

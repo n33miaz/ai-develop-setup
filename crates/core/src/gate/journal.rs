@@ -4,8 +4,8 @@ use std::fmt;
 use super::{
     AbsPath, Action, ActionPlan, ActionPlanRecord, ActionSnapshot, ClassificationBudgetExceeded,
     Command, Decision, ErrorCode, Event, EventMeta, ExecutionPermit, GatePolicy, Id,
-    OperationRequest, PlanOperation, PlanRequest, ReplayError, ShortText, State, TargetRequest,
-    TransitionError, Verdict, classify,
+    OperationRequest, PlanOperation, PlanRequest, ShortText, State, TargetRequest, TransitionError,
+    Verdict, classify,
 };
 
 /// A complete, authenticated action history in commit order.
@@ -25,7 +25,7 @@ pub enum JournalError {
     Transition,
     /// The incoming timestamp is too early. Retry with a current timestamp.
     OutOfOrder,
-    /// A recorded timestamp exceeds the configured rewind limit.
+    /// Inspection warning for a recorded rewind beyond the current tolerance.
     HistoryOutOfOrder,
     Unavailable,
 }
@@ -137,8 +137,13 @@ impl<'a> JournalGate<'a> {
         let history = self.journal.load(action_id)?;
         let mut snapshot =
             load_action(self.policy, self.work_root, action_id, &history)?.snapshot();
+        let tolerance = self.policy.gate_clock_rewind_seconds();
         snapshot.policy_warning = match current_verdict(self.policy, &history.plan) {
-            Ok(_) => None,
+            Ok(_) => history
+                .events
+                .windows(2)
+                .any(|pair| pair[1].ts().precedes_by_more_than(pair[0].ts(), tolerance))
+                .then_some(JournalError::HistoryOutOfOrder),
             Err(
                 error @ (JournalError::PolicyChanged
                 | JournalError::PlanNormalizationFailed
@@ -332,10 +337,9 @@ fn load_action(
     let mut action = Action::begin(first, policy.gate_clock_rewind_seconds())
         .map_err(|_| JournalError::Integrity)?;
     for event in rest {
-        action = action.after(event).map_err(|error| match error {
-            ReplayError::OutOfOrder => JournalError::HistoryOutOfOrder,
-            _ => JournalError::Integrity,
-        })?;
+        action = action
+            .after_recorded(event)
+            .map_err(|_| JournalError::Integrity)?;
     }
     Ok(action)
 }

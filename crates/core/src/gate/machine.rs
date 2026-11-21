@@ -405,9 +405,19 @@ impl Action {
         }
     }
 
-    /// The action after `event`, from the event alone. The only place a state changes: the
-    /// commands go through here, and so does [`replay`].
     pub(super) fn after(&self, event: &Event) -> Result<Action, ReplayError> {
+        let action = self.after_recorded(event)?;
+        if event
+            .ts()
+            .precedes_by_more_than(&self.last_at, self.gate_clock_rewind_seconds)
+        {
+            return Err(ReplayError::OutOfOrder);
+        }
+        Ok(action)
+    }
+
+    /// Rebuilds a state transition from an event already accepted by the journal.
+    pub(super) fn after_recorded(&self, event: &Event) -> Result<Action, ReplayError> {
         let same_action = |action_id: &Id| {
             if action_id == &self.action_id {
                 Ok(())
@@ -551,12 +561,6 @@ impl Action {
                 });
             }
         };
-        if event
-            .ts()
-            .precedes_by_more_than(&self.last_at, self.gate_clock_rewind_seconds)
-        {
-            return Err(ReplayError::OutOfOrder);
-        }
         Ok(Action {
             action_id: self.action_id.clone(),
             plan_hash: self.plan_hash.clone(),

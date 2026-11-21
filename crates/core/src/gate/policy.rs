@@ -8,6 +8,7 @@ use super::path::{AbsPath, PathError, PathStyle, parse_relative, same_name_loose
 
 const DEFAULTS_TOML: &str = include_str!("../../../../defaults/action-gate.toml");
 const MAX_CLASSIFICATION_MATCH_STEPS: u64 = 10_000_000;
+const MAX_GATE_CLOCK_REWIND_SECONDS: u64 = 60;
 
 /// What only the caller can know about the machine. The core reads no environment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,7 +133,6 @@ struct Layer {
     approval_item_limit: Option<u64>,
     classification_match_steps: Option<u64>,
     approval_byte_limit: Option<u64>,
-    #[serde(alias = "clock_rewind_seconds")]
     gate_clock_rewind_seconds: Option<u64>,
     quarantine_enabled: Option<bool>,
     quarantine_dir: Option<String>,
@@ -208,6 +208,17 @@ impl GatePolicy {
             value: quarantine_text,
         })?;
 
+        let gate_clock_rewind_seconds = pick(
+            "gate_clock_rewind_seconds",
+            over.gate_clock_rewind_seconds,
+            base.gate_clock_rewind_seconds,
+        )?;
+        if gate_clock_rewind_seconds > MAX_GATE_CLOCK_REWIND_SECONDS {
+            return Err(PolicyError::Invalid {
+                key: "gate_clock_rewind_seconds",
+                value: gate_clock_rewind_seconds.to_string(),
+            });
+        }
         let classification_match_steps = pick(
             "classification_match_steps",
             over.classification_match_steps,
@@ -266,11 +277,7 @@ impl GatePolicy {
                 over.approval_item_limit,
                 base.approval_item_limit,
             )?,
-            gate_clock_rewind_seconds: pick(
-                "gate_clock_rewind_seconds",
-                over.gate_clock_rewind_seconds,
-                base.gate_clock_rewind_seconds,
-            )?,
+            gate_clock_rewind_seconds,
             approval_byte_limit: pick(
                 "approval_byte_limit",
                 over.approval_byte_limit,
