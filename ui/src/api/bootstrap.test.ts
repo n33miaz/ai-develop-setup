@@ -181,6 +181,28 @@ describe('desktop client selection', () => {
     },
   )
 
+  it('counts the attempt limit from the first call when every call asks to retry', async () => {
+    vi.useFakeTimers()
+    const connect = vi.fn<() => Promise<void>>().mockRejectedValue('desktop connection retry')
+    const invoke = (command: string) =>
+      command === 'desktop_connect' ? connect() : Promise.resolve()
+    const { client } = selectDesktopClient({ core: { invoke, Channel } }, {}, 25, 50, 2000, 2)
+    try {
+      void client.connect().catch(() => undefined)
+      await vi.advanceTimersByTimeAsync(74)
+      expect(connect).toHaveBeenCalledTimes(2)
+      expect(client.getState()).toBe('connecting')
+      await vi.advanceTimersByTimeAsync(1)
+      expect(connect).toHaveBeenCalledTimes(3)
+      expect(client.getState()).toBe('retry_exhausted')
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(connect).toHaveBeenCalledTimes(3)
+    } finally {
+      client.disconnect()
+      vi.useRealTimers()
+    }
+  })
+
   it('stops reconnecting when the replacement daemon fails the identity check', async () => {
     vi.useFakeTimers()
     let channel: Channel | undefined
