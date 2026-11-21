@@ -1,0 +1,19 @@
+{
+  "jsonrpc": "2.0",
+  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAD",
+  "result": {
+    "queue_id": "queue-01",
+    "state": "stopped",
+    "policy": {
+      "attempt_limit": 2,
+      "admission_limit": 1000,
+      "window_seconds": 0,
+      "window_admissions": 10,
+      "manual_window_admissions": 10,
+      "bug_rule_window_admissions": 3,
+      "clock_skew_seconds": 5,
+      "clock_rewind_seconds": 300,
+      "host_confirm_seconds": 60
+    }
+  }
+}
