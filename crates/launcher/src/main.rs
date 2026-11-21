@@ -18,6 +18,11 @@ const DAEMON_LOCK_FILE: &str = "daemon.lock";
 #[serde(deny_unknown_fields)]
 struct Config {
     daemon_program: PathBuf,
+    shell_program: PathBuf,
+    shell_autostart: bool,
+    shell_width: u16,
+    shell_height: u16,
+    shell_start_minimized: bool,
     ptyhost_program: PathBuf,
     daemon_config: Option<PathBuf>,
     ptyhost_config: Option<PathBuf>,
@@ -38,7 +43,7 @@ impl Config {
     fn load(path: Option<&Path>) -> Result<Self, Box<dyn std::error::Error>> {
         let mut defaults: toml::Table =
             toml::from_str(include_str!("../../../defaults/launcher.toml"))?;
-        for key in ["daemon_program", "ptyhost_program"] {
+        for key in ["daemon_program", "ptyhost_program", "shell_program"] {
             let program = defaults[key].as_str().expect("default program name");
             defaults.insert(
                 key.into(),
@@ -67,6 +72,9 @@ impl Config {
         {
             return Err(io::Error::other("invalid launcher interval or retry limit"));
         }
+        if self.shell_width == 0 || self.shell_height == 0 {
+            return Err(io::Error::other("invalid shell window dimensions"));
+        }
         let names = [
             &self.lock_file,
             &self.state_file,
@@ -90,6 +98,7 @@ impl Config {
         }
         if [
             &self.daemon_program,
+            &self.shell_program,
             &self.ptyhost_program,
             &self.control_dir,
         ]
@@ -99,6 +108,10 @@ impl Config {
             return Err(io::Error::other("launcher paths must not be empty"));
         }
         Ok(())
+    }
+
+    fn desktop_enabled(&self) -> bool {
+        cfg!(windows) && self.shell_autostart
     }
 
     fn validate_child_env(&self) -> Result<(), Box<dyn std::error::Error>> {
@@ -157,6 +170,9 @@ fn installation_commands(
     daemon
         .arg("--instance-lock")
         .arg(control.join(DAEMON_LOCK_FILE));
+    if config.desktop_enabled() {
+        daemon.arg("--desktop");
+    }
     add_config(
         &mut daemon,
         "--config",
@@ -198,7 +214,21 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     let config_base = config_path.as_deref().unwrap_or(&exe).parent().unwrap();
     let config = Config::load(config_path.as_deref())?;
     let (control, daemon, host) = installation_commands(&config, install, config_base);
-    supervisor::run(&config, &control, daemon, host)?;
+    let shell = config.desktop_enabled().then(|| {
+        let mut shell = child_command(
+            &install.join(&config.shell_program),
+            &config.child_env_allow,
+        );
+        shell.args([
+            config.shell_width.to_string(),
+            config.shell_height.to_string(),
+        ]);
+        if config.shell_start_minimized {
+            shell.arg("--minimized");
+        }
+        shell
+    });
+    supervisor::run(&config, &control, daemon, host, shell)?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -264,8 +294,14 @@ mod tests {
         let args: Vec<_> = daemon.get_args().collect();
         assert_eq!(args[0], "--instance-lock");
         assert_eq!(args[1], control.join(DAEMON_LOCK_FILE));
-        assert_eq!(args[2], "--config");
-        assert_eq!(args[3], dir.0.join("daemon.toml"));
+        let config_index = if config.desktop_enabled() {
+            assert_eq!(args[2], "--desktop");
+            3
+        } else {
+            2
+        };
+        assert_eq!(args[config_index], "--config");
+        assert_eq!(args[config_index + 1], dir.0.join("daemon.toml"));
     }
 
     // The parent fixture receives synthetic values without changing this test runner's environment.

@@ -82,6 +82,10 @@ desenvolvimento, sem compilação dinâmica no navegador nem alteração de CSP.
 Replay desde zero aceita o início do histórico ainda retido; depois disso,
 uma lacuna na sequência encerra a conexão. Eventos repetidos são ignorados.
 
+Na casca Tauri, o cliente recebe a porta e o token por IPC, autentica na API
+local e mantém a credencial em memória. O service worker fica desativado nessa
+janela. O bundle é o mesmo da interface web.
+
 ## Instalar a interface como aplicativo
 
 Em `ui/`, execute `npm ci`, `npm run build` e `npm run preview` para

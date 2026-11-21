@@ -32,8 +32,24 @@ for encerrado à força, o daemon pode continuar vivo, mas outro daemon da mesma
 instalação receberá uma recusa até o primeiro sair. Para recuperar a supervisão,
 encerre o daemon anterior e peça um reinício pelo sinal `restart`.
 
-O lançador inicia o host destacado e o daemon. A saída padrão do daemon continua
-disponível no terminal para obter a URL autenticada. As opções `daemon_config`
+O lançador inicia o host destacado e o daemon. No Windows, coloque também
+`ads-shell.exe` ao lado do lançador. O modo desktop liga a saída de inicialização
+do daemon diretamente à entrada da casca por um pipe anônimo. O lançador passa
+o identificador do pipe e a casca entrega a credencial à janela em memória.
+A API permite somente a origem da janela nesse modo. Se a casca falhar, daemon
+e host continuam sob supervisão. Para usar o navegador, configure
+`shell_autostart = false` e reinicie a instalação. Nesse modo a URL autenticada
+volta a aparecer na saída padrão do daemon.
+
+| Chave | Padrão | Uso |
+|---|---|---|
+| `shell_program` | `ads-shell.exe` no Windows | Caminho absoluto ou relativo ao lançador. |
+| `shell_autostart` | `true` no Windows | Abre a janela ao iniciar o daemon. Em outros sistemas, vale o modo navegador. |
+| `shell_width`, `shell_height` | 960, 640 | Tamanho inicial em pixels lógicos, de 1 a 65535. |
+| `shell_start_minimized` | `false` | Minimiza a janela na abertura. |
+
+Altere as chaves no TOML passado por `--config` e reinicie o lançador.
+As opções `daemon_config`
 e `ptyhost_config` passam `--config` ao processo correspondente. O arquivo do
 host também é passado ao daemon via `--host-config`, para que ambos usem o
 mesmo canal. `child_env_allow` define quais variáveis os filhos herdam do

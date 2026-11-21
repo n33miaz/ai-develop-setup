@@ -20,14 +20,14 @@ Proposta:
 1. **Endereço.** O núcleo escuta só em `127.0.0.1`, numa porta efêmera escolhida pelo sistema a cada execução. Nunca em `0.0.0.0`, `::` ou interface de rede.
 2. **`Host` e `Origin`.** No pedido de upgrade do WebSocket, o núcleo confere:
    - `Host` igual a `127.0.0.1:<porta>` ou `localhost:<porta>` (barra DNS rebinding);
-   - `Origin` presente e numa lista permitida exata, sem curinga. Padrão de desenvolvimento: `http://127.0.0.1:5173`, o mesmo endereço em que o Vite escuta. A origem da casca Tauri no Windows entra na lista quando for verificada na casca real.
+   - `Origin` presente e numa lista permitida exata, sem curinga. Padrão de desenvolvimento: `http://127.0.0.1:5173`, o mesmo endereço em que o Vite escuta. No modo desktop, a lista contém somente `http://tauri.localhost`, origem da WebView no Windows.
    Qualquer falha responde `403` e fecha, sem dizer qual conferência falhou.
-3. **Token por execução.** A cada partida o núcleo gera um token de 32 bytes (256 bits; o mínimo aceitável é 128) de um gerador criptográfico do sistema, codificado em base64url sem preenchimento (43 caracteres). O token só existe na memória do núcleo.
+3. **Token por execução.** A cada partida o núcleo gera um token de 32 bytes (256 bits; o mínimo aceitável é 128) de um gerador criptográfico do sistema, codificado em base64url sem preenchimento (43 caracteres). O núcleo mantém o token em memória durante a execução.
 4. **Entrega pelo fragmento.** O núcleo imprime uma única linha com a URL da interface e o token no fragmento: `http://127.0.0.1:5173/#core=ws://127.0.0.1:<porta>&token=<token>`. O fragmento não sai do navegador em pedido HTTP nenhum, nem vai para o `Referer`. A interface lê o fragmento, guarda o token só na sessão da aba e limpa a URL.
 5. **Primeira mensagem.** A interface manda o token como primeira mensagem do WebSocket, no comando `auth.hello` (contrato `urn:ads:command:auth.hello:1`). Nunca em query string, cabeçalho de URL ou subprotocolo, que acabam em log e em histórico.
 6. **Conferência.** O núcleo compara o token em tempo constante. Antes de um `auth.hello` válido nenhum outro comando é aceito; token errado, mensagem que não é `auth.hello` ou falta dele dentro do prazo (padrão 5 s) fecham a conexão. Nenhuma resposta diz se o token estava perto de certo.
 7. **Origem remota recusada.** Todo comando que chega pela API local com `_meta.origin = "remote"` é recusado, mesmo autenticado: comando remoto só entra pelo transporte remoto, assinado (ADR 0008).
-8. **Nada em disco nem em log.** O token e a saída de terminal nunca são gravados em arquivo nem em log, inclusive em mensagem de erro e em modo de depuração. A linha com a URL vai só para a saída padrão do processo que o usuário abriu.
+8. **Nada em disco nem em log.** O token e a saída de terminal nunca são gravados em arquivo nem em log, inclusive em mensagem de erro e em modo de depuração. No modo navegador, a linha com a URL vai para a saída padrão do processo que o usuário abriu. No modo desktop, a linha de conexão vai para o pipe herdado pela casca.
 
 Parâmetros (P8): a lista de origens permitidas e o prazo do `auth.hello` ficam na configuração do núcleo, com os padrões acima. Endereço, tamanho mínimo do token e a regra do fragmento não são parâmetros: afrouxá-los desfaz a proteção.
 
@@ -48,7 +48,7 @@ Parâmetros (P8): a lista de origens permitidas e o prazo do `auth.hello` ficam 
 - O núcleo precisa de: escuta em `127.0.0.1` com porta efêmera, conferência de `Host` e `Origin` no upgrade, gerador do token, prazo e máquina de estados da conexão (antes e depois do `auth.hello`), comparação em tempo constante, recusa de `origin: "remote"` e testes de cada recusa.
 - A interface lê o fragmento, guarda o token na sessão da aba, limpa a URL e manda `auth.hello` antes de tudo. Sem token, fica no modo de exemplo.
 - Reiniciar o núcleo troca a porta e o token: a interface aberta perde a conexão e o usuário abre a URL nova.
-- A casca Tauri recebe a URL do núcleo por outro caminho (a definir junto com ela), sem passar por arquivo que outro usuário leia.
+- No Windows, a casca Tauri recebe porta e token pelo pipe anônimo configurado pelo lançador. A casca entrega esses dados uma vez por IPC à interface empacotada, que usa o token em memória.
 - Este módulo entra na lista de módulos de segurança do `CONTRIBUTING.md`: mudanças nele exigem uma revisão a mais antes de juntar.
 
 ## Limite conhecido

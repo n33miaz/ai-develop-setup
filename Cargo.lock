@@ -146,8 +146,10 @@ dependencies = [
 name = "ads-shell"
 version = "0.0.0"
 dependencies = [
+ "serde",
  "tauri",
  "tauri-build",
+ "zeroize",
 ]
 
 [[package]]

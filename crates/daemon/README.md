@@ -7,6 +7,14 @@ pasta definidos no TOML do usuário. Ferramenta sem programa recebe
 `HARNESS_NOT_CONFIGURED`. Ferramenta desconhecida, programa ou pasta
 inexistente e apelido de pasta fora da configuração recebem `INVALID_PARAMS`.
 
+## Modo desktop
+
+O lançador seleciona `--desktop` antes das opções de configuração e conecta
+a saída padrão do daemon ao pipe privado da casca. Nesse modo o daemon envia
+porta e token somente nesse canal e usa uma lista de origens com uma única
+entrada, `http://tauri.localhost`. A casca envia `auth.hello` pela interface
+empacotada, com as mesmas regras de autenticação do navegador.
+
 ## Abrir Claude ou Codex no navegador
 
 1. Na raiz do repositório, inicie o host de terminais em um terminal.
@@ -281,8 +289,7 @@ pois o transporte tem diagnóstico capaz de mostrar payloads. Isso vale também
 em debug e não é configurável, por segurança. Não há logger nem arquivo de saída.
 `zeroize`, já presente no workspace, limpa o token ao descartá-lo e a URL logo
 após a impressão, inclusive quando o envio falha. O `auth.hello` é consumido
-antes do laço autenticado; sua cópia do token é limpa. A única
-exposição intencional do token é a linha inicial na saída padrão.
+antes do laço autenticado; sua cópia do token é limpa. O daemon entrega o token na linha inicial de conexão, ao navegador em desenvolvimento ou pelo pipe da casca no modo desktop.
 
 Os testes exercitam recusas de upgrade e autenticação, comandos negados,
 deduplicação entre conexões, limites, replay e eventos com o backend falso.

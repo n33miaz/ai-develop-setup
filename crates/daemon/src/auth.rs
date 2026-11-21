@@ -9,6 +9,8 @@ use zeroize::Zeroize;
 
 use crate::api::ApiError;
 
+pub const DESKTOP_ORIGIN: &str = "http://tauri.localhost";
+
 pub struct Token(String);
 
 impl Drop for Token {
@@ -32,6 +34,10 @@ impl Token {
 
     pub fn matches(&self, candidate: &str) -> bool {
         self.0.as_bytes().ct_eq(candidate.as_bytes()).into()
+    }
+
+    pub fn desktop_bootstrap(&self, port: u16) -> String {
+        format!("{port} {}", self.0)
     }
 
     pub fn launch_url(&self, base: &str, port: u16) -> String {

@@ -181,7 +181,7 @@ jobs:
           PUSH_BEFORE_SHA: ${{ github.event.before }}
           PUSH_AFTER_SHA: ${{ github.sha }}
           # Casca: ela mesma, os contratos e as entradas da compilação.
-          SHELL_PATHS: '^(crates/shell/|crates/contracts/|crates/e2e/|contracts/|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
+          SHELL_PATHS: '^(crates/(shell|launcher|daemon|ptyhost)/|ui/|tools/smoke_desktop\.py$|defaults/(launcher|daemon|ptyhost|harnesses)\.toml$|crates/contracts/|crates/e2e/|contracts/|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
           # Interface: ela mesma e o que ela lê dos contratos (tipos gerados e os Schemas do teste de contrato).
           UI_PATHS: '^(ui/|contracts/generated/|contracts/schemas/)'
           # Contratos: os Schemas e as ferramentas, os tipos Rust gerados deles e o que muda a forma como o rustfmt os escreve.
@@ -338,13 +338,22 @@ jobs:
         with:
           shared-key: shell-check
           save-if: ${{ github.ref == 'refs/heads/develop' && github.event_name != 'pull_request' }}
-      # O Tauri embute `ui/dist` ao compilar; enquanto a interface não existir, uma página vazia basta.
-      - name: Pasta da interface
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Compilar a interface
+        working-directory: ui
         run: |
-          mkdir -p ui/dist
-          [ -f ui/dist/index.html ] || echo '<!doctype html><title>ads</title>' > ui/dist/index.html
-      - name: Compilar a casca (cargo check)
-        run: cargo check --locked -p ads-shell --all-targets
+          npm ci --ignore-scripts
+          npm run build
+      - name: Testar a casca
+        run: cargo test --locked -j 2 -p ads-shell
+      - name: Compilar os processos do teste de conexão
+        run: cargo build --locked -j 2 -p ads-shell -p ads-daemon -p ads-ptyhost
+      - name: Abrir a janela e autenticar na API local
+        run: python -B tools/smoke_desktop.py
 
   ui:
     name: ui

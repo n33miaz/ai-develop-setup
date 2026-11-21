@@ -121,6 +121,11 @@ pub struct ApiConfig {
     pub close_retry_ms: u64,
 }
 impl ApiConfig {
+    pub fn for_desktop(mut self) -> Self {
+        self.allowed_origins = vec![crate::auth::DESKTOP_ORIGIN.to_owned()];
+        self
+    }
+
     pub fn from_toml_str(overrides: &str) -> Result<Self, ApiError> {
         let mut base: toml::Value = toml::from_str(include_str!("../../../defaults/daemon.toml"))
             .map_err(|_| ApiError::Invalid)?;
@@ -983,6 +988,9 @@ impl LocalApi {
             .local_addr()
             .map(|a| a.port())
             .map_err(|_| ApiError::Unavailable)
+    }
+    pub fn desktop_bootstrap(&self) -> Result<String, ApiError> {
+        Ok(self.token.desktop_bootstrap(self.port()?))
     }
     pub fn launch_url(&self) -> Result<String, ApiError> {
         Ok(self

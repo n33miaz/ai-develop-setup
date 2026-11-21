@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { replaySettings, selectCoreClient } from './bootstrap'
+import { replaySettings, selectCoreClient, selectDesktopClient } from './bootstrap'
 import { createFakeCoreClient } from './fake'
 
 beforeEach(() => {
@@ -64,6 +64,26 @@ describe('client selection', () => {
   it('ignores malformed stored data', () => {
     window.sessionStorage.setItem('ads.local-api', '{')
     expect(selectCoreClient(window).live).toBe(false)
+  })
+})
+
+describe('desktop client selection', () => {
+  it('uses the inherited credentials without changing the URL or storage', async () => {
+    const credentials = { url: 'ws://127.0.0.1:12345', token: 'a'.repeat(43) }
+    async function invoke<T>(command: string): Promise<T> {
+      expect(command).toBe('desktop_bootstrap')
+      return credentials as T
+    }
+    const client = createFakeCoreClient()
+    const real = vi.fn(() => client)
+    expect(await selectDesktopClient({ core: { invoke } }, {}, real)).toEqual({
+      client,
+      live: true,
+    })
+    expect(real).toHaveBeenCalledWith(credentials)
+    expect(window.location.hash).toBe('')
+    expect(window.sessionStorage.length).toBe(0)
+    expect(window.localStorage.getItem('ads.local-api')).toBeNull()
   })
 })
 

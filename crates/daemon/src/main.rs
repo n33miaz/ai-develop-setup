@@ -50,9 +50,15 @@ async fn main() -> ExitCode {
         } else {
             None
         };
+        let desktop = args.next_if(|arg| arg == "--desktop").is_some();
         let args = args.map(|arg| arg.into_string().map_err(|_| "invalid daemon argument"));
         let (config, host_config, tools) =
             load_config(args.collect::<Result<Vec<_>, _>>()?.into_iter())?;
+        let config = if desktop {
+            config.for_desktop()
+        } else {
+            config
+        };
         let launcher = ToolLauncher::from_process_env(
             &tools,
             ads_core::tool_launch::HostRules::host(),
@@ -67,8 +73,15 @@ async fn main() -> ExitCode {
         .map_err(|_| ApiError::Unavailable)?
         .map_err(|_| ApiError::Unavailable)?;
         let api = LocalApi::bind(config, host, Arc::new(launcher)).await?;
-        let mut url = zeroize::Zeroizing::new(api.launch_url()?);
-        print_launch_url(&mut url, &mut std::io::stdout()).map_err(|_| ApiError::Unavailable)?;
+        if desktop {
+            let mut bootstrap = zeroize::Zeroizing::new(api.desktop_bootstrap()?);
+            // A closed or unavailable window must not interrupt the daemon.
+            let _ = print_launch_url(&mut bootstrap, &mut std::io::stdout());
+        } else {
+            let mut url = zeroize::Zeroizing::new(api.launch_url()?);
+            print_launch_url(&mut url, &mut std::io::stdout())
+                .map_err(|_| ApiError::Unavailable)?;
+        }
         Ok(api.run().await?)
     }
     .await;

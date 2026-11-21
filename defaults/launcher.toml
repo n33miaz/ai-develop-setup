@@ -1,8 +1,15 @@
 # Programas e control_dir relativos partem da pasta do binário.
 # Os caminhos *_config relativos partem da pasta do TOML com --config.
-# No Windows, o lançador acrescenta .exe aos dois padrões embutidos.
+# No Windows, o lançador acrescenta .exe aos padrões embutidos.
 daemon_program = "ads-daemon"
 ptyhost_program = "ads-ptyhost"
+shell_program = "ads-shell"
+# No Windows, abre a interface empacotada. Desative para usar o navegador.
+shell_autostart = true
+# Dimensões iniciais em pixels lógicos.
+shell_width = 960
+shell_height = 640
+shell_start_minimized = false
 # daemon_config e ptyhost_config são opcionais. Sem eles, cada filho usa seus padrões.
 # Pasta exclusiva da instalação. Criada só para a conta atual; existente, é recusada se outra conta tiver acesso.
 control_dir = "launcher-control"
