@@ -381,9 +381,27 @@ impl Publication {
 pub(crate) fn run(
     config: &Config,
     control: &Path,
+    daemon: Command,
+    host: Command,
+    shell: Option<Command>,
+) -> io::Result<()> {
+    run_with_interrupt(
+        config,
+        control,
+        daemon,
+        host,
+        shell,
+        private::console_stop_requested,
+    )
+}
+
+fn run_with_interrupt(
+    config: &Config,
+    control: &Path,
     mut daemon: Command,
     mut host: Command,
     mut shell: Option<Command>,
+    mut interrupted: impl FnMut() -> bool,
 ) -> io::Result<()> {
     let control = ControlDir::open(control, &Identity::current()?)?;
     let _lock = open_lock(&control, &config.lock_file)?;
@@ -400,28 +418,36 @@ pub(crate) fn run(
     // Declared after the daemon so that, on any exit, the window closes before it.
     let mut window = Window::new(config);
 
+    let startup_stop = control.signal(stop, true)?;
     // Publish before starting children so an unusable state path fails early.
     let mut publication = Publication {
-        stop_pending_at_startup: matches!(control.signal(stop, false), Ok(Signal::Accepted)),
+        stop_pending_at_startup: matches!(startup_stop, Signal::Accepted),
         ..Publication::default()
     };
-    write_state(&control, state, &daemon, &host, false, &publication)?;
+    if let Err(error) = write_state(&control, state, &daemon, &host, false, &publication) {
+        publication.signal("consume stop signal", &control, stop);
+        return Err(error);
+    }
     let mut stopping = false;
     let mut restarting = false;
     loop {
         if !stopping {
-            stopping = private::console_stop_requested()
-                || publication.signal("consume stop signal", &control, stop) == Some(true);
+            let console_stop = interrupted();
+            let file_stop = publication.signal("consume stop signal", &control, stop);
+            stopping = console_stop || file_stop == Some(true);
         }
         let stopped = if stopping {
             let daemon_stopped = publication.attempt("stop daemon", daemon.stop()).is_some();
             let window_closed = publication.close_shell(&mut window);
-            let signal_cleared = publication
+            let restart_cleared = publication
                 .signal("clear restart signal", &control, restart)
                 .is_some();
             publication.attempt("check host exit", host.tick_exit_only());
             publication.dirty = true;
-            daemon_stopped && window_closed && signal_cleared
+            let stop_cleared = publication
+                .signal("consume stop signal", &control, stop)
+                .is_some();
+            daemon_stopped && window_closed && restart_cleared && stop_cleared
         } else {
             restarting |=
                 publication.signal("consume restart signal", &control, restart) == Some(true);
@@ -708,26 +734,61 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn reports_stop_pending_at_startup_without_starting_children() {
+    fn consumes_stop_when_console_interrupt_arrives() {
         let dir = TestDir::new();
         let settings = config();
-        fs::write(dir.0.join(&settings.stop_file), []).unwrap();
-        let daemon = Command::new(dir.0.join("missing-daemon"));
-        let host = Command::new(dir.0.join("missing-host"));
-        run(&settings, &dir.0, daemon, host, None).unwrap();
-        let state = state_value(&dir.0.join(&settings.state_file)).unwrap();
-        assert_eq!(state["stopped"], true);
-        assert_eq!(state["stop_pending_at_startup"], true);
-        assert!(state["daemon"]["last_error"].is_null());
-        assert!(state["ptyhost"]["last_error"].is_null());
+        let stop = dir.0.join(&settings.stop_file);
+        let state = dir.0.join(&settings.state_file);
+        run_with_interrupt(
+            &settings,
+            &dir.0,
+            fixture(None),
+            fixture(None),
+            None,
+            || {
+                fs::write(&stop, []).unwrap();
+                true
+            },
+        )
+        .unwrap();
+        assert_eq!(state_value(&state).unwrap()["stopped"], true);
+        assert!(!stop.exists());
+
+        // Also simulate an abandoned signal, as after an abrupt exit.
+        fs::write(&stop, []).unwrap();
+        let host_release = dir.0.join("release-host");
+        let daemon_release = dir.0.join("release-daemon");
+        let mut started = false;
+        let mut waited = 0;
+        run_with_interrupt(
+            &settings,
+            &dir.0,
+            fixture(Some(&daemon_release)),
+            fixture(Some(&host_release)),
+            None,
+            || {
+                let state = state_value(&state).unwrap();
+                assert_eq!(state["stop_pending_at_startup"], true);
+                started = state["daemon"]["pid"].is_u64() && state["ptyhost"]["pid"].is_u64();
+                waited += 1;
+                started || waited == 100
+            },
+        )
+        .unwrap();
+        fs::write(host_release, []).unwrap();
+        assert!(started);
+        assert!(!stop.exists());
     }
 
     #[test]
-    fn initial_state_write_failure_is_fatal() {
+    fn initial_state_write_failure_is_fatal_and_clears_stop() {
         let dir = TestDir::new();
         let settings = config();
+        let stop = dir.0.join(&settings.stop_file);
+        fs::write(&stop, []).unwrap();
         fs::create_dir(dir.0.join(&settings.state_file)).unwrap();
         assert!(run(&settings, &dir.0, fixture(None), fixture(None), None).is_err());
+        assert!(!stop.exists());
     }
 
     #[test]
@@ -835,12 +896,26 @@ pub(crate) mod tests {
         let local = Identity::current().unwrap();
         fs::create_dir_all(&dir.0).unwrap();
         ControlDir::open(&control, &local).unwrap();
-        fs::write(control.join(&settings.stop_file), []).unwrap();
-        run(&settings, &control, fixture(None), fixture(None), None).unwrap();
+        run_with_interrupt(
+            &settings,
+            &control,
+            fixture(None),
+            fixture(None),
+            None,
+            || true,
+        )
+        .unwrap();
         assert_private(&control, &settings, &local);
         // The folder, lock and state now exist: a second run reuses and keeps them private.
-        fs::write(control.join(&settings.stop_file), []).unwrap();
-        run(&settings, &control, fixture(None), fixture(None), None).unwrap();
+        run_with_interrupt(
+            &settings,
+            &control,
+            fixture(None),
+            fixture(None),
+            None,
+            || true,
+        )
+        .unwrap();
         assert_private(&control, &settings, &local);
     }
 
@@ -852,13 +927,20 @@ pub(crate) mod tests {
         let dir = TestDir::new();
         let settings = config();
         let local = Identity::current().unwrap();
-        fs::write(dir.0.join(&settings.stop_file), []).unwrap();
         let user = format!("*{}", local.user);
         icacls(&dir.0, &["/remove:g", &user]);
         icacls(&dir.0, &["/grant", &format!("{user}:F")]);
         let folder = private::access_list_text(&dir.0).unwrap();
         assert!(!folder.contains("OI") && !folder.contains("CI"), "{folder}");
-        run(&settings, &dir.0, fixture(None), fixture(None), None).unwrap();
+        run_with_interrupt(
+            &settings,
+            &dir.0,
+            fixture(None),
+            fixture(None),
+            None,
+            || true,
+        )
+        .unwrap();
         let file = private::canonical_access_list(&format!("D:P(A;;FA;;;{})", local.user)).unwrap();
         for name in [&settings.lock_file, &settings.state_file] {
             assert_eq!(private::access_list_text(&dir.0.join(name)).unwrap(), file);

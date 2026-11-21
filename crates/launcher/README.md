@@ -76,9 +76,12 @@ Crie o arquivo vazio `restart` na pasta de controle para reiniciar o daemon e
 zerar seu contador de falhas na janela móvel. Crie `stop` para encerrar o daemon,
 a janela da casca e o lançador. Um arquivo de sinal cujo dono não é a conta atual, ou que no
 Windows dá acesso a outra conta, fica no lugar, é ignorado e aparece em `last_error`.
-O sinal apagado é o mesmo arquivo conferido. Um sinal de parada da conta atual pendente
-na partida continua válido e fica registrado no estado em `stop_pending_at_startup`. Se os dois arquivos
-estiverem presentes, a parada prevalece. O host
+O sinal apagado é o mesmo arquivo conferido. Ao adquirir a trava da pasta de
+controle, o lançador descarta um `stop` válido que já estava presente e registra
+esse descarte em `stop_pending_at_startup`. Para solicitar a parada da execução atual,
+aguarde a publicação de seu estado antes de criar o arquivo. Durante a execução,
+a parada prevalece sobre `restart`. O lançador consome pedidos de parada pendentes
+também ao encerrar por interrupção de console. O host
 permanece em execução com as sessões existentes. Enquanto supervisionado, ele
 só é reiniciado após sair. Reassumir a supervisão de um host que ficou ativo
 depois de `stop` ainda está pendente. Para retomar a supervisão em uma nova
