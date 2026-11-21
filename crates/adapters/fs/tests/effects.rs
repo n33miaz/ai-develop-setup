@@ -197,16 +197,18 @@ fn a_link_swapped_for_another_of_the_same_name_stops_the_purge() {
     if !common::folder_link(&link, &first) {
         return;
     }
+    let next = sandbox.path("work/next");
     let swap = {
         let link = link.clone();
         move || {
-            // A junction is removed as a folder, a symbolic link as a file; the target stays.
+            // The new link is made beside the tree while the old one exists, so the two never
+            // share an identity (Linux reuses a freed inode at once), then takes its name. A
+            // junction cannot be renamed over another: it is removed (as a folder) and made.
+            assert!(common::folder_link(&next, &second));
             if cfg!(windows) {
                 fs::remove_dir(&link).unwrap();
-            } else {
-                fs::remove_file(&link).unwrap();
             }
-            assert!(common::folder_link(&link, &second));
+            fs::rename(&next, &link).unwrap();
         }
     };
     changed_after_the_approval(&sandbox, swap, &[link, first]);
