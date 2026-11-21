@@ -106,33 +106,30 @@ pub(crate) fn first_use(path: &Path, vault: &impl Vault) -> Result<bool, Storage
     Ok(true)
 }
 
-pub(crate) struct VaultKeys<V>(pub(crate) V);
+pub(crate) struct VaultKeys(Secret);
 
-impl<V: Vault> VaultKeys<V> {
-    pub(crate) fn provision(&self, first_use: bool) -> Result<(), StorageError> {
+impl VaultKeys {
+    pub(crate) fn load(vault: &impl Vault, first_use: bool) -> Result<Self, StorageError> {
         let name = SecretName::StorageKey;
-        match self
-            .0
-            .read(name)
-            .map_err(|_| StorageError::KeyUnavailable)?
-        {
-            Some(secret) if secret.expose().len() == 32 => Ok(()),
+        match vault.read(name).map_err(|_| StorageError::KeyUnavailable)? {
+            Some(secret) if secret.expose().len() == 32 => Ok(Self(secret)),
             Some(_) => Err(StorageError::WrongKey),
             None if first_use => {
                 let mut bytes = Zeroizing::new(vec![0; 32]);
                 getrandom::fill(&mut bytes).map_err(|_| CipherError::Random)?;
                 let secret = Secret::new(std::mem::take(&mut *bytes))
                     .map_err(|_| StorageError::KeyUnavailable)?;
-                self.0
+                vault
                     .store(name, &secret)
-                    .map_err(|_| StorageError::KeyUnavailable)
+                    .map_err(|_| StorageError::KeyUnavailable)?;
+                Ok(Self(secret))
             }
             None => Err(StorageError::KeyUnavailable),
         }
     }
 }
 
-impl<V: Vault> KeyProvider for VaultKeys<V> {
+impl KeyProvider for VaultKeys {
     fn current(&self) -> Result<(KeyId, SecretKey), CipherError> {
         let id = KeyId::new(SecretName::StorageKey.as_str().as_ref())?;
         let key = self.by_id(&id)?;
@@ -144,13 +141,8 @@ impl<V: Vault> KeyProvider for VaultKeys<V> {
         if id.as_str() != name.as_str() {
             return Err(CipherError::KeyUnavailable);
         }
-        let secret = self
+        let bytes = self
             .0
-            .read(name)
-            .ok()
-            .flatten()
-            .ok_or(CipherError::KeyUnavailable)?;
-        let bytes = secret
             .expose()
             .try_into()
             .map_err(|_| CipherError::KeyUnavailable)?;
