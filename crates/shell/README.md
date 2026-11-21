@@ -7,7 +7,8 @@ IPC. A credencial fica no processo Rust. A janela reconecta automaticamente
 após uma queda. Uma reconexão ou um recarregamento da interface sempre volta ao
 daemon que abriu a janela, cuja porta e token vieram no pipe, esteja ele ativo
 ou não. Se esse daemon sair, a janela segue tentando até o lançador
-substituí-la pela janela do novo daemon ou fechá-la ao desistir. Ao trocar de
+substituí-la pela janela do novo daemon, fechá-la ao desistir ou o limite de
+tentativas se esgotar; nesse caso ela para e pede um reinício pelo lançador. Ao trocar de
 conexão, a casca avisa a anterior de que ela terminou. Os comandos de IPC
 conferem a URL do documento principal, não a origem de quem chama; por isso a
 política de conteúdo da janela proíbe frames e objetos incorporados
@@ -15,9 +16,10 @@ política de conteúdo da janela proíbe frames e objetos incorporados
 o token recebido no pipe antes de enviar a credencial ou encaminhar
 comandos. A [configuração da interface](../../ui/README.md) define a espera,
 o período de estabilidade e o limite de tentativas. Uma prova ausente ou
-inválida bloqueia novas conexões nessa execução da casca e orienta a reabrir
-pelo lançador para obter a credencial da execução atual. Se a prova estiver
-ausente, confira se a casca e o daemon têm a mesma versão.
+inválida bloqueia novas conexões nessa execução da casca. A janela orienta a
+reiniciar o daemon pelo sinal `restart` do lançador, ou parar e iniciar o
+lançador, para receber a credencial de uma nova execução; com a prova ausente,
+pede também para conferir se a casca e o daemon têm a mesma versão.
 
 Fechar a janela a oculta na bandeja. A opção de saída encerra apenas a casca.
 Em uma nova execução do daemon, o lançador substitui a janela para usar a
