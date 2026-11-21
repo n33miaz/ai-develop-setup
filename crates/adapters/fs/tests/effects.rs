@@ -174,7 +174,7 @@ fn changed_after_the_approval(
 }
 
 #[test]
-fn a_file_swapped_for_another_of_the_same_name_and_size_stops_the_purge() {
+fn an_existing_file_moved_over_the_approved_one_stops_the_purge() {
     let sandbox = Sandbox::new("effects-swap");
     let seen = sandbox.file("work/cache/seen.txt", "seen");
     // Made beside the tree, so that both objects exist at once and have distinct identities.
@@ -188,7 +188,7 @@ fn a_file_swapped_for_another_of_the_same_name_and_size_stops_the_purge() {
 }
 
 #[test]
-fn a_link_swapped_for_another_of_the_same_name_stops_the_purge() {
+fn an_existing_link_moved_over_the_approved_one_stops_the_purge() {
     let sandbox = Sandbox::new("effects-link");
     sandbox.dir("work/cache");
     let first = sandbox.dir("work/first");
@@ -212,4 +212,81 @@ fn a_link_swapped_for_another_of_the_same_name_stops_the_purge() {
         }
     };
     changed_after_the_approval(&sandbox, swap, &[link, first]);
+}
+
+#[test]
+fn a_file_deleted_and_made_again_with_the_same_size_stops_the_purge() {
+    let sandbox = Sandbox::new("effects-recreate");
+    let seen = sandbox.file("work/cache/seen.txt", "seen");
+    let before = inode(&seen);
+    let again = seen.clone();
+    let recreate = move || {
+        // Past the tick of the clock that stamped the first file, as any real swap is.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        fs::remove_file(&again).unwrap();
+        fs::write(&again, "SEEN").unwrap();
+    };
+    changed_after_the_approval(&sandbox, recreate, std::slice::from_ref(&seen));
+    assert_eq!(fs::read_to_string(&seen).unwrap(), "SEEN");
+    // On Linux this is the case of a freed inode handed at once to the new file; when the
+    // file system gave another one, the test proved only what the one above proves.
+    if before.is_some() && inode(&seen) != before {
+        eprintln!("SKIPPED: the inode was not reused here; nothing more is proved");
+    }
+}
+
+#[cfg(unix)]
+fn inode(path: &std::path::Path) -> Option<u64> {
+    use std::os::unix::fs::MetadataExt;
+    Some(fs::metadata(path).unwrap().ino())
+}
+
+#[cfg(not(unix))]
+fn inode(_path: &std::path::Path) -> Option<u64> {
+    None
+}
+
+#[test]
+fn a_volume_that_cannot_be_classified_refuses_the_purge_before_the_disk() {
+    let sandbox = Sandbox::new("effects-unclassified-purge");
+    let policy = sandbox.policy(QUARANTINE_OFF);
+    let seen = sandbox.file("work/cache/seen.txt", "seen");
+    let mut executor = sandbox.executor(QUARANTINE_OFF).with_unclassified_volume();
+    let flow = through_gate(&policy, purge(&sandbox, "act-1"));
+    let refused = executor
+        .rehearse_effects(&id("act-1"), flow.permit.plan())
+        .unwrap_err();
+    assert_eq!(refused.reason, Reason::IdentityUnstable, "{refused}");
+    let failure = run(&mut executor, flow).unwrap_err();
+    assert_eq!(failure.reason, Reason::IdentityUnstable, "{failure}");
+    assert_eq!(failure.stage, Stage::Checks);
+    assert!(failure.report.untouched());
+    assert!(seen.is_file());
+    assert!(sandbox.sentinel_is_intact());
+}
+
+#[test]
+fn a_volume_that_cannot_be_classified_still_quarantines_and_refuses_the_restore() {
+    let sandbox = Sandbox::new("effects-unclassified-restore");
+    let policy = sandbox.policy("");
+    sandbox.file("work/notes.txt", "notes");
+    let flow = through_gate(&policy, delete_of(&sandbox, "act-1", &["work/notes.txt"]));
+    let (batch, batch_text) = batch_of(&sandbox, &flow, "act-1");
+    // Into the quarantine nothing is lost: it still runs.
+    run(&mut sandbox.executor("").with_unclassified_volume(), flow).unwrap();
+    let kept = sandbox.path(&format!("{batch}/{ITEMS_DIR}/notes.txt"));
+    assert!(kept.is_file());
+
+    let mut executor = sandbox.executor("").with_unclassified_volume();
+    let flow = through_gate(&policy, restore_of(&sandbox, "act-2", &batch_text));
+    let refused = executor
+        .rehearse_effects(&id("act-2"), flow.permit.plan())
+        .unwrap_err();
+    assert_eq!(refused.reason, Reason::IdentityUnstable, "{refused}");
+    let failure = run(&mut executor, flow).unwrap_err();
+    assert_eq!(failure.reason, Reason::IdentityUnstable, "{failure}");
+    assert_eq!(failure.stage, Stage::Checks);
+    assert!(failure.report.untouched());
+    assert!(kept.is_file());
+    assert!(!sandbox.path("work/notes.txt").exists());
 }

@@ -10,11 +10,11 @@ use std::os::fd::OwnedFd;
 use std::path::Path;
 
 use rustix::fs::{
-    AtFlags, Dir, FileType, Mode, OFlags, RawMode, RenameFlags, StatxAttributes, StatxFlags, fsync,
-    mkdirat, open, openat, renameat_with, statx, unlinkat,
+    AtFlags, Dir, FileType, Mode, OFlags, RawMode, RenameFlags, StatxAttributes, StatxFlags,
+    fstatfs, fsync, mkdirat, open, openat, renameat_with, statx, unlinkat,
 };
 
-use super::{Error, Identity, Kind, Meta, Mount, plain};
+use super::{Error, Identity, Kind, Meta, Mount, VolumeFacts, plain};
 
 impl From<rustix::io::Errno> for Error {
     fn from(errno: rustix::io::Errno) -> Self {
@@ -33,7 +33,21 @@ pub struct Node {
 }
 
 const ENTRY: OFlags = OFlags::PATH.union(OFlags::NOFOLLOW).union(OFlags::CLOEXEC);
-const WANTED: StatxFlags = StatxFlags::BASIC_STATS.union(StatxFlags::MNT_ID);
+const WANTED: StatxFlags = StatxFlags::BASIC_STATS
+    .union(StatxFlags::BTIME)
+    .union(StatxFlags::MNT_ID);
+
+/// The inode with, above it, the birth time where the system reports it: a freed inode handed
+/// at once to a new object (ext4, xfs, tmpfs) comes back with another birth time. The birth
+/// time is never changed by a rename, a write or a change of links, so the executor's own moves
+/// keep the identity. Seconds take 34 bits up to the year 2514, nanoseconds 30.
+fn file_of(stat: &rustix::fs::Statx, told: StatxFlags) -> u128 {
+    let birth = match told.contains(StatxFlags::BTIME) {
+        true => ((stat.stx_btime.tv_sec as u64) << 30) | u64::from(stat.stx_btime.tv_nsec),
+        false => 0,
+    };
+    (u128::from(birth) << 64) | u128::from(stat.stx_ino)
+}
 
 fn meta_of(stat: &rustix::fs::Statx) -> Meta {
     let kind = match FileType::from_raw_mode(RawMode::from(stat.stx_mode)) {
@@ -47,7 +61,7 @@ fn meta_of(stat: &rustix::fs::Statx) -> Meta {
         kind,
         id: Identity {
             volume: (u64::from(stat.stx_dev_major) << 32) | u64::from(stat.stx_dev_minor),
-            file: u128::from(stat.stx_ino),
+            file: file_of(stat, told),
         },
         size: stat.stx_size,
         mount: Mount {
@@ -77,6 +91,18 @@ impl Node {
     pub fn meta(&self) -> io::Result<Meta> {
         let flags = AtFlags::EMPTY_PATH | AtFlags::SYMLINK_NOFOLLOW;
         Ok(meta_of(&statx(&self.fd, "", flags, WANTED)?))
+    }
+
+    /// What the file system of this entry says about itself.
+    pub fn volume(&self) -> io::Result<VolumeFacts> {
+        let flags = AtFlags::EMPTY_PATH | AtFlags::SYMLINK_NOFOLLOW;
+        let stat = statx(&self.fd, "", flags, WANTED)?;
+        // Magic numbers are 32 bits; `f_type` is a signed word on some targets.
+        let magic = fstatfs(&self.fd)?.f_type as u64 & 0xFFFF_FFFF;
+        Ok(VolumeFacts::Linux {
+            magic,
+            birth: StatxFlags::from_bits_retain(stat.stx_mask).contains(StatxFlags::BTIME),
+        })
     }
 
     /// There is no holding a folder in place here (see [`HOLDS`]): this is one more handle.

@@ -12,7 +12,7 @@ use ads_core::gate::{AbsPath, PathStyle};
 
 use crate::reason::{Reason, Stop};
 pub use crate::sys::Kind;
-use crate::sys::{self, Crossing, Meta, Node};
+use crate::sys::{self, Crossing, Meta, Node, VolumeFacts};
 
 /// A path split into the volume it starts at and its names.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -330,6 +330,9 @@ pub struct Fence {
     frame: Frame,
     root: Node,
     home: Meta,
+    /// What the volume of the fence said about itself; `None` when it did not say. Every
+    /// entry the executor admits is on this volume.
+    volume: Option<VolumeFacts>,
 }
 
 impl Fence {
@@ -350,7 +353,38 @@ impl Fence {
         if home.kind != Some(Kind::Dir) {
             return Err(FenceError::NotADirectory);
         }
-        Ok(Self { frame, root, home })
+        let volume = root.volume().ok();
+        Ok(Self {
+            frame,
+            root,
+            home,
+            volume,
+        })
+    }
+
+    /// Takes what the volume said as unsaid, as on a volume nothing here can classify. Only
+    /// ever stricter: for tests of the refusal.
+    pub(crate) fn forget_volume(&mut self) {
+        self.volume = None;
+    }
+
+    /// Refuses `what` unless an object deleted and recreated under the same name gets another
+    /// identity on the volume of the fence: what depends on telling the two apart is not done
+    /// where they cannot be told apart.
+    pub(crate) fn stable_identity(&self, what: &str) -> Result<(), Stop> {
+        match &self.volume {
+            Some(volume) if volume.stable() => Ok(()),
+            Some(volume) => Err(Stop::new(
+                Reason::IdentityUnstable,
+                format!(
+                    "{what}: the volume of the fence ({volume}) does not tell a recreated                      object from the one it replaced"
+                ),
+            )),
+            None => Err(Stop::new(
+                Reason::IdentityUnstable,
+                format!("{what}: the system did not say what the volume of the fence is"),
+            )),
+        }
     }
 
     /// The fence as a plan writes it (`C:\work`, `/work`).

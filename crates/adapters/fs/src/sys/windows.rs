@@ -19,9 +19,10 @@ use windows::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows::Wdk::Storage::FileSystem::{
     FILE_CREATE, FILE_DIRECTORY_FILE, FILE_INFORMATION_CLASS, FILE_NON_DIRECTORY_FILE, FILE_OPEN,
     FILE_OPEN_FOR_BACKUP_INTENT, FILE_OPEN_REPARSE_POINT, FILE_RENAME_INFORMATION,
-    FILE_SYNCHRONOUS_IO_NONALERT, FileDispositionInformationEx, FileRenameInformation,
+    FILE_SYNCHRONOUS_IO_NONALERT, FS_INFORMATION_CLASS, FileDispositionInformationEx,
+    FileFsAttributeInformation, FileFsDeviceInformation, FileRenameInformation,
     NTCREATEFILE_CREATE_DISPOSITION, NTCREATEFILE_CREATE_OPTIONS, NtCreateFile,
-    NtSetInformationFile,
+    NtQueryVolumeInformationFile, NtSetInformationFile,
 };
 use windows::Win32::Foundation::{
     HANDLE, NTSTATUS, OBJECT_ATTRIBUTE_FLAGS, STATUS_DIRECTORY_NOT_EMPTY, STATUS_NOT_A_DIRECTORY,
@@ -38,13 +39,17 @@ use windows::Win32::Storage::FileSystem::{
 use windows::Win32::System::IO::IO_STATUS_BLOCK;
 use windows::core::PWSTR;
 
-use super::{Error, Identity, Kind, Meta, Mount, plain};
+use super::{Error, Identity, Kind, Meta, Mount, VolumeFacts, plain};
 
 const ATTRIBUTE_DIRECTORY: u32 = 0x10;
 const ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
 const FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
 const FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
 const ERROR_NO_MORE_FILES: i32 = 18;
+const SUPPORTS_OPEN_BY_FILE_ID: u32 = 0x0100_0000;
+const REMOTE_DEVICE: u32 = 0x10;
+const DEVICE_NETWORK: u32 = 0x12;
+const DEVICE_NETWORK_FILE_SYSTEM: u32 = 0x14;
 
 /// Delete now (not when the last handle closes), read-only or not.
 const DISPOSITION_DELETE: u32 = 0x1 | 0x2 | 0x10;
@@ -217,6 +222,27 @@ fn query(file: &File, class: FILE_INFO_BY_HANDLE_CLASS, words: &mut [u64]) -> io
         .map_err(system_error)
 }
 
+/// Fills `words` with the answer of the system about the volume of the open `file`.
+fn query_volume(file: &File, class: FS_INFORMATION_CLASS, words: &mut [u64]) -> io::Result<()> {
+    let size = u32::try_from(size_of_val(words)).map_err(io::Error::other)?;
+    let mut block = IO_STATUS_BLOCK::default();
+    // SAFETY: the buffer is `size` writable bytes, aligned for every structure asked for here,
+    // and `block` is a valid place to write to.
+    let status = unsafe {
+        NtQueryVolumeInformationFile(
+            raw(file),
+            &mut block,
+            words.as_mut_ptr().cast::<c_void>(),
+            size,
+            class,
+        )
+    };
+    match status.is_ok() {
+        true => Ok(()),
+        false => Err(refused(status)),
+    }
+}
+
 /// Applies `words` (the first `size` bytes) to the open `file`.
 fn apply(
     file: &File,
@@ -316,6 +342,31 @@ impl Node {
 
     pub fn meta(&self) -> io::Result<Meta> {
         meta_of(&self.file)
+    }
+
+    /// What the file system of this entry says about itself.
+    pub fn volume(&self) -> io::Result<VolumeFacts> {
+        let broken = || io::Error::new(io::ErrorKind::InvalidData, "an answer that does not fit");
+        // FILE_FS_DEVICE_INFORMATION: device type, characteristics.
+        let mut device = [0u64; 1];
+        query_volume(&self.file, FileFsDeviceInformation, &mut device)?;
+        let device_type = device[0] as u32;
+        let characteristics = (device[0] >> 32) as u32;
+        // FILE_FS_ATTRIBUTE_INFORMATION: attributes at 0, name length at 8, name from 12.
+        let mut attribute = [0u64; 64];
+        query_volume(&self.file, FileFsAttributeInformation, &mut attribute)?;
+        let attributes = u32_at(&attribute, 0).ok_or_else(broken)?;
+        let length = u32_at(&attribute, 8).ok_or_else(broken)? as usize;
+        let units = (0..length / 2)
+            .map(|unit| u16_at(&attribute, 12 + unit * 2))
+            .collect::<Option<Vec<u16>>>()
+            .ok_or_else(broken)?;
+        Ok(VolumeFacts::Windows {
+            file_system: String::from_utf16(&units).map_err(|_| broken())?,
+            remote: characteristics & REMOTE_DEVICE != 0
+                || matches!(device_type, DEVICE_NETWORK | DEVICE_NETWORK_FILE_SYSTEM),
+            open_by_id: attributes & SUPPORTS_OPEN_BY_FILE_ID != 0,
+        })
     }
 
     /// Opens this folder again in a way that keeps it where it is: until the handle that
