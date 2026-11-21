@@ -377,9 +377,10 @@ impl SessionGate {
         log: &mut EventLog,
         action_id: &Id,
     ) -> Result<Approved, JournalError> {
-        let state = self.journal(log).inspect(action_id)?.state;
-        if !matches!(state, State::Approved { .. }) {
-            // Not approved: the gate refuses the license, or none is asked for.
+        let snapshot = self.journal(log).inspect(action_id)?;
+        if snapshot.policy_warning.is_some() || !matches!(snapshot.state, State::Approved { .. }) {
+            // Not approved, or approved under another policy: the gate refuses the license and
+            // records why, or none is asked for.
             return Ok(Approved::NotNeeded);
         }
         let history = log.load(action_id)?;
@@ -405,10 +406,7 @@ impl SessionGate {
         match self.executor.rehearse_effects(action_id, &plan) {
             Ok(found) if found == recorded => Ok(Approved::Effects(recorded)),
             Ok(_) => refused("the disk no longer holds what was approved"),
-            Err(stop) => Ok(Approved::Refused(Stop::new(
-                Reason::EffectsChanged,
-                format!("the rehearsal is refused now: {stop}"),
-            ))),
+            Err(stop) => Ok(Approved::Refused(stop)),
         }
     }
 }

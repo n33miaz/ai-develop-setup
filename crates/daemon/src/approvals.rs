@@ -1056,6 +1056,50 @@ mod tests {
     }
 
     #[test]
+    fn a_policy_changed_after_the_approval_is_recorded_as_such() {
+        let mut bench = Bench::new();
+        let gate = bench.gate("quarantine_enabled = false");
+        let (action, approval, hash, seen) = purge(&mut bench, &gate, "act-policy-run");
+        let desk = bench.desk(vec![gate]);
+        let session = session();
+        let approve = params(&action, &approval, &hash, "approve");
+        assert_eq!(
+            desk.answer(&session, &approve, &new_id().unwrap()),
+            Ok(false)
+        );
+
+        // The same folder, now with the quarantine on: the delete would be another plan.
+        drop(desk);
+        bench.log = Some(bench.reopen());
+        let gate = bench.gate("");
+        let desk = bench.desk(vec![gate]);
+        let next = stream(&desk, &format!("action/{}", action.as_str())).len() as u64 + 1;
+        let now = now_ts().unwrap();
+        let outcome = desk.with_gates(|log, gates| {
+            gates[0]
+                .execute(
+                    log,
+                    &action,
+                    daemon_meta(next, &now),
+                    daemon_meta(next, &now),
+                )
+                .map(|_| ())
+        });
+        assert_eq!(outcome, Err(JournalError::PolicyChanged));
+        let events = stream(&desk, &format!("action/{}", action.as_str()));
+        assert!(
+            events
+                .iter()
+                .all(|(_, event)| event["type"] != "urn:ads:event:action.started:1")
+        );
+        assert_eq!(
+            events.last().unwrap().1["data"]["error_code"],
+            "E_POLICY_CHANGED"
+        );
+        assert!(Path::new(&seen).is_file());
+    }
+
+    #[test]
     fn a_purge_whose_rehearsal_is_too_large_stays_unapprovable() {
         let mut bench = Bench::new();
         let gate = bench
