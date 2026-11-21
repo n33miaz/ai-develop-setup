@@ -2977,13 +2977,18 @@ mod gate_journal {
         if kind.contains("denied") {
             data["reason"] = serde_json::json!("E_HISTORY_UNREADABLE");
         }
-        gate_event(
+        let mut event = gate_event(
             kind,
             &format!("approval/{}", request.approval_id),
             request.next_seq,
             serial,
             data,
-        )
+        );
+        // An expiry is recorded from the deadline on, the first instant the gate accepts.
+        if kind.contains("expired") {
+            event.ts = CommonTimestampV1::new(&request.expires_at).unwrap();
+        }
+        event
     }
 
     fn unreadable(log: &EventLog) -> Vec<String> {
@@ -3048,6 +3053,35 @@ mod gate_journal {
     }
 
     #[test]
+    fn an_unreadable_request_never_expires_before_its_deadline() {
+        let path = fixture();
+        let anchor = MemoryAnchor::default();
+        let mut log = anchored(&path, &anchor).unwrap();
+        let action = broken(&mut log, "broken", 10);
+        let open = open_requests(&log, &action);
+        assert_eq!(open[0].expires_at, "2030-01-02T03:09:05Z");
+        for early in ["2030-01-02T03:09:04.999999Z", "2026-11-19T12:00:00Z"] {
+            let mut expiry = closing("urn:ads:event:approval.expired:2", &action, &open[0], 200);
+            expiry.ts = CommonTimestampV1::new(early).unwrap();
+            assert_eq!(
+                log.close_unreadable_request(&action, &expiry),
+                Err(StorageError::InvalidEvent),
+                "{early}"
+            );
+        }
+        assert_eq!(log.verify_chain(), Ok(6));
+        assert_eq!(open_requests(&log, &action), open);
+        // The same instant in another form is the deadline itself; a denial needs no deadline.
+        let mut expiry = closing("urn:ads:event:approval.expired:2", &action, &open[0], 201);
+        expiry.ts = CommonTimestampV1::new("2030-01-02T03:09:05.000Z").unwrap();
+        log.close_unreadable_request(&action, &expiry).unwrap();
+        let denial = closing("urn:ads:event:approval.denied:2", &action, &open[1], 202);
+        assert_eq!(denial.ts.as_str(), "2026-11-19T12:00:00Z");
+        log.close_unreadable_request(&action, &denial).unwrap();
+        assert_eq!(open_requests(&log, &action), open[2..]);
+    }
+
+    #[test]
     fn a_readable_history_is_never_closed_and_nothing_is_written() {
         let path = fixture();
         let anchor = MemoryAnchor::default();
@@ -3061,6 +3095,7 @@ mod gate_journal {
         let request = crate::OpenRequest {
             approval_id: "approval-waiting".into(),
             plan_hash: history.plan.fields().plan_hash.as_str().to_owned(),
+            expires_at: "2030-01-02T03:09:05Z".into(),
             next_seq: 2,
         };
         assert_eq!(

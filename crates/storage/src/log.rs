@@ -14,7 +14,9 @@ use ads_contracts::{
     CommonActorV1, CommonActorV1Kind, CommonDataClassV1, CommonIdV1, CommonTimestampV1,
     CommonUlidV1, EventEnvelopeV1, EventEnvelopeV1Stream, EventEnvelopeV1Type,
 };
-use ads_core::gate::{ActionPlanRecord, Event, GateHistory, GateJournal, Id, JournalError};
+use ads_core::gate::{
+    ActionPlanRecord, Event, GateHistory, GateJournal, Id, JournalError, Timestamp,
+};
 use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::{Map, Value};
 use std::{collections::HashSet, num::NonZeroU64, path::Path};
@@ -1264,8 +1266,22 @@ pub enum Closable {
 pub struct OpenRequest {
     pub approval_id: String,
     pub plan_hash: String,
+    /// The end of the request's validity; an expiry is recorded only from this instant on.
+    pub expires_at: String,
     /// The `seq` the decision takes in `approval/<approval_id>`.
     pub next_seq: u64,
+}
+
+impl OpenRequest {
+    /// Whether the validity is over at `ts`, as the gate counts it: from `expires_at` on.
+    /// An unreadable instant is never over.
+    pub fn expired_at(&self, ts: &str) -> bool {
+        let instant = |text: &str| CommonTimestampV1::new(text).ok().map(Timestamp::from);
+        match (instant(ts), instant(&self.expires_at)) {
+            (Some(ts), Some(expires_at)) => !ts.is_before(&expires_at),
+            _ => false,
+        }
+    }
 }
 
 /// The gate requests of `action_id` with no gate decision, oldest first, at most `limit`.
@@ -1303,16 +1319,20 @@ fn open_requests(
         let data =
             row.associated(|fields| cipher::decrypt(keys, &AssociatedData(fields), &ciphertext))?;
         let (event, _) = row.envelope_with_plan(&data)?;
-        let plan_hash = event
-            .data
-            .get("plan_hash")
-            .and_then(Value::as_str)
-            .ok_or(StorageError::Corrupt)?
-            .to_owned();
+        let field = |name: &str| {
+            event
+                .data
+                .get(name)
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .ok_or(StorageError::Corrupt)
+        };
+        let (plan_hash, expires_at) = (field("plan_hash")?, field("expires_at")?);
         let head = head_in(tx, &format!("approval/{approval_id}"))?;
         open.push(OpenRequest {
             approval_id,
             plan_hash,
+            expires_at,
             next_seq: u64::try_from(head + 1).map_err(|_| StorageError::Corrupt)?,
         });
     }
@@ -1499,6 +1519,11 @@ impl EventLog {
         };
         if decision.data.get("plan_hash").and_then(Value::as_str)
             != Some(request.plan_hash.as_str())
+        {
+            return Err(StorageError::InvalidEvent);
+        }
+        // An expiry before the deadline would record one that did not happen; deny stays open.
+        if decision.r#type.as_str() == CLOSING_TYPES[1] && !request.expired_at(decision.ts.as_str())
         {
             return Err(StorageError::InvalidEvent);
         }

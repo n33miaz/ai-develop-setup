@@ -382,14 +382,18 @@ recebe `REMOTE_ORIGIN_REFUSED`. O dono e o aparelho vêm do daemon
   pedido do portão (senão `APPROVAL_NOT_FOUND`), se o histórico é legível
   (`APPROVAL_READABLE`: continua só por `approval.answer`) e quais pedidos
   seguem sem decisão (nenhum: `APPROVAL_ALREADY_ANSWERED`), até 64, cada um com
-  o `plan_hash` lido da própria linha. Nada é gravado nessas recusas. Depois o
+  o `plan_hash` e o `expires_at` lidos da própria linha. `expire` antes do
+  `expires_at` de qualquer um desses pedidos é recusado com `INVALID_PARAMS`,
+  porque gravaria uma expiração que não aconteceu; `deny` vale a qualquer
+  momento. Nada é gravado nessas recusas. Depois o
   daemon grava `closure.recorded:1` em `closure/<action_id>` (aparelho do dono,
   dono, decisão, pedidos e chave de idempotência, `cause` no id do comando) e,
   para cada pedido, `approval.denied:2` (motivo `E_HISTORY_UNREADABLE`) ou
   `approval.expired:2` com `cause` nesse registro, por
   `EventLog::close_unreadable_request`. Essa escrita confere de novo, na mesma
   transação, que o histórico segue ilegível, que o pedido é da ação, está aberto
-  e tem aquele hash, e que o tipo é negação ou expiração; nunca grava
+  e tem aquele hash, que o tipo é negação ou expiração e que uma expiração não
+  vem antes do prazo do pedido; nunca grava
   `approval.granted` e o histórico continua sem ler, então nenhuma licença sai
   dele. A mesma chave com a mesma decisão não grava outro registro: fecha só o
   que o registro nomeou e ficou aberto e volta `replayed: true`; com outra
