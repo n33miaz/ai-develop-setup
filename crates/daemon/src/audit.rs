@@ -365,12 +365,23 @@ pub fn open_product(
     instance: Option<&InstanceLock>,
     workdirs: &[PathBuf],
 ) -> Result<ProductLog, ProductLogError> {
+    open_product_with(path, config, keys, OsVault, instance, workdirs)
+}
+
+fn open_product_with<V: Vault + Send + 'static>(
+    path: &Path,
+    config: &StorageConfig,
+    keys: Box<dyn KeyProvider + Send>,
+    vault: V,
+    instance: Option<&InstanceLock>,
+    workdirs: &[PathBuf],
+) -> Result<ProductLog, ProductLogError> {
     open_product_in(
         &vault_directory()?,
         path,
         config,
         keys,
-        OsVault,
+        vault,
         instance,
         workdirs,
     )
@@ -417,7 +428,18 @@ pub fn reanchor(
     confirmed: ReanchorPlan,
     workdirs: &[PathBuf],
 ) -> Result<(), StorageError> {
-    let (path, anchor) = canonical_anchor(path, config, false, OsVault, workdirs)?;
+    reanchor_with(path, config, keys, confirmed, OsVault, workdirs)
+}
+
+fn reanchor_with<V: Vault + Send>(
+    path: &Path,
+    config: &StorageConfig,
+    keys: Box<dyn KeyProvider + Send>,
+    confirmed: ReanchorPlan,
+    vault: V,
+    workdirs: &[PathBuf],
+) -> Result<(), StorageError> {
+    let (path, anchor) = canonical_anchor(path, config, false, vault, workdirs)?;
     let _binding = lock_binding(&vault_directory()?)?;
     EventLog::reanchor(&path, config, keys, &anchor, confirmed)
 }
@@ -1024,12 +1046,197 @@ mod tests {
     }
 
     #[test]
-    fn binding_lock_serializes_distinct_database_paths() {
+    fn binding_lock_contends_on_the_same_lock_file() {
         let directory = fixture();
         let first = lock_binding(&directory).unwrap();
         assert_eq!(lock_binding(&directory).unwrap_err(), StorageError::Busy);
         drop(first);
         assert!(lock_binding(&directory).is_ok());
+    }
+
+    /// The part this test binary plays in `pin_is_serialized_across_processes_and_database_paths`.
+    #[cfg(windows)]
+    const PIN_ROLE: &str = "ADS_TEST_PIN_ROLE";
+    #[cfg(windows)]
+    const PIN_ROOT: &str = "ADS_TEST_PIN_ROOT";
+
+    /// Holds the pin of a fresh database until the other process says to go on.
+    #[cfg(windows)]
+    struct PausedVault {
+        inner: MemoryVault,
+        root: PathBuf,
+    }
+
+    #[cfg(windows)]
+    impl Vault for PausedVault {
+        fn store(&self, name: SecretName, secret: &Secret) -> Result<(), VaultError> {
+            if matches!(name, SecretName::AuditDatabase) {
+                fs::write(self.root.join("pinning"), b"").unwrap();
+                wait_for(&self.root.join("release"));
+            }
+            self.inner.store(name, secret)
+        }
+
+        fn read(&self, name: SecretName) -> Result<Option<Secret>, VaultError> {
+            self.inner.read(name)
+        }
+
+        fn remove(&self, name: SecretName) -> Result<(), VaultError> {
+            self.inner.remove(name)
+        }
+    }
+
+    #[cfg(windows)]
+    fn wait_for(path: &Path) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while !path.exists() {
+            assert!(std::time::Instant::now() < deadline, "{path:?} never came");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    /// Ends a process of the test if an assertion fails while it waits.
+    #[cfg(windows)]
+    struct Reaped(std::process::Child);
+
+    #[cfg(windows)]
+    impl Drop for Reaped {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    #[cfg(windows)]
+    fn vault_contents(vault: &MemoryVault) -> BTreeMap<String, Vec<u8>> {
+        vault
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(name, secret)| (name.clone(), secret.expose().to_vec()))
+            .collect()
+    }
+
+    /// Runs this test binary as one process of the scenario, with its own data folder.
+    #[cfg(windows)]
+    fn spawn_role(role: &str, root: &Path) -> Reaped {
+        Reaped(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "audit::tests::pin_role", "--test-threads=1"])
+                .env(PIN_ROLE, role)
+                .env(PIN_ROOT, root)
+                .env("LOCALAPPDATA", root.join("profile"))
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .unwrap(),
+        )
+    }
+
+    /// A process of `pin_is_serialized_across_processes_and_database_paths`; idle otherwise.
+    #[cfg(windows)]
+    #[test]
+    fn pin_role() {
+        let Some(root) = std::env::var_os(PIN_ROOT).map(PathBuf::from) else {
+            return;
+        };
+        match std::env::var(PIN_ROLE).unwrap().as_str() {
+            "pin" => pin_first(&root),
+            "contend" => contend_second(&root),
+            role => panic!("unknown role {role}"),
+        }
+    }
+
+    #[cfg(windows)]
+    fn pin_first(root: &Path) {
+        let path = root.join("first").join("audit.db");
+        let vault = PausedVault {
+            inner: MemoryVault::default(),
+            root: root.to_path_buf(),
+        };
+        let log = open_product_with(
+            &path,
+            &configured_for(&path),
+            Box::new(Keys),
+            vault,
+            None,
+            &[],
+        );
+        assert!(log.is_ok(), "the first process pins its database");
+        drop(log);
+        fs::write(root.join("pinned"), b"").unwrap();
+    }
+
+    #[cfg(windows)]
+    fn contend_second(root: &Path) {
+        // The owner confirms a move of another database before the first process pins.
+        let old = root.join("old").join("audit.db");
+        let moved = root.join("moved").join("audit.db");
+        let moved_config = configured_for(&moved);
+        let moving = MemoryVault::default();
+        drop(open_configured(&old, &configured_for(&old), &moving).unwrap());
+        fs::create_dir(moved.parent().unwrap()).unwrap();
+        fs::copy(&old, &moved).unwrap();
+        let (path, anchor) =
+            canonical_anchor(&moved, &moved_config, false, moving.clone(), &[]).unwrap();
+        let plan = || EventLog::plan_reanchor(&path, &moved_config, Box::new(Keys), &anchor);
+        let (refused, confirmed) = (plan().unwrap(), plan().unwrap());
+        assert_eq!(refused, confirmed);
+        drop(anchor);
+        let before_move = vault_contents(&moving);
+        fs::write(root.join("planned"), b"").unwrap();
+        wait_for(&root.join("pinning"));
+
+        // Another database path is refused at once while the first process pins.
+        let second = root.join("second").join("audit.db");
+        let opening = MemoryVault::default();
+        let open_second = || {
+            open_product_with(
+                &second,
+                &configured_for(&second),
+                Box::new(Keys),
+                opening.clone(),
+                None,
+                &[],
+            )
+        };
+        assert!(matches!(
+            open_second(),
+            Err(ProductLogError::Storage(StorageError::Busy))
+        ));
+        assert!(vault_contents(&opening).is_empty());
+        assert!(!second.exists());
+        let move_with = |plan| {
+            reanchor_with(
+                &moved,
+                &moved_config,
+                Box::new(Keys),
+                plan,
+                moving.clone(),
+                &[],
+            )
+        };
+        assert_eq!(move_with(refused), Err(StorageError::Busy));
+        assert_eq!(vault_contents(&moving), before_move);
+
+        fs::write(root.join("release"), b"").unwrap();
+        wait_for(&root.join("pinned"));
+        drop(open_second().unwrap());
+        assert!(vault_contents(&opening).contains_key("audit-database"));
+        move_with(confirmed).unwrap();
+        assert_ne!(vault_contents(&moving), before_move);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn pin_is_serialized_across_processes_and_database_paths() {
+        let root = fixture();
+        fs::create_dir(root.join("profile")).unwrap();
+        let mut second = spawn_role("contend", &root);
+        wait_for(&root.join("planned"));
+        let mut first = spawn_role("pin", &root);
+        assert!(second.0.wait().unwrap().success());
+        assert!(first.0.wait().unwrap().success());
     }
 
     #[test]
