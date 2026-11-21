@@ -12,14 +12,14 @@ export interface DesktopBridge {
 export function desktopSocketFactory(
   core: DesktopBridge['core'],
   { initialMs = 250, maxMs = 5000 } = {},
-): () => CoreSocket {
+): (reconnecting: boolean) => CoreSocket {
   let lifecycle = Promise.resolve()
   const changeConnection: DesktopBridge['core']['invoke'] = (command, args) => {
     const change = lifecycle.then(() => core.invoke(command, args))
     lifecycle = change.catch(() => undefined)
     return change
   }
-  return () => new DesktopSocket(core, changeConnection, initialMs, maxMs)
+  return (reconnecting) => new DesktopSocket(core, changeConnection, initialMs, maxMs, reconnecting)
 }
 
 class DesktopSocket extends EventTarget implements CoreSocket {
@@ -37,6 +37,7 @@ class DesktopSocket extends EventTarget implements CoreSocket {
     changeConnection: DesktopBridge['core']['invoke'],
     initialMs: number,
     maxMs: number,
+    reconnecting: boolean,
   ) {
     super()
     this.core = core
@@ -51,6 +52,11 @@ class DesktopSocket extends EventTarget implements CoreSocket {
         this.dispatchEvent(new MessageEvent('message', { data: frame.text }))
       }
     }
+    const retry = (delay: number) => {
+      this.retryTimer = setTimeout(() => {
+        connect(Math.min(delay * 2, maxMs))
+      }, delay)
+    }
     const connect = (delay: number) => {
       if (this.closed) return
       void changeConnection('desktop_connect', { id: this.id, frames: this.frames }).then(
@@ -61,9 +67,7 @@ class DesktopSocket extends EventTarget implements CoreSocket {
           if (this.closed) return
           switch (reason) {
             case 'desktop connection retry':
-              this.retryTimer = setTimeout(() => {
-                connect(Math.min(delay * 2, maxMs))
-              }, delay)
+              retry(delay)
               break
             case 'desktop protocol incompatible':
               this.dispatchEvent(new CustomEvent('error', { detail: 'incompatible' }))
@@ -77,7 +81,9 @@ class DesktopSocket extends EventTarget implements CoreSocket {
         },
       )
     }
-    connect(Math.min(initialMs, maxMs))
+    const initialDelay = Math.min(initialMs, maxMs)
+    if (reconnecting) retry(initialDelay)
+    else connect(initialDelay)
   }
 
   send(text: string) {

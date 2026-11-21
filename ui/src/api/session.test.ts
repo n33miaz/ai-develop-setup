@@ -28,6 +28,7 @@ describe('session input', () => {
 
   it('drops the rest of a failed write and reports it once', async () => {
     const client = createFakeCoreClient()
+    await client.connect()
     const send = vi
       .spyOn(client, 'send')
       .mockResolvedValue({ jsonrpc: '2.0', id: 'id', error: { code: -1, message: 'rejected' } })
@@ -41,6 +42,7 @@ describe('session input', () => {
 
   it('keeps sending later writes in order after a rejected write', async () => {
     const client = createFakeCoreClient()
+    await client.connect()
     const send = vi
       .spyOn(client, 'send')
       .mockResolvedValueOnce({ jsonrpc: '2.0', id: 'id', error: { code: -1, message: 'rejected' } })
@@ -62,6 +64,7 @@ describe('session input', () => {
 
   it('waits for each write before the next, even when one throws', async () => {
     const client = createFakeCoreClient()
+    await client.connect()
     let fail: (reason: Error) => void = () => undefined
     const send = vi
       .spyOn(client, 'send')
@@ -89,8 +92,34 @@ describe('session input', () => {
     expect(error).toHaveBeenCalledOnce()
   })
 
+  it('discards queued and offline input when the connection generation changes', async () => {
+    const client = createFakeCoreClient()
+    await client.connect()
+    let finishFirstWrite: () => void = () => undefined
+    const send = vi.spyOn(client, 'send').mockReturnValueOnce(
+      new Promise((resolve) => {
+        finishFirstWrite = () => {
+          resolve({ jsonrpc: '2.0', id: 'id', result: { accepted: true, replayed: false } })
+        }
+      }),
+    )
+    const input = sessionInput(client, 's-a', vi.fn())
+    input(new Uint8Array(70000))
+    input(Uint8Array.of(1))
+    await vi.waitFor(() => {
+      expect(send).toHaveBeenCalledOnce()
+    })
+    client.disconnect()
+    input(Uint8Array.of(2))
+    await client.connect()
+    finishFirstWrite()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(send).toHaveBeenCalledOnce()
+  })
+
   it('does not report again for empty input after a failure', async () => {
     const client = createFakeCoreClient()
+    await client.connect()
     vi.spyOn(client, 'send').mockResolvedValue({
       jsonrpc: '2.0',
       id: 'id',

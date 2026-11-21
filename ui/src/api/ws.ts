@@ -81,12 +81,13 @@ export function createWsCoreClient({
 }
 
 export function createCoreClient(
-  socketFactory: () => CoreSocket,
+  socketFactory: (reconnecting: boolean) => CoreSocket,
   {
     listTimeoutMs = 10000,
     replayEvents: configuredEvents,
     replayBytes: configuredBytes,
-  }: Omit<WsClientOptions, 'url' | 'token' | 'socketFactory'>,
+    reconnectOnDrop = false,
+  }: Omit<WsClientOptions, 'url' | 'token' | 'socketFactory'> & { reconnectOnDrop?: boolean },
   token?: string,
 ): CoreClient {
   // Com 0 nada ficaria guardado: um terminal remontado ficaria vazio e uma nova assinatura depois de
@@ -197,14 +198,14 @@ export function createCoreClient(
       }
     })
   }
-  return {
+  const client = {
     getState: () => state,
     getGeneration: () => generation,
     onStateChange(listener) {
       listeners.add(listener)
       return () => listeners.delete(listener)
     },
-    connect() {
+    connect(reconnecting = false): Promise<void> {
       if (state === 'connected') return Promise.resolve()
       if (connecting) return connecting
       setState('connecting')
@@ -212,19 +213,22 @@ export function createCoreClient(
         rejectConnection = reject
         let current: CoreSocket
         try {
-          current = socketFactory()
+          current = socketFactory(reconnecting)
           socket = current
         } catch {
           disconnect()
           reject(unavailable())
           return
         }
-        const fail = () => {
+        const fail = (closed = false) => {
           if (socket !== current) return
+          const retry = reconnectOnDrop && (closed || state === 'connected')
           disconnect()
-          reject(unavailable())
+          if (retry) void client.connect(true).catch(() => undefined)
         }
-        current.addEventListener('close', fail)
+        current.addEventListener('close', () => {
+          fail(true)
+        })
         current.addEventListener('error', (event) => {
           if (socket !== current) return
           const reason: unknown = event instanceof CustomEvent ? event.detail : undefined
@@ -245,10 +249,15 @@ export function createCoreClient(
             connected()
             return
           }
-          void transmit(newCommand('auth.hello', { token })).then((response) => {
-            if (accepted(response)) connected()
-            else fail()
-          }, fail)
+          void transmit(newCommand('auth.hello', { token })).then(
+            (response) => {
+              if (accepted(response)) connected()
+              else fail()
+            },
+            () => {
+              fail()
+            },
+          )
         })
         current.addEventListener('message', (message) => {
           if (socket !== current) return
@@ -415,5 +424,6 @@ export function createCoreClient(
       // Sair só desliga este ouvinte; a assinatura no núcleo segue para os demais e para quem vier.
       return () => shared.listeners.delete(listener)
     },
-  }
+  } satisfies CoreClient
+  return client
 }

@@ -71,8 +71,9 @@ do dispositivo. Isso também suspende brevemente a digitação durante essa aná
 após ela, a entrada normal e as respostas a consultas novas passam. Não se usa um
 temporizador para presumir que o replay acabou.
 
-Queda, recusa da autenticação ou falha de protocolo deixam a interface desconectada
-e rejeitam pedidos pendentes. Não há reconexão automática: reabra a URL da execução.
+No navegador, queda, recusa da autenticação ou falha de protocolo deixam a
+interface desconectada e rejeitam pedidos pendentes. Reabra a URL da execução
+para conectar de novo.
 Para voltar aos exemplos, limpe `ads.local-api` do armazenamento da aba e recarregue
 sem fragmento. O cliente não registra token nem saída do terminal em logs.
 
@@ -83,8 +84,14 @@ Replay desde zero aceita o início do histórico ainda retido; depois disso,
 uma lacuna na sequência encerra a conexão. Eventos repetidos são ignorados.
 
 Na casca Tauri, o cliente envia comandos e recebe mensagens por IPC com o
-processo Rust, que autentica no daemon. A credencial fica no Rust. O service
-worker fica desativado nessa janela. O bundle é o mesmo da interface web.
+processo Rust, que autentica no daemon. A credencial fica no Rust. Após uma
+queda, a janela volta a conectar automaticamente e a casca verifica a prova
+de identidade do daemon antes de enviar o token ou encaminhar comandos. Se
+a prova vier incorreta, as tentativas param e a janela orienta a reabrir
+pelo lançador. Pedidos pendentes falham quando a conexão cai. O que for
+digitado durante a queda é descartado e precisa ser digitado novamente
+depois que o terminal voltar a aceitar entrada. O service worker fica
+desativado nessa janela. O bundle é o mesmo da interface web.
 
 ## Uso e contas
 

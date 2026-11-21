@@ -279,22 +279,33 @@ mod tests {
         )
     }
 
+    async fn accept_authenticated(listener: &TcpListener, token: &str) {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut socket = accept(stream, Some(token), false).await;
+        let hello = socket.next().await.unwrap().unwrap().into_text().unwrap();
+        let hello: Value = serde_json::from_str(hello.as_str()).unwrap();
+        assert_eq!(hello["method"], "auth.hello");
+        assert_eq!(hello["params"]["token"], token);
+        socket.send(accepted()).await.unwrap();
+    }
+
     #[tokio::test]
-    async fn retries_after_a_refused_upgrade() {
+    async fn authenticates_again_after_a_drop_and_a_refused_upgrade() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let bootstrap = bootstrap(&listener);
         let token = bootstrap.token.clone();
         let daemon = tokio::spawn(async move {
+            accept_authenticated(&listener, &token).await;
             drop(listener.accept().await.unwrap());
-            let (stream, _) = listener.accept().await.unwrap();
-            let mut socket = accept(stream, Some(&token), false).await;
-            let hello = socket.next().await.unwrap().unwrap().into_text().unwrap();
-            let hello: Value = serde_json::from_str(hello.as_str()).unwrap();
-            assert_eq!(hello["params"]["token"], token);
-            socket.send(accepted()).await.unwrap();
+            accept_authenticated(&listener, &token).await;
         });
 
         let mut state = ConnectionState::Idle;
+        let mut socket = connect_socket(&bootstrap, &mut state).await.unwrap();
+        assert!(matches!(
+            timeout(DEADLINE, socket.next()).await,
+            Ok(None | Some(Err(_)))
+        ));
         assert!(matches!(
             connect_socket(&bootstrap, &mut state).await,
             Err(RETRY)
@@ -308,6 +319,7 @@ mod tests {
         let bootstrap = bootstrap(&listener);
         let token = bootstrap.token.clone();
         let impostor = tokio::spawn(async move {
+            accept_authenticated(&listener, &token).await;
             let (stream, _) = listener.accept().await.unwrap();
             let mut socket = accept(stream, wrong_connection.then_some(token.as_str()), true).await;
             let _ = socket.send(accepted()).await;
@@ -315,6 +327,11 @@ mod tests {
         });
 
         let mut state = ConnectionState::Idle;
+        let mut socket = connect_socket(&bootstrap, &mut state).await.unwrap();
+        assert!(matches!(
+            timeout(DEADLINE, socket.next()).await,
+            Ok(None | Some(Err(_)))
+        ));
         let result = connect_socket(&bootstrap, &mut state).await;
         assert_eq!(
             result.err(),

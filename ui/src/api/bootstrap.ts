@@ -83,5 +83,8 @@ export function selectDesktopClient(
     initialMs: delay(retryInitial),
     maxMs: delay(retryMax),
   })
-  return { client: createCoreClient(socketFactory, replay), live: true }
+  return {
+    client: createCoreClient(socketFactory, { ...replay, reconnectOnDrop: true }),
+    live: true,
+  }
 }
