@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:command:queue.get.response:2",
+  "title": "Resposta de queue.get",
+  "description": "Resposta aceita de queue.get: estado da fila e política vigente registrada no histórico. A política é null se nunca foi registrada.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "jsonrpc",
+    "id",
+    "result"
+  ],
+  "properties": {
+    "jsonrpc": {
+      "const": "2.0"
+    },
+    "id": {
+      "$ref": "urn:ads:common:ulid:1"
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "queue_id",
+        "state",
+        "policy"
+      ],
+      "properties": {
+        "queue_id": {
+          "$ref": "urn:ads:common:id:1"
+        },
+        "state": {
+          "enum": [
+            "stopped",
+            "enabled"
+          ]
+        },
+        "policy": {
+          "anyOf": [
+            {
+              "$ref": "urn:ads:common:queue-policy:1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "jsonrpc": "2.0",
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAD",
+      "result": {
+        "queue_id": "queue-01",
+        "state": "stopped",
+        "policy": {
+          "attempt_limit": 2,
+          "admission_limit": 1000,
+          "window_seconds": 3600,
+          "window_admissions": 10,
+          "manual_window_admissions": 10,
+          "bug_rule_window_admissions": 3,
+          "clock_skew_seconds": 5,
+          "clock_rewind_seconds": 300,
+          "host_confirm_seconds": 60
+        }
+      }
+    }
+  ]
+}
