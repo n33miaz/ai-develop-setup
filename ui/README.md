@@ -88,8 +88,8 @@ processo Rust, que autentica no daemon. A credencial fica no Rust. Após uma
 queda, a janela volta a conectar automaticamente e a casca verifica a prova
 de identidade do daemon antes de enviar o token ou encaminhar comandos. Se
 a prova estiver ausente ou incorreta, as tentativas param e a janela orienta
-a reabrir pelo lançador. A janela também indica quando o limite de tentativas
-é atingido. Pedidos pendentes falham quando a conexão cai. O que for
+a reiniciar o núcleo pelo sinal `restart` do lançador, ou a parar e iniciar o
+lançador. A janela também indica quando o limite de tentativas é atingido. Pedidos pendentes falham quando a conexão cai. O que for
 digitado durante a queda é descartado e precisa ser digitado novamente
 depois que o terminal voltar a aceitar entrada. O service worker fica
 desativado nessa janela. O bundle é o mesmo da interface web.
