@@ -20,7 +20,10 @@ pub enum JournalError {
     Integrity,
     PolicyChanged,
     Transition,
+    /// The incoming timestamp is too early. Retry with a current timestamp.
     OutOfOrder,
+    /// A recorded timestamp exceeds the configured rewind limit.
+    HistoryOutOfOrder,
     Unavailable,
 }
 
@@ -268,7 +271,7 @@ fn load_action(
     }
     for event in rest {
         action = action.after(event).map_err(|error| match error {
-            ReplayError::OutOfOrder => JournalError::OutOfOrder,
+            ReplayError::OutOfOrder => JournalError::HistoryOutOfOrder,
             _ => JournalError::Integrity,
         })?;
     }

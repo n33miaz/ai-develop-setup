@@ -274,7 +274,7 @@ pub struct Action {
     risk: Risk,
     needs_approval: bool,
     last_at: Timestamp,
-    clock_rewind_seconds: u64,
+    gate_clock_rewind_seconds: u64,
     state: State,
 }
 
@@ -313,13 +313,13 @@ impl Action {
                 },
             )),
         };
-        let action = Action::begin(&event, verdict.clock_rewind_seconds)
+        let action = Action::begin(&event, verdict.gate_clock_rewind_seconds)
             .map_err(TransitionError::Inconsistent)?;
         Ok((action, event, record))
     }
 
     /// The action right after its first event.
-    fn begin(event: &Event, clock_rewind_seconds: u64) -> Result<Action, ReplayError> {
+    fn begin(event: &Event, gate_clock_rewind_seconds: u64) -> Result<Action, ReplayError> {
         match event {
             Event::ActionPlanned(event) => {
                 let data = event.data();
@@ -341,7 +341,7 @@ impl Action {
                     risk: data.risk,
                     needs_approval,
                     last_at: event.ts().clone(),
-                    clock_rewind_seconds,
+                    gate_clock_rewind_seconds,
                     state: State::Planned,
                 })
             }
@@ -351,7 +351,7 @@ impl Action {
                 risk: Risk::High,
                 needs_approval: false,
                 last_at: event.ts().clone(),
-                clock_rewind_seconds,
+                gate_clock_rewind_seconds,
                 state: State::Denied,
             }),
             other => Err(ReplayError::UnexpectedEvent {
@@ -546,7 +546,7 @@ impl Action {
         };
         if event
             .ts()
-            .precedes_by_more_than(&self.last_at, self.clock_rewind_seconds)
+            .precedes_by_more_than(&self.last_at, self.gate_clock_rewind_seconds)
         {
             return Err(ReplayError::OutOfOrder);
         }
@@ -556,7 +556,7 @@ impl Action {
             risk: self.risk,
             needs_approval: self.needs_approval,
             last_at: event.ts().clone(),
-            clock_rewind_seconds: self.clock_rewind_seconds,
+            gate_clock_rewind_seconds: self.gate_clock_rewind_seconds,
             state,
         })
     }
@@ -798,16 +798,16 @@ impl Action {
 /// decision of an approval taken for another action, or a timestamp outside the default
 /// rewind tolerance.
 pub fn replay(events: &[Event]) -> Result<ActionSnapshot, ReplayError> {
-    replay_with_clock_rewind(events, super::policy::default_clock_rewind_seconds())
+    replay_with_clock_rewind(events, super::policy::default_gate_clock_rewind_seconds())
 }
 
 /// Rebuilds an action using the same rewind tolerance as its producer.
 pub fn replay_with_clock_rewind(
     events: &[Event],
-    clock_rewind_seconds: u64,
+    gate_clock_rewind_seconds: u64,
 ) -> Result<ActionSnapshot, ReplayError> {
     let (first, rest) = events.split_first().ok_or(ReplayError::EmptyLog)?;
-    let mut action = Action::begin(first, clock_rewind_seconds)?;
+    let mut action = Action::begin(first, gate_clock_rewind_seconds)?;
     for event in rest {
         action = action.after(event)?;
     }

@@ -832,7 +832,7 @@ fn failure_cannot_precede_previous_event() {
 #[test]
 fn rewind_at_exact_limit_is_accepted() {
     let plan = plan(Op::Delete, WIN_ROOT, &[BUILD]);
-    let verdict = classify(&plan, &policy(WIN_HOME, "clock_rewind_seconds = 5"));
+    let verdict = classify(&plan, &policy(WIN_HOME, "gate_clock_rewind_seconds = 5"));
     let action = Action::plan(id("act-01"), &verdict, meta("2030-01-02T00:00:02.1Z", 1))
         .unwrap()
         .0;
@@ -846,7 +846,7 @@ fn rewind_at_exact_limit_is_accepted() {
 #[test]
 fn rewind_one_microsecond_over_limit_is_refused() {
     let plan = plan(Op::Delete, WIN_ROOT, &[BUILD]);
-    let verdict = classify(&plan, &policy(WIN_HOME, "clock_rewind_seconds = 5"));
+    let verdict = classify(&plan, &policy(WIN_HOME, "gate_clock_rewind_seconds = 5"));
     let action = Action::plan(id("act-01"), &verdict, meta("2030-01-02T00:00:02.1Z", 1))
         .unwrap()
         .0;

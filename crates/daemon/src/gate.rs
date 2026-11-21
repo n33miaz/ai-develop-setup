@@ -81,16 +81,19 @@ impl SessionGate {
         JournalGate::new(&self.policy, log).for_work_root(&self.root)
     }
 
-    /// Records the start before touching disk. A failed outcome write preserves the
-    /// operation report and leaves the durable start spent.
+    /// Records the start before touching disk and uses it as the earliest outcome stamp.
+    /// A failed outcome write preserves the operation report and leaves the start spent.
     pub fn execute(
         &mut self,
         log: &mut EventLog,
         action_id: &Id,
         start: EventMeta,
-        finish: EventMeta,
+        mut finish: EventMeta,
     ) -> Result<ExecutionOutcome, JournalError> {
         let mut gate = JournalGate::new(&self.policy, log).for_work_root(&self.root);
+        if finish.ts.is_before(&start.ts) {
+            finish.ts = start.ts.clone();
+        }
         let started = gate.authorize(action_id, start)?;
         match self.executor.execute_recorded(started) {
             Ok(completed) => {
