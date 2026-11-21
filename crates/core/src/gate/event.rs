@@ -460,6 +460,25 @@ impl Event {
         }
     }
 
+    pub(super) fn meta(&self) -> EventMeta {
+        each_event!(self, event => EventMeta {
+            id: event.id.clone(),
+            ts: event.ts.clone(),
+            seq: event.seq,
+            actor: event.actor.clone(),
+            cause: event.cause.clone(),
+            data_class: event.data_class,
+        })
+    }
+
+    pub(super) fn id(&self) -> &Ulid {
+        each_event!(self, event => &event.id)
+    }
+
+    pub(super) fn seq(&self) -> NonZeroU64 {
+        each_event!(self, event => event.seq)
+    }
+
     /// The URN of the event.
     pub fn kind(&self) -> &str {
         each_event!(self, event => &event.kind)
@@ -486,7 +505,7 @@ pub struct PlanTarget {
 
 impl PlanTarget {
     /// The target as one text: the path, or the path, a separator and the wildcard.
-    fn text(&self) -> String {
+    pub(super) fn text(&self) -> String {
         let path = self.path.as_str();
         let Some(pattern) = &self.pattern else {
             return path.to_owned();

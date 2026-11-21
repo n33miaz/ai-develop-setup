@@ -371,6 +371,110 @@ mod tests {
     }
 
     #[test]
+    fn file_execution_uses_the_anchored_gate() {
+        use std::{fs, num::NonZeroU64, path::PathBuf};
+
+        use ads_adapter_fs::Executor;
+        use ads_core::gate::{
+            AbsPath, ActionPlan, Actor, ActorKind, DataClass, Estimate, EventMeta, GatePolicy,
+            HostFacts, Id, JournalError, JournalGate, OperationRequest, PlanRequest, State,
+            TargetRequest, Timestamp, Ulid,
+        };
+        use ads_storage::cipher::{CipherError, KeyId, SecretKey};
+
+        struct FixtureKey;
+        impl KeyProvider for FixtureKey {
+            fn current(&self) -> Result<(KeyId, SecretKey), CipherError> {
+                Ok((KeyId::new("fixture")?, SecretKey::new(&[9; 32])))
+            }
+
+            fn by_id(&self, id: &KeyId) -> Result<SecretKey, CipherError> {
+                let (expected, key) = self.current()?;
+                if *id != expected {
+                    return Err(CipherError::KeyUnavailable);
+                }
+                Ok(key)
+            }
+        }
+
+        let mut unique = [0_u8; 16];
+        getrandom::fill(&mut unique).unwrap();
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.test-tmp")
+            .join(format!("file-gate-{:032x}", u128::from_be_bytes(unique)));
+        fs::create_dir_all(&root).unwrap();
+        let fence = root.join("fence");
+        let work = fence.join("work");
+        fs::create_dir(&fence).unwrap();
+        fs::create_dir(&work).unwrap();
+        let file = work.join("example.txt");
+        fs::write(&file, "example").unwrap();
+
+        let fence_path = fs::canonicalize(&fence).unwrap();
+        let fence_path = fence_path.to_str().unwrap();
+        let fence_path = fence_path.strip_prefix(r"\\?\").unwrap_or(fence_path);
+        let child = |name| format!("{fence_path}{}{name}", std::path::MAIN_SEPARATOR);
+        let home = child("fake-home");
+        let work = child("work");
+        let target = format!("{work}{}example.txt", std::path::MAIN_SEPARATOR);
+        let policy = GatePolicy::defaults(&HostFacts { user_home: &home }).unwrap();
+        let mut executor = Executor::new(&fence, policy.clone()).unwrap();
+        let facts = executor
+            .measure(
+                &AbsPath::parse(&work).unwrap(),
+                &AbsPath::parse(&target).unwrap(),
+            )
+            .unwrap();
+        let plan = ActionPlan::normalize(&PlanRequest {
+            operation: OperationRequest::Delete,
+            work_root: work,
+            targets: vec![TargetRequest {
+                path: target,
+                repo_root: facts.repo_root,
+            }],
+            estimate: Some(Estimate {
+                items: facts.items,
+                bytes: facts.bytes,
+            }),
+        })
+        .unwrap();
+        let meta = |seq| EventMeta {
+            seq: NonZeroU64::new(seq).unwrap(),
+            id: Ulid::new(format!("01J{seq:023}")).unwrap(),
+            ts: Timestamp::new("2030-01-02T03:04:05Z").unwrap(),
+            actor: Actor {
+                kind: ActorKind::Daemon,
+                id: Id::new("daemon").unwrap(),
+            },
+            cause: None,
+            data_class: DataClass::Internal,
+        };
+
+        let database = root.join("events.db");
+        let mut log = EventLog::open(
+            &database,
+            &StorageConfig::defaults(),
+            Box::new(FixtureKey),
+            Box::new(VaultAnchor::new(MemoryVault::default(), &database, false).unwrap()),
+        )
+        .unwrap();
+        let id = Id::new("example").unwrap();
+        JournalGate::new(&policy, &mut log)
+            .plan(id.clone(), &plan, meta(1))
+            .unwrap();
+        let result =
+            crate::gate::execute(&mut log, &policy, &mut executor, &id, meta(2), meta(3)).unwrap();
+        assert!(result.operation.is_ok(), "{:?}", result.operation);
+        assert_eq!(result.recorded.unwrap().state, State::Executed);
+        assert!(!file.exists());
+        assert_eq!(log.verify_chain(), Ok(3));
+        assert!(matches!(
+            crate::gate::execute(&mut log, &policy, &mut executor, &id, meta(4), meta(5)),
+            Err(JournalError::Transition)
+        ));
+    }
+
+    #[test]
     fn binding_lock_serializes_distinct_database_paths() {
         let directory = fixture();
         let first = lock_binding(&directory).unwrap();

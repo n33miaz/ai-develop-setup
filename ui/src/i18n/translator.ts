@@ -3,7 +3,10 @@ import { en, ptBR, type MessageKey } from './messages'
 export type Locale = 'pt-BR' | 'en'
 export const DEFAULT_LOCALE: Locale = 'pt-BR'
 
-export type Translate = (key: MessageKey, vars?: Record<string, string>) => string
+export interface Translate {
+  (key: MessageKey, vars?: Record<string, string>): string
+  readonly locale: Locale
+}
 
 const catalogs: Record<Locale, Record<MessageKey, string>> = { 'pt-BR': ptBR, en }
 
@@ -14,9 +17,10 @@ export function resolveLocale(value: string | null | undefined): Locale {
 
 export function createTranslator(locale: Locale): Translate {
   const catalog = catalogs[locale]
-  return (key, vars) => {
+  const translate = (key: MessageKey, vars?: Record<string, string>) => {
     const text = catalog[key]
     if (!vars) return text
     return text.replace(/\{(\w+)\}/g, (whole, name: string) => vars[name] ?? whole)
   }
+  return Object.assign(translate, { locale })
 }

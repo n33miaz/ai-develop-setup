@@ -38,7 +38,7 @@ forbid_external = [
 
 [crates.ads-storage]
 path = "crates/storage"
-allow = ["ads-contracts"]
+allow = ["ads-contracts", "ads-core"]
 
 # Processo estavel das sessoes: so contratos.
 

@@ -10,7 +10,10 @@ pub enum StorageError {
     ReadOnly,
     Permission,
     CantOpen,
+    /// The disk is full, or at open the database passes `inspection_max_bytes`.
     Full,
+    /// A queue stream reached `queue_max_events`: raise it and reopen, or create another queue.
+    QueueFull,
     Corrupt,
     ForeignApplication,
     SchemaTooNew,
@@ -49,7 +52,17 @@ pub enum StorageError {
 
 impl fmt::Display for StorageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "storage: {self:?}")
+        match self {
+            Self::Full => write!(
+                f,
+                "storage: Full: the disk is full, or the database passes inspection_max_bytes                  at open; free space and retry, or raise inspection_max_bytes"
+            ),
+            Self::QueueFull => write!(
+                f,
+                "storage: QueueFull: the queue reached queue_max_events; raise queue_max_events                  in storage.toml and reopen, or create another queue"
+            ),
+            _ => write!(f, "storage: {self:?}"),
+        }
     }
 }
 
@@ -146,6 +159,12 @@ mod tests {
         ] {
             assert_eq!(StorageError::from(std::io::Error::from(kind)), expected);
         }
+        assert_ne!(StorageError::QueueFull, StorageError::Full);
+        let full = StorageError::Full.to_string();
+        let queue_full = StorageError::QueueFull.to_string();
+        assert!(full.contains("free space") && !full.contains("queue_max_events"));
+        assert!(queue_full.contains("raise queue_max_events") && !queue_full.contains("disk"));
+        assert_eq!(StorageError::Busy.to_string(), "storage: Busy");
         assert_eq!(
             StorageError::from(rusqlite::Error::QueryReturnedNoRows),
             StorageError::UnsupportedSchema

@@ -33,6 +33,8 @@ Na partida, `restore_running_task` decide o destino da tarefa cujo último estad
 
 Hoje o daemon não adota sessões antigas ao reiniciar, então `Kept` ainda não acontece na prática.
 
+O armazenamento devolve o stream como envelopes (`EventLog::read_queue`). `QueueStreamEvent::from_envelope` lê cada um no contrato do seu tipo, entre as dez versões que o replay aceita, e recusa tipo desconhecido (`UnknownType`) ou envelope fora do contrato (`Invalid`); `as_log` entrega a forma emprestada que o replay lê.
+
 O replay (`replay_task`) recebe o stream inteiro da fila, a partir de `queue.created` com `seq` 1 e sem buraco, uma consulta ao cadastro de aparelhos no instante de cada evento, e a política inicial, quando disponível. Ele devolve o estado, o saldo, a última âncora e a política vigente, ou o motivo da recusa (`ReplayRefusal`). Além da ordem e do saldo, ele confere:
 - todo evento é da fila e do stream `queue/<id>`;
 - todo ator que é aparelho pertencia ao dono da fila naquele instante;
@@ -327,6 +329,10 @@ Toda transição consome a ação (ela é passada por valor) e nem a ação nem 
 O estado guarda o instante do pedido de aprovação (`requested_at`) e o da concessão (`granted_at`), e a ordem é cobrada: pedido ≤ concessão ≤ início, e pedido ≤ negação, tudo dentro da validade. Instante igual vale (comparado como instante: `05Z` e `05.000Z` são o mesmo). O núcleo não tem relógio: confere a ordem do que recebe, e relógio confiável é dever de quem chama. O instante dos eventos que fecham a ação (`action.executed`, `action.failed`) não é comparado com o do início, para que uma ação iniciada sempre possa ser fechada.
 
 São recusados, entre outros: licença sem a aprovação que o veredito exigia; plano, aprovação ou licença de outro hash; aprovação de outro `approval_id` ou tomada para outra ação; conceder ou negar com instante anterior ao do pedido; iniciar com instante anterior ao da concessão; conceder ou executar depois da validade; expirar antes dela; segunda licença para a mesma ação; qualquer comando em estado final.
+
+`JournalGate` usa a porta `GateJournal` para gravar o plano e as transições e só devolve a licença depois de o diário confirmar `action.started`. Ao carregar a ação, confere identificadores de evento e sequências por stream, reaplica a política vigente ao pedido reconstruído e compara o resultado com o plano e o evento inicial. Uma divergência impede novas transições. Um início já gravado restaura o estado `Executing` sem emitir outra licença. Cada transição passa por `GateJournal::transition`, que carrega o histórico, deixa o portão decidir o próximo evento e o grava; o padrão do traço é `load` seguido de `append`, e uma implementação pode fazer os três sob um só lock (o `EventLog` faz). A porta exige que a implementação autentique o histórico e compare sua extensão na mesma transação que grava a próxima transição. `StartedExecution` prova só a ordem (a licença nasce depois de o diário aceitar a gravação de `action.started`); a durabilidade é a da implementação de `GateJournal`, que é um traço público. No workspace, só o `EventLog` ancorado do armazenamento a garante.
+
+O daemon liga este portão ao executor de arquivos (`ads_daemon::gate::execute`) antes de fechar todos os itens da issue #26. O diário fecha a parte persistida de "Unicidade persistida" e de "Reconstrução do estado". Seguem abertos, entre outros: "Tempo só tem teto" (os instantes vêm de quem chama, sem política de relógio confiável), "Quarentena e raiz de trabalho declarada" e "Pré-requisitos que nenhum tipo prova" (cópia de segurança, ensaio, consentimento humano e reconferência antes de executar não são exigidos por tipo). A ligação é aceitável agora porque a composição existe só como biblioteca Rust: a API local do daemon não expõe nenhuma operação de arquivo. Expor a ação destrutiva pela API depende de fechar esses itens ou de registrar outra decisão.
 
 ### Estado a partir dos eventos
 

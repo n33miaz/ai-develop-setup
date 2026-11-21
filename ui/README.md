@@ -86,6 +86,16 @@ Na casca Tauri, o cliente envia comandos e recebe mensagens por IPC com o
 processo Rust, que autentica no daemon. A credencial fica no Rust. O service
 worker fica desativado nessa janela. O bundle é o mesmo da interface web.
 
+## Uso e contas
+
+Abra **Uso e contas** abaixo do aviso “Em construção”. No modo de exemplo, o
+painel mostra
+perfis fictícios, o perfil da próxima sessão, a cota observada e restante por
+janela, o saldo do orçamento da tarefa em USD e a sugestão de roteamento. Os
+dados vêm dos exemplos de referência dos contratos. A sugestão é exibida para
+consulta e o seletor fica desativado. No modo conectado, o painel avisa que a
+API local ainda não oferece esses dados.
+
 ## Instalar a interface como aplicativo
 
 Em `ui/`, execute `npm ci`, `npm run build` e `npm run preview` para

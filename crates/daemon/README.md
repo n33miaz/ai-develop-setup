@@ -15,6 +15,10 @@ porta e token somente nesse canal. A API exige um upgrade sem cabeçalho
 `Origin` e mantém a conferência de `Host` e do token. O processo Rust da casca
 envia `auth.hello` antes de encaminhar mensagens da janela.
 
+## Portão de ações de arquivo
+
+`ads_daemon::gate::execute` recebe o log ancorado, a política vigente e o executor da cerca. Quem chama fornece a medição e a decisão exigidas para o plano antes de solicitar a execução. O portão grava `action.started` antes de chamar o executor. Ao terminar, o daemon tenta gravar o resultado e devolve separadamente o relatório da operação e o status dessa gravação. Um início confirmado continua consumido mesmo se o resultado não puder ser gravado. A composição está disponível em Rust. A API local ainda não expõe comandos de execução de arquivos. Os instantes e identificadores de `start` e `finish` vêm de quem chama, e só o `ts` decide a validade da aprovação: quando a API existir, o daemon deve carimbar `ts` e `id` ele mesmo. Os itens da issue #26 que seguem abertos estão no [portão do núcleo](../core/README.md#máquina-de-estados).
+
 ## Abrir Claude ou Codex no navegador
 
 1. Na raiz do repositório, inicie o host de terminais em um terminal.
