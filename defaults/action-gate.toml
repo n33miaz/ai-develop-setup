@@ -71,9 +71,9 @@ approval_byte_limit = 104857600
 # O padrão comporta 10 mil nomes literais de 100 bytes em destinos comuns.
 classification_match_steps = 2000000
 
-# Recuo máximo entre eventos consecutivos da ação, em segundos.
+# Recuo máximo por evento novo da ação, em segundos (0 a 60).
 # Zero preserva a ordem estrita. Aumente só para acomodar ajustes do relógio.
-# Esta tolerância é independente da configuração da fila.
+# O portão tem sua própria chave. Use clock_rewind_seconds somente na fila.
 gate_clock_rewind_seconds = 0
 
 # Quarentena por padrao: apagar e apagar recursivo viram "mover para a pasta de quarentena", e e esse
