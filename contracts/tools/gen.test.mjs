@@ -159,3 +159,30 @@ test("preserves the local API error code assigned to each name", async () => {
     SESSION_SETUP_FAILED: -32014,
   });
 });
+
+test("version 2 of the local API error catalog keeps every code and adds the queue codes", async () => {
+  const { root, put } = tree();
+  const schema = JSON.parse(fs.readFileSync(new URL(
+    "../schemas/contract.local-api.error-code.v2.schema.json",
+    import.meta.url,
+  ), "utf8"));
+  put("contract.local-api.error-code.v2.schema.json", schema);
+
+  const files = await generateAll(root);
+  const constants = files.get("contract.local-api.error-code.v2.constants.ts");
+  const entries = [...constants.matchAll(/^export const (\w+) = (-?\d+)$/gm)];
+  assert.deepEqual(Object.fromEntries(entries.map(([, name, value]) => [name, Number(value)])), {
+    METHOD_NOT_FOUND: -32601,
+    INVALID_PARAMS: -32602,
+    INTERNAL_ERROR: -32603,
+    CAPACITY_EXCEEDED: -32003,
+    SUBSCRIPTION_REPLAY_UNAVAILABLE: -32004,
+    REMOTE_ORIGIN_REFUSED: -32010,
+    HARNESS_NOT_CONFIGURED: -32011,
+    CONFLICT: -32012,
+    SESSION_CLOSE_PENDING: -32013,
+    SESSION_SETUP_FAILED: -32014,
+    QUEUE_NOT_CONFIGURED: -32015,
+    QUEUE_ALREADY_ENABLED: -32016,
+  });
+});

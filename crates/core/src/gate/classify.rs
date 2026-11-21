@@ -309,7 +309,7 @@ fn judge(plan: &ActionPlan, policy: &GatePolicy) -> Vec<Finding> {
     };
 
     let work_root = plan.work_root();
-    if let Some(protection) = policy.protection(work_root) {
+    if let Some(protection) = policy.place_protection(work_root) {
         find(Rule::WorkRootProtected(protection), work_root);
     }
     let same_root = |root: &AbsPath| root.is_within(work_root) && work_root.is_within(root);
@@ -400,7 +400,7 @@ fn judge(plan: &ActionPlan, policy: &GatePolicy) -> Vec<Finding> {
         if in_other_quarantine(destination) {
             find(Rule::QuarantineOfOtherRoot, destination);
         }
-        if let Some(protection) = policy.protection(destination) {
+        if let Some(protection) = policy.place_protection(destination) {
             find(Rule::DestinationProtected(protection), destination);
         }
         let allowed = destination.is_within(work_root)
@@ -473,6 +473,11 @@ fn judge(plan: &ActionPlan, policy: &GatePolicy) -> Vec<Finding> {
                     for path in &reserved {
                         if let Some(entry) = named(path) {
                             find(Rule::DestinationEntryReserved, &entry);
+                        }
+                    }
+                    for path in policy.product_paths() {
+                        if let Some(entry) = named(path) {
+                            find(Rule::DestinationProtected(Protection::ProductData), &entry);
                         }
                     }
                     for other in plan.targets() {

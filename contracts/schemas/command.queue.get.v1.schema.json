@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:command:queue.get:1",
+  "title": "Ler o estado da fila",
+  "description": "Pede ao núcleo o estado atual de uma fila de tarefas (stopped ou enabled). Só leitura: não muda nada no núcleo e não entra na cache de idempotência. A resposta aceita é command.queue.get.response:1; a recusa volta como command.response:2 com error.",
+  "allOf": [
+    {
+      "$ref": "urn:ads:command:request:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "method",
+        "params"
+      ],
+      "properties": {
+        "method": {
+          "const": "queue.get"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "queue_id",
+            "_meta"
+          ],
+          "properties": {
+            "queue_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "_meta": true
+          }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "jsonrpc": "2.0",
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAD",
+      "method": "queue.get",
+      "params": {
+        "queue_id": "queue-01",
+        "_meta": {
+          "idempotency_key": "01ARZ3NDEKTSV4RRFFQ69G5FAE",
+          "origin": "local"
+        }
+      }
+    }
+  ]
+}

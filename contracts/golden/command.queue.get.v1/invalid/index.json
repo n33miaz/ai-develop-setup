@@ -1,0 +1,28 @@
+{
+  "01-missing-queue-id.json": {
+    "rule": "O comando nomeia a fila.",
+    "keyword": "required",
+    "instancePath": "/params",
+    "params": {
+      "missingProperty": "queue_id"
+    }
+  },
+  "02-extra-param.json": {
+    "rule": "params é fechado: o dono vem do núcleo, nunca do pedido.",
+    "keyword": "additionalProperties",
+    "instancePath": "/params",
+    "params": {
+      "additionalProperty": "owner_id"
+    }
+  },
+  "03-other-method.json": {
+    "rule": "O método é fixo.",
+    "keyword": "const",
+    "instancePath": "/method"
+  },
+  "04-queue-id-not-id.json": {
+    "rule": "O id da fila é um identificador opaco, sem barra.",
+    "keyword": "pattern",
+    "instancePath": "/params/queue_id"
+  }
+}
