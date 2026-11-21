@@ -1401,13 +1401,21 @@ impl EventLog {
         let limit = usize::try_from(limit.min(self.config.read_page_limit)).unwrap_or(usize::MAX);
         self.read_anchored(|log, tx| {
             let mut statement = tx.prepare(
-                "SELECT action_id FROM event AS asked
-                 WHERE asked.type = ?1 AND asked.format = ?5 AND asked.action_id IS NOT NULL
-                   AND NOT EXISTS (SELECT 1 FROM event AS decided
-                                   WHERE decided.approval_id = asked.approval_id
-                                     AND decided.format = ?5
-                                     AND decided.type IN (?2, ?3, ?4))
-                 ORDER BY asked.position",
+                "WITH pending AS NOT MATERIALIZED (
+                     SELECT asked.action_id, asked.position FROM event AS asked
+                     WHERE asked.type = ?1 AND asked.format = ?5 AND asked.action_id IS NOT NULL
+                       AND NOT EXISTS (SELECT 1 FROM event AS decided
+                                       WHERE decided.approval_id = asked.approval_id
+                                         AND decided.format = ?5
+                                         AND decided.type IN (?2, ?3, ?4))
+                 )
+                 SELECT candidate.action_id FROM pending AS candidate
+                 WHERE candidate.position = (
+                     SELECT earlier.position FROM pending AS earlier
+                     WHERE earlier.action_id = candidate.action_id
+                     ORDER BY earlier.position LIMIT 1
+                 )
+                 ORDER BY candidate.position",
             )?;
             let mut rows = statement.query(params![
                 "urn:ads:event:approval.requested:2",
@@ -1417,20 +1425,13 @@ impl EventLog {
                 GATE_ROW_FORMAT,
             ])?;
             let reads = PendingReads { log, tx };
-            let mut unreadable = HashSet::new();
             let mut taken = 0;
             while let Some(row) = rows.next()? {
                 let id: String = row.get(0)?;
-                if unreadable.contains(&id) {
-                    continue;
-                }
                 let entry = match readable_gate(tx, &*log.keys, &id)? {
                     Some(history) => Pending::History(history),
                     None => Pending::Unreadable(id),
                 };
-                if let Pending::Unreadable(id) = &entry {
-                    unreadable.insert(id.clone());
-                }
                 let full = taken == limit;
                 match visit(entry, &reads, full) {
                     Visit::Take if full => break,

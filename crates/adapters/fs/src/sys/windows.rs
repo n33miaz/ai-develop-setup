@@ -274,8 +274,20 @@ fn apply(
     }
 }
 
+/// A native Windows operation failed with this NTSTATUS.
+#[derive(Debug)]
+pub struct NtStatusError(pub i32);
+
+impl std::fmt::Display for NtStatusError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "the system answered {:#010x}", self.0)
+    }
+}
+
+impl std::error::Error for NtStatusError {}
+
 fn refused(status: NTSTATUS) -> io::Error {
-    io::Error::other(format!("the system answered {:#010x}", status.0))
+    io::Error::other(NtStatusError(status.0))
 }
 
 // The answers are little-endian structures read out of 64-bit words.
@@ -295,7 +307,20 @@ fn file_of(low: u64, high: u64) -> u128 {
 
 #[cfg(test)]
 mod tests {
-    use super::file_of;
+    use super::{NTSTATUS, NtStatusError, file_of, refused};
+
+    #[test]
+    fn native_error_preserves_the_status() {
+        for status in [-1, -2] {
+            let error = refused(NTSTATUS(status));
+            let native = error
+                .get_ref()
+                .unwrap()
+                .downcast_ref::<NtStatusError>()
+                .unwrap();
+            assert_eq!(native.0, status);
+        }
+    }
 
     #[test]
     fn ntfs_sequence_distinguishes_objects_with_the_same_record_number() {

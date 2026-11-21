@@ -115,6 +115,10 @@ impl Bench {
         }
     }
     fn bind_or_pending(&self) -> LocalQueue {
+        self.try_bind_or_pending().unwrap()
+    }
+
+    fn try_bind_or_pending(&self) -> Result<LocalQueue, QueueOpenError> {
         LocalQueue::bind_or_pending(
             Arc::new(Mutex::new(open_log(
                 &self.folder.db(),
@@ -127,7 +131,6 @@ impl Bench {
                 device_id: id("device-01"),
             },
         )
-        .unwrap()
     }
     fn open_as(&self, owner_id: &str) -> Result<LoggedQueue, QueueOpenError> {
         LoggedQueue::bind(
@@ -172,15 +175,7 @@ impl Bench {
     }
     /// Opens again once the previous handle, held by aborted API tasks, is gone.
     async fn reopen(&self) -> Arc<LoggedQueue> {
-        for _ in 0..200 {
-            match self.open_as("owner-01") {
-                Err(QueueOpenError::AlreadyOpen) => {
-                    tokio::time::sleep(Duration::from_millis(10)).await
-                }
-                other => return Arc::new(other.unwrap()),
-            }
-        }
-        panic!("the previous handle was never released")
+        Arc::new(wait_for_queue(|| self.open_as("owner-01")).await)
     }
     fn fail_writes(&self, fail: bool) {
         self.anchor.1.store(fail, Ordering::SeqCst);
@@ -777,6 +772,30 @@ async fn create_records_the_default_policy_and_refuses_a_second_creation() {
     assert_eq!(bench.audit(), events);
 }
 
+async fn wait_for_queue<T>(mut bind: impl FnMut() -> Result<T, QueueOpenError>) -> T {
+    for _ in 0..200 {
+        match bind() {
+            Err(QueueOpenError::AlreadyOpen) => tokio::time::sleep(Duration::from_millis(10)).await,
+            other => return other.unwrap(),
+        }
+    }
+    panic!("the previous handle was never released")
+}
+
+#[tokio::test]
+async fn rebinding_waits_for_the_previous_queue_handle() {
+    let bench = Bench::new("queue-rebind");
+    let mut previous = Some(bench.open());
+    wait_for_queue(|| {
+        let result = bench.try_bind_or_pending();
+        if previous.take().is_some() {
+            assert!(matches!(result, Err(QueueOpenError::AlreadyOpen)));
+        }
+        result
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn startup_binds_an_existing_queue_stopped() {
     let bench = Bench::new("queue-create-restart");
@@ -798,7 +817,8 @@ async fn startup_binds_an_existing_queue_stopped() {
         })
         .await;
     }
-    let f = fixture(Some(Arc::new(bench.bind_or_pending()))).await;
+    let queue = wait_for_queue(|| bench.try_bind_or_pending()).await;
+    let f = fixture(Some(Arc::new(queue))).await;
     let mut ws = authenticated(&f).await;
     assert_eq!(state(&mut ws, &bench.params()).await, "stopped");
     let events = bench.audit();

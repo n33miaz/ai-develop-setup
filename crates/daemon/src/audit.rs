@@ -525,8 +525,7 @@ fn open_local_product_in<V: Vault + Send + Sync + 'static>(
         TryLockError::Error(error) => error.into(),
     })?;
     let ids = LocalIdentities::load(&private, first_use).map_err(StartupError::Identity)?;
-    let keys = VaultKeys(vault);
-    keys.provision(first_use)?;
+    let keys = VaultKeys::load(vault.as_ref(), first_use)?;
     let mut log = finish_product(
         directory,
         canonical,
@@ -881,6 +880,15 @@ mod tests {
         fn identities(&self) -> PathBuf {
             self.root.path.join("vault/local-identities.toml")
         }
+    }
+
+    #[test]
+    fn open_product_keeps_its_validated_column_key() {
+        let fixture = LocalFixture::new();
+        let (log, _) = fixture.open().unwrap();
+        log.log().unwrap().append(&event(1)).unwrap();
+        fixture.vault.remove(SecretName::StorageKey).unwrap();
+        assert_eq!(log.log().unwrap().verify_chain(), Ok(1));
     }
 
     #[cfg(windows)]
