@@ -94,6 +94,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let bootstrap = read_bootstrap(stdin::private_input()?)?;
     #[cfg(not(windows))]
     let bootstrap = read_bootstrap(io::stdin().lock())?;
+    #[cfg(windows)]
+    let close_pipe = if std::env::var_os("ADS_SHELL_CLOSE_PIPE").is_some() {
+        use std::os::windows::io::AsHandle;
+        Some(std::fs::File::from(
+            io::stderr().as_handle().try_clone_to_owned()?,
+        ))
+    } else {
+        None
+    };
     tauri::Builder::default()
         .manage(bridge::Bridge::new(bootstrap, smoke))
         .invoke_handler(tauri::generate_handler![
@@ -140,6 +149,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 tray = tray.icon(icon.clone());
             }
             tray.build(app)?;
+            #[cfg(windows)]
+            if let Some(mut pipe) = close_pipe {
+                let app = app.handle().clone();
+                std::thread::Builder::new()
+                    .name("launcher-close".into())
+                    .spawn(move || {
+                        let mut command = [0];
+                        if pipe.read_exact(&mut command).is_ok() && command == *b"Q" {
+                            app.exit(0);
+                        }
+                    })?;
+            }
             Ok(())
         })
         .run(tauri::generate_context!())?;
@@ -150,7 +171,11 @@ fn main() -> ExitCode {
     if run().is_ok() {
         ExitCode::SUCCESS
     } else {
-        eprintln!("ads-shell: desktop startup failed");
+        if cfg!(windows) && std::env::var_os("ADS_SHELL_CLOSE_PIPE").is_some() {
+            println!("ads-shell: desktop startup failed");
+        } else {
+            eprintln!("ads-shell: desktop startup failed");
+        }
         ExitCode::FAILURE
     }
 }

@@ -38,16 +38,21 @@ do daemon diretamente à entrada padrão da casca por um pipe anônimo. O Rust
 da casca autentica a conexão e encaminha mensagens à janela por IPC. Se a casca
 sair pela bandeja ou falhar, o daemon e o host continuam sob supervisão. Use o
 sinal `restart` para abrir outra janela com a nova credencial.
-O lançador fecha a janela que ele próprio abriu no sinal `stop`, quando desiste do
-daemon depois de `crash_window_limit` falhas, ao trocá-la pela janela de um daemon
-novo e em qualquer saída do supervisor que passe pela limpeza de processos. Primeiro
-ele pede o fechamento: no Windows, `WM_ENDSESSION` às janelas desse processo, o mesmo
-pedido que o sistema faz ao encerrar a sessão; no Unix, `SIGTERM`. Se a casca não
-sair em `shell_close_timeout_ms`, ele força o término desse processo. Processos que
-ele não iniciou nunca são tocados. Se o lançador for encerrado à força, a janela pode
-continuar aberta. Para usar o navegador, configure
-`shell_autostart = false` e reinicie a instalação. Nesse modo a URL autenticada
-volta a aparecer na saída padrão do daemon.
+
+O lançador fecha a casca que abriu no sinal `stop`, em Ctrl+C ou Ctrl+Break no
+console do Windows, quando desiste do daemon depois de `crash_window_limit`
+falhas, ao substituí-la e ao sair do escopo do supervisor. No Windows, um pipe
+anônimo por instância entrega o byte `Q` à casca, que encerra sua própria aplicação.
+A variável `ADS_SHELL_CLOSE_PIPE` indica à casca que o identificador de erro padrão
+é a ponta de leitura desse pipe. No Unix, o pedido usa `SIGTERM`. Se a entrega
+falhar, o lançador registra o erro e segue para o término forçado. Durante o laço
+do supervisor, o erro também aparece em `last_error`. Se a casca ainda estiver
+viva após `shell_close_timeout_ms`, o lançador força o término pelo handle do
+filho no Windows. Se o sistema encerrar o lançador sem executar a limpeza do
+supervisor, a janela pode continuar aberta.
+
+Para usar o navegador, configure `shell_autostart = false` e reinicie a instalação.
+Nesse modo a URL autenticada volta a aparecer na saída padrão do daemon.
 
 | Chave | Padrão | Uso |
 |---|---|---|

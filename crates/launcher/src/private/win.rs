@@ -1,7 +1,7 @@
 //! Windows calls for the control folder: identity and access lists, and every entry opened
 //! relative to the folder held open (`NtCreateFile` with a root handle), as itself and never
 //! through a reparse point, then renamed or removed by its own handle
-//! (`NtSetInformationFile`); also the close request posted to the windows of a started child.
+//! (`NtSetInformationFile`); also the console interruption handler.
 //! Each block is a single call or the read of data the previous call filled, with a `SAFETY`
 //! comment; see docs/unsafe.md.
 
@@ -562,41 +562,34 @@ fn descriptor_text(descriptor: PSECURITY_DESCRIPTOR) -> io::Result<String> {
     take_text(text)
 }
 
-/// Posts `WM_ENDSESSION` to every top-level window of `pid`, as the Restart Manager does to
-/// ask an application to close; a window that hides on `WM_CLOSE` still ends on it. Returns
-/// how many windows were asked. The caller holds the process handle, so `pid` is not reused.
-pub(super) fn request_close(pid: u32) -> io::Result<usize> {
-    use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
-    use windows::Win32::UI::WindowsAndMessaging::{
-        ENDSESSION_CLOSEAPP, EnumWindows, GetWindowThreadProcessId, PostMessageW, WM_ENDSESSION,
+static STOP_REQUESTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+unsafe extern "system" fn console_control(event: u32) -> windows::core::BOOL {
+    use windows::Win32::System::Console::{CTRL_BREAK_EVENT, CTRL_C_EVENT};
+    let stopping = matches!(event, CTRL_C_EVENT | CTRL_BREAK_EVENT);
+    if stopping {
+        STOP_REQUESTED.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    windows::core::BOOL::from(stopping)
+}
+
+pub(super) fn install_console_handler() -> io::Result<()> {
+    use windows::Win32::System::Console::SetConsoleCtrlHandler;
+    // SAFETY: the callback has static lifetime and touches only an atomic flag.
+    unsafe { SetConsoleCtrlHandler(Some(console_control), true) }.map_err(os_error)
+}
+
+pub(super) fn console_stop_requested() -> bool {
+    STOP_REQUESTED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(test)]
+pub(crate) fn generate_console_interrupt() -> io::Result<()> {
+    use windows::Win32::System::Console::{
+        CTRL_C_EVENT, GenerateConsoleCtrlEvent, SetConsoleCtrlHandler,
     };
-    use windows::core::BOOL;
-
-    unsafe extern "system" fn collect(window: HWND, found: LPARAM) -> BOOL {
-        // SAFETY: `found` is the address of the tuple below, alive for the whole enumeration.
-        let (pid, windows) = unsafe { &mut *(found.0 as *mut (u32, Vec<HWND>)) };
-        let mut owner = 0;
-        // SAFETY: `window` comes from the enumeration; `owner` is a valid output location.
-        unsafe { GetWindowThreadProcessId(window, Some(&raw mut owner)) };
-        if owner == *pid {
-            windows.push(window);
-        }
-        BOOL::from(true)
-    }
-
-    let mut found = (pid, Vec::new());
-    // SAFETY: the callback only reads `found` through the pointer during this call.
-    unsafe { EnumWindows(Some(collect), LPARAM(&raw mut found as isize)) }.map_err(os_error)?;
-    for window in &found.1 {
-        // SAFETY: posting copies plain values; a window closed meanwhile only fails the post.
-        let _ = unsafe {
-            PostMessageW(
-                Some(*window),
-                WM_ENDSESSION,
-                WPARAM(1),
-                LPARAM(ENDSESSION_CLOSEAPP as isize),
-            )
-        };
-    }
-    Ok(found.1.len())
+    // SAFETY: this resets the inherited ignore flag only in the isolated test process.
+    unsafe { SetConsoleCtrlHandler(None, false) }.map_err(os_error)?;
+    // SAFETY: the test starts this process in a new console with no unrelated clients.
+    unsafe { GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0) }.map_err(os_error)
 }

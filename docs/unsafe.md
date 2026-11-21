@@ -10,7 +10,7 @@ A contagem só sobe com justificativa aqui.
 | `ads-adapter-fs` | 4 | chamadas da API do Windows para abrir, mover e apagar por identificador aberto, listadas abaixo; no Linux as mesmas operações vêm do `rustix`, sem `unsafe` |
 | `ads-testkit` | 7 | só de teste, fora de qualquer binário do produto; listados abaixo |
 | `ads-adapter-vault` | 6 | operações por nome no cofre do Windows e tratamento da memória devolvida |
-| `ads-launcher` | 23 | chamadas da API do Windows para criar a pasta de controle e seus arquivos só do usuário, conferir dono e lista de acesso, operar relativo à pasta aberta e pedir à janela que feche, listadas abaixo (2 delas só nos testes); no Unix o mesmo vem da biblioteca padrão e do `rustix`, sem `unsafe` |
+| `ads-launcher` | 23 | chamadas da API do Windows para criar a pasta de controle e seus arquivos só do usuário, conferir dono e lista de acesso, operar relativo à pasta aberta e receber interrupções do console (5 blocos só nos testes) |
 | `ads-shell` | 2 | retirar e fechar a entrada padrão herdada antes de iniciar a WebView |
 | `ads-storage` | 0 | SQLite e cifra pelas APIs seguras das dependências; herda `forbid` |
 | demais | 0 | nenhum |
@@ -70,7 +70,7 @@ Um processo filho do binário de teste fecha o próprio processo ou o próprio t
 
 ## `ads-launcher` (`crates/launcher/src/private/win.rs`)
 
-A biblioteca padrão não cria pasta nem arquivo com lista de acesso própria, não lê dono e lista de acesso e só abre, move e apaga por caminho, que o sistema resolve de novo a cada chamada. Por isso a pasta de controle é aberta uma vez, sem seguir ponto de reanálise e sem compartilhar o direito de apagar (o que impede renomear a pasta e as pastas acima dela enquanto o lançador roda), conferida nesse identificador, e a trava, o estado e os sinais são abertos relativos a ele, com a mesma técnica do `ads-adapter-fs`. Cada bloco é uma única chamada, ou a leitura do que a chamada anterior preencheu, e leva um comentário `SAFETY`; os identificadores abertos passam na hora para um `OwnedHandle`, e a memória que o sistema aloca fica num guarda que a libera ao sair de escopo. O mesmo módulo pede o fechamento da janela da casca: a biblioteca padrão só sabe forçar o término, e a casca esconde a janela no `WM_CLOSE`, então o lançador lista as janelas do processo que ele iniciou e lhes envia `WM_ENDSESSION` antes de forçar.
+A biblioteca padrão não cria pasta nem arquivo com lista de acesso própria, não lê dono e lista de acesso e só abre, move e apaga por caminho, que o sistema resolve de novo a cada chamada. Por isso a pasta de controle é aberta uma vez, sem seguir ponto de reanálise e sem compartilhar o direito de apagar (o que impede renomear a pasta e as pastas acima dela enquanto o lançador roda), conferida nesse identificador, e a trava, o estado e os sinais são abertos relativos a ele, com a mesma técnica do `ads-adapter-fs`. Cada bloco é uma única chamada, ou a leitura do que a chamada anterior preencheu, e leva um comentário `SAFETY`; os identificadores abertos passam na hora para um `OwnedHandle`, e a memória que o sistema aloca fica num guarda que a libera ao sair de escopo. O mesmo módulo instala o retorno de chamada que marca a parada em Ctrl+C e Ctrl+Break. O laço do supervisor lê essa marca e executa a limpeza. O pedido de fechamento no Windows usa um pipe anônimo da biblioteca padrão.
 
 | Onde | Blocos | Chamada | Motivo |
 |---|---|---|---|
@@ -85,8 +85,9 @@ A biblioteca padrão não cria pasta nem arquivo com lista de acesso própria, n
 | `open_at` | 2 | `NtCreateFile`, `OwnedHandle::from_raw_handle` | abrir ou criar a trava, o estado temporário e os sinais por um nome só, relativos à pasta aberta, sem seguir ponto de reanálise, e criar arquivo já com o descritor privado |
 | `apply` | 1 | `NtSetInformationFile` | mover o estado temporário sobre o estado e apagar um sinal, os dois pelo identificador em que foram conferidos |
 | `security` | 4 | `GetSecurityInfo` (dono e lista de acesso), `GetAclInformation`, `GetAce`, leitura do cabeçalho da entrada | conferir o dono e cada entrada da lista de acesso da pasta, da trava e de cada sinal, no identificador aberto |
-| `access_list_text` (só testes) | 2 | `GetSecurityInfo`, `ConvertSecurityDescriptorToStringSecurityDescriptorW` | ler a lista de acesso em texto, com proteção e herança, para os testes compararem com a esperada |
-| `request_close` | 4 | `EnumWindows`, leitura da lista passada ao retorno de chamada, `GetWindowThreadProcessId`, `PostMessageW` | pedir o fechamento (`WM_ENDSESSION`) às janelas da casca que o próprio lançador iniciou e ainda não recolheu, antes do término forçado |
+| `access_list_text`, `canonical_access_list` e `descriptor_text` (só testes) | 3 | `GetSecurityInfo`, conversões de descritor de segurança | comparar a lista de acesso com a forma de escrita do Windows, incluindo proteção, herança e abreviação de identificadores |
+| `install_console_handler` | 1 | `SetConsoleCtrlHandler` | registrar o retorno de chamada que marca a parada em uma variável atômica |
+| `generate_console_interrupt` (só testes) | 2 | `SetConsoleCtrlHandler`, `GenerateConsoleCtrlEvent` | habilitar e gerar Ctrl+C dentro de um console isolado para verificar a limpeza |
 
 ## `ads-shell` (`crates/shell/src/stdin.rs`)
 

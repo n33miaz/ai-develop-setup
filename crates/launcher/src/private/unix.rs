@@ -76,6 +76,6 @@ pub(super) fn rename(dir: &OwnedFd, from: &str, to: &str) -> io::Result<()> {
 }
 
 /// Sends `SIGTERM` to a child the caller still holds unreaped, so its pid cannot be reused.
-pub(super) fn request_close(child: &Child) -> io::Result<()> {
+pub(crate) fn request_close(child: &Child) -> io::Result<()> {
     Ok(kill_process(Pid::from_child(child), Signal::TERM)?)
 }

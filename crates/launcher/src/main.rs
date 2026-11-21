@@ -234,6 +234,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         }
         shell
     });
+    private::install_console_handler()?;
     supervisor::run(&config, &control, daemon, host, shell)?;
     Ok(ExitCode::SUCCESS)
 }
