@@ -672,6 +672,14 @@ mod tests {
         std::os::unix::fs::symlink(target, link).unwrap();
     }
 
+    /// Removes a link made by [`link_folder`], never what it points to.
+    fn unlink_folder(link: &Path) {
+        #[cfg(windows)]
+        fs::remove_dir(link).unwrap();
+        #[cfg(unix)]
+        fs::remove_file(link).unwrap();
+    }
+
     /// A session whose work root holds the product state (the audit database reached through
     /// two links, the vault folder and the launcher control folder) never gets a plan that
     /// removes or moves any of it, and the executor refuses such a permit on its own.
@@ -792,6 +800,40 @@ mod tests {
             destination: at(folder),
         };
         let mut planned = 0;
+        // A permit issued under a policy that does not know the product state: the executor
+        // of the session judges it again and refuses before touching anything.
+        let work_root = AbsPath::parse(&work).unwrap();
+        let blind = policy_with("").with_work_roots(vec![work_root.clone()]);
+        let plan =
+            ActionPlan::normalize(&request(OperationRequest::Delete, &at("data/audit.db"), 1))
+                .unwrap();
+        let observed = Executor::new(&fence, blind.clone())
+            .unwrap()
+            .observe_plan(&plan)
+            .unwrap();
+        planned += 1;
+        let id = Id::new(format!("product-{planned}")).unwrap();
+        let snapshot = JournalGate::new(&blind, log.log())
+            .for_work_root(&work_root)
+            .plan(id.clone(), &observed, meta(planned, 1))
+            .unwrap();
+        assert_eq!(snapshot.state, State::Planned);
+        planned += 1;
+        let started = JournalGate::new(&blind, log.log())
+            .for_work_root(&work_root)
+            .authorize(&id, meta(planned, 2))
+            .unwrap();
+        let mut gate = launcher
+            .session_gate(&opened, policy_with(""), &log, &fence)
+            .unwrap();
+        let failure = gate.executor_mut().execute_recorded(started).err().unwrap();
+        assert_eq!(failure.reason, Reason::PolicyDenies, "{}", failure.detail);
+        assert!(
+            failure.detail.contains("protected.product_data"),
+            "{}",
+            failure.detail
+        );
+
         for overrides in ["", "quarantine_enabled = false"] {
             let gate = launcher
                 .session_gate(&opened, policy_with(overrides), &log, &fence)
@@ -838,40 +880,6 @@ mod tests {
             assert_ne!(snapshot.state, State::Denied, "{overrides:?}");
         }
 
-        // A permit issued under a policy that does not know the product state: the executor
-        // of the session judges it again and refuses before touching anything.
-        let work_root = AbsPath::parse(&work).unwrap();
-        let blind = policy_with("").with_work_roots(vec![work_root.clone()]);
-        let plan =
-            ActionPlan::normalize(&request(OperationRequest::Delete, &at("data/audit.db"), 1))
-                .unwrap();
-        let observed = Executor::new(&fence, blind.clone())
-            .unwrap()
-            .observe_plan(&plan)
-            .unwrap();
-        planned += 1;
-        let id = Id::new(format!("product-{planned}")).unwrap();
-        let snapshot = JournalGate::new(&blind, log.log())
-            .for_work_root(&work_root)
-            .plan(id.clone(), &observed, meta(planned, 1))
-            .unwrap();
-        assert_eq!(snapshot.state, State::Planned);
-        planned += 1;
-        let started = JournalGate::new(&blind, log.log())
-            .for_work_root(&work_root)
-            .authorize(&id, meta(planned, 2))
-            .unwrap();
-        let mut gate = launcher
-            .session_gate(&opened, policy_with(""), &log, &fence)
-            .unwrap();
-        let failure = gate.executor_mut().execute_recorded(started).err().unwrap();
-        assert_eq!(failure.reason, Reason::PolicyDenies, "{}", failure.detail);
-        assert!(
-            failure.detail.contains("protected.product_data"),
-            "{}",
-            failure.detail
-        );
-
         // A gate acts only on the log it was built for.
         let other_db = work_dir.join("other").join("audit.db");
         let mut other = open_product_in(
@@ -915,6 +923,13 @@ mod tests {
             ProductState::resolve(&root.join("dangling").join("audit.db"), &vault_dir, None)
                 .is_err()
         );
+        for link in [
+            root.join("dangling"),
+            root.join("linked-data"),
+            work_dir.join("bridge"),
+        ] {
+            unlink_folder(&link);
+        }
     }
 
     #[test]
