@@ -80,6 +80,16 @@ storage não dependerá do núcleo nem do executor, inclusive em testes.
 nada no armazenamento autoriza execução. A composição futura exigirá chave do
 cofre antes de persistir dados sensíveis.
 
+Atualizado em 21/11/2026, fronteira implementada: o armazenamento depende do
+núcleo só para `EventLog` implementar `GateJournal`
+(`crates/storage/src/log.rs`); o executor continua fora dele e nada no
+armazenamento autoriza execução. A composição Rust disponível é
+`audit::open_product`, no `ads-daemon`: usa `OsVault` para a âncora, recebe do
+chamador o `KeyProvider` e serializa a fixação no cofre. O serviço ainda não a
+chama: o binário entra por `LocalApi::bind` com `DisabledQueue`, os comandos da
+fila respondem `QUEUE_NOT_CONFIGURED` e o banco de auditoria não é aberto. Falta
+a inicialização do serviço ligar `audit::open_product` e fornecer a chave.
+
 ## Dependências e parâmetros
 
 Conferência em 16/11/2026 por `cargo info` e API oficial do crates.io:
@@ -267,9 +277,11 @@ com `Full` no padrão, abre em cerca de 0,6 s com integridade e 3 ms sem ela.
 Falhas por categoria serão medidas quando a composição existir.
 
 Não há garantia contra troca concorrente do caminho por outro processo. A pasta
-por usuário vem de `audit::canonical_path`, a fixação no cofre é serializada
-entre processos por `audit-binding.lock` (`lock_binding`, PR #187) e a trava de
-instância do daemon é `InstanceLock` (PR #229). Backup e
+por usuário (`%LOCALAPPDATA%/ads` no Windows) é o padrão do banco em
+`audit::canonical_path`, que usa `audit_database_path` quando configurado. A
+fixação no cofre é serializada entre processos por `audit-binding.lock` nessa
+pasta (`lock_binding`, PR #187), também quando o banco está em outro caminho, e a
+trava de instância do daemon é `InstanceLock` (PR #229). Backup e
 restauração completa ainda dependem do log. Para reverter a proposta de arquivo,
 criar migração explícita com backup e demonstração de atomicidade; nunca reduzir
 user_version nem dividir invariantes entre arquivos WAL. As tabelas futuras devem

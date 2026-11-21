@@ -15,6 +15,12 @@ fixa a identidade por usuário. A entrada `audit-anchor-<id>` guarda o compromis
 resumo do caminho normalizado. A fixação encerra o uso da entrada legada `audit-anchor`,
 inclusive quando o dono confirma uma nova identidade ou um novo caminho. A [API e a recuperação da âncora](../../crates/storage/README.md#âncora-no-cofre) descrevem como SQLite e cofre são conferidos.
 
+Atualizado em 21/11/2026: a injeção da âncora existe na composição Rust
+`audit::open_product`, que usa `OsVault` e recebe a chave do chamador. O serviço
+do daemon ainda não chama essa composição: entra por `LocalApi::bind` com
+`DisabledQueue` e não abre o banco de auditoria. Ligar a composição e fornecer a
+chave fica para a inicialização do serviço.
+
 ## Alternativas
 
 - Uma biblioteca multiplataforma reduziria o código nativo próprio, mas exigiria validar o serviço e as dependências de cada plataforma atendida.
