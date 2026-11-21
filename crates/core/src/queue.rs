@@ -4,19 +4,19 @@ use std::num::{NonZeroU64, NonZeroUsize};
 
 use ads_contracts::{
     CommonActorV1, CommonActorV1Kind, CommonIdV1, CommonQueueTaskOriginV1, CommonQueueTaskStateV1,
-    CommonTimestampV1, EventQueueClockReanchoredV1, EventQueueClockReanchoredV1Data,
-    EventQueueClockReanchoredV1DataVia, EventQueueCreatedV1, EventQueueCreatedV1DataVia,
-    EventQueueEnabledV1, EventQueueEnabledV1Data, EventQueueEnabledV1DataVia,
-    EventQueuePolicyChangedV1, EventQueuePolicyChangedV1Data, EventQueuePolicyChangedV1DataPolicy,
-    EventQueuePolicyChangedV1DataPolicyAttemptLimit, EventQueuePolicyChangedV1DataVia,
-    EventQueueStoppedV1, EventQueueStoppedV1Data, EventQueueStoppedV1DataReason,
-    EventQueueStoppedV1DataVia, EventQueueTaskCreatedV1, EventQueueTaskCreatedV1DataOrigin,
-    EventQueueTaskCreatedV2, EventQueueTaskCreatedV2DataOrigin, EventQueueTaskCreatedV3,
-    EventQueueTaskStateChangedV1, EventQueueTaskStateChangedV2, EventQueueTaskStateChangedV2Data,
-    EventQueueTaskStateChangedV2DataAttempts, EventQueueTaskStateChangedV2DataFields,
-    EventQueueTaskStateChangedV2DataReason, EventQueueTaskStateChangedV2DataVia, RecordQueueTaskV1,
-    RecordQueueTaskV2, RecordQueueTaskV2Attempts, RecordTaskQueueV1, RecordTaskQueueV1State,
-    RecordTaskQueueV1Version,
+    CommonTimestampV1, EventEnvelopeV1, EventQueueClockReanchoredV1,
+    EventQueueClockReanchoredV1Data, EventQueueClockReanchoredV1DataVia, EventQueueCreatedV1,
+    EventQueueCreatedV1DataVia, EventQueueEnabledV1, EventQueueEnabledV1Data,
+    EventQueueEnabledV1DataVia, EventQueuePolicyChangedV1, EventQueuePolicyChangedV1Data,
+    EventQueuePolicyChangedV1DataPolicy, EventQueuePolicyChangedV1DataPolicyAttemptLimit,
+    EventQueuePolicyChangedV1DataVia, EventQueueStoppedV1, EventQueueStoppedV1Data,
+    EventQueueStoppedV1DataReason, EventQueueStoppedV1DataVia, EventQueueTaskCreatedV1,
+    EventQueueTaskCreatedV1DataOrigin, EventQueueTaskCreatedV2, EventQueueTaskCreatedV2DataOrigin,
+    EventQueueTaskCreatedV3, EventQueueTaskStateChangedV1, EventQueueTaskStateChangedV2,
+    EventQueueTaskStateChangedV2Data, EventQueueTaskStateChangedV2DataAttempts,
+    EventQueueTaskStateChangedV2DataFields, EventQueueTaskStateChangedV2DataReason,
+    EventQueueTaskStateChangedV2DataVia, RecordQueueTaskV1, RecordQueueTaskV2,
+    RecordQueueTaskV2Attempts, RecordTaskQueueV1, RecordTaskQueueV1State, RecordTaskQueueV1Version,
 };
 
 use CommonQueueTaskStateV1::{Cancelled, Done, Failed, Queued, Review, Running};
@@ -455,6 +455,74 @@ impl<'a> QueueLogEvent<'a> {
             Self::TaskCreatedV2(event) => Some(event.into()),
             Self::TaskCreatedV3(event) => Some(event.into()),
             _ => None,
+        }
+    }
+}
+
+/// One event of the `queue/<id>` stream, owned, as the storage hands it back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QueueStreamEvent {
+    Created(EventQueueCreatedV1),
+    Enabled(EventQueueEnabledV1),
+    Stopped(EventQueueStoppedV1),
+    ClockReanchored(EventQueueClockReanchoredV1),
+    PolicyChanged(EventQueuePolicyChangedV1),
+    TaskCreated(EventQueueTaskCreatedV1),
+    TaskCreatedV2(EventQueueTaskCreatedV2),
+    TaskCreatedV3(EventQueueTaskCreatedV3),
+    TaskStateChanged(EventQueueTaskStateChangedV1),
+    TaskStateChangedV2(EventQueueTaskStateChangedV2),
+}
+
+/// Why an envelope is not an event of the queue stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueEventRefusal {
+    /// The type is not one of the queue event versions this core reads.
+    UnknownType,
+    /// The envelope breaks the contract of its type.
+    Invalid,
+}
+
+impl QueueStreamEvent {
+    /// Reads an envelope of the queue stream into the contract of its type.
+    pub fn from_envelope(envelope: &EventEnvelopeV1) -> Result<Self, QueueEventRefusal> {
+        fn typed<T: serde::de::DeserializeOwned>(
+            envelope: &EventEnvelopeV1,
+        ) -> Result<T, QueueEventRefusal> {
+            serde_json::to_value(envelope)
+                .and_then(serde_json::from_value)
+                .map_err(|_| QueueEventRefusal::Invalid)
+        }
+        Ok(match envelope.r#type.as_str() {
+            "urn:ads:event:queue.created:1" => Self::Created(typed(envelope)?),
+            "urn:ads:event:queue.enabled:1" => Self::Enabled(typed(envelope)?),
+            "urn:ads:event:queue.stopped:1" => Self::Stopped(typed(envelope)?),
+            "urn:ads:event:queue.clock_reanchored:1" => Self::ClockReanchored(typed(envelope)?),
+            "urn:ads:event:queue.policy_changed:1" => Self::PolicyChanged(typed(envelope)?),
+            "urn:ads:event:queue.task_created:1" => Self::TaskCreated(typed(envelope)?),
+            "urn:ads:event:queue.task_created:2" => Self::TaskCreatedV2(typed(envelope)?),
+            "urn:ads:event:queue.task_created:3" => Self::TaskCreatedV3(typed(envelope)?),
+            "urn:ads:event:queue.task_state_changed:1" => Self::TaskStateChanged(typed(envelope)?),
+            "urn:ads:event:queue.task_state_changed:2" => {
+                Self::TaskStateChangedV2(typed(envelope)?)
+            }
+            _ => return Err(QueueEventRefusal::UnknownType),
+        })
+    }
+
+    /// The borrowed form `replay_task` reads.
+    pub fn as_log(&self) -> QueueLogEvent<'_> {
+        match self {
+            Self::Created(event) => QueueLogEvent::Created(event),
+            Self::Enabled(event) => QueueLogEvent::Enabled(event),
+            Self::Stopped(event) => QueueLogEvent::Stopped(event),
+            Self::ClockReanchored(event) => QueueLogEvent::ClockReanchored(event),
+            Self::PolicyChanged(event) => QueueLogEvent::PolicyChanged(event),
+            Self::TaskCreated(event) => QueueLogEvent::TaskCreated(event),
+            Self::TaskCreatedV2(event) => QueueLogEvent::TaskCreatedV2(event),
+            Self::TaskCreatedV3(event) => QueueLogEvent::TaskCreatedV3(event),
+            Self::TaskStateChanged(event) => QueueLogEvent::TaskStateChanged(event),
+            Self::TaskStateChangedV2(event) => QueueLogEvent::TaskStateChangedV2(event),
         }
     }
 }

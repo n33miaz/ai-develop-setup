@@ -18,7 +18,7 @@ const SENTINEL: &str = "private-sentinel-5f2e9c1d";
 const CLEAR_MARKER: &str = "clear-actor-marker-81b3";
 
 #[derive(Clone, Default)]
-struct MemoryAnchor(std::sync::Arc<std::sync::Mutex<MemoryAnchorState>>);
+pub(crate) struct MemoryAnchor(std::sync::Arc<std::sync::Mutex<MemoryAnchorState>>);
 
 #[derive(Default)]
 struct MemoryAnchorState {
@@ -485,12 +485,12 @@ fn sibling(path: &Path, suffix: &str) -> PathBuf {
 }
 
 /// Current key plus older keys still available for reading.
-struct Keys {
+pub(crate) struct Keys {
     current: (&'static str, u8),
     older: Vec<(&'static str, u8)>,
 }
 
-fn keys(id: &'static str, byte: u8) -> Box<Keys> {
+pub(crate) fn keys(id: &'static str, byte: u8) -> Box<Keys> {
     Box::new(Keys {
         current: (id, byte),
         older: vec![],
@@ -668,7 +668,7 @@ fn tamper_with(path: &Path, change: impl FnOnce(&Connection)) {
 }
 
 /// `tamper_with` for one statement that must change exactly one row.
-fn tamper(path: &Path, sql: &str, blob: Option<Vec<u8>>) {
+pub(crate) fn tamper(path: &Path, sql: &str, blob: Option<Vec<u8>>) {
     tamper_with(path, |c| {
         match blob {
             Some(bytes) => assert_eq!(c.execute(sql, [bytes]).unwrap(), 1),
@@ -677,7 +677,7 @@ fn tamper(path: &Path, sql: &str, blob: Option<Vec<u8>>) {
     });
 }
 
-fn data_ct(path: &Path, position: i64) -> Vec<u8> {
+pub(crate) fn data_ct(path: &Path, position: i64) -> Vec<u8> {
     Connection::open(path)
         .unwrap()
         .query_row(

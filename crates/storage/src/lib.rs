@@ -8,6 +8,7 @@ pub mod error;
 pub mod log;
 mod migrate;
 pub mod open;
+pub mod queue;
 mod snapshot;
 pub use config::{StorageConfig, VerifyOnAppend};
 pub use error::StorageError;
@@ -16,6 +17,8 @@ pub use open::AuditStore;
 
 #[cfg(test)]
 mod event_log_tests;
+#[cfg(test)]
+mod queue_tests;
 
 /// Package name as declared in the manifest.
 pub const fn crate_name() -> &'static str {
