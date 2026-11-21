@@ -2728,4 +2728,59 @@ mod gate_journal {
         assert_eq!(read, vec![created, enabled]);
         assert_eq!(anchored(&path, &anchor).unwrap().verify_chain(), Ok(6));
     }
+
+    #[test]
+    fn pending_approvals_lists_only_undecided_requests_in_order() {
+        let path = fixture();
+        let anchor = MemoryAnchor::default();
+        let mut log = anchored(&path, &anchor).unwrap();
+        // Decided: requested and granted.
+        let (granted, _) = approved(&mut log);
+        // Planned only: nothing asked.
+        let planned = Id::new("planned").unwrap();
+        create(&mut log, &planned, 10);
+        let mut asked = Vec::new();
+        for (index, name) in ["waiting-1", "waiting-2", "waiting-3"].iter().enumerate() {
+            let serial = 20 + 2 * index as u64;
+            let action_id = Id::new(*name).unwrap();
+            create(&mut log, &action_id, serial);
+            JournalGate::new(&policy(), &mut log)
+                .apply(
+                    &action_id,
+                    request(&Id::new(format!("approval-{name}")).unwrap()),
+                    meta(1, serial + 1),
+                )
+                .unwrap();
+            asked.push(action_id);
+        }
+        let ids = |histories: Vec<GateHistory>| {
+            histories
+                .into_iter()
+                .map(|history| history.plan.fields().action_id.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(log.pending_approvals(10).unwrap()), asked);
+        assert_eq!(ids(log.pending_approvals(2).unwrap()), asked[..2]);
+        let pending = log.pending_approvals(10).unwrap();
+        assert!(pending.iter().all(|history| history.events.len() == 2));
+        assert!(!ids(pending).contains(&granted));
+
+        // A denial takes the action out of the list.
+        let first = &asked[0];
+        let history = log.load(first).unwrap();
+        let policy = policy();
+        JournalGate::new(&policy, &mut log)
+            .apply(
+                first,
+                Command::Deny {
+                    action_id: first.clone(),
+                    approval_id: Id::new("approval-waiting-1").unwrap(),
+                    plan_hash: history.plan.fields().plan_hash.clone(),
+                    reason: None,
+                },
+                meta(2, 40),
+            )
+            .unwrap();
+        assert_eq!(ids(log.pending_approvals(10).unwrap()), asked[1..]);
+    }
 }

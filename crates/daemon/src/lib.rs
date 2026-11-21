@@ -1,6 +1,7 @@
 //! Composition services used by the daemon.
 
 pub mod api;
+pub mod approvals;
 pub mod audit;
 pub mod auth;
 pub mod events;

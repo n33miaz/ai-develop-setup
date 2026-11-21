@@ -4,6 +4,9 @@ use serde_json::Value;
 
 use crate::support;
 
+pub mod command_approval_answer_v1;
+pub mod command_approval_list_response_v1;
+pub mod command_approval_list_v1;
 pub mod command_auth_hello_v1;
 pub mod command_events_subscribe_v1;
 pub mod command_harness_list_response_v1;
@@ -39,9 +42,11 @@ pub mod common_workdir_alias_v1;
 pub mod contract_harness_adapter_v1;
 pub mod contract_local_api_error_code_v1;
 pub mod contract_local_api_error_code_v2;
+pub mod contract_local_api_error_code_v3;
 pub mod contract_local_api_server_message_v1;
 pub mod contract_local_api_server_message_v2;
 pub mod contract_local_api_server_message_v3;
+pub mod contract_local_api_server_message_v4;
 pub mod contract_pty_host_frame_v1;
 pub mod contract_pty_host_notification_v1;
 pub mod contract_pty_host_request_v1;
@@ -53,6 +58,7 @@ pub mod event_action_executed_v1;
 pub mod event_action_failed_v1;
 pub mod event_action_planned_v1;
 pub mod event_action_started_v1;
+pub mod event_answer_recorded_v1;
 pub mod event_approval_denied_v1;
 pub mod event_approval_denied_v2;
 pub mod event_approval_expired_v1;
@@ -122,6 +128,9 @@ pub mod record_usage_event_v1;
 pub mod relay_device_v1;
 pub mod relay_envelope_v1;
 
+pub use command_approval_answer_v1::*;
+pub use command_approval_list_response_v1::*;
+pub use command_approval_list_v1::*;
 pub use command_auth_hello_v1::*;
 pub use command_events_subscribe_v1::*;
 pub use command_harness_list_response_v1::*;
@@ -157,9 +166,11 @@ pub use common_workdir_alias_v1::*;
 pub use contract_harness_adapter_v1::*;
 pub use contract_local_api_error_code_v1::*;
 pub use contract_local_api_error_code_v2::*;
+pub use contract_local_api_error_code_v3::*;
 pub use contract_local_api_server_message_v1::*;
 pub use contract_local_api_server_message_v2::*;
 pub use contract_local_api_server_message_v3::*;
+pub use contract_local_api_server_message_v4::*;
 pub use contract_pty_host_frame_v1::*;
 pub use contract_pty_host_notification_v1::*;
 pub use contract_pty_host_request_v1::*;
@@ -171,6 +182,7 @@ pub use event_action_executed_v1::*;
 pub use event_action_failed_v1::*;
 pub use event_action_planned_v1::*;
 pub use event_action_started_v1::*;
+pub use event_answer_recorded_v1::*;
 pub use event_approval_denied_v1::*;
 pub use event_approval_denied_v2::*;
 pub use event_approval_expired_v1::*;
@@ -242,6 +254,18 @@ pub use relay_envelope_v1::*;
 
 /// Every Schema a type was generated from: its file key and its `$id`.
 pub const SCHEMAS: &[(&str, &str)] = &[
+    (
+        "command.approval.answer.v1",
+        "urn:ads:command:approval.answer:1",
+    ),
+    (
+        "command.approval.list.response.v1",
+        "urn:ads:command:approval.list.response:1",
+    ),
+    (
+        "command.approval.list.v1",
+        "urn:ads:command:approval.list:1",
+    ),
     ("command.auth.hello.v1", "urn:ads:command:auth.hello:1"),
     (
         "command.events.subscribe.v1",
@@ -314,6 +338,10 @@ pub const SCHEMAS: &[(&str, &str)] = &[
         "urn:ads:contract:local-api.error-code:2",
     ),
     (
+        "contract.local-api.error-code.v3",
+        "urn:ads:contract:local-api.error-code:3",
+    ),
+    (
         "contract.local-api.server-message.v1",
         "urn:ads:contract:local-api.server-message:1",
     ),
@@ -324,6 +352,10 @@ pub const SCHEMAS: &[(&str, &str)] = &[
     (
         "contract.local-api.server-message.v3",
         "urn:ads:contract:local-api.server-message:3",
+    ),
+    (
+        "contract.local-api.server-message.v4",
+        "urn:ads:contract:local-api.server-message:4",
     ),
     (
         "contract.pty-host.frame.v1",
@@ -357,6 +389,10 @@ pub const SCHEMAS: &[(&str, &str)] = &[
     ("event.action.failed.v1", "urn:ads:event:action.failed:1"),
     ("event.action.planned.v1", "urn:ads:event:action.planned:1"),
     ("event.action.started.v1", "urn:ads:event:action.started:1"),
+    (
+        "event.answer.recorded.v1",
+        "urn:ads:event:answer.recorded:1",
+    ),
     (
         "event.approval.denied.v1",
         "urn:ads:event:approval.denied:1",
@@ -581,6 +617,7 @@ pub const PATTERNS: &[&str] = &[
     r"^[a-z][a-z0-9_]{0,31}$",
     r"^account/",
     r"^action/",
+    r"^answer/",
     r"^approval/",
     r"^dev-[0-9]{8}-[0-9a-f]{7,12}$",
     r"^handoff/",
@@ -600,6 +637,11 @@ pub const PATTERNS: &[&str] = &[
 /// `None` when no Schema has that `$id`.
 pub fn reencode(id: &str, value: Value) -> Option<Result<Value, serde_json::Error>> {
     let written = match id {
+        "urn:ads:command:approval.answer:1" => support::reencode::<CommandApprovalAnswerV1>(value),
+        "urn:ads:command:approval.list.response:1" => {
+            support::reencode::<CommandApprovalListResponseV1>(value)
+        }
+        "urn:ads:command:approval.list:1" => support::reencode::<CommandApprovalListV1>(value),
         "urn:ads:command:auth.hello:1" => support::reencode::<CommandAuthHelloV1>(value),
         "urn:ads:command:events.subscribe:1" => {
             support::reencode::<CommandEventsSubscribeV1>(value)
@@ -647,6 +689,9 @@ pub fn reencode(id: &str, value: Value) -> Option<Result<Value, serde_json::Erro
         "urn:ads:contract:local-api.error-code:2" => {
             support::reencode::<ContractLocalApiErrorCodeV2>(value)
         }
+        "urn:ads:contract:local-api.error-code:3" => {
+            support::reencode::<ContractLocalApiErrorCodeV3>(value)
+        }
         "urn:ads:contract:local-api.server-message:1" => {
             support::reencode::<ContractLocalApiServerMessageV1>(value)
         }
@@ -655,6 +700,9 @@ pub fn reencode(id: &str, value: Value) -> Option<Result<Value, serde_json::Erro
         }
         "urn:ads:contract:local-api.server-message:3" => {
             support::reencode::<ContractLocalApiServerMessageV3>(value)
+        }
+        "urn:ads:contract:local-api.server-message:4" => {
+            support::reencode::<ContractLocalApiServerMessageV4>(value)
         }
         "urn:ads:contract:pty-host.frame:1" => support::reencode::<ContractPtyHostFrameV1>(value),
         "urn:ads:contract:pty-host.notification:1" => {
@@ -675,6 +723,7 @@ pub fn reencode(id: &str, value: Value) -> Option<Result<Value, serde_json::Erro
         "urn:ads:event:action.failed:1" => support::reencode::<EventActionFailedV1>(value),
         "urn:ads:event:action.planned:1" => support::reencode::<EventActionPlannedV1>(value),
         "urn:ads:event:action.started:1" => support::reencode::<EventActionStartedV1>(value),
+        "urn:ads:event:answer.recorded:1" => support::reencode::<EventAnswerRecordedV1>(value),
         "urn:ads:event:approval.denied:1" => support::reencode::<EventApprovalDeniedV1>(value),
         "urn:ads:event:approval.denied:2" => support::reencode::<EventApprovalDeniedV2>(value),
         "urn:ads:event:approval.expired:1" => support::reencode::<EventApprovalExpiredV1>(value),

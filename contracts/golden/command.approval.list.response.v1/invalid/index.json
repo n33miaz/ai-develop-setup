@@ -1,0 +1,31 @@
+{
+  "01-with-accepted.json": {
+    "rule": "A resposta de approval.list e a de um comando com efeito não se misturam.",
+    "keyword": "additionalProperties",
+    "instancePath": "/result",
+    "params": {
+      "additionalProperty": "accepted"
+    }
+  },
+  "02-missing-plan.json": {
+    "rule": "Cada aprovação leva o plano exato do ensaio.",
+    "keyword": "required",
+    "instancePath": "/result/approvals/0",
+    "params": {
+      "missingProperty": "plan"
+    }
+  },
+  "03-extra-field.json": {
+    "rule": "Cada aprovação é fechada.",
+    "keyword": "additionalProperties",
+    "instancePath": "/result/approvals/0",
+    "params": {
+      "additionalProperty": "owner_id"
+    }
+  },
+  "04-plan-version-1.json": {
+    "rule": "O plano é o registro que o portão escreve, na versão 2.",
+    "keyword": "const",
+    "instancePath": "/result/approvals/0/plan/version"
+  }
+}

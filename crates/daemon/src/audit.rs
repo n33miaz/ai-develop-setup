@@ -422,6 +422,13 @@ pub fn reanchor(
     EventLog::reanchor(&path, config, keys, &anchor, confirmed)
 }
 
+/// A product log in `root` (an existing, resolved folder) with an in-memory vault, for the
+/// tests of the modules that compose the gate.
+#[cfg(test)]
+pub(crate) fn test_product_log(root: &Path) -> ProductLog {
+    tests::product_log(root)
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -1145,6 +1152,20 @@ mod tests {
             open_with(&original, &migrated, true).unwrap_err(),
             StorageError::AnchorMismatch
         );
+    }
+
+    pub(super) fn product_log(root: &Path) -> ProductLog {
+        let database = root.join("audit").join("audit.db");
+        open_product_in(
+            &root.join("vault"),
+            &database,
+            &configured_for(&database),
+            Box::new(Keys),
+            MemoryVault::default(),
+            None,
+            &[],
+        )
+        .unwrap()
     }
 
     fn configured_for(path: &Path) -> StorageConfig {

@@ -1,0 +1,25 @@
+{
+  "01-daemon-actor.json": {
+    "rule": "Quem responde é um aparelho do dono.",
+    "keyword": "const",
+    "instancePath": "/actor/kind"
+  },
+  "02-missing-owner.json": {
+    "rule": "A resposta registra o dono.",
+    "keyword": "required",
+    "instancePath": "/data",
+    "params": {
+      "missingProperty": "owner_id"
+    }
+  },
+  "03-approval-stream.json": {
+    "rule": "A resposta fica no stream answer/, fora do stream do portão.",
+    "keyword": "pattern",
+    "instancePath": "/stream"
+  },
+  "04-unknown-decision.json": {
+    "rule": "A resposta só aprova ou nega.",
+    "keyword": "enum",
+    "instancePath": "/data/decision"
+  }
+}

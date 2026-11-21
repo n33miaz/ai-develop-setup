@@ -4,6 +4,15 @@ Formato: uma seção por data. Contrato novo, campo opcional acrescentado, vers�
 
 ## 2026-11-21
 
+Aprovações do portão de ações pela API local.
+
+- Contratos novos (`:1`):
+  - Comandos `approval.list` (só `_meta`, só lê) e `approval.answer` (`action_id`, `approval_id`, `plan_hash` e `decision`, `approve` ou `deny`).
+  - Resposta `approval.list.response`: `result` fechado com `approvals`, cada uma com a aprovação pedida e o registro `record.action-plan:2`.
+  - Evento `answer.recorded`: a resposta do dono, gravada no stream `answer/<approval_id>` antes de o portão agir. Família de stream nova `answer`, amarrada a `approval_id`.
+- Versão nova, convivendo com a `:1` à `:3`: `local-api.server-message:4`, que aceita também a resposta de `approval.list`. O núcleo passa a escrever a `:4`.
+- Versão nova, convivendo com a `:1` e a `:2`: `local-api.error-code:3`, com os códigos da `:2` mais `APPROVAL_NOT_CONFIGURED` (`-32017`), `APPROVAL_NOT_FOUND` (`-32018`), `APPROVAL_ALREADY_ANSWERED` (`-32019`), `APPROVAL_STALE` (`-32020`), `APPROVAL_POLICY_CHANGED` (`-32021`) e `APPROVAL_OUT_OF_ORDER` (`-32022`). O núcleo passa a emitir a `:3`.
+
 - `queue.created:2` exige a política inicial completa. A `:1` continua legível.
 - `common.queue-policy:1` define os limites usados na criação da fila e em `queue.policy_changed:1`, que mantém o formato aceito.
 

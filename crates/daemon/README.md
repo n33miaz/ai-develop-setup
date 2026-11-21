@@ -126,7 +126,7 @@ política `[env]`; o daemon guarda só o resultado, sem as variáveis negadas.
 ## Comandos, limites e recuperação
 
 Os nomes, valores e significados dos erros emitidos pela API local estão no
-[contrato de códigos de erro](../../contracts/schemas/contract.local-api.error-code.v2.schema.json).
+[contrato de códigos de erro](../../contracts/schemas/contract.local-api.error-code.v3.schema.json).
 
 | Nome | Código na resposta |
 |---|---|
@@ -142,6 +142,12 @@ Os nomes, valores e significados dos erros emitidos pela API local estão no
 | `SESSION_SETUP_FAILED` | `-32014` |
 | `QUEUE_NOT_CONFIGURED` | `-32015` |
 | `QUEUE_ALREADY_ENABLED` | `-32016` |
+| `APPROVAL_NOT_CONFIGURED` | `-32017` |
+| `APPROVAL_NOT_FOUND` | `-32018` |
+| `APPROVAL_ALREADY_ANSWERED` | `-32019` |
+| `APPROVAL_STALE` | `-32020` |
+| `APPROVAL_POLICY_CHANGED` | `-32021` |
+| `APPROVAL_OUT_OF_ORDER` | `-32022` |
 
 `api::Launcher::prepare` recebe os parâmetros gerados de `session.open` (ferramenta,
 apelido de pasta, identificador e tamanho) e devolve `OpenParams` do ptyhost.
@@ -168,7 +174,7 @@ Como só lê, não passa pela cache de idempotência: repetir a chave devolve a
 lista de novo, nunca `replayed`. `api::Launcher::catalog` fornece a lista; o
 padrão é vazio, como em `DisabledLauncher`. Essa resposta exige a
 `local-api.server-message:2`; quem não envia `harness.list` nem `queue.get`
-continua recebendo só mensagens da `:1`. O daemon escreve a `:3`. Um daemon anterior ao comando o recusa
+continua recebendo só mensagens da `:1`. O daemon escreve a `:4`, que acrescenta a resposta de `approval.list`. Um daemon anterior ao comando o recusa
 com `METHOD_NOT_FOUND`, e a interface mostra que o daemon precisa ser atualizado.
 
 ## Fila de tarefas
@@ -224,6 +230,53 @@ autenticidade deles (ver o README do núcleo). A transição usa
 `LocalApi::with_queue` entrega a fila à API. O executável ainda não abre o log
 ancorado, porque falta o provedor de chaves do cofre; até lá ele serve
 `queue::DisabledQueue`, que recusa os três comandos com `QUEUE_NOT_CONFIGURED`.
+
+## Aprovações do portão
+
+O dono vê e responde as ações que o portão segurou para aprovação. Valem as
+conferências dos outros comandos: só depois de `auth.hello`, e origem remota
+recebe `REMOTE_ORIGIN_REFUSED`. O dono e o aparelho vêm do daemon
+(`approvals::ApprovalOwner`), nunca do pedido, e cada chamada a
+`approvals::ApprovalControl` exige a prova `auth::LocalSession`.
+
+- `approval.list` (só `_meta`) responde `{"approvals": [...]}`
+  ([`command.approval.list.response:1`](../../contracts/README.md#api-local)):
+  da mais antiga à mais nova, cada ação cuja aprovação foi pedida e ainda não
+  foi concedida, negada nem expirada, com `approval_id`, `risk`, `summary`,
+  `requested_at`, `expires_at` e o registro do plano (`record.action-plan:2`)
+  como o portão o julgou: alvos, destino, quarentena, estimativa e regras. Só
+  ações de uma pasta de sessão servida aqui; no máximo `read_page_limit` da
+  configuração do armazenamento por pedido. Só lê e fica fora da cache de
+  idempotência.
+- `approval.answer` leva `action_id`, `approval_id`, `plan_hash` (o que o dono
+  viu) e `decision` (`approve` ou `deny`). Antes de gravar qualquer coisa, o
+  daemon confere que a ação existe (`APPROVAL_NOT_FOUND`), ainda aguarda
+  resposta (`APPROVAL_ALREADY_ANSWERED`) e tem essa aprovação, esse hash e, para
+  aprovar, validade em curso (`APPROVAL_STALE`); nessas recusas nada é gravado.
+  Depois grava `answer.recorded:1` no stream `answer/<approval_id>`: o aparelho
+  como ator, o dono, o `ts` do relógio do daemon, a decisão, o hash e o id do
+  comando em `cause`. Se essa gravação falhar, a resposta é `INTERNAL_ERROR` e o
+  portão não age. Só então o portão registra `approval.granted:2` ou
+  `approval.denied:2`, com o mesmo ator e `cause` apontando para o registro da
+  resposta.
+- Aprovar reconfere a política atual e a ordem no tempo. Política ou tolerância
+  do relógio mudada desde o plano vira negação registrada pelo portão
+  (`E_POLICY_CHANGED` ou `E_CLOCK_POLICY_CHANGED`) e a resposta
+  `APPROVAL_POLICY_CHANGED`. Relógio antes do último passo da ação devolve
+  `APPROVAL_OUT_OF_ORDER` sem decisão; a resposta do dono já ficou gravada e
+  pode ser repetida. Aprovar não executa nada: a licença de execução só sai em
+  `SessionGate::execute`, que confere política e tempo de novo.
+- A repetição da mesma chave de idempotência devolve `replayed: true` sem
+  responder de novo.
+
+`approvals::ApprovalDesk` guarda o log ancorado (`audit::ProductLog`) e as
+portas de sessão (`gate::SessionGate`) ligadas a ele; planejar, pedir aprovação
+e executar passam por `ApprovalDesk::with_gates`, sob a mesma trava das
+respostas. A lista vem de `EventLog::pending_approvals`, que confere a âncora e
+a cadeia antes de ler. `LocalApi::with_approvals` entrega o controle à API. O
+executável ainda não monta o portão, porque falta o provedor de chaves do
+cofre; até lá ele serve `approvals::DisabledApprovals`, que recusa os dois
+comandos com `APPROVAL_NOT_CONFIGURED`.
 
 Padrões em [defaults/daemon.toml](../../defaults/daemon.toml), aplicados ao iniciar:
 

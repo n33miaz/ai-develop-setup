@@ -421,7 +421,7 @@ where
 
 pub fn hooked(
     executor: Executor,
-    probe: impl FnMut(Moment, &ads_adapter_fs::Mutation) -> std::io::Result<()> + 'static,
+    probe: impl FnMut(Moment, &ads_adapter_fs::Mutation) -> std::io::Result<()> + Send + 'static,
 ) -> Executor {
     executor.with_probe(Box::new(Hook(probe)))
 }
@@ -491,5 +491,42 @@ pub fn folder_link(link: &Path, target: &Path) -> bool {
     #[cfg(not(windows))]
     {
         symlink(link, target)
+    }
+}
+
+/// `Cell` and `RefCell` for the state a probe shares with its test: a probe is `Send`, so the
+/// state sits behind a mutex. Same calls as the standard ones.
+pub mod shared {
+    use std::sync::{Mutex, MutexGuard};
+
+    pub struct Cell<T>(Mutex<T>);
+
+    impl<T: Copy> Cell<T> {
+        pub fn new(value: T) -> Self {
+            Self(Mutex::new(value))
+        }
+        pub fn get(&self) -> T {
+            *self.0.lock().unwrap()
+        }
+        pub fn set(&self, value: T) {
+            *self.0.lock().unwrap() = value;
+        }
+        pub fn replace(&self, value: T) -> T {
+            std::mem::replace(&mut *self.0.lock().unwrap(), value)
+        }
+    }
+
+    pub struct RefCell<T>(Mutex<T>);
+
+    impl<T> RefCell<T> {
+        pub fn new(value: T) -> Self {
+            Self(Mutex::new(value))
+        }
+        pub fn borrow(&self) -> MutexGuard<'_, T> {
+            self.0.lock().unwrap()
+        }
+        pub fn borrow_mut(&self) -> MutexGuard<'_, T> {
+            self.0.lock().unwrap()
+        }
     }
 }

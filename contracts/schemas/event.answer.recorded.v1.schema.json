@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:event:answer.recorded:1",
+  "title": "Resposta do dono registrada",
+  "description": "A resposta do dono a uma aprovação, gravada antes de o portão agir sobre ela: o aparelho (actor), o dono, o instante (ts), a decisão e o plano que o dono viu. Fica no stream answer/<approval_id>. A decisão do portão vem depois, em approval.granted:2 ou approval.denied:2, e pode ser uma negação mesmo quando o dono aprovou (política mudou).",
+  "allOf": [
+    {
+      "$ref": "urn:ads:event:envelope:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "type",
+        "stream",
+        "data",
+        "actor"
+      ],
+      "properties": {
+        "type": {
+          "const": "urn:ads:event:answer.recorded:1"
+        },
+        "stream": {
+          "type": "string",
+          "pattern": "^answer/"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "approval_id",
+            "action_id",
+            "plan_hash",
+            "decision",
+            "owner_id",
+            "via"
+          ],
+          "properties": {
+            "approval_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "action_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "plan_hash": {
+              "$ref": "urn:ads:common:sha256:1"
+            },
+            "decision": {
+              "enum": [
+                "approve",
+                "deny"
+              ]
+            },
+            "owner_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "via": {
+              "enum": [
+                "local_ui",
+                "tray",
+                "remote_device"
+              ]
+            }
+          }
+        },
+        "actor": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "kind": {
+              "const": "device"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+      "type": "urn:ads:event:answer.recorded:1",
+      "ts": "2030-01-02T03:05:00Z",
+      "stream": "answer/appr-03",
+      "seq": 1,
+      "actor": {
+        "kind": "device",
+        "id": "device-01"
+      },
+      "cause": "01ARZ3NDEKTSV4RRFFQ69G5FAD",
+      "data_class": "internal",
+      "data": {
+        "approval_id": "appr-03",
+        "action_id": "act-03",
+        "plan_hash": "sha256:5486cc58827bffeb2204a994db3d77fe6c8f2c863eb73de6e2a60802784293cb",
+        "decision": "approve",
+        "owner_id": "owner-01",
+        "via": "local_ui"
+      }
+    }
+  ]
+}
