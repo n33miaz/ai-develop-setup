@@ -6,7 +6,7 @@ Codinome de uma plataforma local para delegar trabalho de desenvolvimento a agen
 
 ## Estado
 
-Em construção, sem versão estável: quando o CI de uma junção na `develop` termina verde, sai um pré-lançamento de desenvolvimento ([ADR 0025](docs/adr/0025-semver-dev-prereleases-until-first-installer.md)). Já existem os contratos e os tipos gerados deles, o portão de ações destrutivas, o executor de arquivos, o host de terminais com o cliente dele no daemon, a abertura do banco local com a cifra por coluna, a API local autenticada servida pelo daemon e a interface com o cliente dela; o estado de cada módulo está em [docs/modules.md](docs/modules.md) e os riscos conhecidos em [docs/risks.md](docs/risks.md).
+Em construção, sem versão estável: quando o CI de uma junção na `develop` termina verde, sai um pré-lançamento de desenvolvimento ([ADR 0025](docs/adr/0025-semver-dev-prereleases-until-first-installer.md)). Já existem os contratos e os tipos gerados deles, o portão de ações destrutivas, o executor de arquivos, o host de terminais com o cliente dele no daemon, a abertura do banco local com a cifra por coluna, a API local autenticada servida pelo daemon, a interface com o cliente dela, a casca desktop no Windows conectada ao daemon e o lançador que supervisiona daemon, host e casca. Na biblioteca do daemon, o log de auditoria ancorado no cofre do Windows guarda o diário do portão e o stream da fila; o executável ainda não abre esse log. O estado de cada módulo está em [docs/modules.md](docs/modules.md) e os riscos conhecidos em [docs/risks.md](docs/risks.md).
 
 ## Pré-requisitos
 
