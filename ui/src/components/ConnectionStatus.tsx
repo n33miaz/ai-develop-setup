@@ -6,14 +6,16 @@ const LABEL: Record<ConnectionState, MessageKey> = {
   disconnected: 'connection.disconnected',
   connecting: 'connection.connecting',
   connected: 'connection.connected',
-  incompatible: 'connection.incompatibleDesktop',
+  proof_missing: 'connection.proofMissing',
   relaunch_required: 'connection.relaunchDesktop',
+  retry_exhausted: 'connection.retryExhausted',
 }
 
 /** Estado da conexão com o núcleo. A forma do ponto muda com o estado, para não depender só de cor. */
 export function ConnectionStatus({ state }: { state: ConnectionState }) {
   const t = useT()
-  const actionable = state === 'incompatible' || state === 'relaunch_required'
+  const actionable =
+    state === 'proof_missing' || state === 'relaunch_required' || state === 'retry_exhausted'
   const label = `${t('connection.label')}: ${t(LABEL[state])}`
   return (
     <p

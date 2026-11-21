@@ -71,8 +71,9 @@ do dispositivo. Isso também suspende brevemente a digitação durante essa aná
 após ela, a entrada normal e as respostas a consultas novas passam. Não se usa um
 temporizador para presumir que o replay acabou.
 
-Queda, recusa da autenticação ou falha de protocolo deixam a interface desconectada
-e rejeitam pedidos pendentes. Não há reconexão automática: reabra a URL da execução.
+No navegador, queda, recusa da autenticação ou falha de protocolo deixam a
+interface desconectada e rejeitam pedidos pendentes. Reabra a URL da execução
+para conectar de novo.
 Para voltar aos exemplos, limpe `ads.local-api` do armazenamento da aba e recarregue
 sem fragmento. O cliente não registra token nem saída do terminal em logs.
 
@@ -83,10 +84,15 @@ Replay desde zero aceita o início do histórico ainda retido; depois disso,
 uma lacuna na sequência encerra a conexão. Eventos repetidos são ignorados.
 
 Na casca Tauri, o cliente envia comandos e recebe mensagens por IPC com o
-processo Rust, que autentica no daemon. A credencial fica no Rust. O service
-worker fica desativado nessa janela. O bundle é o mesmo da interface web.
-Ali também não há reconexão automática depois de conectada: no lugar de reabrir
-a URL, recarregue a interface ou siga a [casca](../crates/shell/README.md).
+processo Rust, que autentica no daemon. A credencial fica no Rust. Após uma
+queda, a janela volta a conectar automaticamente e a casca verifica a prova
+de identidade do daemon antes de enviar o token ou encaminhar comandos. Se
+a prova estiver ausente ou incorreta, as tentativas param e a janela orienta
+a reabrir pelo lançador. A janela também indica quando o limite de tentativas
+é atingido. Pedidos pendentes falham quando a conexão cai. O que for
+digitado durante a queda é descartado e precisa ser digitado novamente
+depois que o terminal voltar a aceitar entrada. O service worker fica
+desativado nessa janela. O bundle é o mesmo da interface web.
 
 ## Uso e contas
 
@@ -115,9 +121,16 @@ Ao receber o aviso de atualização, recarregue a página. O acesso remoto ao
 núcleo ainda não existe. No celular, uma interface servida por HTTPS pode
 ser instalada e aberta no modo de exemplo.
 
-Na compilação da interface de desktop, `VITE_DESKTOP_RETRY_INITIAL_MS` (250)
-e `VITE_DESKTOP_RETRY_MAX_MS` (5000) configuram a espera inicial e máxima
-entre as tentativas de abrir a conexão após falhas transitórias. Elas não
-valem para uma queda depois de conectada. Use inteiros positivos de
-até 2147483647 ms. Valores inválidos usam o padrão e a espera inicial respeita
-o teto.
+Na compilação da interface de desktop, ajuste estas variáveis de ambiente
+para configurar as próximas tentativas.
+
+- `VITE_DESKTOP_RETRY_INITIAL_MS` (250) e `VITE_DESKTOP_RETRY_MAX_MS` (5000)
+  definem a espera inicial e máxima. A espera dobra a cada nova tentativa,
+  inclusive após quedas sucessivas ou falhas de protocolo.
+- `VITE_DESKTOP_RETRY_STABLE_MS` (10000) define por quanto tempo uma conexão
+  deve ficar aberta para restaurar a espera inicial e o limite de tentativas.
+- `VITE_DESKTOP_RETRY_MAX_ATTEMPTS` (12) limita as tentativas após a abertura
+  inicial, incluindo falhas genéricas durante a reconexão.
+
+Use inteiros positivos e limite os tempos a 2147483647 ms. Valores inválidos
+usam o padrão e a espera inicial respeita o teto.

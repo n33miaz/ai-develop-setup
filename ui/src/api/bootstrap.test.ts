@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { replaySettings, selectCoreClient, selectDesktopClient } from './bootstrap'
+import { newCommand } from './command'
 import { createFakeCoreClient } from './fake'
 
 beforeEach(() => {
@@ -102,7 +103,7 @@ describe('desktop client selection', () => {
   })
 
   it.each([
-    ['desktop protocol incompatible', 'incompatible'],
+    ['desktop identity proof missing', 'proof_missing'],
     ['desktop relaunch required', 'relaunch_required'],
   ])('reports %s as %s', async (reason, state) => {
     const invoke = vi.fn(() => Promise.resolve()).mockRejectedValueOnce(reason)
@@ -112,10 +113,117 @@ describe('desktop client selection', () => {
     expect(client.getState()).toBe(state)
   })
 
-  it('uses scoped IPC for commands and reconnects without exchanging credentials', async () => {
-    let frames: Channel
+  it.each([{ kind: 'closed' }, { kind: 'message', text: '{' }] satisfies Frame[])(
+    'backs off across short-lived connections that end with $kind',
+    async (frame) => {
+      vi.useFakeTimers()
+      let channel: Channel | undefined
+      const connect = vi.fn()
+      const invoke = (command: string, args: Record<string, unknown>) => {
+        if (command === 'desktop_connect') {
+          connect()
+          channel = args.frames as Channel
+        }
+        return Promise.resolve()
+      }
+      const { client } = selectDesktopClient({ core: { invoke, Channel } }, {}, 250, 1000, 2000)
+      try {
+        await client.connect()
+        for (const [index, delay] of [250, 500, 1000, 1000].entries()) {
+          channel?.onmessage(frame)
+          await vi.advanceTimersByTimeAsync(delay - 1)
+          expect(connect).toHaveBeenCalledTimes(index + 1)
+          await vi.advanceTimersByTimeAsync(1)
+          expect(connect).toHaveBeenCalledTimes(index + 2)
+          expect(client.getState()).toBe('connected')
+        }
+        await vi.advanceTimersByTimeAsync(2000)
+        channel?.onmessage(frame)
+        await vi.advanceTimersByTimeAsync(250)
+        expect(connect).toHaveBeenCalledTimes(6)
+      } finally {
+        client.disconnect()
+        vi.useRealTimers()
+      }
+    },
+  )
+
+  it.each(['desktop connection unavailable', 'desktop connection retry'])(
+    'retries %s after a drop until the attempt limit',
+    async (reason) => {
+      vi.useFakeTimers()
+      let channel: Channel | undefined
+      const connect = vi
+        .fn<() => Promise<void>>()
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValue(reason)
+      const invoke = (command: string, args: Record<string, unknown>) => {
+        if (command !== 'desktop_connect') return Promise.resolve()
+        channel = args.frames as Channel
+        return connect()
+      }
+      const { client } = selectDesktopClient({ core: { invoke, Channel } }, {}, 25, 50, 2000, 2)
+      try {
+        await client.connect()
+        channel?.onmessage({ kind: 'closed' })
+        await vi.advanceTimersByTimeAsync(74)
+        expect(connect).toHaveBeenCalledTimes(2)
+        expect(client.getState()).toBe('connecting')
+        await vi.advanceTimersByTimeAsync(1)
+        expect(client.getState()).toBe('retry_exhausted')
+        await vi.advanceTimersByTimeAsync(1000)
+        expect(connect).toHaveBeenCalledTimes(3)
+      } finally {
+        client.disconnect()
+        vi.useRealTimers()
+      }
+    },
+  )
+
+  it('stops reconnecting when the replacement daemon fails the identity check', async () => {
+    vi.useFakeTimers()
+    let channel: Channel | undefined
+    const connect = vi
+      .fn<() => Promise<void>>()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValue('desktop relaunch required')
     const invoke = vi.fn((command: string, args: Record<string, unknown>) => {
-      if (command === 'desktop_connect') frames = args.frames as Channel
+      if (command !== 'desktop_connect') return Promise.resolve()
+      channel ??= args.frames as Channel
+      return connect()
+    })
+    const { client } = selectDesktopClient({ core: { invoke, Channel } }, {}, 25, 50)
+    try {
+      await client.connect()
+      channel?.onmessage({ kind: 'closed' })
+      await expect(
+        client.send(newCommand('session.write', { session_id: 'session-a', data: 'YQ==' })),
+      ).rejects.toMatchObject({ code: 'not_connected' })
+      await vi.advanceTimersByTimeAsync(500)
+      expect(client.getState()).toBe('relaunch_required')
+      expect(client.getGeneration()).toBe(1)
+      expect(invoke.mock.calls.map(([command]) => command)).toEqual([
+        'desktop_connect',
+        'desktop_disconnect',
+        'desktop_connect',
+        'desktop_disconnect',
+      ])
+    } finally {
+      client.disconnect()
+      vi.useRealTimers()
+    }
+  })
+
+  it('uses scoped IPC for commands and reconnects without exchanging credentials', async () => {
+    vi.useFakeTimers()
+    let frames: Channel
+    let available = true
+    const retry = vi.fn<() => Promise<void>>().mockRejectedValue('desktop connection retry')
+    const invoke = vi.fn((command: string, args: Record<string, unknown>) => {
+      if (command === 'desktop_connect') {
+        if (!available) return retry()
+        frames = args.frames as Channel
+      }
       if (command === 'desktop_send') {
         const request = JSON.parse(String(args.text)) as { id: string; method: string }
         expect(request.method).toBe('harness.list')
@@ -131,21 +239,48 @@ describe('desktop client selection', () => {
       return Promise.resolve()
     })
     window.history.replaceState(null, '', '/#untouched')
-    const { client } = selectDesktopClient({ core: { invoke, Channel } }, {})
-    await client.connect()
-    const first = invoke.mock.calls[0]?.[1]
-    expect(Object.keys(first ?? {}).sort()).toEqual(['frames', 'id'])
-    await expect(client.listHarnesses()).resolves.toEqual({ harnesses: [], workdir_aliases: [] })
+    const { client } = selectDesktopClient({ core: { invoke, Channel } }, {}, 25, 50)
+    try {
+      await client.connect()
+      const first = invoke.mock.calls[0]?.[1]
+      expect(Object.keys(first ?? {}).sort()).toEqual(['frames', 'id'])
+      await expect(client.listHarnesses()).resolves.toEqual({ harnesses: [], workdir_aliases: [] })
 
-    const firstChannel = first?.frames as Channel
-    firstChannel.onmessage({ kind: 'closed' })
-    expect(client.getState()).toBe('disconnected')
-    await client.connect()
-    expect(client.getGeneration()).toBe(2)
-    expect(window.location.hash).toBe('#untouched')
-    expect(window.sessionStorage.length).toBe(0)
-    expect(window.localStorage.getItem('ads.local-api')).toBeNull()
-    client.disconnect()
+      const firstChannel = first?.frames as Channel
+      available = false
+      firstChannel.onmessage({ kind: 'closed' })
+      await expect(
+        client.send(newCommand('session.write', { session_id: 'session-a', data: 'YQ==' })),
+      ).rejects.toMatchObject({ code: 'not_connected' })
+      expect(client.getState()).toBe('connecting')
+      await vi.advanceTimersByTimeAsync(24)
+      expect(invoke.mock.calls.filter(([command]) => command === 'desktop_connect')).toHaveLength(1)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(invoke.mock.calls.filter(([command]) => command === 'desktop_connect')).toHaveLength(2)
+      expect(client.getGeneration()).toBe(1)
+      available = true
+      await vi.advanceTimersByTimeAsync(49)
+      expect(invoke.mock.calls.filter(([command]) => command === 'desktop_connect')).toHaveLength(2)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(invoke.mock.calls.filter(([command]) => command === 'desktop_connect')).toHaveLength(3)
+      expect(client.getGeneration()).toBe(2)
+      expect(client.getState()).toBe('connected')
+      expect(invoke.mock.calls.filter(([command]) => command === 'desktop_send')).toHaveLength(1)
+      await expect(client.listHarnesses()).resolves.toEqual({ harnesses: [], workdir_aliases: [] })
+      expect(window.location.hash).toBe('#untouched')
+      expect(window.sessionStorage.length).toBe(0)
+      expect(window.localStorage.getItem('ads.local-api')).toBeNull()
+      const latest = invoke.mock.calls.filter(([command]) => command === 'desktop_connect').at(-1)
+      expect(latest?.[1].id).not.toBe(first?.id)
+      const latestChannel = latest?.[1].frames as Channel
+      latestChannel.onmessage({ kind: 'closed' })
+      client.disconnect()
+      await vi.advanceTimersByTimeAsync(500)
+      expect(invoke.mock.calls.filter(([command]) => command === 'desktop_connect')).toHaveLength(3)
+    } finally {
+      client.disconnect()
+      vi.useRealTimers()
+    }
   })
 })
 
