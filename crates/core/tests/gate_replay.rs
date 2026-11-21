@@ -717,3 +717,19 @@ fn generated_legacy_grant_cannot_enter_replay() {
     let _: ads_contracts::EventApprovalGrantedV1 = serde_json::from_value(json.clone()).unwrap();
     assert!(Event::from_json(json).is_err());
 }
+
+#[test]
+fn replay_refuses_a_request_before_the_plan() {
+    let (_, log) = approved_run("act-01", "appr-01", &approval_needed(&[BUILD]));
+    let log = rewritten(&log, 1, &|event| {
+        event["ts"] = "2030-01-02T03:04:04.999999Z".into()
+    });
+    assert_eq!(replay(&log[..2]), Err(ReplayError::OutOfOrder));
+}
+
+#[test]
+fn replay_refuses_success_before_start() {
+    let (_, log) = approved_run("act-01", "appr-01", &approval_needed(&[BUILD]));
+    let log = rewritten(&log, 4, &|event| event["ts"] = T0.into());
+    assert_eq!(replay(&log), Err(ReplayError::OutOfOrder));
+}

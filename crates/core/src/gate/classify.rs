@@ -153,6 +153,7 @@ pub struct Verdict {
     /// The operation as asked, which the quarantine rewrite replaces in `plan`.
     requested: Operation,
     quarantined: bool,
+    pub(super) clock_rewind_seconds: u64,
 }
 
 impl Verdict {
@@ -289,6 +290,7 @@ pub fn classify(plan: &ActionPlan, policy: &GatePolicy) -> Verdict {
         plan: rewrite.unwrap_or_else(|| plan.clone()),
         requested: plan.operation().clone(),
         quarantined,
+        clock_rewind_seconds: policy.clock_rewind_seconds(),
     }
 }
 

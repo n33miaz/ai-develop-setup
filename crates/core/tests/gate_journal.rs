@@ -117,3 +117,42 @@ fn recovery_checks_sequences_and_reapplies_policy() {
         Err(JournalError::Integrity)
     );
 }
+
+#[test]
+fn journal_rejects_retroactive_start_without_appending() {
+    let mut journal = planned_journal();
+    let policy = policy(POSIX_HOME, "clock_rewind_seconds = 5");
+    let action_id = id("action-1");
+    let mut start = meta("2030-01-02T03:03:59.999999Z", 2);
+    start.id = Ulid::new("01ARZ3NDEKTSV4RRFFQ69G5FAC").unwrap();
+
+    let mut gate = JournalGate::new(&policy, &mut journal);
+    assert_eq!(
+        gate.authorize(&action_id, start),
+        Err(JournalError::OutOfOrder)
+    );
+    assert_eq!(gate.inspect(&action_id).unwrap().state, State::Planned);
+    assert_eq!(journal.history.as_ref().unwrap().events.len(), 1);
+}
+
+#[test]
+fn journal_replays_with_configured_tolerance() {
+    let mut journal = planned_journal();
+    let tolerant = policy(POSIX_HOME, "clock_rewind_seconds = 5");
+    let strict = policy(POSIX_HOME, "");
+    let action_id = id("action-1");
+    let mut start = meta("2030-01-02T03:04:00Z", 2);
+    start.id = Ulid::new("01ARZ3NDEKTSV4RRFFQ69G5FAC").unwrap();
+
+    let mut gate = JournalGate::new(&tolerant, &mut journal);
+    gate.authorize(&action_id, start).unwrap();
+    assert_eq!(
+        gate.inspect(&action_id).unwrap().state,
+        State::Executing { approval_id: None }
+    );
+    assert_eq!(
+        JournalGate::new(&strict, &mut journal).inspect(&action_id),
+        Err(JournalError::OutOfOrder),
+    );
+    assert_eq!(journal.history.as_ref().unwrap().events.len(), 2);
+}

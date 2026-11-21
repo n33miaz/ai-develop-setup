@@ -29,7 +29,7 @@ pub use event::{
 pub use journal::{GateHistory, GateJournal, JournalError, JournalGate, StartedExecution};
 pub use machine::{
     Action, ActionSnapshot, Command, ExecutionPermit, Refused, ReplayError, State, TransitionError,
-    replay,
+    replay, replay_with_clock_rewind,
 };
 pub use path::{AbsPath, PathError, PathStyle, TargetPath};
 pub use plan::{

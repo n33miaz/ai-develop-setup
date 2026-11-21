@@ -24,6 +24,8 @@ use ads_contracts::{
     RecordTaskQueueV1Version,
 };
 
+use crate::timestamp::epoch_seconds;
+
 use CommonQueueTaskStateV1::{Cancelled, Done, Failed, Queued, Review, Running};
 use RecordTaskQueueV1State::{Enabled, Stopped};
 
@@ -894,22 +896,6 @@ fn instant(ts: &CommonTimestampV1) -> (&str, u32) {
     (seconds, micros)
 }
 
-/// Seconds since 1970-01-01T00:00:00Z, ignoring the fraction.
-fn epoch_seconds(ts: &CommonTimestampV1) -> Option<i64> {
-    let text = ts.as_str();
-    let number = |from: usize, to: usize| text.get(from..to)?.parse::<i64>().ok();
-    let (year, month, day) = (number(0, 4)?, number(5, 7)?, number(8, 10)?);
-    let (hour, minute, second) = (number(11, 13)?, number(14, 16)?, number(17, 19)?);
-    // Days from the civil date, counting years from March so that February is last.
-    let year = if month <= 2 { year - 1 } else { year };
-    let era = year.div_euclid(400);
-    let year_of_era = year - era * 400;
-    let day_of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
-    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
-    let days = era * 146_097 + day_of_era - 719_468;
-    Some(days * 86_400 + hour * 3_600 + minute * 60 + second)
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TaskOrigin<'a> {
     Manual(&'a CommonIdV1),
@@ -1239,7 +1225,10 @@ fn check_admission<'a>(
         return Err(Refusal::AttemptCeiling);
     }
     let manual = created.origin.is_manual();
-    let (Some(stamp), Some(clock)) = (epoch_seconds(created.ts), epoch_seconds(inputs.now)) else {
+    let (Some(stamp), Some(clock)) = (
+        epoch_seconds(created.ts.as_str()),
+        epoch_seconds(inputs.now.as_str()),
+    ) else {
         return Err(Refusal::UnreadableInstant);
     };
     let seconds = |value: u64| i64::try_from(value).unwrap_or(i64::MAX);
@@ -1255,7 +1244,7 @@ fn check_admission<'a>(
             return Err(Refusal::AnchorAfterCandidate);
         }
         Some(anchor) => {
-            let at = epoch_seconds(&anchor.at).ok_or(Refusal::UnreadableInstant)?;
+            let at = epoch_seconds(anchor.at.as_str()).ok_or(Refusal::UnreadableInstant)?;
             if at > latest_now {
                 return Err(Refusal::AnchorAheadOfClock);
             }
@@ -1287,7 +1276,7 @@ fn check_admission<'a>(
         }
         // The anchor moves only covered creations still ahead of the clock, so an old anchor
         // never takes an ordinary creation out of the window.
-        let then = epoch_seconds(prior.ts).map(|then| match anchor {
+        let then = epoch_seconds(prior.ts.as_str()).map(|then| match anchor {
             Some((through, at)) if prior.seq <= through && then > latest_now => then.min(at),
             _ => then,
         });

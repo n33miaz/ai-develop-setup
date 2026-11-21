@@ -64,6 +64,10 @@ posix_user_parents = ["/home", "/Users"]
 approval_item_limit = 500
 approval_byte_limit = 104857600
 
+# Recuo máximo entre eventos consecutivos da ação, em segundos.
+# Zero preserva a ordem estrita. Aumente só para acomodar ajustes do relógio.
+clock_rewind_seconds = 0
+
 # Quarentena por padrao: apagar e apagar recursivo viram "mover para a pasta de quarentena", e e esse
 # plano reescrito que recebe o hash, a aprovacao e a execucao. false: apaga de verdade.
 quarantine_enabled = true

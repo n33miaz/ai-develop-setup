@@ -9,9 +9,8 @@
 //! persists the events: append `action.started` atomically, refusing a second one for the same
 //! action, before handing the permit to an executor, and give each approval id to one action.
 //!
-//! Time comes from the caller. What is checked is the order inside one approval: asked, then
-//! granted or denied, then started, each not before the one it follows, and all of it inside
-//! the validity. A clock that can be trusted is the duty of the caller.
+//! Time comes from the caller. Consecutive events must follow timestamp order within
+//! the configured rewind tolerance. Approval validity is checked independently.
 
 use std::fmt;
 
@@ -30,13 +29,13 @@ pub enum State {
     Planned,
     AwaitingApproval {
         approval_id: Id,
-        /// The instant of `approval.requested`: no decision comes before it.
+        /// The instant of `approval.requested`: the recorded request time.
         requested_at: Timestamp,
         expires_at: Timestamp,
     },
     Approved {
         approval_id: Id,
-        /// The instant of `approval.granted`: the execution does not start before it.
+        /// The instant of `approval.granted`: the recorded grant time.
         granted_at: Timestamp,
         expires_at: Timestamp,
     },
@@ -122,7 +121,7 @@ pub enum TransitionError {
     ApprovalLapsed,
     /// Expiring an approval whose validity is not over.
     NotYetExpired,
-    /// A decision dated before its request, or a start dated before the grant.
+    /// The instant precedes the previous event by more than the configured tolerance.
     OutOfOrder,
     /// The event of the transition does not follow from the state. The checks of each command
     /// come first, so this is a defect of the machine, kept as an error instead of a panic.
@@ -179,7 +178,7 @@ pub enum ReplayError {
     ApprovalRequired,
     /// The instant of the event is on the wrong side of the validity of the approval.
     OutsideValidity,
-    /// A decision dated before its request, or `action.started` dated before the grant.
+    /// The instant precedes the previous event by more than the configured tolerance.
     OutOfOrder,
     /// A valid event this gate never writes: a planned action of high risk or asking for
     /// elevation, or an approval asked for a plan that needs none or with another risk.
@@ -274,6 +273,8 @@ pub struct Action {
     plan_hash: PlanHash,
     risk: Risk,
     needs_approval: bool,
+    last_at: Timestamp,
+    clock_rewind_seconds: u64,
     state: State,
 }
 
@@ -312,12 +313,13 @@ impl Action {
                 },
             )),
         };
-        let action = Action::begin(&event).map_err(TransitionError::Inconsistent)?;
+        let action = Action::begin(&event, verdict.clock_rewind_seconds)
+            .map_err(TransitionError::Inconsistent)?;
         Ok((action, event, record))
     }
 
     /// The action right after its first event.
-    fn begin(event: &Event) -> Result<Action, ReplayError> {
+    fn begin(event: &Event, clock_rewind_seconds: u64) -> Result<Action, ReplayError> {
         match event {
             Event::ActionPlanned(event) => {
                 let data = event.data();
@@ -338,6 +340,8 @@ impl Action {
                     plan_hash: data.plan_hash.clone(),
                     risk: data.risk,
                     needs_approval,
+                    last_at: event.ts().clone(),
+                    clock_rewind_seconds,
                     state: State::Planned,
                 })
             }
@@ -346,6 +350,8 @@ impl Action {
                 plan_hash: event.data().plan_hash.clone(),
                 risk: Risk::High,
                 needs_approval: false,
+                last_at: event.ts().clone(),
+                clock_rewind_seconds,
                 state: State::Denied,
             }),
             other => Err(ReplayError::UnexpectedEvent {
@@ -423,14 +429,6 @@ impl Action {
                 Err(ReplayError::OutsideValidity)
             }
         };
-        // The same instant is in order: only an earlier one is refused.
-        let not_before = |ts: &Timestamp, earlier: &Timestamp| {
-            if ts.is_before(earlier) {
-                Err(ReplayError::OutOfOrder)
-            } else {
-                Ok(())
-            }
-        };
 
         let state = match (&self.state, event) {
             (State::Planned, Event::ApprovalRequested(event)) => {
@@ -457,15 +455,14 @@ impl Action {
             (
                 State::AwaitingApproval {
                     approval_id,
-                    requested_at,
                     expires_at,
+                    ..
                 },
                 Event::ApprovalGranted(event),
             ) => {
                 same_action(&event.data().action_id)?;
                 same_approval(Some(&event.data().approval_id), Some(approval_id))?;
                 same_plan(&event.data().plan_hash)?;
-                not_before(event.ts(), requested_at)?;
                 within(event.ts(), expires_at, true)?;
                 State::Approved {
                     approval_id: approval_id.clone(),
@@ -473,18 +470,10 @@ impl Action {
                     expires_at: expires_at.clone(),
                 }
             }
-            (
-                State::AwaitingApproval {
-                    approval_id,
-                    requested_at,
-                    ..
-                },
-                Event::ApprovalDenied(event),
-            ) => {
+            (State::AwaitingApproval { approval_id, .. }, Event::ApprovalDenied(event)) => {
                 same_action(&event.data().action_id)?;
                 same_approval(Some(&event.data().approval_id), Some(approval_id))?;
                 same_plan(&event.data().plan_hash)?;
-                not_before(event.ts(), requested_at)?;
                 State::ApprovalDenied
             }
             // Never before the request: the validity ends after it.
@@ -518,8 +507,8 @@ impl Action {
             (
                 State::Approved {
                     approval_id,
-                    granted_at,
                     expires_at,
+                    ..
                 },
                 Event::ActionStarted(event),
             ) => {
@@ -527,7 +516,6 @@ impl Action {
                 same_action(&data.action_id)?;
                 same_plan(&data.plan_hash)?;
                 same_approval(data.approval_id.as_ref(), Some(approval_id))?;
-                not_before(event.ts(), granted_at)?;
                 within(event.ts(), expires_at, true)?;
                 State::Executing {
                     approval_id: Some(approval_id.clone()),
@@ -556,22 +544,33 @@ impl Action {
                 });
             }
         };
+        if event
+            .ts()
+            .precedes_by_more_than(&self.last_at, self.clock_rewind_seconds)
+        {
+            return Err(ReplayError::OutOfOrder);
+        }
         Ok(Action {
             action_id: self.action_id.clone(),
             plan_hash: self.plan_hash.clone(),
             risk: self.risk,
             needs_approval: self.needs_approval,
+            last_at: event.ts().clone(),
+            clock_rewind_seconds: self.clock_rewind_seconds,
             state,
         })
     }
 
     /// The transition of `event`, already checked by the command that built it.
     fn step(&self, event: Event) -> Result<(Action, Event), TransitionError> {
-        let action = self.after(&event).map_err(TransitionError::Inconsistent)?;
+        let action = self.after(&event).map_err(|error| match error {
+            ReplayError::OutOfOrder => TransitionError::OutOfOrder,
+            other => TransitionError::Inconsistent(other),
+        })?;
         Ok((action, event))
     }
 
-    /// The instants of the pending approval (asked at, valid until), after checking that the
+    /// The expiry of the pending approval, after checking that the
     /// command names it, this action and this plan.
     fn pending(
         &self,
@@ -579,11 +578,11 @@ impl Action {
         action_id: &Id,
         approval_id: &Id,
         plan_hash: &PlanHash,
-    ) -> Result<(&Timestamp, &Timestamp), TransitionError> {
+    ) -> Result<&Timestamp, TransitionError> {
         let State::AwaitingApproval {
             approval_id: pending,
-            requested_at,
             expires_at,
+            ..
         } = &self.state
         else {
             return Err(self.invalid(command));
@@ -597,7 +596,7 @@ impl Action {
         if approval_id != pending {
             return Err(TransitionError::ApprovalMismatch);
         }
-        Ok((requested_at, expires_at))
+        Ok(expires_at)
     }
 
     /// Hands out the permit to execute `plan` at the instant `meta.ts`, moves to `Executing`
@@ -631,12 +630,9 @@ impl Action {
             }
             State::Approved {
                 approval_id,
-                granted_at,
                 expires_at,
+                ..
             } => {
-                if meta.ts.is_before(granted_at) {
-                    return Err(TransitionError::OutOfOrder);
-                }
                 if !meta.ts.is_before(expires_at) {
                     return Err(TransitionError::ApprovalLapsed);
                 }
@@ -713,11 +709,7 @@ impl Action {
                 plan_hash,
                 via,
             } => {
-                let (requested_at, expires_at) =
-                    self.pending("grant", &action_id, &approval_id, &plan_hash)?;
-                if meta.ts.is_before(requested_at) {
-                    return Err(TransitionError::OutOfOrder);
-                }
+                let expires_at = self.pending("grant", &action_id, &approval_id, &plan_hash)?;
                 if !meta.ts.is_before(expires_at) {
                     return Err(TransitionError::ApprovalLapsed);
                 }
@@ -735,11 +727,7 @@ impl Action {
                 plan_hash,
                 reason,
             } => {
-                let (requested_at, _) =
-                    self.pending("deny", &action_id, &approval_id, &plan_hash)?;
-                if meta.ts.is_before(requested_at) {
-                    return Err(TransitionError::OutOfOrder);
-                }
+                self.pending("deny", &action_id, &approval_id, &plan_hash)?;
                 let data = ApprovalDenied {
                     approval_id,
                     action_id,
@@ -753,8 +741,7 @@ impl Action {
                 approval_id,
                 plan_hash,
             } => {
-                let (_, expires_at) =
-                    self.pending("expire", &action_id, &approval_id, &plan_hash)?;
+                let expires_at = self.pending("expire", &action_id, &approval_id, &plan_hash)?;
                 if meta.ts.is_before(expires_at) {
                     return Err(TransitionError::NotYetExpired);
                 }
@@ -808,11 +795,19 @@ impl Action {
 /// the `action.*` events of `action/<id>` and the `approval.*` events of the approval that
 /// `approval.requested` ties to it. Refuses whatever the machine would not have written: an
 /// empty log, a jump, an event after a final state, another action, plan hash or approval, a
-/// decision of an approval taken for another action, and a decision dated before its request
-/// or a start dated before the grant.
+/// decision of an approval taken for another action, or a timestamp outside the default
+/// rewind tolerance.
 pub fn replay(events: &[Event]) -> Result<ActionSnapshot, ReplayError> {
+    replay_with_clock_rewind(events, super::policy::default_clock_rewind_seconds())
+}
+
+/// Rebuilds an action using the same rewind tolerance as its producer.
+pub fn replay_with_clock_rewind(
+    events: &[Event],
+    clock_rewind_seconds: u64,
+) -> Result<ActionSnapshot, ReplayError> {
     let (first, rest) = events.split_first().ok_or(ReplayError::EmptyLog)?;
-    let mut action = Action::begin(first)?;
+    let mut action = Action::begin(first, clock_rewind_seconds)?;
     for event in rest {
         action = action.after(event)?;
     }
