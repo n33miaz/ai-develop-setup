@@ -126,7 +126,7 @@ política `[env]`; o daemon guarda só o resultado, sem as variáveis negadas.
 ## Comandos, limites e recuperação
 
 Os nomes, valores e significados dos erros emitidos pela API local estão no
-[contrato de códigos de erro](../../contracts/schemas/contract.local-api.error-code.v4.schema.json).
+[contrato de códigos de erro](../../contracts/schemas/contract.local-api.error-code.v5.schema.json).
 
 | Nome | Código na resposta |
 |---|---|
@@ -150,6 +150,7 @@ Os nomes, valores e significados dos erros emitidos pela API local estão no
 | `APPROVAL_POLICY_CHANGED` | `-32021` |
 | `APPROVAL_OUT_OF_ORDER` | `-32022` |
 | `APPROVAL_NOT_APPROVABLE` | `-32023` |
+| `APPROVAL_READABLE` | `-32025` |
 
 `api::Launcher::prepare` recebe os parâmetros gerados de `session.open` (ferramenta,
 apelido de pasta, identificador e tamanho) e devolve `OpenParams` do ptyhost.
@@ -305,7 +306,7 @@ recebe `REMOTE_ORIGIN_REFUSED`. O dono e o aparelho vêm do daemon
   ao procurar mais um pedido listável após atingir o limite de itens. O daemon
   omite pedidos cujo histórico é ilegível, registra o `action_id` no log e
   segue a listagem. O portão precisa de um histórico legível para negar ou
-  expirar um pedido. Pedido ou decisão gravados fora do formato do
+  expirar um pedido; um pedido ilegível sai por `approval.close` (abaixo). Pedido ou decisão gravados fora do formato do
   portão são ignorados. Só lê e fica fora da cache de idempotência.
 - O que o registro do plano garante: a operação, os alvos como foram pedidos
   (caminho e curinga), o destino, se há quarentena, a estimativa e as regras.
@@ -377,6 +378,24 @@ recebe `REMOTE_ORIGIN_REFUSED`. O dono e o aparelho vêm do daemon
   pode ser repetida com a mesma chave. Aprovar não executa nada: a licença de
   execução só sai em `SessionGate::execute`, que confere política e tempo de
   novo.
+- `approval.close` leva `action_id` (o que o log registrou) e `decision`
+  (`deny` ou `expire`; nunca aprova). É a recuperação de um pedido que a lista
+  omite: sob a trava da mesa, `EventLog::closable_requests` diz se a ação tem
+  pedido do portão (senão `APPROVAL_NOT_FOUND`), se o histórico é legível
+  (`APPROVAL_READABLE`: continua só por `approval.answer`) e quais pedidos
+  seguem sem decisão (nenhum: `APPROVAL_ALREADY_ANSWERED`), até 64, cada um com
+  o `plan_hash` lido da própria linha. Nada é gravado nessas recusas. Depois o
+  daemon grava `closure.recorded:1` em `closure/<action_id>` (aparelho do dono,
+  dono, decisão, pedidos e chave de idempotência, `cause` no id do comando) e,
+  para cada pedido, `approval.denied:2` (motivo `E_HISTORY_UNREADABLE`) ou
+  `approval.expired:2` com `cause` nesse registro, por
+  `EventLog::close_unreadable_request`. Essa escrita confere de novo, na mesma
+  transação, que o histórico segue ilegível, que o pedido é da ação, está aberto
+  e tem aquele hash, e que o tipo é negação ou expiração; nunca grava
+  `approval.granted` e o histórico continua sem ler, então nenhuma licença sai
+  dele. A mesma chave com a mesma decisão não grava outro registro: fecha só o
+  que o registro nomeou e ficou aberto e volta `replayed: true`; com outra
+  decisão, `CONFLICT`.
 - Repetições: a cache em memória (`idempotency_keys` comandos aceitos) devolve
   `replayed: true` sem chamar o portão. Fora dela, a chave fica no log, junto da
   resposta, enquanto o log existir: a mesma chave com o mesmo conteúdo nunca

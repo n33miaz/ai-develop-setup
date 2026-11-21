@@ -1,0 +1,22 @@
+{
+  "01-approve.json": {
+    "rule": "O fechamento só nega ou expira; nunca aprova.",
+    "keyword": "enum",
+    "instancePath": "/data/decision"
+  },
+  "02-no-approval.json": {
+    "rule": "O registro nomeia pelo menos um pedido fechado.",
+    "keyword": "minItems",
+    "instancePath": "/data/approval_ids"
+  },
+  "03-daemon-actor.json": {
+    "rule": "Quem fecha é um aparelho do dono.",
+    "keyword": "const",
+    "instancePath": "/actor/kind"
+  },
+  "04-repeated-approval.json": {
+    "rule": "Cada pedido aparece uma vez.",
+    "keyword": "uniqueItems",
+    "instancePath": "/data/approval_ids"
+  }
+}

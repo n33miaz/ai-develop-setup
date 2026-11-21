@@ -2928,4 +2928,176 @@ mod gate_journal {
         .unwrap();
         assert_eq!(visits, 1);
     }
+
+    /// An action whose history holds more requests than a history does: four extra approvals
+    /// beside its own, none decided.
+    fn broken(log: &mut EventLog, name: &str, serial: u64) -> Id {
+        let action_id = ask(log, name, serial);
+        let requested = log.load(&action_id).unwrap().events[1].to_json();
+        for extra in 0..4u64 {
+            let approval = format!("approval-{name}-extra-{extra}");
+            let mut json = requested.clone();
+            json["id"] = serde_json::json!(format!("01J{:023}", serial + 50 + extra));
+            json["stream"] = serde_json::json!(format!("approval/{approval}"));
+            json["data"]["approval_id"] = serde_json::json!(approval);
+            let event = Event::from_json(json).unwrap();
+            GateJournal::append(log, &action_id, 2 + extra as usize, &event).unwrap();
+        }
+        action_id
+    }
+
+    /// The denial `approval.close` writes for `request` of `action_id`.
+    fn closing(
+        kind: &str,
+        action_id: &Id,
+        request: &crate::OpenRequest,
+        serial: u64,
+    ) -> EventEnvelopeV1 {
+        let mut data = serde_json::json!({
+            "approval_id": request.approval_id,
+            "action_id": action_id.as_str(),
+            "plan_hash": request.plan_hash,
+        });
+        if kind.contains("denied") {
+            data["reason"] = serde_json::json!("E_HISTORY_UNREADABLE");
+        }
+        gate_event(
+            kind,
+            &format!("approval/{}", request.approval_id),
+            request.next_seq,
+            serial,
+            data,
+        )
+    }
+
+    fn unreadable(log: &EventLog) -> Vec<String> {
+        let mut seen = Vec::new();
+        log.visit_pending_approvals(10, &mut |entry, _, _| {
+            if let crate::Pending::Unreadable(id) = entry {
+                seen.push(id);
+            }
+            crate::Visit::Skip
+        })
+        .unwrap();
+        seen
+    }
+
+    fn open_requests(log: &EventLog, action_id: &Id) -> Vec<crate::OpenRequest> {
+        match log.closable_requests(action_id, 100).unwrap() {
+            crate::Closable::Requests(open) => open,
+            other => panic!("unreadable history expected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn closing_every_open_request_takes_an_unreadable_history_out_of_the_pending() {
+        let path = fixture();
+        let anchor = MemoryAnchor::default();
+        let mut log = anchored(&path, &anchor).unwrap();
+        let action = broken(&mut log, "broken", 10);
+        let waiting = ask(&mut log, "waiting", 100);
+        assert_eq!(unreadable(&log), ["broken"]);
+        let open = open_requests(&log, &action);
+        assert_eq!(open.len(), 5);
+        let plan_hash = log.load(&waiting).unwrap().plan.fields().plan_hash.clone();
+        assert!(
+            open.iter()
+                .all(|request| request.plan_hash == plan_hash.as_str())
+        );
+
+        let kinds = [
+            "urn:ads:event:approval.denied:2",
+            "urn:ads:event:approval.expired:2",
+        ];
+        for (index, request) in open.iter().enumerate() {
+            let kind = kinds[index % 2];
+            log.close_unreadable_request(
+                &action,
+                &closing(kind, &action, request, 200 + index as u64),
+            )
+            .unwrap();
+        }
+        assert!(unreadable(&log).is_empty());
+        assert_eq!(pending_ids(&log), [waiting]);
+        assert_eq!(
+            log.closable_requests(&action, 100).unwrap(),
+            crate::Closable::Requests(Vec::new())
+        );
+        // A request closed once is not closed again.
+        assert_eq!(
+            log.close_unreadable_request(&action, &closing(kinds[0], &action, &open[0], 300)),
+            Err(StorageError::Conflict)
+        );
+        assert_eq!(anchored(&path, &anchor).unwrap().verify_chain(), Ok(13));
+    }
+
+    #[test]
+    fn a_readable_history_is_never_closed_and_nothing_is_written() {
+        let path = fixture();
+        let anchor = MemoryAnchor::default();
+        let mut log = anchored(&path, &anchor).unwrap();
+        let waiting = ask(&mut log, "waiting", 10);
+        assert_eq!(
+            log.closable_requests(&waiting, 100).unwrap(),
+            crate::Closable::Readable
+        );
+        let history = log.load(&waiting).unwrap();
+        let request = crate::OpenRequest {
+            approval_id: "approval-waiting".into(),
+            plan_hash: history.plan.fields().plan_hash.as_str().to_owned(),
+            next_seq: 2,
+        };
+        assert_eq!(
+            log.close_unreadable_request(
+                &waiting,
+                &closing("urn:ads:event:approval.denied:2", &waiting, &request, 30)
+            ),
+            Err(StorageError::Conflict)
+        );
+        assert_eq!(log.verify_chain(), Ok(2));
+        assert_eq!(pending_ids(&log), [waiting]);
+        assert_eq!(
+            log.closable_requests(&Id::new("unknown").unwrap(), 100)
+                .unwrap(),
+            crate::Closable::Missing
+        );
+    }
+
+    #[test]
+    fn closing_never_grants_and_never_names_another_request() {
+        let path = fixture();
+        let anchor = MemoryAnchor::default();
+        let mut log = anchored(&path, &anchor).unwrap();
+        let action = broken(&mut log, "broken", 10);
+        let other = broken(&mut log, "other", 100);
+        let open = open_requests(&log, &action);
+        let mut grant = closing("urn:ads:event:approval.granted:2", &action, &open[0], 300);
+        grant
+            .data
+            .insert("via".into(), serde_json::json!("local_ui"));
+        assert_eq!(
+            log.close_unreadable_request(&action, &grant),
+            Err(StorageError::InvalidEvent)
+        );
+        // A request of another action, under this one's id.
+        let foreign = &open_requests(&log, &other)[0];
+        assert_eq!(
+            log.close_unreadable_request(
+                &action,
+                &closing("urn:ads:event:approval.denied:2", &other, foreign, 301)
+            ),
+            Err(StorageError::InvalidEvent)
+        );
+        let mut wrong_hash = closing("urn:ads:event:approval.denied:2", &action, &open[0], 302);
+        wrong_hash.data.insert(
+            "plan_hash".into(),
+            serde_json::json!(format!("sha256:{}", "0".repeat(64))),
+        );
+        assert_eq!(
+            log.close_unreadable_request(&action, &wrong_hash),
+            Err(StorageError::InvalidEvent)
+        );
+        assert_eq!(log.verify_chain(), Ok(12));
+        assert_eq!(unreadable(&log), ["broken", "other"]);
+    }
 }

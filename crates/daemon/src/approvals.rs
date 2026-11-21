@@ -1,11 +1,13 @@
 //! Owner answers to the action gate for the local API: the approvals the session gates wait
-//! for, and each answer recorded in the anchored audit log before the gate acts on it.
+//! for, and each answer recorded in the anchored audit log before the gate acts on it. A
+//! request whose history does not read is closed by the owner, never granted.
 
 use std::num::NonZeroU64;
 use std::sync::{Mutex, MutexGuard};
 
 use ads_contracts::{
-    CommandApprovalAnswerV1Params, CommandApprovalAnswerV1ParamsDecision as Decision, CommonIdV1,
+    CommandApprovalAnswerV1Params, CommandApprovalAnswerV1ParamsDecision as Decision,
+    CommandApprovalCloseV1Params, CommandApprovalCloseV1ParamsDecision as Closing, CommonIdV1,
     EventEnvelopeV1, EventEnvelopeV1Stream,
 };
 use ads_core::gate::{
@@ -21,13 +23,23 @@ use crate::auth::LocalSession;
 use crate::events::{new_id, now_ts};
 use crate::gate::{EffectsSource, Recorded, SessionGate, effects_size, recorded_effects};
 use ads_adapter_fs::Effects;
-use ads_storage::{Pending as StoredPending, Visit};
+use ads_storage::{Closable, Pending as StoredPending, StorageError, Visit};
 
 /// The type of the answer record and the family of its `answer/<approval_id>` stream.
 const ANSWER: &str = "urn:ads:event:answer.recorded:2";
 
 /// The most approvals one `approval.list` answers: the `maxItems` of its response contract.
 const MAX_LISTED: u32 = 1000;
+
+/// The type of the closing record and the family of its `closure/<action_id>` stream.
+const CLOSURE: &str = "urn:ads:event:closure.recorded:1";
+
+/// The most requests one `approval.close` closes: the `maxItems` of `approval_ids` in its
+/// record. The rest stay open for another command.
+const MAX_CLOSED: u32 = 64;
+
+/// The reason of a denial written by `approval.close`.
+const UNREADABLE_REASON: &str = "E_HISTORY_UNREADABLE";
 
 /// What the local API asks of the gate. Each call takes the proof that the connection passed
 /// the token check; the owner and the device come from the implementation, never the request.
@@ -41,6 +53,15 @@ pub trait ApprovalControl: Send + Sync + 'static {
         &self,
         session: &LocalSession,
         answer: &CommandApprovalAnswerV1Params,
+        cause: &str,
+    ) -> Result<bool, ApiError>;
+    /// Closes, denying or expiring, the open requests of an action whose history does not
+    /// read: the closing is recorded first, and no request is ever granted. Returns whether
+    /// the outcome is the one of an earlier command with the same idempotency key.
+    fn close(
+        &self,
+        session: &LocalSession,
+        close: &CommandApprovalCloseV1Params,
         cause: &str,
     ) -> Result<bool, ApiError>;
 }
@@ -63,6 +84,14 @@ impl ApprovalControl for DisabledApprovals {
         &self,
         _: &LocalSession,
         _: &CommandApprovalAnswerV1Params,
+        _: &str,
+    ) -> Result<bool, ApiError> {
+        Err(ApiError::ApprovalNotConfigured)
+    }
+    fn close(
+        &self,
+        _: &LocalSession,
+        _: &CommandApprovalCloseV1Params,
         _: &str,
     ) -> Result<bool, ApiError> {
         Err(ApiError::ApprovalNotConfigured)
@@ -297,6 +326,11 @@ fn answer_stream(approval_id: &Id) -> Result<EventEnvelopeV1Stream, ApiError> {
         .map_err(|_| ApiError::Invalid)
 }
 
+fn closure_stream(action_id: &Id) -> Result<EventEnvelopeV1Stream, ApiError> {
+    serde_json::from_value(json!(format!("closure/{}", action_id.as_str())))
+        .map_err(|_| ApiError::Invalid)
+}
+
 impl Desk {
     fn gate_for(&self, history: &GateHistory) -> Option<usize> {
         let root = root_of(history)?;
@@ -332,6 +366,83 @@ impl Desk {
             serde_json::from_value(value).map_err(|_| ApiError::Storage)?;
         log.append(&event).map_err(ApiError::from_storage)?;
         Ok(id)
+    }
+
+    /// Writes the closing of `approvals` as the owner's device, at the next `seq` of
+    /// `closure/<action_id>`.
+    fn record_closing(
+        &mut self,
+        close: &CommandApprovalCloseV1Params,
+        approvals: &[&str],
+        ts: &str,
+        cause: &str,
+    ) -> Result<String, ApiError> {
+        let stream = closure_stream(&close.action_id)?;
+        let mut log = self.log.log().map_err(ApiError::from_storage)?;
+        let seq = log.head(&stream).map_err(ApiError::from_storage)? + 1;
+        let id = new_id()?;
+        let value = json!({
+            "id": id, "type": CLOSURE, "ts": ts, "stream": stream, "seq": seq,
+            "actor": {"kind": "device", "id": self.owner.device_id},
+            "cause": cause, "data_class": "internal",
+            "data": {
+                "action_id": close.action_id, "approval_ids": approvals,
+                "decision": close.decision.as_str(),
+                "owner_id": self.owner.owner_id, "via": "local_ui",
+                "idempotency_key": close.meta.idempotency_key
+            }
+        });
+        let value = checked(CLOSURE, value).map_err(|_| ApiError::Storage)?;
+        let event: EventEnvelopeV1 =
+            serde_json::from_value(value).map_err(|_| ApiError::Storage)?;
+        log.append(&event).map_err(ApiError::from_storage)?;
+        Ok(id)
+    }
+
+    /// The closing already recorded for this action with the same idempotency key.
+    fn closed_with_key(&mut self, action_id: &Id, key: &str) -> Result<Option<Value>, ApiError> {
+        let stream = closure_stream(action_id)?;
+        let mut log = self.log.log().map_err(ApiError::from_storage)?;
+        find_answer(&mut log, &stream, |event| {
+            event["data"]["idempotency_key"] == key
+        })
+    }
+
+    /// The decision of one request, caused by the closing `record`; the storage checks again,
+    /// in the transaction of the write, that the history does not read and the request is open.
+    fn close_request(
+        &mut self,
+        close: &CommandApprovalCloseV1Params,
+        request: &ads_storage::OpenRequest,
+        record: &str,
+        ts: &str,
+    ) -> Result<(), ApiError> {
+        let (kind, mut data) = match close.decision {
+            Closing::Deny => (
+                "urn:ads:event:approval.denied:2",
+                json!({"reason": UNREADABLE_REASON}),
+            ),
+            Closing::Expire => ("urn:ads:event:approval.expired:2", json!({})),
+        };
+        data["approval_id"] = json!(request.approval_id);
+        data["action_id"] = json!(close.action_id);
+        data["plan_hash"] = json!(request.plan_hash);
+        let value = json!({
+            "id": new_id()?, "type": kind, "ts": ts,
+            "stream": format!("approval/{}", request.approval_id), "seq": request.next_seq,
+            "actor": {"kind": "device", "id": self.owner.device_id},
+            "cause": record, "data_class": "internal", "data": data
+        });
+        let value = checked(kind, value).map_err(|_| ApiError::Storage)?;
+        let event: EventEnvelopeV1 =
+            serde_json::from_value(value).map_err(|_| ApiError::Storage)?;
+        let mut log = self.log.log().map_err(ApiError::from_storage)?;
+        match log.close_unreadable_request(&close.action_id, &event) {
+            Ok(_) => Ok(()),
+            // Decided, or readable again, since the probe: nothing was written.
+            Err(StorageError::Conflict) => Err(ApiError::ApprovalAlreadyAnswered),
+            Err(error) => Err(ApiError::from_storage(error)),
+        }
     }
 
     /// The answer already recorded for this approval with the same idempotency key.
@@ -603,6 +714,72 @@ impl ApprovalControl for ApprovalDesk {
             }
             Err(error) => Err(gate_error(error)),
         }
+    }
+
+    fn close(
+        &self,
+        _: &LocalSession,
+        close: &CommandApprovalCloseV1Params,
+        cause: &str,
+    ) -> Result<bool, ApiError> {
+        self.close_unreadable(close, cause)
+    }
+}
+
+impl ApprovalDesk {
+    fn close_unreadable(
+        &self,
+        close: &CommandApprovalCloseV1Params,
+        cause: &str,
+    ) -> Result<bool, ApiError> {
+        let mut guard = self.lock()?;
+        let desk = &mut *guard;
+        let action_id: Id = close.action_id.clone();
+        let earlier = desk.closed_with_key(&action_id, close.meta.idempotency_key.as_str())?;
+        if let Some(event) = &earlier
+            && event["data"]["decision"] != close.decision.as_str()
+        {
+            return Err(ApiError::Conflict);
+        }
+        // Read only: a refusal here writes nothing.
+        let closable = desk
+            .log
+            .log()
+            .map_err(ApiError::from_storage)?
+            .closable_requests(&action_id, MAX_CLOSED)
+            .map_err(ApiError::from_storage)?;
+        let open = match closable {
+            Closable::Missing => return Err(ApiError::ApprovalNotFound),
+            Closable::Readable => return Err(ApiError::ApprovalReadable),
+            Closable::Requests(open) => open,
+        };
+        let ts = now_ts()?;
+        let (record, open) = match &earlier {
+            // The same key again: only what the recorded closing named and is still open.
+            Some(event) => {
+                let named = event["data"]["approval_ids"]
+                    .as_array()
+                    .ok_or(ApiError::Storage)?;
+                let open: Vec<_> = open
+                    .into_iter()
+                    .filter(|request| named.iter().any(|id| id == &request.approval_id))
+                    .collect();
+                let record = event["id"].as_str().ok_or(ApiError::Storage)?.to_owned();
+                (record, open)
+            }
+            None if open.is_empty() => return Err(ApiError::ApprovalAlreadyAnswered),
+            None => {
+                let ids: Vec<&str> = open
+                    .iter()
+                    .map(|request| request.approval_id.as_str())
+                    .collect();
+                (desk.record_closing(close, &ids, &ts, cause)?, open)
+            }
+        };
+        for request in &open {
+            desk.close_request(close, request, &record, &ts)?;
+        }
+        Ok(earlier.is_some())
     }
 }
 
@@ -2188,5 +2365,170 @@ mod tests {
         let page = desk.pending(&session()).unwrap();
         assert!(page.approvals.is_empty());
         assert!(!page.more);
+    }
+
+    /// An action waiting for approval whose history holds more requests than a history does:
+    /// four more, written by no gate of this core. Returns the action and its five approvals.
+    fn unreadable(bench: &mut Bench, gate: &SessionGate, name: &str) -> (Id, Vec<String>) {
+        let (action, approval, _) = bench.waiting(gate, name);
+        let mut approvals = vec![approval.as_str().to_owned()];
+        let mut log = bench.log.as_mut().unwrap().log().unwrap();
+        let requested = log.load(&action).unwrap().events[1].to_json();
+        for extra in 0..4_usize {
+            let approval = format!("appr-{name}-extra-{extra}");
+            let mut json = requested.clone();
+            json["id"] = json!(new_id().unwrap());
+            json["stream"] = json!(format!("approval/{approval}"));
+            json["data"]["approval_id"] = json!(approval);
+            let event = Event::from_json(json).unwrap();
+            GateJournal::append(&mut *log, &action, 2 + extra, &event).unwrap();
+            approvals.push(approval);
+        }
+        (action, approvals)
+    }
+
+    fn close_params(action: &Id, decision: &str) -> CommandApprovalCloseV1Params {
+        serde_json::from_value(json!({
+            "action_id": action, "decision": decision,
+            "_meta": {"idempotency_key": new_id().unwrap(), "origin": "local"}
+        }))
+        .unwrap()
+    }
+
+    /// The actions the storage still reports as pending with a history that does not read.
+    fn unreadable_pending(desk: &ApprovalDesk) -> Vec<String> {
+        desk.with_gates_ok(|log, _| {
+            let mut seen = Vec::new();
+            log.log()
+                .unwrap()
+                .visit_pending_approvals(100, &mut |entry, _, _| {
+                    if let StoredPending::Unreadable(id) = entry {
+                        seen.push(id);
+                    }
+                    Visit::Skip
+                })
+                .unwrap();
+            seen
+        })
+    }
+
+    /// Every event of the log of these types, as JSON with its position.
+    fn of_type(desk: &ApprovalDesk, streams: &[String], kind: &str) -> Vec<(i64, Value)> {
+        streams
+            .iter()
+            .flat_map(|name| stream(desk, name))
+            .filter(|(_, event)| event["type"].as_str().is_some_and(|t| t.starts_with(kind)))
+            .collect()
+    }
+
+    #[test]
+    fn closing_an_unreadable_request_records_it_first_and_never_licenses() {
+        for decision in ["deny", "expire"] {
+            let mut bench = Bench::new();
+            let gate = bench.gate(OVER_LIMIT);
+            let (broken, approvals) = unreadable(&mut bench, &gate, "act-broken");
+            let (fine, _, _) = bench.waiting(&gate, "act-fine");
+            let desk = bench.desk(vec![gate]);
+            let session = session();
+            assert_eq!(unreadable_pending(&desk), ["act-broken"]);
+
+            let close = close_params(&broken, decision);
+            let cause = new_id().unwrap();
+            assert_eq!(desk.close(&session, &close, &cause), Ok(false));
+            assert!(unreadable_pending(&desk).is_empty(), "{decision}");
+            assert_eq!(
+                only(&desk.pending(&session).unwrap().approvals)["action_id"],
+                fine.as_str()
+            );
+
+            let records = stream(&desk, "closure/act-broken");
+            let [(recorded_at, record)] = &records[..] else {
+                panic!("one closing record: {records:?}");
+            };
+            assert_eq!(record["cause"], cause.as_str());
+            assert_eq!(
+                record["actor"],
+                json!({"kind": "device", "id": "device-01"})
+            );
+            assert_eq!(record["data"]["decision"], decision);
+            assert_eq!(record["data"]["approval_ids"], json!(approvals));
+            let streams: Vec<String> = approvals
+                .iter()
+                .map(|approval| format!("approval/{approval}"))
+                .collect();
+            let kind = match decision {
+                "deny" => "urn:ads:event:approval.denied:",
+                _ => "urn:ads:event:approval.expired:",
+            };
+            let decided = of_type(&desk, &streams, kind);
+            assert_eq!(decided.len(), approvals.len());
+            for (position, event) in &decided {
+                assert!(position > recorded_at, "recorded before any decision");
+                assert_eq!(event["cause"], record["id"]);
+            }
+            // No grant and no license: the action never starts.
+            assert!(of_type(&desk, &streams, "urn:ads:event:approval.granted:").is_empty());
+            assert!(execute(&desk, &broken).is_err());
+            let action_stream = vec!["action/act-broken".to_owned()];
+            assert!(of_type(&desk, &action_stream, "urn:ads:event:action.started:").is_empty());
+
+            // The same key again records nothing more; a new key finds nothing open.
+            assert_eq!(desk.close(&session, &again_close(&close), &cause), Ok(true));
+            assert_eq!(stream(&desk, "closure/act-broken").len(), 1);
+            assert_eq!(
+                desk.close(
+                    &session,
+                    &close_params(&broken, decision),
+                    &new_id().unwrap()
+                ),
+                Err(ApiError::ApprovalAlreadyAnswered)
+            );
+            assert_eq!(stream(&desk, "closure/act-broken").len(), 1);
+        }
+    }
+
+    fn again_close(close: &CommandApprovalCloseV1Params) -> CommandApprovalCloseV1Params {
+        close.clone()
+    }
+
+    #[test]
+    fn a_readable_request_is_closed_only_by_an_answer() {
+        let mut bench = Bench::new();
+        let gate = bench.gate(OVER_LIMIT);
+        let (fine, approval, hash) = bench.waiting(&gate, "act-fine");
+        let desk = bench.desk(vec![gate]);
+        let session = session();
+        for decision in ["deny", "expire"] {
+            assert_eq!(
+                desk.close(&session, &close_params(&fine, decision), &new_id().unwrap()),
+                Err(ApiError::ApprovalReadable)
+            );
+        }
+        assert_eq!(
+            desk.close(
+                &session,
+                &close_params(&Id::new("act-unknown").unwrap(), "deny"),
+                &new_id().unwrap()
+            ),
+            Err(ApiError::ApprovalNotFound)
+        );
+        assert!(stream(&desk, "closure/act-fine").is_empty());
+        assert!(matches!(
+            state(&desk, &fine),
+            State::AwaitingApproval { .. }
+        ));
+        // The normal path still answers it.
+        let deny = params(&fine, &approval, &hash, "deny");
+        assert_eq!(desk.answer(&session, &deny, &new_id().unwrap()), Ok(false));
+        assert_eq!(state(&desk, &fine), State::ApprovalDenied);
+    }
+
+    #[test]
+    fn a_disabled_control_refuses_a_closing() {
+        let close = close_params(&Id::new("act-01").unwrap(), "deny");
+        assert_eq!(
+            DisabledApprovals.close(&session(), &close, "cause"),
+            Err(ApiError::ApprovalNotConfigured)
+        );
     }
 }

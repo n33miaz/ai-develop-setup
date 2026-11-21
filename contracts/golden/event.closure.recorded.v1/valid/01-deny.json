@@ -1,0 +1,23 @@
+{
+  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+  "type": "urn:ads:event:closure.recorded:1",
+  "ts": "2030-01-02T03:05:00Z",
+  "stream": "closure/act-03",
+  "seq": 1,
+  "actor": {
+    "kind": "device",
+    "id": "device-01"
+  },
+  "cause": "01ARZ3NDEKTSV4RRFFQ69G5FAD",
+  "data_class": "internal",
+  "data": {
+    "action_id": "act-03",
+    "approval_ids": [
+      "appr-03"
+    ],
+    "decision": "deny",
+    "owner_id": "owner-01",
+    "via": "local_ui",
+    "idempotency_key": "01ARZ3NDEKTSV4RRFFQ69G5FAE"
+  }
+}

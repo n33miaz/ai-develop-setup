@@ -6,27 +6,28 @@ use crate::events::{Closing, EventLog, Poll, Stream};
 use crate::pty_client::{ClientError, ErrorCode, Event, PtyClient};
 use crate::queue::{DisabledQueue, QueueControl};
 use ads_contracts::{
-    CommandApprovalAnswerV1Params, CommandSessionOpenV1Params,
-    ContractLocalApiErrorCodeV4ApprovalAlreadyAnswered as ApprovalAlreadyAnswered,
-    ContractLocalApiErrorCodeV4ApprovalNotApprovable as ApprovalNotApprovable,
-    ContractLocalApiErrorCodeV4ApprovalNotConfigured as ApprovalNotConfigured,
-    ContractLocalApiErrorCodeV4ApprovalNotFound as ApprovalNotFound,
-    ContractLocalApiErrorCodeV4ApprovalOutOfOrder as ApprovalOutOfOrder,
-    ContractLocalApiErrorCodeV4ApprovalPolicyChanged as ApprovalPolicyChanged,
-    ContractLocalApiErrorCodeV4ApprovalStale as ApprovalStale,
-    ContractLocalApiErrorCodeV4CapacityExceeded as CapacityExceeded,
-    ContractLocalApiErrorCodeV4Conflict as Conflict,
-    ContractLocalApiErrorCodeV4HarnessNotConfigured as HarnessNotConfigured,
-    ContractLocalApiErrorCodeV4InternalError as InternalError,
-    ContractLocalApiErrorCodeV4InvalidParams as InvalidParams,
-    ContractLocalApiErrorCodeV4MethodNotFound as MethodNotFound,
-    ContractLocalApiErrorCodeV4QueueAlreadyCreated as QueueAlreadyCreated,
-    ContractLocalApiErrorCodeV4QueueAlreadyEnabled as QueueAlreadyEnabled,
-    ContractLocalApiErrorCodeV4QueueNotConfigured as QueueNotConfigured,
-    ContractLocalApiErrorCodeV4RemoteOriginRefused as RemoteOriginRefused,
-    ContractLocalApiErrorCodeV4SessionClosePending as SessionClosePending,
-    ContractLocalApiErrorCodeV4SessionSetupFailed as SessionSetupFailed,
-    ContractLocalApiErrorCodeV4SubscriptionReplayUnavailable as SubscriptionReplayUnavailable,
+    CommandApprovalAnswerV1Params, CommandApprovalCloseV1Params, CommandSessionOpenV1Params,
+    ContractLocalApiErrorCodeV5ApprovalAlreadyAnswered as ApprovalAlreadyAnswered,
+    ContractLocalApiErrorCodeV5ApprovalNotApprovable as ApprovalNotApprovable,
+    ContractLocalApiErrorCodeV5ApprovalNotConfigured as ApprovalNotConfigured,
+    ContractLocalApiErrorCodeV5ApprovalNotFound as ApprovalNotFound,
+    ContractLocalApiErrorCodeV5ApprovalOutOfOrder as ApprovalOutOfOrder,
+    ContractLocalApiErrorCodeV5ApprovalPolicyChanged as ApprovalPolicyChanged,
+    ContractLocalApiErrorCodeV5ApprovalReadable as ApprovalReadable,
+    ContractLocalApiErrorCodeV5ApprovalStale as ApprovalStale,
+    ContractLocalApiErrorCodeV5CapacityExceeded as CapacityExceeded,
+    ContractLocalApiErrorCodeV5Conflict as Conflict,
+    ContractLocalApiErrorCodeV5HarnessNotConfigured as HarnessNotConfigured,
+    ContractLocalApiErrorCodeV5InternalError as InternalError,
+    ContractLocalApiErrorCodeV5InvalidParams as InvalidParams,
+    ContractLocalApiErrorCodeV5MethodNotFound as MethodNotFound,
+    ContractLocalApiErrorCodeV5QueueAlreadyCreated as QueueAlreadyCreated,
+    ContractLocalApiErrorCodeV5QueueAlreadyEnabled as QueueAlreadyEnabled,
+    ContractLocalApiErrorCodeV5QueueNotConfigured as QueueNotConfigured,
+    ContractLocalApiErrorCodeV5RemoteOriginRefused as RemoteOriginRefused,
+    ContractLocalApiErrorCodeV5SessionClosePending as SessionClosePending,
+    ContractLocalApiErrorCodeV5SessionSetupFailed as SessionSetupFailed,
+    ContractLocalApiErrorCodeV5SubscriptionReplayUnavailable as SubscriptionReplayUnavailable,
 };
 use ads_ptyhost::wire::{
     Notification, OpenParams, ResizeParams, SessionId, SessionParams, WriteParams,
@@ -84,6 +85,9 @@ pub enum ApiError {
     ApprovalOutOfOrder,
     /// The record does not fix the concrete effect of the plan: the API does not approve it.
     ApprovalNotApprovable,
+    /// `approval.close` named an action whose history reads: it is answered by
+    /// `approval.answer` only.
+    ApprovalReadable,
 }
 impl ApiError {
     pub(crate) fn from_storage(error: ads_storage::StorageError) -> Self {
@@ -117,6 +121,7 @@ impl ApiError {
             Self::ApprovalPolicyChanged => ApprovalPolicyChanged::VALUE,
             Self::ApprovalOutOfOrder => ApprovalOutOfOrder::VALUE,
             Self::ApprovalNotApprovable => ApprovalNotApprovable::VALUE,
+            Self::ApprovalReadable => ApprovalReadable::VALUE,
             Self::Host(code) => code.number(),
         }
     }
@@ -146,6 +151,7 @@ impl ApiError {
             Self::ApprovalPolicyChanged => "policy changed since the plan",
             Self::ApprovalOutOfOrder => "clock before the last step",
             Self::ApprovalNotApprovable => "approval not allowed for this plan",
+            Self::ApprovalReadable => "approval history readable; answer it instead",
         }
     }
 }
@@ -324,7 +330,13 @@ impl PendingMutation {
     fn defers(&self, command: &Value) -> bool {
         matches!(
             command["method"].as_str(),
-            Some("queue.create" | "queue.start" | "queue.stop" | "approval.answer")
+            Some(
+                "queue.create"
+                    | "queue.start"
+                    | "queue.stop"
+                    | "approval.answer"
+                    | "approval.close"
+            )
         ) || self.entry.as_ref().is_some_and(|entry| {
             command["params"]["_meta"]["idempotency_key"] == entry.key.as_str()
         })
@@ -435,6 +447,11 @@ impl Service {
                     serde_json::from_value(params.clone()).map_err(|_| ApiError::Invalid)?;
                 let approvals = self.approvals.clone();
                 tokio::task::spawn_blocking(move || approvals.answer(&session, &answer, &cause))
+            } else if method == "approval.close" {
+                let close: CommandApprovalCloseV1Params =
+                    serde_json::from_value(params.clone()).map_err(|_| ApiError::Invalid)?;
+                let approvals = self.approvals.clone();
+                tokio::task::spawn_blocking(move || approvals.close(&session, &close, &cause))
             } else {
                 let id = queue_id(params)?;
                 let queue = self.queue.clone();
@@ -1148,7 +1165,7 @@ impl LocalApi {
         self.service.queue = queue;
         self
     }
-    /// Serves `approval.list` and `approval.answer` from `approvals`; without it they answer
+    /// Serves `approval.list`, `approval.answer` and `approval.close` from `approvals`; without it they answer
     /// `APPROVAL_NOT_CONFIGURED`.
     pub fn with_approvals(mut self, approvals: Arc<dyn ApprovalControl>) -> Self {
         self.service.approvals = approvals;
@@ -1242,7 +1259,7 @@ impl LocalApi {
                         deferred.push_back(request);
                         continue;
                     }
-                    if matches!(request.command["method"].as_str(), Some("queue.create" | "queue.start" | "queue.stop" | "approval.answer")) {
+                    if matches!(request.command["method"].as_str(), Some("queue.create" | "queue.start" | "queue.stop" | "approval.answer" | "approval.close")) {
                         pending_mutation = service.dispatch_mutation(request);
                         continue;
                     }
@@ -1338,6 +1355,7 @@ fn validate_command(value: Value) -> Result<Value, ApiError> {
             | "queue.stop"
             | "approval.list"
             | "approval.answer"
+            | "approval.close"
     ) {
         return Err(ApiError::Method);
     }

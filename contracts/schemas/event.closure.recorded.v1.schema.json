@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:event:closure.recorded:1",
+  "title": "Fechamento de pedido ilegível registrado",
+  "description": "O dono fechou, pelo caminho de recuperação (approval.close), os pedidos de aprovação pendentes de uma ação cujo histórico o núcleo não lê: o aparelho (actor), o dono, o instante (ts), a decisão (deny ou expire), os pedidos fechados (approval_ids) e a chave de idempotência do comando, que deduplica o fechamento no log. Gravado no stream closure/<action_id> antes de qualquer efeito; cada pedido ganha depois approval.denied:2 ou approval.expired:2 com cause apontando para este registro. Nunca aprova e nunca emite licença.",
+  "allOf": [
+    {
+      "$ref": "urn:ads:event:envelope:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "type",
+        "stream",
+        "data",
+        "actor"
+      ],
+      "properties": {
+        "type": {
+          "const": "urn:ads:event:closure.recorded:1"
+        },
+        "stream": {
+          "type": "string",
+          "pattern": "^closure/"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action_id",
+            "approval_ids",
+            "decision",
+            "owner_id",
+            "via",
+            "idempotency_key"
+          ],
+          "properties": {
+            "action_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "approval_ids": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 64,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "urn:ads:common:id:1"
+              }
+            },
+            "decision": {
+              "enum": [
+                "deny",
+                "expire"
+              ]
+            },
+            "owner_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "via": {
+              "enum": [
+                "local_ui"
+              ]
+            },
+            "idempotency_key": {
+              "$ref": "urn:ads:common:ulid:1"
+            }
+          }
+        },
+        "actor": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "kind": {
+              "const": "device"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+      "type": "urn:ads:event:closure.recorded:1",
+      "ts": "2030-01-02T03:05:00Z",
+      "stream": "closure/act-03",
+      "seq": 1,
+      "actor": {
+        "kind": "device",
+        "id": "device-01"
+      },
+      "cause": "01ARZ3NDEKTSV4RRFFQ69G5FAD",
+      "data_class": "internal",
+      "data": {
+        "action_id": "act-03",
+        "approval_ids": [
+          "appr-03"
+        ],
+        "decision": "deny",
+        "owner_id": "owner-01",
+        "via": "local_ui",
+        "idempotency_key": "01ARZ3NDEKTSV4RRFFQ69G5FAE"
+      }
+    }
+  ]
+}
