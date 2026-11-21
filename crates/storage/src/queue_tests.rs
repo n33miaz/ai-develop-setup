@@ -408,6 +408,9 @@ fn older_queue_rows_migrate_from(version: i64) {
         (queue_type, "task/t1", 1),
         ("urn:ads:event:task.noted:1", "queue/queue-01", 7),
         (queue_type, "queue/", 1),
+        // A NUL ends a text for `length()`; the binding measures the bytes and refuses it.
+        (queue_type, "queue/q\0x", 1),
+        (queue_type, &format!("queue/{}\0x", "q".repeat(61)), 1),
     ] {
         let error = raw_append(&fixture.db(), kind, stream, seq).unwrap_err();
         assert!(error.contains("queue"), "{kind} {stream}: {error}");
@@ -423,11 +426,13 @@ fn older_queue_rows_migrate_from(version: i64) {
 #[test]
 fn an_older_file_with_an_unbound_queue_row_is_left_as_it_was() {
     for version in [4, 5] {
-        an_unbound_queue_row_is_left_from(version);
+        for stream in ["task/t1", "queue/q\0x"] {
+            an_unbound_queue_row_is_left_from(version, stream);
+        }
     }
 }
 
-fn an_unbound_queue_row_is_left_from(version: i64) {
+fn an_unbound_queue_row_is_left_from(version: i64, stream: &str) {
     let fixture = Fixture::new();
     let anchor = MemoryAnchor::default();
     let mut log = open(&fixture.db(), &anchor, "").unwrap();
@@ -435,7 +440,7 @@ fn an_unbound_queue_row_is_left_from(version: i64) {
     drop(log);
     back_to_version(&fixture.db(), version);
     assert_eq!(
-        raw_append(&fixture.db(), "urn:ads:event:queue.enabled:1", "task/t1", 1),
+        raw_append(&fixture.db(), "urn:ads:event:queue.enabled:1", stream, 1),
         Ok(1)
     );
 

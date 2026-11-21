@@ -99,13 +99,16 @@ END;
 
 /// Version 6: the database itself binds a `queue.*` type to a `queue/<id>` stream and back,
 /// as the table CHECKs bind the gate families. A trigger, because SQLite adds a table CHECK
-/// only by rebuilding the append-only table. `<id>` is a `common.id:1`, 1 to 64 characters.
+/// only by rebuilding the append-only table. `<id>` is a `common.id:1`, 1 to 64 ASCII characters,
+/// so its bytes and characters agree unless a NUL ends the text early for `length()`.
 const QUEUE_BINDING_SQL: &str = r#"
 CREATE TRIGGER event_queue_binding BEFORE INSERT ON event
 BEGIN
   SELECT RAISE(ABORT, 'queue')
   WHERE (substr(NEW.type, 1, 20) = 'urn:ads:event:queue.') IS NOT (substr(NEW.stream, 1, 6) = 'queue/')
-     OR (substr(NEW.stream, 1, 6) = 'queue/' AND length(NEW.stream) NOT BETWEEN 7 AND 70);
+     OR (substr(NEW.stream, 1, 6) = 'queue/'
+         AND (length(CAST(NEW.stream AS BLOB)) NOT BETWEEN 7 AND 70
+              OR length(CAST(NEW.stream AS TEXT)) <> length(CAST(NEW.stream AS BLOB))));
 END;
 "#;
 
@@ -116,7 +119,9 @@ pub(crate) const DROP_QUEUE_BINDING_SQL: &str = "DROP TRIGGER event_queue_bindin
 const QUEUE_BINDING_VIOLATIONS: &str = "SELECT EXISTS (
     SELECT 1 FROM event
     WHERE (substr(type, 1, 20) = 'urn:ads:event:queue.') IS NOT (substr(stream, 1, 6) = 'queue/')
-       OR (substr(stream, 1, 6) = 'queue/' AND length(stream) NOT BETWEEN 7 AND 70)
+       OR (substr(stream, 1, 6) = 'queue/'
+           AND (length(CAST(stream AS BLOB)) NOT BETWEEN 7 AND 70
+                OR length(CAST(stream AS TEXT)) <> length(CAST(stream AS BLOB))))
 )";
 
 /// `(version, script)`: each script takes the file from the previous listed
