@@ -275,7 +275,9 @@ recebe `REMOTE_ORIGIN_REFUSED`. O dono e o aparelho vêm do daemon
   alteração (`Executor::execute_approved`). Diferença, registro ausente ou
   aprovação sem registro para um plano que precisa dele: o disco não é tocado, a
   ação termina em `action.failed` com `E_FS_EFFECTS_CHANGED` e só um plano novo,
-  com aprovação nova, volta a executar.
+  com aprovação nova, volta a executar. Política ou tolerância do relógio
+  mudada desde a aprovação é recusada antes dessa conferência, pelo portão,
+  como `E_POLICY_CHANGED` ou `E_CLOCK_POLICY_CHANGED`.
 - `approval.answer` leva `action_id`, `approval_id`, `plan_hash` (o que o dono
   viu) e `decision` (`approve` ou `deny`). Antes de gravar qualquer coisa, o
   daemon confere que a ação existe e que a aprovação é a pedida no histórico
