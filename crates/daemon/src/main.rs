@@ -1,5 +1,6 @@
 //! Inicialização do daemon local.
 
+use ads_core::vault::Vault;
 use ads_daemon::api::{ApiError, LocalApi};
 use ads_daemon::pty_client::{ClientConfig, PtyClient};
 use ads_daemon::startup::{InstanceLock, attach_product_controls, load_config};
@@ -14,8 +15,16 @@ fn print_launch_url(url: &mut String, out: &mut impl std::io::Write) -> std::io:
     result
 }
 
+#[cfg_attr(
+    test,
+    allow(dead_code, reason = "the integration target calls run directly")
+)]
+fn main() -> ExitCode {
+    run(ads_adapter_vault::OsVault)
+}
+
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> ExitCode {
+pub(crate) async fn run(vault: impl Vault + Send + Sync + 'static) -> ExitCode {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         // The daemon runs as a common user: an elevated session would leave its files owned
         // by the Administrators group.
@@ -55,6 +64,7 @@ async fn main() -> ExitCode {
         let api = attach_product_controls(
             api,
             storage,
+            vault,
             instance_lock.as_ref(),
             &workdirs,
             max_list_bytes,
@@ -82,9 +92,9 @@ async fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     #[test]
     fn printed_url_is_one_line_and_erased_even_when_output_fails() {
+        use super::print_launch_url;
         let original = "http://localhost:5173/#core=ws://127.0.0.1:1234&token=credential-sentinel";
         let mut url = original.to_owned();
         let mut bytes = Vec::new();

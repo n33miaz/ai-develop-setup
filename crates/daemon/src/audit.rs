@@ -490,13 +490,14 @@ fn finish_product<V: Vault + Send + 'static>(
 
 pub(crate) fn open_local_product(
     config: &StorageConfig,
+    vault: impl Vault + Send + Sync + 'static,
     instance: Option<&InstanceLock>,
     workdirs: &[PathBuf],
 ) -> Result<(ProductLog, crate::product::LocalIdentities), crate::product::StartupError> {
     open_local_product_in(
         &vault_directory()?,
         config,
-        Arc::new(OsVault),
+        Arc::new(vault),
         instance,
         workdirs,
     )

@@ -1,5 +1,8 @@
 #![cfg(windows)]
 
+#[path = "common/temp.rs"]
+mod temp;
+
 use ads_ptyhost::{HostConfig, channel::Listener, wire};
 use std::io::{BufRead, BufReader, Read};
 use std::process::{Command, Stdio};
@@ -18,8 +21,7 @@ impl Drop for Child {
 async fn binary_stdout_contains_only_the_launch_url() {
     let endpoint = format!(r"\\.\pipe\ads-daemon-stdout-{}", std::process::id());
     let overrides = format!("channel_path = '{endpoint}'\n");
-    let path = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
-        .join(format!("daemon-stdout-{}.toml", std::process::id()));
+    let path = temp::directory().join(format!("daemon-stdout-{}.toml", std::process::id()));
     std::fs::write(&path, &overrides).unwrap();
     let host = HostConfig::from_toml_str(&overrides).unwrap();
     let mut listener = Listener::bind(&channel_endpoint(&host)).unwrap();
