@@ -170,7 +170,10 @@ fn is_smoke_reply(text: &str, request_id: Option<&str>) -> bool {
         return false;
     };
     serde_json::from_str::<Value>(text).is_ok_and(|reply| {
-        reply["jsonrpc"] == "2.0" && reply["id"] == request_id && reply["result"].is_array()
+        reply["jsonrpc"] == "2.0"
+            && reply["id"] == request_id
+            && reply["result"]["harnesses"].is_array()
+            && reply["result"]["workdir_aliases"].is_array()
     })
 }
 
@@ -296,7 +299,7 @@ mod tests {
 
     #[test]
     fn smoke_requires_a_successful_reply_to_the_window_request() {
-        let reply = r#"{"jsonrpc":"2.0","id":"window","result":[]}"#;
+        let reply = r#"{"jsonrpc":"2.0","id":"window","result":{"harnesses":["claude"],"workdir_aliases":[]}}"#;
         assert!(!is_smoke_reply(reply, None));
         assert!(!is_smoke_reply(reply, Some("other")));
         assert!(!is_smoke_reply(
@@ -313,6 +316,10 @@ mod tests {
         ));
         assert!(!is_smoke_reply(
             r#"{"jsonrpc":"2.0","id":"window","result":{}}"#,
+            Some("window")
+        ));
+        assert!(!is_smoke_reply(
+            r#"{"jsonrpc":"2.0","id":"window","result":[]}"#,
             Some("window")
         ));
         assert!(is_smoke_reply(reply, Some("window")));
