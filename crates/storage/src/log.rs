@@ -467,7 +467,7 @@ fn recovery_plan(
     })
 }
 
-fn head_in(tx: &rusqlite::Connection, stream: &str) -> Result<i64, StorageError> {
+pub(crate) fn head_in(tx: &rusqlite::Connection, stream: &str) -> Result<i64, StorageError> {
     Ok(tx.query_row(
         "SELECT coalesce(max(seq), 0) FROM event WHERE stream = ?1",
         [stream],
@@ -768,10 +768,42 @@ impl EventLog {
         from_seq: u64,
         limit: u32,
     ) -> Result<Vec<StoredEvent>, StorageError> {
+        let tx = self.store.connection.unchecked_transaction()?;
+        let events = self.read_stream_in(&tx, stream, from_seq, limit)?;
+        tx.finish()?;
+        Ok(events)
+    }
+
+    /// Runs `read` under the write lock, after the anchor, the schema and the whole chain
+    /// were checked in the same transaction, so it never sees a cut tail or a broken chain.
+    /// The lock keeps an append from publishing its anchor between the check and the read.
+    pub(crate) fn read_anchored<T>(
+        &self,
+        read: impl FnOnce(&Self, &Transaction<'_>) -> Result<T, StorageError>,
+    ) -> Result<T, StorageError> {
+        let anchor = self
+            .anchor
+            .as_ref()
+            .ok_or(StorageError::AnchorUnavailable)?;
+        let tx =
+            Transaction::new_unchecked(&self.store.connection, TransactionBehavior::Immediate)?;
+        anchored_in(&tx, &**anchor, &*self.keys)?;
+        let value = read(self, &tx)?;
+        tx.finish()?;
+        Ok(value)
+    }
+
+    /// `read_stream` inside a transaction the caller holds.
+    pub(crate) fn read_stream_in(
+        &self,
+        tx: &rusqlite::Connection,
+        stream: &EventEnvelopeV1Stream,
+        from_seq: u64,
+        limit: u32,
+    ) -> Result<Vec<StoredEvent>, StorageError> {
         let from = i64::try_from(from_seq).unwrap_or(i64::MAX);
         let limit = limit.min(self.config.read_page_limit);
         let budget = self.config.read_page_max_bytes;
-        let tx = self.store.connection.unchecked_transaction()?;
         let mut events = Vec::new();
         {
             let mut statement = tx.prepare(&format!(
@@ -798,7 +830,7 @@ impl EventLog {
                 };
                 let id = KeyId::new(&row.key_id).map_err(|_| broken)?;
                 let registration = if checked.insert(row.key_id.clone()) {
-                    check_registered(&tx, &*self.keys, &id)
+                    check_registered(tx, &*self.keys, &id)
                 } else {
                     Ok(true)
                 };
@@ -819,7 +851,7 @@ impl EventLog {
                         StorageError::Tampered
                         | StorageError::KeyUnavailable
                         | StorageError::WrongKey,
-                    ) if self.authenticates_with_another_id(&tx, &row, &mut ciphertext)? => {
+                    ) if self.authenticates_with_another_id(tx, &row, &mut ciphertext)? => {
                         return Err(broken);
                     }
                     Err(StorageError::KeyUnavailable) => return Err(broken),
@@ -838,7 +870,6 @@ impl EventLog {
                 });
             }
         }
-        tx.finish()?;
         Ok(events)
     }
 

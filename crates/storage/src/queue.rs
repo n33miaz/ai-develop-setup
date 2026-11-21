@@ -1,5 +1,5 @@
 //! Queue streams: the events of each task queue in the anchored log, one stream per queue.
-use crate::{EventLog, StorageConfig, StorageError, StoredEvent};
+use crate::{EventLog, StorageConfig, StorageError, StoredEvent, log::head_in};
 use ads_contracts::{CommonIdV1, EventEnvelopeV1Stream};
 use rusqlite::OptionalExtension;
 use serde_json::{Map, Value};
@@ -70,30 +70,35 @@ pub fn queue_stream(queue_id: &CommonIdV1) -> EventEnvelopeV1Stream {
 }
 
 impl EventLog {
-    /// Every event of the queue, from `seq` 1 up to the head read when the call starts, in
-    /// pages of `read_page_limit`. Each page is read and authenticated like `read_stream`, and
-    /// the next page starts at the `seq` after the last one received, so a row missing between
-    /// pages is `ChainBroken` too. It never refuses a stream for its length: lowering
-    /// `queue_max_events` only stops new appends.
+    /// Every event of the queue, from `seq` 1 up to its head, for a caller that decides on
+    /// them. It runs under the write lock and first checks the vault anchor and the whole chain
+    /// (`AnchorMismatch` for a cut tail or an older copy, `ChainBroken` for a broken link,
+    /// `AnchorUnavailable` without an anchor), with a cost proportional to the log like the
+    /// anchored open. Then it reads pages of `read_page_limit`, each authenticated like
+    /// `read_stream`, the next starting at the `seq` after the last one received. It never
+    /// refuses a stream for its length: lowering `queue_max_events` only stops new appends.
     pub fn read_queue(&self, queue_id: &CommonIdV1) -> Result<Vec<StoredEvent>, StorageError> {
         let stream = queue_stream(queue_id);
-        let head = self.head(&stream)?;
-        let mut events: Vec<StoredEvent> = Vec::new();
-        let mut next = 1u64;
-        while next <= head {
-            let page = self.read_stream(&stream, next, u32::MAX)?;
-            if page.is_empty() {
-                return Err(StorageError::Corrupt);
-            }
-            for stored in page {
-                if stored.event.seq.get() > head {
-                    return Ok(events);
+        self.read_anchored(|log, tx| {
+            let head =
+                u64::try_from(head_in(tx, stream.as_str())?).map_err(|_| StorageError::Corrupt)?;
+            let mut events: Vec<StoredEvent> = Vec::new();
+            let mut next = 1u64;
+            while next <= head {
+                let page = log.read_stream_in(tx, &stream, next, u32::MAX)?;
+                if page.is_empty() {
+                    return Err(StorageError::Corrupt);
                 }
-                next = stored.event.seq.get() + 1;
-                events.push(stored);
+                for stored in page {
+                    if stored.event.seq.get() > head {
+                        return Ok(events);
+                    }
+                    next = stored.event.seq.get() + 1;
+                    events.push(stored);
+                }
             }
-        }
-        Ok(events)
+            Ok(events)
+        })
     }
 }
 
