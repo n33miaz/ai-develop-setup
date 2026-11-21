@@ -144,5 +144,5 @@ it('tells the owner how many unreadable requests were left out', async () => {
   const panel = open('Aprovações')
   fireEvent.click(panel.getByRole('button', { name: 'Consultar' }))
   expect(await panel.findByText(/Pedidos com histórico ilegível fora da lista: 2\./)).toBeVisible()
-  expect(panel.getByText('Nenhuma aprovação pendente.')).toBeVisible()
+  expect(panel.queryByText('Nenhuma aprovação pendente.')).toBeNull()
 })

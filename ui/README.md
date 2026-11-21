@@ -107,7 +107,7 @@ de alvos, efeitos e caminhos na quarentena. Para aprovar, confira essa lista e
 selecione **Confirmar aprovação**. Ações sem ensaio aprovável explicam a
 restrição e podem ser negadas. Quando houver mais itens, consulte novamente
 depois de responder aos itens exibidos. Se o daemon deixou de fora pedidos com
-histórico ilegível, o painel mostra quantos são; os ids ficam no log do daemon e
+histórico ilegível, o painel mostra quantos são; os ids saem na saída de erro do daemon e
 saem por `approval.close`. Os dois painéis usam a mesma API local no
 navegador e na janela de desktop.
 

@@ -168,7 +168,7 @@ export function ApprovalsPanel({ api }: { api: Api }) {
         {page !== undefined && page.unreadable > 0 && (
           <p>{t('approvals.unreadable', { count: String(page.unreadable) })}</p>
         )}
-        {page?.approvals.length === 0 && <p>{t('approvals.empty')}</p>}
+        {page?.approvals.length === 0 && page.unreadable === 0 && <p>{t('approvals.empty')}</p>}
         {page?.approvals.map((approval) => {
           const confirmingThis = confirming === approval.approval_id
           const canApprove =
