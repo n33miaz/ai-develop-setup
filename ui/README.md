@@ -85,6 +85,8 @@ uma lacuna na sequência encerra a conexão. Eventos repetidos são ignorados.
 Na casca Tauri, o cliente envia comandos e recebe mensagens por IPC com o
 processo Rust, que autentica no daemon. A credencial fica no Rust. O service
 worker fica desativado nessa janela. O bundle é o mesmo da interface web.
+Ali também não há reconexão automática depois de conectada: no lugar de reabrir
+a URL, recarregue a interface ou siga a [casca](../crates/shell/README.md).
 
 ## Uso e contas
 
@@ -115,6 +117,7 @@ ser instalada e aberta no modo de exemplo.
 
 Na compilação da interface de desktop, `VITE_DESKTOP_RETRY_INITIAL_MS` (250)
 e `VITE_DESKTOP_RETRY_MAX_MS` (5000) configuram a espera inicial e máxima
-para retentar a conexão após falhas transitórias. Use inteiros positivos de
+entre as tentativas de abrir a conexão após falhas transitórias. Elas não
+valem para uma queda depois de conectada. Use inteiros positivos de
 até 2147483647 ms. Valores inválidos usam o padrão e a espera inicial respeita
 o teto.
