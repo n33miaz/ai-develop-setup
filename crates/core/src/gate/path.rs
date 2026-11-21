@@ -139,7 +139,7 @@ impl AbsPath {
     /// Like [`Self::is_within`], with the widest comparison of names, in both styles. For deny
     /// rules only: some file systems ignore case, and a deny rule must not be dodged by
     /// changing it. Never use it to grant.
-    pub(crate) fn is_loosely_within(&self, base: &AbsPath) -> bool {
+    pub fn is_loosely_within(&self, base: &AbsPath) -> bool {
         self.within(base, same_name_loosely)
     }
 

@@ -9,9 +9,11 @@
 //! the handle it was checked on.
 
 #[cfg(unix)]
+#[path = "platform/unix.rs"]
 mod unix;
 #[cfg(windows)]
 #[allow(unsafe_code)]
+#[path = "platform/win.rs"]
 mod win;
 
 use std::{
@@ -24,14 +26,14 @@ use std::{
 /// Who runs the launcher. On Windows, security identifiers in text form; on Unix, the
 /// effective user id in decimal.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Identity {
-    pub(crate) user: String,
+pub struct Identity {
+    pub user: String,
     /// The owner this user's new objects get (Administrators in an elevated Windows session).
-    pub(crate) default_owner: String,
+    pub default_owner: String,
 }
 
 impl Identity {
-    pub(crate) fn current() -> io::Result<Self> {
+    pub fn current() -> io::Result<Self> {
         #[cfg(windows)]
         {
             win::current_identity()
@@ -46,7 +48,7 @@ impl Identity {
         }
     }
 
-    pub(crate) fn owns(&self, owner: &str) -> bool {
+    pub fn owns(&self, owner: &str) -> bool {
         !self.user.is_empty() && (owner == self.user || owner == self.default_owner)
     }
 }
@@ -76,7 +78,16 @@ const MACHINE_TRUSTED: [&str; 2] = ["S-1-5-18", "S-1-5-32-544"];
 /// Accepts a Windows folder only if the user owns it and no other account has any access.
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn windows_private(local: &Identity, security: &Security) -> Result<(), &'static str> {
-    if !local.owns(&security.owner) {
+    check_windows_private(local, security, false)
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn check_windows_private(
+    local: &Identity,
+    security: &Security,
+    strict: bool,
+) -> Result<(), &'static str> {
+    if (strict && local.user != security.owner) || !local.owns(&security.owner) {
         return Err("is owned by another account");
     }
     let Some(entries) = &security.dacl else {
@@ -85,7 +96,10 @@ pub(crate) fn windows_private(local: &Identity, security: &Security) -> Result<(
     for entry in entries {
         match entry {
             Entry::Deny => {}
-            Entry::Allow(sid) if local.owns(sid) || MACHINE_TRUSTED.contains(&sid.as_str()) => {}
+            Entry::Allow(sid)
+                if sid == &local.user
+                    || sid == MACHINE_TRUSTED[0]
+                    || (!strict && (local.owns(sid) || sid == MACHINE_TRUSTED[1])) => {}
             Entry::Allow(_) => return Err("grants access to another account"),
             Entry::Other => return Err("has an access entry of an unsupported type"),
         }
@@ -105,6 +119,14 @@ pub(crate) fn unix_private(local: &Identity, owner: u32, mode: u32) -> Result<()
     Ok(())
 }
 
+/// Whether this path names a Windows network share or a mapped network drive.
+pub fn is_network_path(_path: &Path) -> bool {
+    #[cfg(windows)]
+    return win::is_network_path(_path);
+    #[cfg(not(windows))]
+    false
+}
+
 /// What an open entry is. A link or reparse point is `Other`, never what it points to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Kind {
@@ -115,7 +137,7 @@ pub(crate) enum Kind {
 
 /// What was found under the name of a signal.
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum Signal {
+pub enum Signal {
     Absent,
     Accepted,
     /// A file another account owns or can use: left in place and never honored.
@@ -123,7 +145,7 @@ pub(crate) enum Signal {
 }
 
 /// Creates the folder `path` (not its parents) readable and writable only by `local`.
-pub(crate) fn create_dir(path: &Path, local: &Identity) -> io::Result<()> {
+pub fn create_dir(path: &Path, local: &Identity) -> io::Result<()> {
     #[cfg(windows)]
     {
         win::create_dir(path, local)
@@ -153,7 +175,7 @@ fn is_loop(error: &io::Error) -> bool {
 }
 
 /// The control folder, open and held for as long as the value lives.
-pub(crate) struct ControlDir {
+pub struct ControlDir {
     #[cfg(windows)]
     dir: File,
     #[cfg(unix)]
@@ -165,7 +187,7 @@ pub(crate) struct ControlDir {
 impl ControlDir {
     /// Creates the folder privately when missing, opens it and refuses it unless only `local`
     /// can reach it.
-    pub(crate) fn open(path: &Path, local: &Identity) -> io::Result<Self> {
+    pub fn open(path: &Path, local: &Identity) -> io::Result<Self> {
         if let Some(parent) = path
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
@@ -176,6 +198,22 @@ impl ControlDir {
             Err(error) if error.kind() != io::ErrorKind::AlreadyExists => return Err(error),
             _ => {}
         }
+        Self::checked(path, local, false)
+    }
+
+    /// Holds a directory owned by the current user, permitting only that user and SYSTEM.
+    pub fn open_user_owned(path: &Path, create: bool) -> io::Result<Self> {
+        let local = Identity::current()?;
+        if create {
+            match create_dir(path, &local) {
+                Err(error) if error.kind() != io::ErrorKind::AlreadyExists => return Err(error),
+                _ => {}
+            }
+        }
+        Self::checked(path, &local, true)
+    }
+
+    fn checked(path: &Path, local: &Identity, _strict: bool) -> io::Result<Self> {
         let refuse = |reason| refusal("folder", path, reason);
         #[cfg(windows)]
         let dir = {
@@ -183,7 +221,7 @@ impl ControlDir {
             if win::kind(&dir)? != Kind::Dir {
                 return Err(refuse("is not a plain folder"));
             }
-            windows_private(local, &win::security(&dir)?).map_err(refuse)?;
+            check_windows_private(local, &win::security(&dir)?, _strict).map_err(refuse)?;
             dir
         };
         #[cfg(unix)]
@@ -212,19 +250,19 @@ impl ControlDir {
         })
     }
 
-    pub(crate) fn path(&self) -> &Path {
+    pub fn path(&self) -> &Path {
         &self.path
     }
 
     /// The same folder, with its files judged as `local`'s.
-    #[cfg(test)]
-    pub(crate) fn judged_as(self, local: Identity) -> Self {
+    #[cfg(feature = "test-support")]
+    pub fn judged_as(self, local: Identity) -> Self {
         Self { local, ..self }
     }
 
     /// Opens the lock file `name`, created private when missing; an existing one is refused
     /// unless it is a plain file that only the user can reach.
-    pub(crate) fn lock_file(&self, name: &str) -> io::Result<File> {
+    pub fn lock_file(&self, name: &str) -> io::Result<File> {
         let refuse = |reason| refusal("file", &self.path.join(name), reason);
         #[cfg(windows)]
         {
@@ -255,7 +293,7 @@ impl ControlDir {
 
     /// Replaces the file `name` with `bytes` at once: a new private file is written, then
     /// moved over it.
-    pub(crate) fn publish(&self, name: &str, bytes: &[u8]) -> io::Result<()> {
+    pub fn publish(&self, name: &str, bytes: &[u8]) -> io::Result<()> {
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -288,7 +326,7 @@ impl ControlDir {
 
     /// Looks at the signal `name` and, when it is the user's own and `consume` is set,
     /// removes it: the entry removed is the one checked.
-    pub(crate) fn signal(&self, name: &str, consume: bool) -> io::Result<Signal> {
+    pub fn signal(&self, name: &str, consume: bool) -> io::Result<Signal> {
         #[cfg(windows)]
         {
             let file = match win::open_to_remove(&self.dir, name) {
@@ -355,29 +393,29 @@ impl ControlDir {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     /// Runs once between the check of a signal and its removal, to stand in for a race.
-    pub(crate) static BEFORE_REMOVE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+    pub static BEFORE_REMOVE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
 }
 
 fn before_remove() {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     if let Some(hook) = BEFORE_REMOVE.with(|hook| hook.borrow_mut().take()) {
         hook();
     }
 }
 
 /// The access list of `path` in text form, protection and inheritance flags included.
-#[cfg(all(windows, test))]
-pub(crate) fn access_list_text(path: &Path) -> io::Result<String> {
+#[cfg(all(windows, any(test, feature = "test-support")))]
+pub fn access_list_text(path: &Path) -> io::Result<String> {
     win::access_list_text(path)
 }
 
 /// `text` in the form `access_list_text` returns, with the SIDs Windows abbreviates replaced.
-#[cfg(all(windows, test))]
-pub(crate) fn canonical_access_list(text: &str) -> io::Result<String> {
+#[cfg(all(windows, any(test, feature = "test-support")))]
+pub fn canonical_access_list(text: &str) -> io::Result<String> {
     win::canonical_access_list(text)
 }
 

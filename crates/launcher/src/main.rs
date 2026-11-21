@@ -1,6 +1,6 @@
 //! Supervises the daemon and terminal host for one installation.
 
-mod private;
+use ads_private_dir as private;
 mod supervisor;
 
 use std::{

@@ -15,7 +15,7 @@ use std::mem::{offset_of, size_of};
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-use std::path::Path;
+use std::path::{Component, Path, Prefix};
 
 use windows::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows::Wdk::Storage::FileSystem::{
@@ -49,7 +49,26 @@ use windows::Win32::Storage::FileSystem::{
 };
 use windows::Win32::System::IO::IO_STATUS_BLOCK;
 use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+use windows::Win32::System::WindowsProgramming::DRIVE_REMOTE;
 use windows::core::{PCWSTR, PWSTR};
+
+pub(super) fn is_network_path(path: &Path) -> bool {
+    match path.components().next() {
+        Some(Component::Prefix(prefix)) => match prefix.kind() {
+            Prefix::UNC(..) | Prefix::VerbatimUNC(..) => true,
+            Prefix::Disk(drive) | Prefix::VerbatimDisk(drive) => {
+                let root = [u16::from(drive), u16::from(b':'), 92, 0];
+                // SAFETY: root is a NUL-terminated drive root valid for the duration of the call.
+                unsafe {
+                    windows::Win32::Storage::FileSystem::GetDriveTypeW(PCWSTR(root.as_ptr()))
+                        == DRIVE_REMOTE
+                }
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+}
 
 use super::{Entry, Identity, Kind, Security};
 
@@ -497,7 +516,7 @@ pub(super) fn security(file: &File) -> io::Result<Security> {
 
 /// The access list of `path` in text form (`D:P(A;OICI;FA;;;S-...)`), protection and
 /// inheritance flags included.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn access_list_text(path: &Path) -> io::Result<String> {
     let file = OpenOptions::new()
         .access_mode(READ_CONTROL.0)
@@ -526,7 +545,7 @@ pub(super) fn access_list_text(path: &Path) -> io::Result<String> {
 
 /// `text` as Windows writes it back, so a list built with a raw SID compares equal to one read
 /// from disk when Windows abbreviates that SID (`LA` for the built-in administrator).
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn canonical_access_list(text: &str) -> io::Result<String> {
     let wide: Vec<u16> = text.encode_utf16().chain([0]).collect();
     let mut descriptor = PSECURITY_DESCRIPTOR::default();
@@ -544,7 +563,7 @@ pub(super) fn canonical_access_list(text: &str) -> io::Result<String> {
     descriptor_text(descriptor)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn descriptor_text(descriptor: PSECURITY_DESCRIPTOR) -> io::Result<String> {
     use windows::Win32::Security::Authorization::ConvertSecurityDescriptorToStringSecurityDescriptorW;
     let mut text = PWSTR::null();

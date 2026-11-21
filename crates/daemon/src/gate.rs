@@ -67,7 +67,7 @@ impl ProductState {
 /// each link met on the way, at its real place, since removing one breaks the path. A missing
 /// entry is accepted (a file not created yet) and ends the walk; a link whose target is
 /// missing or written with `..` is refused, as is a chain longer than [`MAX_LINKS`].
-fn spellings(path: &Path) -> Result<Vec<AbsPath>, String> {
+pub(crate) fn spellings(path: &Path) -> Result<Vec<AbsPath>, String> {
     let failed = |at: &Path, error: std::io::Error| format!("{}: {error}", at.display());
     let mut found = Vec::new();
     let mut push = |path: AbsPath| {
