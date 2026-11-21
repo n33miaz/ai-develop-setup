@@ -3,6 +3,8 @@ import { replaySettings, selectCoreClient, selectDesktopClient } from './bootstr
 import { newCommand } from './command'
 import { desktopSocketFactory } from './desktop'
 import { createFakeCoreClient } from './fake'
+import type { CommandRequestV1 } from './contracts'
+import { queueApprovals } from './queueApprovals'
 
 beforeEach(() => {
   window.sessionStorage.clear()
@@ -74,6 +76,37 @@ describe('desktop client selection', () => {
   class Channel {
     onmessage: (frame: Frame) => void = () => undefined
   }
+
+  it('carries queue and approval queries through desktop IPC', async () => {
+    let channel: Channel | undefined
+    const methods: string[] = []
+    function invoke(method: string, args: Record<string, unknown>) {
+      if (method === 'desktop_connect') channel = args.frames as Channel
+      if (method === 'desktop_send') {
+        const request = JSON.parse(String(args.text)) as CommandRequestV1
+        methods.push(request.method)
+        const result =
+          request.method === 'queue.get'
+            ? { queue_id: request.params.queue_id, state: 'enabled' }
+            : { approvals: [], more: false }
+        channel?.onmessage({
+          kind: 'message',
+          text: JSON.stringify({ jsonrpc: '2.0', id: request.id, result }),
+        })
+      }
+      return Promise.resolve()
+    }
+    const { client } = selectDesktopClient({ core: { invoke, Channel } }, {})
+    try {
+      await client.connect()
+      const api = queueApprovals(client)
+      await expect(api.get('queue-01')).resolves.toEqual({ queue_id: 'queue-01', state: 'enabled' })
+      await expect(api.list()).resolves.toEqual({ approvals: [], more: false })
+      expect(methods).toEqual(['queue.get', 'approval.list'])
+    } finally {
+      client.disconnect()
+    }
+  })
 
   it('retries transient failures with increasing delays up to the configured cap', async () => {
     vi.useFakeTimers()
