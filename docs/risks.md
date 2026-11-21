@@ -385,7 +385,7 @@ Riscos da troca de conta por pasta de perfil ([ADR 0022](adr/0022-account-profil
 - **Teto.** O trecho legado da fila afetada. O teto de tentativas de cada tarefa continua verificável pelo seu evento de criação.
 - **Mitigação existente.** Filas novas registram a política inicial no primeiro evento. O replay aplica os limites gravados em ordem, e o teste de reabertura cobre uma redução no arquivo de configuração.
 - **Plano B.** Para admitir tarefas numa fila sem política gravada, o dono registra os limites a aplicar dali em diante. Se a cadeia do log falhar, manter a fila parada e recuperar um backup íntegro.
-- **O que falta.** Integrar ao produtor a gravação condicional conforme o [README do núcleo](../crates/core/README.md#fila-contínua).
+- **O que falta.** Antes de habilitar a admissão no daemon, disponibilizar a gravação condicional de política pelo dono e recusar novas tarefas enquanto o replay devolver política ausente, conforme o [README do núcleo](../crates/core/README.md#fila-contínua).
 
 ## Stream da fila no teto de eventos
 

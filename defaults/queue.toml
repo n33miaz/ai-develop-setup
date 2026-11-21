@@ -1,4 +1,4 @@
-# Política inicial de filas novas. Nas filas existentes, o dono altera a política pelo log.
+# Padrão embutido para a política inicial de filas novas.
 
 # Tentativas por tarefa, incluindo a primeira. O contrato aceita de 1 a 10.
 attempt_limit = 2

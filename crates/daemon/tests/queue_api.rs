@@ -541,6 +541,43 @@ async fn reopening_restores_the_queue_stopped_and_refuses_another_owner() {
     assert_eq!(bench.kinds().len(), 3);
 }
 
+#[tokio::test]
+async fn opening_a_legacy_stream_restores_it_stopped_and_checks_the_owner() {
+    let bench = Bench::new("queue-legacy");
+    let mut log = open_log(&bench.folder.db(), &bench.anchor);
+    let owner = json!({"queue_id": bench.queue, "owner_id": "owner-01", "via": "local_ui"});
+    let mut created = owner.clone();
+    created["state"] = "stopped".into();
+    for (seq, kind, data) in [(1, "created:1", created), (2, "enabled:1", owner)] {
+        let event = serde_json::from_value(json!({
+            "id": new_id().unwrap(),
+            "type": format!("urn:ads:event:queue.{kind}"),
+            "ts": "2030-01-02T03:04:05Z",
+            "stream": format!("queue/{}", bench.queue),
+            "seq": seq,
+            "actor": {"kind": "device", "id": "device-01"},
+            "cause": null,
+            "data_class": "internal",
+            "data": data,
+        }))
+        .unwrap();
+        log.append(&event).unwrap();
+    }
+    drop(log);
+
+    assert!(matches!(
+        bench.open_as("owner-02"),
+        Err(QueueOpenError::ForeignOwner)
+    ));
+    assert_eq!(bench.kinds(), ["created:1", "enabled:1"]);
+
+    let f = fixture(Some(bench.open())).await;
+    let mut ws = authenticated(&f).await;
+    assert_eq!(state(&mut ws, &bench.params()).await, "stopped");
+    assert_eq!(bench.kinds(), ["created:1", "enabled:1", "stopped:1"]);
+    assert_eq!(bench.audit()[2]["data"]["reason"], "restart");
+}
+
 #[test]
 fn a_process_holds_one_handle_per_queue() {
     let bench = Bench::new("queue-single-handle");

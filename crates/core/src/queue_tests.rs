@@ -581,14 +581,38 @@ fn legacy_replay_preserves_task_limits_until_a_policy_is_recorded() {
     );
 
     let configured = policy();
-    let mut events = stream.policy_changed(&configured).numbered();
-    let restored = replay_with_policy(&typed(events.clone()), None).unwrap();
+    let events = stream.policy_changed(&configured).numbered();
+    let restored = replay_with_policy(&typed(events), None).unwrap();
     assert_eq!(restored.policy, Some(configured));
-    events[1]["ts"] = "2031-01-02T03:04:02Z".into();
+}
+
+#[test]
+fn legacy_replay_rejects_a_repeated_origin_in_the_same_workspace() {
+    let mut events = Stream::new()
+        .admit("task-01", 2)
+        .admit("task-02", 2)
+        .numbered();
+    events[2]["data"]["origin"] = events[1]["data"]["origin"].clone();
     assert_eq!(
-        replay_with_policy(&typed(events), None).unwrap().state,
-        Queued
+        replay_with_policy(&typed(events.clone()), None),
+        Err(ReplayRefusal::Admission(AdmissionRefusal::OriginRepeated))
     );
+
+    events[2]["data"]["workspace_alias"] = "site".into();
+    assert!(replay_with_policy(&typed(events), None).is_ok());
+}
+
+#[test]
+fn legacy_stream_rejects_an_unreadable_admission_timestamp_at_decode() {
+    let mut events = Stream::new().admit("task-01", 2).numbered();
+    let admission = events.pop().unwrap();
+    assert!(
+        replay_with_policy(&typed(vec![events.pop().unwrap(), admission.clone()]), None).is_ok()
+    );
+
+    let mut unreadable = admission;
+    unreadable["ts"] = "2030-02-30T03:04:05Z".into();
+    assert!(serde_json::from_value::<EventEnvelopeV1>(unreadable).is_err());
 }
 
 #[test]

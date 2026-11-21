@@ -117,7 +117,8 @@ impl Drop for LoggedQueue {
 }
 
 impl LoggedQueue {
-    /// Binds the queue, creating it stopped when its stream is empty. Every open restores the
+    /// Binds the queue, creating it stopped with the bundled policy when its stream is empty.
+    /// Every open restores the
     /// queue stopped and records the restart when the log last said enabled.
     pub fn open(
         log: EventLog,
