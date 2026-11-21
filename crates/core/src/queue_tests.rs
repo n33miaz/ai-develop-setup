@@ -1822,6 +1822,7 @@ fn every_queue_event_version_decodes_from_its_envelope() {
         include_str!("../../../contracts/golden/event.queue.task_created.v1/valid/01-base.json"),
         include_str!("../../../contracts/golden/event.queue.task_created.v2/valid/01-base.json"),
         include_str!("../../../contracts/golden/event.queue.task_created.v3/valid/01-base.json"),
+        include_str!("../../../contracts/golden/event.queue.task_created.v4/valid/01-base.json"),
         include_str!(
             "../../../contracts/golden/event.queue.task_state_changed.v1/valid/01-base.json"
         ),
@@ -1880,4 +1881,183 @@ fn a_stored_queue_replays_after_the_policy_is_lowered() {
     let restored = replay_with_policy(&events, None).unwrap();
     assert_eq!((restored.state, restored.attempts), (Running, 1));
     assert_eq!(restored.policy, lowered);
+}
+
+/// Turns the creation at `index` into `queue.task_created:4` with a title and a tool.
+fn as_v4(values: &mut [serde_json::Value], index: usize, title: &str, tool: &str) {
+    values[index]["type"] = "urn:ads:event:queue.task_created:4".into();
+    values[index]["data"]["title"] = title.into();
+    values[index]["data"]["tool"] = tool.into();
+}
+
+#[test]
+fn replay_queue_rebuilds_every_task_record_in_one_pass() {
+    let mut values = Stream::new()
+        .policy_changed(&policy())
+        .enabled(OWNER_DEVICE)
+        .admit("task-01", 2)
+        .admit("task-02", 1)
+        .admit("task-03", 2)
+        .change_of("task-02", DAEMON, "queued", "running", 1)
+        .change(DAEMON, "queued", "running", 1)
+        .change_of("task-02", DAEMON, "running", "failed", 1)
+        .change(DAEMON, "running", "review", 1)
+        .change(OWNER_DEVICE, "review", "done", 1)
+        .numbered();
+    values[4]["type"] = "urn:ads:event:queue.task_created:3".into();
+    as_v4(&mut values, 5, "Conferir documentação", "tool-a");
+    let events = typed(values.clone());
+
+    let queue = replay_queue(events.iter().map(Owned::as_log), registry, None).unwrap();
+    let tasks = &queue.tasks;
+    assert_eq!(
+        tasks
+            .iter()
+            .map(|task| task.id.as_str())
+            .collect::<Vec<_>>(),
+        ["task-01", "task-02", "task-03"]
+    );
+    let summary = |task: &RecordQueueTaskV3| {
+        (
+            task.state,
+            task.attempts.get(),
+            task.attempt_limit.get(),
+            task.created_at.as_str().to_owned(),
+            task.updated_at.as_str().to_owned(),
+        )
+    };
+    let at = |seq: usize| values[seq - 1]["ts"].as_str().unwrap().to_owned();
+    assert_eq!(summary(&tasks[0]), (Done, 1, 2, at(4), at(11)));
+    assert_eq!(summary(&tasks[1]), (Failed, 1, 1, at(5), at(9)));
+    assert_eq!(summary(&tasks[2]), (Queued, 0, 2, at(6), at(6)));
+
+    // Only the fourth version records title and tool; older creations show them as absent.
+    assert_eq!(
+        (tasks[0].title.as_ref(), tasks[0].tool.as_ref()),
+        (None, None)
+    );
+    assert_eq!(
+        (tasks[1].title.as_ref(), tasks[1].tool.as_ref()),
+        (None, None)
+    );
+    assert_eq!(
+        tasks[2].title.as_ref().map(CommonQueueTaskTitleV1::as_str),
+        Some("Conferir documentação")
+    );
+    assert_eq!(tasks[2].tool, Some(id("tool-a")));
+    for task in tasks {
+        assert_eq!(task.queue_id, id("queue-01"));
+        assert_eq!(task.workspace_alias.as_str(), "docs");
+        assert!(task.branch.is_none() && task.pull_request.is_none());
+        let json = serde_json::to_value(task).unwrap();
+        assert!(json["title"].is_string() || json["title"].is_null());
+        assert_eq!(
+            serde_json::from_value::<RecordQueueTaskV3>(json).unwrap(),
+            *task
+        );
+    }
+    assert_eq!(
+        serde_json::to_value(&tasks[1]).unwrap()["origin"],
+        serde_json::json!({ "kind": "manual", "request_id": "request-task-02" })
+    );
+
+    // The one pass agrees with the replay of each task on its own.
+    for task in tasks {
+        let alone =
+            replay_task(&task.id, events.iter().map(Owned::as_log), registry, None).unwrap();
+        assert_eq!(
+            (alone.state, alone.attempts),
+            (task.state, task.attempts.get())
+        );
+        assert_eq!(alone.policy, queue.policy);
+        assert_eq!(alone.anchor, queue.anchor);
+    }
+}
+
+#[test]
+fn replay_queue_applies_the_task_checks_to_every_task() {
+    let base = Stream::new()
+        .admit("task-01", 2)
+        .admit("task-02", 2)
+        .change_of("task-02", DAEMON, "queued", "running", 1)
+        .numbered();
+    let events = typed(base);
+    // The single-task replay skips task-02; the one pass refuses its start on a stopped queue.
+    assert_eq!(
+        replay_events(&events, &policy()).map(|t| t.state),
+        Ok(Queued)
+    );
+    assert_eq!(
+        replay_queue(events.iter().map(Owned::as_log), registry, Some(&policy())),
+        Err(ReplayRefusal::QueueStopped)
+    );
+
+    let never_created = typed(
+        Stream::new()
+            .enabled(OWNER_DEVICE)
+            .admit("task-01", 2)
+            .change_of("task-09", DAEMON, "queued", "running", 1)
+            .numbered(),
+    );
+    assert_eq!(
+        replay_events(&never_created, &policy()).map(|t| t.state),
+        Ok(Queued)
+    );
+    assert_eq!(
+        replay_queue(
+            never_created.iter().map(Owned::as_log),
+            registry,
+            Some(&policy())
+        ),
+        Err(ReplayRefusal::TaskCreation)
+    );
+
+    let mut twice = Stream::new()
+        .admit("task-01", 2)
+        .admit("task-02", 2)
+        .numbered();
+    twice[2]["data"]["task_id"] = "task-01".into();
+    twice[2]["data"]["origin"]["request_id"] = "request-other".into();
+    assert_eq!(
+        replay_queue(
+            typed(twice).iter().map(Owned::as_log),
+            registry,
+            Some(&policy())
+        ),
+        Err(ReplayRefusal::TaskCreation)
+    );
+
+    let empty = typed(Stream::new().numbered());
+    let queue = replay_queue(empty.iter().map(Owned::as_log), registry, Some(&policy())).unwrap();
+    assert!(queue.tasks.is_empty());
+}
+
+#[test]
+fn creation_v4_is_admitted_with_the_older_versions_and_a_v3_record_restores() {
+    let mut values = Stream::new()
+        .enabled(OWNER_DEVICE)
+        .admit("task-01", 2)
+        .numbered();
+    as_v4(&mut values, 2, "Corrigir issue 42", "tool-b");
+    let events = typed(values.clone());
+    let mut record = replay_queue(events.iter().map(Owned::as_log), registry, Some(&policy()))
+        .unwrap()
+        .tasks
+        .remove(0);
+    assert_eq!(record.tool, Some(id("tool-b")));
+
+    let mut foreign = values;
+    foreign[2]["actor"] = serde_json::json!({"kind": "agent", "id": "agent-01"});
+    let envelope: EventEnvelopeV1 = serde_json::from_value(foreign[2].clone()).unwrap();
+    assert_eq!(
+        QueueStreamEvent::from_envelope(&envelope),
+        Err(QueueEventRefusal::Invalid)
+    );
+
+    record.state = Running;
+    record.attempts = RecordQueueTaskV3Attempts::new(1).unwrap();
+    assert!(matches!(
+        restore_running_task(&record, HostProcess::Lost, &policy()),
+        RunningAfterRestart::Fail(data) if data.from == Running && data.attempts.get() == 1
+    ));
 }
