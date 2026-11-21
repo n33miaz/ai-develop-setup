@@ -333,3 +333,109 @@ fn over_the_cap_only_one_replayable_stop_enters() {
     assert_eq!(log.verify_chain(), Ok(7));
     assert_eq!(log.head(&queue_stream(&queue_id("queue-01"))), Ok(7));
 }
+
+/// Takes a current file back to version 4, before the database bound queue events.
+fn back_to_version_four(path: &Path) {
+    let c = rusqlite::Connection::open(path).unwrap();
+    c.execute_batch("DROP TRIGGER event_queue_binding").unwrap();
+    c.pragma_update(None, "user_version", 4).unwrap();
+    assert_eq!(
+        crate::migrate::schema(&c).unwrap(),
+        crate::migrate::expected_schema(4).unwrap()
+    );
+}
+
+/// Copies the last row as the next one, in `stream` with `kind`; only the database checks it.
+fn raw_append(path: &Path, kind: &str, stream: &str, seq: i64) -> Result<usize, String> {
+    rusqlite::Connection::open(path)
+        .unwrap()
+        .execute(
+            "INSERT INTO event (position, format, id, type, ts, stream, seq, actor_kind, actor_id,
+                cause, data_class, action_id, approval_id, key_id, nonce, data_ct, prev_chain, chain)
+             SELECT position + 1, format, '01ARZ3NDEKTSV4RT' || printf('%010d', position + 1),
+                ?1, ts, ?2, ?3, actor_kind, actor_id, cause, data_class, NULL, NULL, key_id,
+                nonce, data_ct, chain, chain
+             FROM event ORDER BY position DESC LIMIT 1",
+            rusqlite::params![kind, stream, seq],
+        )
+        .map_err(|error| error.to_string())
+}
+
+fn user_version(path: &Path) -> i64 {
+    rusqlite::Connection::open(path)
+        .unwrap()
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap()
+}
+
+#[test]
+fn version_four_queue_rows_migrate_and_the_database_binds_new_ones() {
+    let fixture = Fixture::new();
+    let anchor = MemoryAnchor::default();
+    let events = queue_events();
+    let mut log = open(&fixture.db(), &anchor, "").unwrap();
+    for event in &events[..3] {
+        log.append(event).unwrap();
+    }
+    drop(log);
+    back_to_version_four(&fixture.db());
+
+    let mut log = open(&fixture.db(), &anchor, "").unwrap();
+    assert_eq!(user_version(&fixture.db()), crate::open::SCHEMA_VERSION);
+    assert_eq!(log.verify_chain(), Ok(3));
+    assert_eq!(read_back(&log).unwrap(), events[..3]);
+    for event in &events[3..] {
+        log.append(event).unwrap();
+    }
+    assert_eq!(read_back(&log).unwrap(), events);
+    drop(log);
+
+    let queue_type = "urn:ads:event:queue.enabled:1";
+    // Each row is otherwise valid for the chain trigger, so only the binding refuses it.
+    for (kind, stream, seq) in [
+        (queue_type, "task/t1", 1),
+        ("urn:ads:event:task.noted:1", "queue/queue-01", 7),
+        (queue_type, "queue/", 1),
+    ] {
+        let error = raw_append(&fixture.db(), kind, stream, seq).unwrap_err();
+        assert!(error.contains("queue"), "{kind} {stream}: {error}");
+    }
+    // The binding refuses only the family mismatch: the row below passes it (and the chain
+    // trigger), and only the authenticated read would refuse its copied ciphertext.
+    assert_eq!(
+        raw_append(&fixture.db(), queue_type, "queue/queue-01", 7),
+        Ok(1)
+    );
+}
+
+#[test]
+fn a_version_four_file_with_an_unbound_queue_row_is_left_as_it_was() {
+    let fixture = Fixture::new();
+    let anchor = MemoryAnchor::default();
+    let mut log = open(&fixture.db(), &anchor, "").unwrap();
+    log.append(&queue_events()[0]).unwrap();
+    drop(log);
+    back_to_version_four(&fixture.db());
+    assert_eq!(
+        raw_append(&fixture.db(), "urn:ads:event:queue.enabled:1", "task/t1", 1),
+        Ok(1)
+    );
+
+    let before = {
+        let c = rusqlite::Connection::open(fixture.db()).unwrap();
+        crate::migrate::schema(&c).unwrap()
+    };
+    assert!(matches!(
+        open(&fixture.db(), &anchor, ""),
+        Err(StorageError::UnsupportedSchema)
+    ));
+    assert_eq!(user_version(&fixture.db()), 4);
+    let c = rusqlite::Connection::open(fixture.db()).unwrap();
+    assert_eq!(crate::migrate::schema(&c).unwrap(), before);
+    assert_eq!(
+        c.query_row("SELECT count(*) FROM log_genesis", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+}

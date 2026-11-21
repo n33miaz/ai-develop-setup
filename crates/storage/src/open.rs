@@ -11,7 +11,7 @@ use std::{
 };
 
 pub const APPLICATION_ID: i64 = 0x41445331;
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 /// Owns the connection; raw SQL remains private to storage.
 pub struct AuditStore {

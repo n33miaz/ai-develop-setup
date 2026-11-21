@@ -97,10 +97,34 @@ BEGIN
 END;
 "#;
 
+/// Version 5: the database itself binds a `queue.*` type to a `queue/<id>` stream and back,
+/// as the table CHECKs bind the gate families. A trigger, because SQLite adds a table CHECK
+/// only by rebuilding the append-only table. `<id>` is a `common.id:1`, 1 to 64 characters.
+const QUEUE_BINDING_SQL: &str = r#"
+CREATE TRIGGER event_queue_binding BEFORE INSERT ON event
+BEGIN
+  SELECT RAISE(ABORT, 'queue')
+  WHERE (substr(NEW.type, 1, 20) = 'urn:ads:event:queue.') IS NOT (substr(NEW.stream, 1, 6) = 'queue/')
+     OR (substr(NEW.stream, 1, 6) = 'queue/' AND length(NEW.stream) NOT BETWEEN 7 AND 70);
+END;
+"#;
+
+/// Rows a version 4 file may hold that the version 5 binding refuses.
+const QUEUE_BINDING_VIOLATIONS: &str = "SELECT EXISTS (
+    SELECT 1 FROM event
+    WHERE (substr(type, 1, 20) = 'urn:ads:event:queue.') IS NOT (substr(stream, 1, 6) = 'queue/')
+       OR (substr(stream, 1, 6) = 'queue/' AND length(stream) NOT BETWEEN 7 AND 70)
+)";
+
 /// `(version, script)`: each script takes the file from the previous listed
 /// version to `version`. Version 2 (a pre-release event log) is retired: its rows
 /// cannot be re-sealed without the key, which opening never receives.
-const STEPS: [(i64, &str); 3] = [(1, META_SQL), (3, EVENT_LOG_SQL), (4, GENESIS_SQL)];
+const STEPS: [(i64, &str); 4] = [
+    (1, META_SQL),
+    (3, EVENT_LOG_SQL),
+    (4, GENESIS_SQL),
+    (5, QUEUE_BINDING_SQL),
+];
 pub(crate) const RETIRED: [i64; 1] = [2];
 
 /// Refuses versions this build never reads: negative, newer or retired.
@@ -192,10 +216,19 @@ fn migrate_with(
             return Err(StorageError::LegacyKeyReuse);
         }
     }
+    // The binding only adds a check: a file holding a row it refuses stays as it was.
+    if matches!(version, 3 | 4) && tx.query_row(QUEUE_BINDING_VIOLATIONS, [], |row| row.get(0))? {
+        return Err(StorageError::UnsupportedSchema);
+    }
     if version < SCHEMA_VERSION {
         for step in scripts(steps, version, SCHEMA_VERSION) {
             tx.execute_batch(step)?;
         }
+        tx.pragma_update(None, "application_id", APPLICATION_ID)?;
+        tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+    }
+    // The genesis link exists from version 4 on; a later step must not seal it again.
+    if version < 4 {
         let first_link: Option<Vec<u8>> = tx
             .query_row("SELECT prev_chain FROM event WHERE position = 1", [], |r| {
                 r.get(0)
@@ -206,8 +239,6 @@ fn migrate_with(
             None => random_link()?.to_vec(),
         };
         tx.execute("INSERT INTO log_genesis VALUES (1, ?1)", [link])?;
-        tx.pragma_update(None, "application_id", APPLICATION_ID)?;
-        tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     }
     tx.commit()?;
     Ok(())
