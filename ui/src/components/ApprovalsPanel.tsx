@@ -165,6 +165,9 @@ export function ApprovalsPanel({ api }: { api: Api }) {
         {busy && <p role="status">{t('controls.loading')}</p>}
         {message && <p role={message === 'controls.saved' ? 'status' : 'alert'}>{t(message)}</p>}
         {page?.more && <p>{t('approvals.more')}</p>}
+        {page !== undefined && page.unreadable > 0 && (
+          <p>{t('approvals.unreadable', { count: String(page.unreadable) })}</p>
+        )}
         {page?.approvals.length === 0 && <p>{t('approvals.empty')}</p>}
         {page?.approvals.map((approval) => {
           const confirmingThis = confirming === approval.approval_id

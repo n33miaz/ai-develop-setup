@@ -1,19 +1,19 @@
 import * as validators from 'virtual:wire-validators'
 import type {
-  CommandApprovalListResponseV2,
+  CommandApprovalListResponseV3,
   CommandHarnessListResponseV1,
-  CommandQueueGetResponseV1,
+  CommandQueueGetResponseV2,
   CommandRequestV1,
-  ContractLocalApiServerMessageV5,
+  ContractLocalApiServerMessageV7,
 } from './contracts'
 
 function validate(urn: string, value: unknown): boolean {
   return validators[urn.replace(/[^a-zA-Z0-9]/g, '_')]?.(value) === true
 }
 
-export function isServerMessage(value: unknown): value is ContractLocalApiServerMessageV5 {
-  if (!validate('urn:ads:contract:local-api.server-message:5', value)) return false
-  const message = value as ContractLocalApiServerMessageV5
+export function isServerMessage(value: unknown): value is ContractLocalApiServerMessageV7 {
+  if (!validate('urn:ads:contract:local-api.server-message:7', value)) return false
+  const message = value as ContractLocalApiServerMessageV7
   if ('jsonrpc' in message) return true
   const event = message
   if (event.type.startsWith('urn:ads:event:session.')) {
@@ -28,12 +28,12 @@ export function isHarnessList(value: unknown): value is CommandHarnessListRespon
   return validate('urn:ads:command:harness.list.response:1', value)
 }
 
-export function isQueueGet(value: unknown): value is CommandQueueGetResponseV1 {
-  return validate('urn:ads:command:queue.get.response:1', value)
+export function isQueueGet(value: unknown): value is CommandQueueGetResponseV2 {
+  return validate('urn:ads:command:queue.get.response:2', value)
 }
 
-export function isApprovalList(value: unknown): value is CommandApprovalListResponseV2 {
-  return validate('urn:ads:command:approval.list.response:2', value)
+export function isApprovalList(value: unknown): value is CommandApprovalListResponseV3 {
+  return validate('urn:ads:command:approval.list.response:3', value)
 }
 
 export function isLocalCommand(command: CommandRequestV1): boolean {

@@ -3,8 +3,8 @@ import {
   SESSION_SETUP_FAILED,
   SUBSCRIPTION_REPLAY_UNAVAILABLE,
   type CommandRequestV1,
-  type CommandQueueGetResponseV1,
-  type CommandApprovalListResponseV2,
+  type CommandQueueGetResponseV2,
+  type CommandApprovalListResponseV3,
   type CommandResponseV2,
   type EventEnvelopeV1,
   type HarnessCatalog,
@@ -12,7 +12,7 @@ import {
 
 export type LocalCommandReply =
   | CommandResponseV2
-  | ((CommandQueueGetResponseV1 | CommandApprovalListResponseV2) & { error?: never })
+  | ((CommandQueueGetResponseV2 | CommandApprovalListResponseV3) & { error?: never })
 
 export type Unsubscribe = () => void
 

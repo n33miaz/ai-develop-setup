@@ -1,13 +1,15 @@
 import { fireEvent, render, screen, within } from '@testing-library/react'
 import { expect, it, vi } from 'vitest'
-import recorded from '../../../contracts/golden/command.approval.list.response.v2/valid/02-with-effects.json'
-import refused from '../../../contracts/golden/command.approval.list.response.v2/valid/04-refused-with-more.json'
+import recorded from '../../../contracts/golden/command.approval.list.response.v3/valid/02-with-effects.json'
+import refused from '../../../contracts/golden/command.approval.list.response.v3/valid/04-refused-with-more.json'
+import unreadable from '../../../contracts/golden/command.approval.list.response.v3/valid/05-empty-with-unreadable.json'
+import queued from '../../../contracts/golden/command.queue.get.response.v2/valid/01-recorded-policy.json'
 import {
   HARNESS_NOT_CONFIGURED,
   QUEUE_NOT_CONFIGURED,
 } from '../../../contracts/generated/ts/contract.local-api.error-code.v4.constants'
 import { CommandRefusal, type queueApprovals } from '../api/queueApprovals'
-import { isApprovalList } from '../api/wire'
+import { isApprovalList, isQueueGet } from '../api/wire'
 import { ApprovalsPanel } from './ApprovalsPanel'
 import { QueuePanel } from './QueuePanel'
 
@@ -35,9 +37,9 @@ it('creates, starts and stops a queue using the reported state', async () => {
   const api = mockApi()
   api.get
     .mockRejectedValueOnce(new CommandRefusal(QUEUE_NOT_CONFIGURED))
-    .mockResolvedValueOnce({ queue_id: 'queue-01', state: 'stopped' })
-    .mockResolvedValueOnce({ queue_id: 'queue-01', state: 'enabled' })
-    .mockResolvedValueOnce({ queue_id: 'queue-01', state: 'stopped' })
+    .mockResolvedValueOnce({ queue_id: 'queue-01', state: 'stopped', policy: null })
+    .mockResolvedValueOnce({ queue_id: 'queue-01', state: 'enabled', policy: null })
+    .mockResolvedValueOnce({ queue_id: 'queue-01', state: 'stopped', policy: null })
   render(<QueuePanel api={api} />)
   const panel = open('Fila de tarefas')
   expect(panel.queryByRole('button', { name: 'Criar fila' })).toBeNull()
@@ -48,6 +50,7 @@ it('creates, starts and stops a queue using the reported state', async () => {
   fireEvent.click(await panel.findByRole('button', { name: 'Ligar fila' }))
   fireEvent.click(await panel.findByRole('button', { name: 'Parar fila' }))
   expect(await panel.findByText('Fila parada.')).toBeVisible()
+  expect(panel.getByText('A fila não tem limites registrados no histórico.')).toBeVisible()
   expect(api.create).toHaveBeenCalledWith('queue-01')
   expect(api.start).toHaveBeenCalledWith('queue-01')
   expect(api.stop).toHaveBeenCalledWith('queue-01')
@@ -57,7 +60,7 @@ it('shows a failed query and a specific executor refusal', async () => {
   const api = mockApi()
   api.get
     .mockRejectedValueOnce(new Error('offline'))
-    .mockResolvedValueOnce({ queue_id: 'queue-01', state: 'stopped' })
+    .mockResolvedValueOnce({ queue_id: 'queue-01', state: 'stopped', policy: null })
   api.start.mockRejectedValueOnce(new CommandRefusal(HARNESS_NOT_CONFIGURED))
   render(<QueuePanel api={api} />)
   const panel = open('Fila de tarefas')
@@ -75,7 +78,9 @@ it('shows the recorded effects and requires confirmation before answering', asyn
   const page = recorded.result
   const item = page.approvals[0]
   if (!item) throw new Error('missing recorded approval')
-  api.list.mockResolvedValueOnce(page).mockResolvedValueOnce({ approvals: [], more: false })
+  api.list
+    .mockResolvedValueOnce(page)
+    .mockResolvedValueOnce({ approvals: [], more: false, unreadable: 0 })
   render(<ApprovalsPanel api={api} />)
   const panel = open('Aprovações')
   fireEvent.click(panel.getByRole('button', { name: 'Consultar' }))
@@ -110,4 +115,34 @@ it('marks omitted and unapprovable items while allowing denial', async () => {
   fireEvent.click(panel.getByRole('button', { name: 'Negar' }))
   expect(await panel.findByRole('alert')).toHaveTextContent('O núcleo recusou')
   expect(api.answer).toHaveBeenCalledWith(expect.objectContaining({ decision: 'deny' }))
+})
+
+it('shows the limits recorded for the queue', async () => {
+  const api = mockApi()
+  if (!isQueueGet(queued)) throw new Error('invalid queue fixture')
+  api.get.mockResolvedValueOnce(queued.result)
+  render(<QueuePanel api={api} />)
+  const panel = open('Fila de tarefas')
+  fireEvent.change(panel.getByLabelText('ID da fila'), {
+    target: { value: queued.result.queue_id },
+  })
+  fireEvent.click(panel.getByRole('button', { name: 'Consultar' }))
+  expect(await panel.findByText('Limites registrados')).toBeVisible()
+  // The fixture records 2 attempts, a window of 3600 s and 60 s for the host.
+  expect(panel.getByText('Tentativas por tarefa: 2')).toBeVisible()
+  expect(panel.getByText('Janela de admissão: 3600 s')).toBeVisible()
+  expect(panel.getByText('Prazo de confirmação da sessão pelo host: 60 s')).toBeVisible()
+  expect(panel.getAllByRole('listitem')).toHaveLength(9)
+  expect(panel.queryByText('A fila não tem limites registrados no histórico.')).toBeNull()
+})
+
+it('tells the owner how many unreadable requests were left out', async () => {
+  const api = mockApi()
+  if (!isApprovalList(unreadable)) throw new Error('invalid unreadable fixture')
+  api.list.mockResolvedValueOnce(unreadable.result)
+  render(<ApprovalsPanel api={api} />)
+  const panel = open('Aprovações')
+  fireEvent.click(panel.getByRole('button', { name: 'Consultar' }))
+  expect(await panel.findByText(/Pedidos com histórico ilegível fora da lista: 2\./)).toBeVisible()
+  expect(panel.getByText('Nenhuma aprovação pendente.')).toBeVisible()
 })
