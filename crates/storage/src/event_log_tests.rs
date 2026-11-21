@@ -2759,9 +2759,15 @@ mod gate_journal {
                 .map(|history| history.plan.fields().action_id.clone())
                 .collect::<Vec<_>>()
         };
-        assert_eq!(ids(log.pending_approvals(10).unwrap()), asked);
-        assert_eq!(ids(log.pending_approvals(2).unwrap()), asked[..2]);
-        let pending = log.pending_approvals(10).unwrap();
+        assert_eq!(
+            ids(log.pending_approvals(10, &mut |_| true).unwrap()),
+            asked
+        );
+        assert_eq!(
+            ids(log.pending_approvals(2, &mut |_| true).unwrap()),
+            asked[..2]
+        );
+        let pending = log.pending_approvals(10, &mut |_| true).unwrap();
         assert!(pending.iter().all(|history| history.events.len() == 2));
         assert!(!ids(pending).contains(&granted));
 
@@ -2781,6 +2787,17 @@ mod gate_journal {
                 meta(2, 40),
             )
             .unwrap();
-        assert_eq!(ids(log.pending_approvals(10).unwrap()), asked[1..]);
+        assert_eq!(
+            ids(log.pending_approvals(10, &mut |_| true).unwrap()),
+            asked[1..]
+        );
+
+        // The limit counts what the caller keeps: skipped requests never fill the page.
+        let last = asked[2].clone();
+        let mut only_last = |history: &GateHistory| history.plan.fields().action_id == last;
+        assert_eq!(
+            ids(log.pending_approvals(1, &mut only_last).unwrap()),
+            [asked[2].clone()]
+        );
     }
 }

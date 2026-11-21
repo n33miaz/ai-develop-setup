@@ -11,6 +11,11 @@
         "summary": "Limpar arquivos temporários do projeto",
         "requested_at": "2030-01-02T03:04:05Z",
         "expires_at": "2030-01-02T03:19:05Z",
+        "not_approvable": [
+          "estimate_unknown",
+          "wildcard_target",
+          "definitive_recursive_delete"
+        ],
         "plan": {
           "version": 2,
           "action_id": "act-03",
@@ -52,6 +57,7 @@
         "summary": "Limpar arquivos temporários do projeto",
         "requested_at": "2030-01-02T03:04:05Z",
         "expires_at": "2030-01-02T03:19:05Z",
+        "not_approvable": [],
         "plan": {
           "version": 2,
           "action_id": "act-06",

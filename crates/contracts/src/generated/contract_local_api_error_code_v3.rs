@@ -28,6 +28,7 @@ pub enum ContractLocalApiErrorCodeV3 {
     ApprovalStale(ContractLocalApiErrorCodeV3ApprovalStale),
     ApprovalPolicyChanged(ContractLocalApiErrorCodeV3ApprovalPolicyChanged),
     ApprovalOutOfOrder(ContractLocalApiErrorCodeV3ApprovalOutOfOrder),
+    ApprovalNotApprovable(ContractLocalApiErrorCodeV3ApprovalNotApprovable),
 }
 
 /// O método solicitado é desconhecido.
@@ -457,6 +458,30 @@ impl Serialize for ContractLocalApiErrorCodeV3ApprovalOutOfOrder {
 }
 
 impl<'de> Deserialize<'de> for ContractLocalApiErrorCodeV3ApprovalOutOfOrder {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        support::expect_i64(deserializer, Self::VALUE).map(|()| Self)
+    }
+}
+
+/// A API não deixa aprovar esta ação: o efeito concreto não está fixado no plano registrado. Negar continua permitido. A resposta fica registrada.
+///
+/// `$defs.approval_not_approvable` in `urn:ads:contract:local-api.error-code:3`.
+///
+/// Always `-32023`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ContractLocalApiErrorCodeV3ApprovalNotApprovable;
+
+impl ContractLocalApiErrorCodeV3ApprovalNotApprovable {
+    pub const VALUE: i64 = -32023;
+}
+
+impl Serialize for ContractLocalApiErrorCodeV3ApprovalNotApprovable {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_i64(Self::VALUE)
+    }
+}
+
+impl<'de> Deserialize<'de> for ContractLocalApiErrorCodeV3ApprovalNotApprovable {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         support::expect_i64(deserializer, Self::VALUE).map(|()| Self)
     }

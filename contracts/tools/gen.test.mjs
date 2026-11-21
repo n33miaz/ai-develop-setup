@@ -217,5 +217,6 @@ test("version 3 of the local API error catalog keeps every code and adds the app
     APPROVAL_STALE: -32020,
     APPROVAL_POLICY_CHANGED: -32021,
     APPROVAL_OUT_OF_ORDER: -32022,
+    APPROVAL_NOT_APPROVABLE: -32023,
   });
 });

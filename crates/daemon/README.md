@@ -148,6 +148,7 @@ Os nomes, valores e significados dos erros emitidos pela API local estão no
 | `APPROVAL_STALE` | `-32020` |
 | `APPROVAL_POLICY_CHANGED` | `-32021` |
 | `APPROVAL_OUT_OF_ORDER` | `-32022` |
+| `APPROVAL_NOT_APPROVABLE` | `-32023` |
 
 `api::Launcher::prepare` recebe os parâmetros gerados de `session.open` (ferramenta,
 apelido de pasta, identificador e tamanho) e devolve `OpenParams` do ptyhost.
@@ -243,22 +244,38 @@ recebe `REMOTE_ORIGIN_REFUSED`. O dono e o aparelho vêm do daemon
   ([`command.approval.list.response:1`](../../contracts/README.md#api-local)):
   da mais antiga à mais nova, cada ação cuja aprovação foi pedida e ainda não
   foi concedida, negada nem expirada, com `approval_id`, `risk`, `summary`,
-  `requested_at`, `expires_at` e o registro do plano (`record.action-plan:2`)
-  como o portão o julgou: alvos, destino, quarentena, estimativa e regras. Só
-  ações de uma pasta de sessão servida aqui; no máximo `read_page_limit` da
-  configuração do armazenamento por pedido, e nunca mais de 1000 (o limite do
-  contrato da resposta). Só lê e fica fora da cache de
-  idempotência.
+  `requested_at`, `expires_at`, `not_approvable` e o registro do plano
+  (`record.action-plan:2`) como o portão o julgou. Só ações de uma pasta de
+  sessão servida aqui: o filtro vem antes do limite, então pedidos de outras
+  pastas nunca ocupam a página. No máximo `read_page_limit` da configuração do
+  armazenamento por pedido, e nunca mais de 1000 (o limite do contrato da
+  resposta). Só lê e fica fora da cache de idempotência.
+- O que o registro garante: a operação, os alvos como foram pedidos (caminho e
+  curinga), o destino, se há quarentena, a estimativa e as regras. Ele não lista
+  o conteúdo de uma pasta alvo, os nomes que um curinga vai casar nem os itens
+  do manifesto de uma restauração: o executor os lê no disco na execução. Com
+  estimativa, o executor recusa antes de mudar qualquer coisa se encontrar mais
+  itens ou bytes do que o aprovado.
+- Por isso a API só aprova ação cujo efeito concreto o registro fixa.
+  `not_approvable` (`approvals::not_approvable`) lista por que não:
+  `estimate_unknown` (sem estimativa, sem teto), `wildcard_target` (alvo com
+  curinga), `definitive_recursive_delete` (`fs.delete_recursive` ou
+  `fs.clean_untracked` sem quarentena) e `restore_from_manifest` (mover de volta
+  à raiz de trabalho: os pares origem e destino vêm do manifesto). Aprovar uma
+  dessas grava a resposta e volta `APPROVAL_NOT_APPROVABLE`, com a ação ainda
+  aguardando; negar continua permitido. Ver efeitos concretos antes de aprovar
+  pede registrá-los no ensaio, o que esta versão não faz.
 - `approval.answer` leva `action_id`, `approval_id`, `plan_hash` (o que o dono
   viu) e `decision` (`approve` ou `deny`). Antes de gravar qualquer coisa, o
-  daemon confere que a ação existe e tem essa aprovação (`APPROVAL_NOT_FOUND`) e
-  ainda aguarda resposta (`APPROVAL_ALREADY_ANSWERED`); nessas recusas nada é
-  gravado. Depois grava `answer.recorded:1` no stream `answer/<approval_id>`: o aparelho
-  como ator, o dono, o `ts` do relógio do daemon, a decisão, o hash e o id do
-  comando em `cause`. Se essa gravação falhar, a resposta é `INTERNAL_ERROR` e o
-  portão não age. Só então o portão registra `approval.granted:2` ou
-  `approval.denied:2`, com o mesmo ator e `cause` apontando para o registro da
-  resposta.
+  daemon confere que a ação existe e que a aprovação é a pedida no histórico
+  dela, em qualquer estado (`APPROVAL_NOT_FOUND`), e que a ação ainda aguarda
+  resposta (`APPROVAL_ALREADY_ANSWERED`); nessas recusas nada é gravado. Depois
+  grava `answer.recorded:1` no stream `answer/<approval_id>`: o aparelho como
+  ator, o dono, o `ts` do relógio do daemon, a decisão, o hash, a chave de
+  idempotência e o id do comando em `cause`. Se essa gravação falhar, a
+  resposta é `INTERNAL_ERROR` e o portão não age. Só então o portão registra
+  `approval.granted:2` ou `approval.denied:2`, com o mesmo ator e `cause`
+  apontando para o registro da resposta.
 - Resposta velha fica registrada e é recusada com `APPROVAL_STALE`: com outro
   hash que não o do plano em espera, o portão não age; com a validade vencida,
   aprovando ou negando, o portão registra `approval.expired:2` e a ação sai da
@@ -268,16 +285,24 @@ recebe `REMOTE_ORIGIN_REFUSED`. O dono e o aparelho vêm do daemon
   (`E_POLICY_CHANGED` ou `E_CLOCK_POLICY_CHANGED`) e a resposta
   `APPROVAL_POLICY_CHANGED`. Relógio antes do último passo da ação devolve
   `APPROVAL_OUT_OF_ORDER` sem decisão; a resposta do dono já ficou gravada e
-  pode ser repetida. Aprovar não executa nada: a licença de execução só sai em
-  `SessionGate::execute`, que confere política e tempo de novo.
-- A repetição da mesma chave de idempotência devolve `replayed: true` sem
-  responder de novo.
+  pode ser repetida com a mesma chave. Aprovar não executa nada: a licença de
+  execução só sai em `SessionGate::execute`, que confere política e tempo de
+  novo.
+- Repetições: a cache em memória (`idempotency_keys` comandos aceitos) devolve
+  `replayed: true` sem chamar o portão. Fora dela, a chave fica no log, junto da
+  resposta, enquanto o log existir: a mesma chave com o mesmo conteúdo nunca
+  grava outra resposta. Se o portão já decidiu por causa dela, volta o mesmo
+  resultado (aceito com `replayed: true`, ou a mesma recusa); se só a resposta
+  foi gravada (falha entre os dois registros, relógio atrasado, reinício), a
+  decisão é tomada de novo com `cause` na resposta gravada; recusas que não
+  dependem do portão voltam iguais. A mesma chave com outra decisão ou outro
+  hash recebe `CONFLICT`. A busca é no stream da aprovação nomeada.
 
 `approvals::ApprovalDesk` guarda o log ancorado (`audit::ProductLog`) e as
 portas de sessão (`gate::SessionGate`) ligadas a ele; planejar, pedir aprovação
 e executar passam por `ApprovalDesk::with_gates`, sob a mesma trava das
 respostas. A lista vem de `EventLog::pending_approvals`, que confere a âncora e
-a cadeia antes de ler. `LocalApi::with_approvals` entrega o controle à API. O
+a cadeia uma vez antes de ler e aplica o filtro da mesa antes do limite. `LocalApi::with_approvals` entrega o controle à API. O
 executável ainda não monta o portão, porque falta o provedor de chaves do
 cofre; até lá ele serve `approvals::DisabledApprovals`, que recusa os dois
 comandos com `APPROVAL_NOT_CONFIGURED`.

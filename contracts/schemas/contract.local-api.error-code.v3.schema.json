@@ -57,6 +57,9 @@
     },
     {
       "$ref": "#/$defs/approval_out_of_order"
+    },
+    {
+      "$ref": "#/$defs/approval_not_approvable"
     }
   ],
   "examples": [
@@ -152,6 +155,11 @@
       "type": "integer",
       "const": -32022,
       "description": "O relógio do núcleo está antes do último passo da ação; nada foi decidido e a resposta pode ser repetida."
+    },
+    "approval_not_approvable": {
+      "type": "integer",
+      "const": -32023,
+      "description": "A API não deixa aprovar esta ação: o efeito concreto não está fixado no plano registrado. Negar continua permitido. A resposta fica registrada."
     }
   }
 }

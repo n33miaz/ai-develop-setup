@@ -13,7 +13,7 @@ use super::record_action_plan_v2::RecordActionPlanV2;
 use crate::support;
 use crate::support::ContractError;
 
-/// Resposta de approval.list. Resposta JSON-RPC 2.0 aceita de approval.list: as ações que aguardam a resposta do dono, da mais antiga à mais nova, cada uma com a aprovação pedida e o registro do plano como o portão o julgou (alvos, destino, quarentena, estimativa e regras). A recusa volta como command.response:2 com error.
+/// Resposta de approval.list. Resposta JSON-RPC 2.0 aceita de approval.list: as ações que aguardam a resposta do dono, da mais antiga à mais nova, cada uma com a aprovação pedida, o registro do plano como o portão o julgou (alvos como pedidos, destino, quarentena, estimativa e regras) e os motivos pelos quais a API não a deixa aprovar (not_approvable; vazio quando é aprovável). O registro não lista o conteúdo das pastas nem os itens de um manifesto: esses são lidos na execução. A recusa volta como command.response:2 com error.
 ///
 /// `urn:ads:command:approval.list.response:1`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -124,6 +124,7 @@ pub struct CommandApprovalListResponseV1ResultApprovalsItem {
     pub summary: CommandApprovalListResponseV1ResultApprovalsItemSummary,
     pub requested_at: CommonTimestampV1,
     pub expires_at: CommonTimestampV1,
+    pub not_approvable: CommandApprovalListResponseV1ResultApprovalsItemNotApprovable,
     pub plan: RecordActionPlanV2,
 }
 
@@ -180,5 +181,91 @@ impl fmt::Display for CommandApprovalListResponseV1ResultApprovalsItemSummary {
 impl Serialize for CommandApprovalListResponseV1ResultApprovalsItemSummary {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(&self.0)
+    }
+}
+
+/// `result.approvals[].not_approvable` in `urn:ads:command:approval.list.response:1`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
+#[serde(try_from = "Vec<CommandApprovalListResponseV1ResultApprovalsItemNotApprovableItem>")]
+pub struct CommandApprovalListResponseV1ResultApprovalsItemNotApprovable(
+    Vec<CommandApprovalListResponseV1ResultApprovalsItemNotApprovableItem>,
+);
+
+impl CommandApprovalListResponseV1ResultApprovalsItemNotApprovable {
+    pub const MAX_ITEMS: usize = 4;
+
+    pub fn new(
+        items: Vec<CommandApprovalListResponseV1ResultApprovalsItemNotApprovableItem>,
+    ) -> Result<Self, ContractError> {
+        if items.len() <= Self::MAX_ITEMS && support::all_distinct(&items) {
+            Ok(Self(items))
+        } else {
+            Err(ContractError::new(
+                "CommandApprovalListResponseV1ResultApprovalsItemNotApprovable",
+                format!("{} items", items.len()),
+            ))
+        }
+    }
+
+    pub fn as_slice(&self) -> &[CommandApprovalListResponseV1ResultApprovalsItemNotApprovableItem] {
+        &self.0
+    }
+
+    pub fn into_vec(
+        self,
+    ) -> Vec<CommandApprovalListResponseV1ResultApprovalsItemNotApprovableItem> {
+        self.0
+    }
+}
+
+impl TryFrom<Vec<CommandApprovalListResponseV1ResultApprovalsItemNotApprovableItem>>
+    for CommandApprovalListResponseV1ResultApprovalsItemNotApprovable
+{
+    type Error = ContractError;
+
+    fn try_from(
+        items: Vec<CommandApprovalListResponseV1ResultApprovalsItemNotApprovableItem>,
+    ) -> Result<Self, ContractError> {
+        Self::new(items)
+    }
+}
+
+impl From<CommandApprovalListResponseV1ResultApprovalsItemNotApprovable>
+    for Vec<CommandApprovalListResponseV1ResultApprovalsItemNotApprovableItem>
+{
+    fn from(
+        value: CommandApprovalListResponseV1ResultApprovalsItemNotApprovable,
+    ) -> Vec<CommandApprovalListResponseV1ResultApprovalsItemNotApprovableItem> {
+        value.0
+    }
+}
+
+impl Serialize for CommandApprovalListResponseV1ResultApprovalsItemNotApprovable {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
+    }
+}
+
+/// `result.approvals[].not_approvable[]` in `urn:ads:command:approval.list.response:1`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum CommandApprovalListResponseV1ResultApprovalsItemNotApprovableItem {
+    #[serde(rename = "estimate_unknown")]
+    EstimateUnknown,
+    #[serde(rename = "wildcard_target")]
+    WildcardTarget,
+    #[serde(rename = "definitive_recursive_delete")]
+    DefinitiveRecursiveDelete,
+    #[serde(rename = "restore_from_manifest")]
+    RestoreFromManifest,
+}
+
+impl CommandApprovalListResponseV1ResultApprovalsItemNotApprovableItem {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::EstimateUnknown => "estimate_unknown",
+            Self::WildcardTarget => "wildcard_target",
+            Self::DefinitiveRecursiveDelete => "definitive_recursive_delete",
+            Self::RestoreFromManifest => "restore_from_manifest",
+        }
     }
 }

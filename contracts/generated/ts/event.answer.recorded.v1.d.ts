@@ -1,7 +1,7 @@
 /* Gerado por tools/gen-ts.mjs a partir de schemas/event.answer.recorded.v1.schema.json. Não edite à mão. */
 
 /**
- * Resposta do dono registrada. A resposta do dono a uma aprovação, gravada antes de o portão agir sobre ela: o aparelho (actor), o dono, o instante (ts), a decisão e o plano que o dono viu. Fica no stream answer/<approval_id>. A decisão do portão vem depois, em approval.granted:2 ou approval.denied:2, e pode ser uma negação mesmo quando o dono aprovou (política mudou).
+ * Resposta do dono registrada. A resposta do dono a uma aprovação, gravada antes de o portão agir sobre ela: o aparelho (actor), o dono, o instante (ts), a decisão, o plano que o dono viu e a chave de idempotência do comando, que deduplica a resposta no log. Fica no stream answer/<approval_id>. A decisão do portão vem depois, em approval.granted:2 ou approval.denied:2, e pode ser uma negação mesmo quando o dono aprovou (política mudou).
  */
 export type EventAnswerRecordedV1 = EventEnvelopeV1 & {
   type: "urn:ads:event:answer.recorded:1";
@@ -13,6 +13,7 @@ export type EventAnswerRecordedV1 = EventEnvelopeV1 & {
     decision: "approve" | "deny";
     owner_id: CommonIdV1;
     via: "local_ui" | "tray" | "remote_device";
+    idempotency_key: CommonUlidV1;
   };
   actor: {
     kind?: "device";

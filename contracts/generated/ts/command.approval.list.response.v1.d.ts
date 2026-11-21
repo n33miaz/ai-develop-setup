@@ -73,7 +73,7 @@ export type CommonAbspathV2 = string;
 export type CommonActionRuleV1 = string;
 
 /**
- * Resposta de approval.list. Resposta JSON-RPC 2.0 aceita de approval.list: as ações que aguardam a resposta do dono, da mais antiga à mais nova, cada uma com a aprovação pedida e o registro do plano como o portão o julgou (alvos, destino, quarentena, estimativa e regras). A recusa volta como command.response:2 com error.
+ * Resposta de approval.list. Resposta JSON-RPC 2.0 aceita de approval.list: as ações que aguardam a resposta do dono, da mais antiga à mais nova, cada uma com a aprovação pedida, o registro do plano como o portão o julgou (alvos como pedidos, destino, quarentena, estimativa e regras) e os motivos pelos quais a API não a deixa aprovar (not_approvable; vazio quando é aprovável). O registro não lista o conteúdo das pastas nem os itens de um manifesto: esses são lidos na execução. A recusa volta como command.response:2 com error.
  */
 export interface CommandApprovalListResponseV1 {
   jsonrpc: "2.0";
@@ -90,6 +90,27 @@ export interface CommandApprovalListResponseV1 {
       summary: string;
       requested_at: CommonTimestampV1;
       expires_at: CommonTimestampV1;
+      /**
+       * @maxItems 4
+       */
+      not_approvable:
+        | []
+        | ["estimate_unknown" | "wildcard_target" | "definitive_recursive_delete" | "restore_from_manifest"]
+        | [
+            "estimate_unknown" | "wildcard_target" | "definitive_recursive_delete" | "restore_from_manifest",
+            "estimate_unknown" | "wildcard_target" | "definitive_recursive_delete" | "restore_from_manifest"
+          ]
+        | [
+            "estimate_unknown" | "wildcard_target" | "definitive_recursive_delete" | "restore_from_manifest",
+            "estimate_unknown" | "wildcard_target" | "definitive_recursive_delete" | "restore_from_manifest",
+            "estimate_unknown" | "wildcard_target" | "definitive_recursive_delete" | "restore_from_manifest"
+          ]
+        | [
+            "estimate_unknown" | "wildcard_target" | "definitive_recursive_delete" | "restore_from_manifest",
+            "estimate_unknown" | "wildcard_target" | "definitive_recursive_delete" | "restore_from_manifest",
+            "estimate_unknown" | "wildcard_target" | "definitive_recursive_delete" | "restore_from_manifest",
+            "estimate_unknown" | "wildcard_target" | "definitive_recursive_delete" | "restore_from_manifest"
+          ];
       plan: RecordActionPlanV2;
     }[];
   };

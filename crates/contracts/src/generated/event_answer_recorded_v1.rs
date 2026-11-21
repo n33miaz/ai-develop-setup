@@ -26,7 +26,7 @@ static EVENT_ANSWER_RECORDED_V1_RULES: &[(&str, Rule)] = &[(
     )]),
 )];
 
-/// Resposta do dono registrada. A resposta do dono a uma aprovação, gravada antes de o portão agir sobre ela: o aparelho (actor), o dono, o instante (ts), a decisão e o plano que o dono viu. Fica no stream answer/<approval_id>. A decisão do portão vem depois, em approval.granted:2 ou approval.denied:2, e pode ser uma negação mesmo quando o dono aprovou (política mudou).
+/// Resposta do dono registrada. A resposta do dono a uma aprovação, gravada antes de o portão agir sobre ela: o aparelho (actor), o dono, o instante (ts), a decisão, o plano que o dono viu e a chave de idempotência do comando, que deduplica a resposta no log. Fica no stream answer/<approval_id>. A decisão do portão vem depois, em approval.granted:2 ou approval.denied:2, e pode ser uma negação mesmo quando o dono aprovou (política mudou).
 ///
 /// `urn:ads:event:answer.recorded:1`.
 ///
@@ -181,6 +181,7 @@ pub struct EventAnswerRecordedV1Data {
     pub decision: EventAnswerRecordedV1DataDecision,
     pub owner_id: CommonIdV1,
     pub via: EventAnswerRecordedV1DataVia,
+    pub idempotency_key: CommonUlidV1,
 }
 
 /// `data.decision` in `urn:ads:event:answer.recorded:1`.

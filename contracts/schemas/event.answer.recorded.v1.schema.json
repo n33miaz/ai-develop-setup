@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:ads:event:answer.recorded:1",
   "title": "Resposta do dono registrada",
-  "description": "A resposta do dono a uma aprovação, gravada antes de o portão agir sobre ela: o aparelho (actor), o dono, o instante (ts), a decisão e o plano que o dono viu. Fica no stream answer/<approval_id>. A decisão do portão vem depois, em approval.granted:2 ou approval.denied:2, e pode ser uma negação mesmo quando o dono aprovou (política mudou).",
+  "description": "A resposta do dono a uma aprovação, gravada antes de o portão agir sobre ela: o aparelho (actor), o dono, o instante (ts), a decisão, o plano que o dono viu e a chave de idempotência do comando, que deduplica a resposta no log. Fica no stream answer/<approval_id>. A decisão do portão vem depois, em approval.granted:2 ou approval.denied:2, e pode ser uma negação mesmo quando o dono aprovou (política mudou).",
   "allOf": [
     {
       "$ref": "urn:ads:event:envelope:1"
@@ -32,7 +32,8 @@
             "plan_hash",
             "decision",
             "owner_id",
-            "via"
+            "via",
+            "idempotency_key"
           ],
           "properties": {
             "approval_id": {
@@ -59,6 +60,9 @@
                 "tray",
                 "remote_device"
               ]
+            },
+            "idempotency_key": {
+              "$ref": "urn:ads:common:ulid:1"
             }
           }
         },
@@ -93,7 +97,8 @@
         "plan_hash": "sha256:5486cc58827bffeb2204a994db3d77fe6c8f2c863eb73de6e2a60802784293cb",
         "decision": "approve",
         "owner_id": "owner-01",
-        "via": "local_ui"
+        "via": "local_ui",
+        "idempotency_key": "01ARZ3NDEKTSV4RRFFQ69G5FAE"
       }
     }
   ]

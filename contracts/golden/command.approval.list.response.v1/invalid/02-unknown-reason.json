@@ -11,6 +11,9 @@
         "summary": "Limpar arquivos temporários do projeto",
         "requested_at": "2030-01-02T03:04:05Z",
         "expires_at": "2030-01-02T03:19:05Z",
+        "not_approvable": [
+          "looks_risky"
+        ],
         "plan": {
           "version": 2,
           "action_id": "act-03",
@@ -42,8 +45,7 @@
             ]
           },
           "quarantined": false
-        },
-        "owner_id": "owner-01"
+        }
       }
     ]
   }

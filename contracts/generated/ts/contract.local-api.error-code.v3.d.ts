@@ -21,7 +21,8 @@ export type ContractLocalApiErrorCodeV3 =
   | ApprovalAlreadyAnswered
   | ApprovalStale
   | ApprovalPolicyChanged
-  | ApprovalOutOfOrder;
+  | ApprovalOutOfOrder
+  | ApprovalNotApprovable;
 /**
  * O método solicitado é desconhecido.
  */
@@ -94,3 +95,7 @@ export type ApprovalPolicyChanged = -32021;
  * O relógio do núcleo está antes do último passo da ação; nada foi decidido e a resposta pode ser repetida.
  */
 export type ApprovalOutOfOrder = -32022;
+/**
+ * A API não deixa aprovar esta ação: o efeito concreto não está fixado no plano registrado. Negar continua permitido. A resposta fica registrada.
+ */
+export type ApprovalNotApprovable = -32023;

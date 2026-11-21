@@ -28,6 +28,8 @@ const HASH: &str = "sha256:5486cc58827bffeb2204a994db3d77fe6c8f2c863eb73de6e2a60
 struct Counting {
     calls: Mutex<Vec<(String, String)>>,
     refusal: Mutex<Option<ApiError>>,
+    /// Answers as if the log already held this key.
+    from_log: std::sync::atomic::AtomicBool,
 }
 impl ApprovalControl for Counting {
     fn pending(&self, _: &LocalSession) -> Result<Vec<Value>, ApiError> {
@@ -43,7 +45,7 @@ impl ApprovalControl for Counting {
             "action_id": "act-03", "approval_id": "appr-03", "plan_hash": HASH,
             "risk": "medium", "summary": "Limpar temporários",
             "requested_at": "2030-01-02T03:04:05Z", "expires_at": "2030-01-02T03:19:05Z",
-            "plan": plan
+            "not_approvable": ["estimate_unknown", "wildcard_target", "definitive_recursive_delete"], "plan": plan
         })])
     }
     fn answer(
@@ -51,14 +53,14 @@ impl ApprovalControl for Counting {
         _: &LocalSession,
         answer: &CommandApprovalAnswerV1Params,
         cause: &str,
-    ) -> Result<(), ApiError> {
+    ) -> Result<bool, ApiError> {
         self.calls
             .lock()
             .unwrap()
             .push((answer.decision.as_str().into(), cause.into()));
         match *self.refusal.lock().unwrap() {
             Some(error) => Err(error),
-            None => Ok(()),
+            None => Ok(self.from_log.load(std::sync::atomic::Ordering::SeqCst)),
         }
     }
 }
@@ -254,6 +256,13 @@ async fn list_answers_with_the_plan_and_answer_reaches_the_gate_once() {
             approve["id"].as_str().unwrap().to_owned()
         )
     );
+
+    // A key the cache never saw but the log holds is reported as a repetition.
+    counting
+        .from_log
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let reply = exchange(&mut ws, &command("approval.answer", answer("approve"))).await;
+    assert_eq!(reply["result"], json!({"accepted": true, "replayed": true}));
 }
 
 #[tokio::test]
@@ -267,6 +276,7 @@ async fn gate_refusals_keep_their_codes() {
         (ApiError::ApprovalStale, -32020),
         (ApiError::ApprovalPolicyChanged, -32021),
         (ApiError::ApprovalOutOfOrder, -32022),
+        (ApiError::ApprovalNotApprovable, -32023),
         (ApiError::Storage, -32603),
     ] {
         *counting.refusal.lock().unwrap() = Some(error);

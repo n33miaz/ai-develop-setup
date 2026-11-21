@@ -8,6 +8,7 @@ use crate::queue::{DisabledQueue, QueueControl};
 use ads_contracts::{
     CommandApprovalAnswerV1Params, CommandSessionOpenV1Params,
     ContractLocalApiErrorCodeV3ApprovalAlreadyAnswered as ApprovalAlreadyAnswered,
+    ContractLocalApiErrorCodeV3ApprovalNotApprovable as ApprovalNotApprovable,
     ContractLocalApiErrorCodeV3ApprovalNotConfigured as ApprovalNotConfigured,
     ContractLocalApiErrorCodeV3ApprovalNotFound as ApprovalNotFound,
     ContractLocalApiErrorCodeV3ApprovalOutOfOrder as ApprovalOutOfOrder,
@@ -78,6 +79,8 @@ pub enum ApiError {
     ApprovalPolicyChanged,
     /// The core clock is before the last step of the action; nothing was decided.
     ApprovalOutOfOrder,
+    /// The record does not fix the concrete effect of the plan: the API does not approve it.
+    ApprovalNotApprovable,
 }
 impl ApiError {
     pub fn code(self) -> i64 {
@@ -100,6 +103,7 @@ impl ApiError {
             Self::ApprovalStale => ApprovalStale::VALUE,
             Self::ApprovalPolicyChanged => ApprovalPolicyChanged::VALUE,
             Self::ApprovalOutOfOrder => ApprovalOutOfOrder::VALUE,
+            Self::ApprovalNotApprovable => ApprovalNotApprovable::VALUE,
             Self::Host(code) => code.number(),
         }
     }
@@ -126,6 +130,7 @@ impl ApiError {
             Self::ApprovalStale => "approval stale",
             Self::ApprovalPolicyChanged => "policy changed since the plan",
             Self::ApprovalOutOfOrder => "clock before the last step",
+            Self::ApprovalNotApprovable => "approval not allowed for this plan",
         }
     }
 }
@@ -364,7 +369,7 @@ impl Service {
             serde_json::to_vec(&json!([method, params])).map_err(|_| ApiError::Invalid)?,
         )
         .into();
-        let replayed = match self.keys.iter().find(|e| e.key == key) {
+        let mut replayed = match self.keys.iter().find(|e| e.key == key) {
             Some(entry) if entry.digest == digest => true,
             Some(_) => return Err(ApiError::Conflict),
             None => false,
@@ -378,7 +383,8 @@ impl Service {
                 let cause = command["id"].as_str().ok_or(ApiError::Invalid)?;
                 let answer: CommandApprovalAnswerV1Params =
                     serde_json::from_value(params.clone()).map_err(|_| ApiError::Invalid)?;
-                self.approvals.answer(session, &answer, cause)?;
+                // A key this cache no longer holds may still be in the log.
+                replayed = self.approvals.answer(session, &answer, cause)?;
             } else {
                 stream = self
                     .execute(method, params, command["id"].as_str(), deadline)

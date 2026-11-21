@@ -53,3 +53,6 @@ export const APPROVAL_POLICY_CHANGED = -32021
 
 /** O relógio do núcleo está antes do último passo da ação; nada foi decidido e a resposta pode ser repetida. */
 export const APPROVAL_OUT_OF_ORDER = -32022
+
+/** A API não deixa aprovar esta ação: o efeito concreto não está fixado no plano registrado. Negar continua permitido. A resposta fica registrada. */
+export const APPROVAL_NOT_APPROVABLE = -32023
