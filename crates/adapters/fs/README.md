@@ -81,7 +81,7 @@ O executor descobre uma vez, ao abrir a cerca, o sistema de arquivos dela (no Wi
 | Windows, NTFS local | detectado | detectado: o identificador traz o número de sequência do registro da MFT, que sobe quando o registro é reaproveitado | permitidos |
 | Windows, ReFS local (Dev Drive) | detectado | detectado: o identificador de 128 bits não é reaproveitado | permitidos |
 | Linux, ext2/3/4, xfs, btrfs, tmpfs, f2fs ou zfs, com instante de criação no `statx` | detectado | detectado pelo instante de criação, que entra na identidade junto com o inode: um inode liberado e entregue na hora a um objeto novo volta com outro instante | permitidos (apagar de verdade conforme `definitive_delete`) |
-| FAT, exFAT (os dois sistemas) | não garantido: o identificador vem da posição da entrada na pasta, e um nome recriado ou renomeado para a entrada liberada herda o identificador | não garantido | recusados (`E_FS_IDENTITY_UNSTABLE`) |
+| FAT, exFAT (os dois sistemas) | não garantido: no Windows o identificador vem da posição da entrada na pasta, e um nome recriado ou renomeado para a entrada liberada herda o identificador; no Linux o número de inode do vfat e do exfat também não é guardado no disco | não garantido | recusados (`E_FS_IDENTITY_UNSTABLE`) |
 | Compartilhamento de rede ou sistema de arquivos remoto | não garantido | não garantido | recusados |
 | Qualquer outro, inclusive Linux sem instante de criação, overlay, FUSE, 9p (`/mnt/c` do WSL), ntfs3, ou volume que não respondeu | não garantido | não garantido | recusados |
 
@@ -97,7 +97,7 @@ Nos volumes marcados "recusados" a troca não é detectada; o que depende de det
 
 Só `disk.rs` altera o disco: criar pasta (falha se existe), criar arquivo novo (falha se existe), mover e remover uma entrada. Não há exclusão nem criação recursiva da biblioteca. Cada operação alcança a entrada de novo a partir da cerca e confere: estritamente abaixo do piso (a raiz de trabalho; na purga, a pasta de quarentena; e a pasta de espera da própria execução), nenhum link no caminho e, na entrada, **o mesmo objeto do inventário, com o mesmo tamanho**.
 
-- **Só o que foi aprovado.** Um arquivo trocado por outro com o mesmo nome é recusa, e um arquivo que cresceu ou encolheu mantendo a identidade (escrito direto ou por outro hardlink) também (`E_FS_CHANGED`). Antes de mover uma árvore, e de novo antes de esvaziá-la, ela inteira é comparada com o inventário: nomes, identidades e tamanhos. O tamanho é conferido uma última vez na hora de remover cada entrada (no Windows, no identificador dela; no Linux, pelo nome dentro da pasta aberta).
+- **Só o que foi aprovado.** Um arquivo trocado por outro com o mesmo nome é recusa (objeto apagado e recriado, só onde a identidade é estável: ver [Identidade por sistema de arquivos](#identidade-por-sistema-de-arquivos)), e um arquivo que cresceu ou encolheu mantendo a identidade (escrito direto ou por outro hardlink) também (`E_FS_CHANGED`). Antes de mover uma árvore, e de novo antes de esvaziá-la, ela inteira é comparada com o inventário: nomes, identidades e tamanhos. O tamanho é conferido uma última vez na hora de remover cada entrada (no Windows, no identificador dela; no Linux, pelo nome dentro da pasta aberta).
 - **Mover nunca substitui.** A recusa de destino existente é do próprio sistema, na mesma chamada que move (`RENAME_NOREPLACE`; no Windows, renomear sem substituição). Sistema de arquivos sem essa primitiva recusa o movimento.
 - **Um movimento feito é dito como feito.** Depois de o sistema aceitar o movimento, o que chegou é conferido (no Linux, por nome; no Windows o identificador movido já é a prova) e as duas pastas são sincronizadas de qualquer jeito. Se a conferência falha, o passo sai "não verificado" (`E_FS_MOVE_UNVERIFIED`): o alvo saiu do lugar e o relatório não promete onde ele está.
 - **Durabilidade.** Depois de cada criação, movimento e remoção, a pasta envolvida é sincronizada (as duas, no movimento). Um passo só conta como feito depois disso; se a alteração foi feita e a sincronização falhou, sai como não confirmado (`E_FS_UNCONFIRMED`), nunca como feito.
@@ -182,7 +182,7 @@ O evento `action.failed` leva só o código (é o contrato); o relatório é dev
 
 ## Modelo de ameaça
 
-O que é garantido, por tipo de adversário. "Dentro da cerca" quer dizer: nenhuma entrada fora da pasta aberta como cerca é criada, movida, lida ou apagada pelo executor.
+O que é garantido, por tipo de adversário. "Dentro da cerca" quer dizer: nenhuma entrada fora da pasta aberta como cerca é criada, movida, lida ou apagada pelo executor. Tudo que depende de identidade ("mesmas identidades", "outro objeto com o mesmo nome") vale com o alcance da [tabela por sistema de arquivos](#identidade-por-sistema-de-arquivos): num volume sem identidade estável só a quarentena roda, e lá um objeto apagado e recriado sob o mesmo nome, ou renomeado para a entrada liberada (FAT/exFAT), pode passar despercebido e ir para a quarentena no lugar do aprovado, de onde volta.
 
 **(a) Agente descuidado, sem concorrência** (o plano está errado, mal escrito ou desatualizado; ninguém mexe no disco durante a execução). Garantido nos dois sistemas:
 
