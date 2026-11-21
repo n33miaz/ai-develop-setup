@@ -1167,11 +1167,19 @@ mod tests {
         answer.clone()
     }
 
+    /// Executes `action` with the next `seq` of its stream for the start and the outcome, so
+    /// that an error comes from the gate and never from a sequence the journal refuses.
     fn execute(desk: &ApprovalDesk, action: &Id) -> Result<(), JournalError> {
         let now = now_ts().unwrap();
+        let next = stream(desk, &format!("action/{}", action.as_str())).len() as u64 + 1;
         desk.with_gates_ok(|log, gates| {
             gates[0]
-                .execute(log, action, daemon_meta(1, &now), daemon_meta(1, &now))
+                .execute(
+                    log,
+                    action,
+                    daemon_meta(next, &now),
+                    daemon_meta(next + 1, &now),
+                )
                 .map(|_| ())
         })
     }
@@ -1691,7 +1699,7 @@ mod tests {
         });
         assert!(matches!(state(&desk, &granted), State::Approved { .. }));
         let outcome = execute(&desk, &granted);
-        assert!(outcome.is_err(), "{outcome:?}");
+        assert_eq!(outcome, Err(JournalError::Integrity));
         let events = stream(&desk, &format!("action/{}", granted.as_str()));
         assert!(
             events
