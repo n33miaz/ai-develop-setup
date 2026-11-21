@@ -114,6 +114,7 @@ function isCompact() {
 interface AppProps {
   client: CoreClient
   live?: boolean
+  desktop?: boolean
   /** Reserva do modo de exemplo; conectada, a interface usa a lista do núcleo. */
   harnesses?: readonly string[]
 
@@ -134,6 +135,7 @@ export function App({
   client,
   events = sampleEvents,
   live = false,
+  desktop = false,
   sessionStreams = NO_STREAMS,
 
   harnesses = NO_STREAMS,
@@ -569,7 +571,7 @@ export function App({
           {t('nav.menu')}
         </button>
         <h1 className={styles.title}>{t('app.title')}</h1>
-        <ConnectionStatus state={connection} />
+        <ConnectionStatus state={connection} desktop={desktop} />
         <button type="button" className={styles.button} onClick={cycle}>
           {t('theme.button', { mode: t(THEME_LABEL[preference]) })}
         </button>

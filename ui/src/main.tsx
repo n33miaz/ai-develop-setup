@@ -60,6 +60,7 @@ function render(root: HTMLElement) {
           <App
             client={client}
             live={live}
+            desktop={Boolean(bridge)}
             sessionStreams={sessionStreams}
             harnesses={harnesses}
             workdir={workdir}

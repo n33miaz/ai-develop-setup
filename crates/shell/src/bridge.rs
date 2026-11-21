@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use ads_contracts::desktop_proof;
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
 use serde_json::Value;
@@ -9,7 +10,10 @@ use tokio::{
     sync::{Mutex, mpsc},
     time::timeout,
 };
-use tokio_tungstenite::{WebSocketStream, client_async, tungstenite::Message};
+use tokio_tungstenite::{
+    WebSocketStream, client_async,
+    tungstenite::{Message, client::IntoClientRequest},
+};
 use zeroize::Zeroizing;
 
 use super::{Bootstrap, trusted_window};
@@ -21,7 +25,13 @@ const HELLO_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAB";
 pub(super) struct Bridge {
     bootstrap: Bootstrap,
     smoke: bool,
-    connection: Mutex<Option<Connection>>,
+    connection: Mutex<ConnectionState>,
+}
+
+enum ConnectionState {
+    Idle,
+    Connected(Connection),
+    RelaunchRequired,
 }
 
 struct Connection {
@@ -41,7 +51,7 @@ impl Bridge {
         Self {
             bootstrap,
             smoke,
-            connection: Mutex::new(None),
+            connection: Mutex::new(ConnectionState::Idle),
         }
     }
 }
@@ -56,9 +66,30 @@ pub(super) enum Frame {
 async fn authenticate(bootstrap: &Bootstrap) -> Result<WebSocketStream<TcpStream>, &'static str> {
     let address = bootstrap.url.strip_prefix("ws://").ok_or(UNAVAILABLE)?;
     let stream = TcpStream::connect(address).await.map_err(|_| UNAVAILABLE)?;
-    let (mut socket, _) = client_async(bootstrap.url.as_str(), stream)
+    let client = stream.local_addr().map_err(|_| UNAVAILABLE)?;
+    let server = stream.peer_addr().map_err(|_| UNAVAILABLE)?;
+    let request = bootstrap
+        .url
+        .as_str()
+        .into_client_request()
+        .map_err(|_| UNAVAILABLE)?;
+    let nonce = request.headers()["sec-websocket-key"].clone();
+    let (mut socket, response) = client_async(request, stream)
         .await
         .map_err(|_| UNAVAILABLE)?;
+    let proof = response
+        .headers()
+        .get(desktop_proof::HEADER)
+        .ok_or(UNAVAILABLE)?;
+    if !desktop_proof::verify(
+        &bootstrap.token,
+        nonce.as_bytes(),
+        client,
+        server,
+        proof.as_bytes(),
+    ) {
+        return Err(UNAVAILABLE);
+    }
     let hello = Zeroizing::new(format!(
         r#"{{"jsonrpc":"2.0","id":"{HELLO_ID}","method":"auth.hello","params":{{"token":"{}","_meta":{{"origin":"local","idempotency_key":"{HELLO_ID}"}}}}}}"#,
         bootstrap.token
@@ -120,7 +151,10 @@ pub(super) async fn desktop_connect(
         return Err(UNAVAILABLE);
     }
     let mut connection = bridge.connection.lock().await;
-    *connection = None;
+    if matches!(*connection, ConnectionState::RelaunchRequired) {
+        return Err(UNAVAILABLE);
+    }
+    *connection = ConnectionState::RelaunchRequired;
     let socket = timeout(DEADLINE, authenticate(&bridge.bootstrap))
         .await
         .map_err(|_| UNAVAILABLE)??;
@@ -130,7 +164,7 @@ pub(super) async fn desktop_connect(
         let _ = relay(socket, incoming, &frames, smoke).await;
         let _ = frames.send(Frame::Closed);
     });
-    *connection = Some(Connection { id, requests, task });
+    *connection = ConnectionState::Connected(Connection { id, requests, task });
     Ok(())
 }
 
@@ -151,14 +185,12 @@ pub(super) async fn desktop_send(
     {
         return Err(UNAVAILABLE);
     }
-    let sender = bridge
-        .connection
-        .lock()
-        .await
-        .as_ref()
-        .filter(|connection| connection.id == id)
-        .map(|connection| connection.requests.clone())
-        .ok_or(UNAVAILABLE)?;
+    let sender = match &*bridge.connection.lock().await {
+        ConnectionState::Connected(connection) if connection.id == id => {
+            connection.requests.clone()
+        }
+        _ => return Err(UNAVAILABLE),
+    };
     timeout(DEADLINE, sender.send(text))
         .await
         .map_err(|_| UNAVAILABLE)?
@@ -175,11 +207,50 @@ pub(super) async fn desktop_disconnect(
         return Err(UNAVAILABLE);
     }
     let mut connection = bridge.connection.lock().await;
-    if connection
-        .as_ref()
-        .is_some_and(|connection| connection.id == id)
-    {
-        *connection = None;
+    if matches!(&*connection, ConnectionState::Connected(active) if active.id == id) {
+        *connection = ConnectionState::Idle;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn replacement_listener_receives_neither_token_nor_input() {
+        let original = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = original.local_addr().unwrap();
+        let bootstrap = Bootstrap {
+            url: format!("ws://{address}"),
+            token: "a".repeat(43),
+        };
+        drop(original);
+        let replacement = tokio::net::TcpListener::bind(address).await.unwrap();
+        let impostor = tokio::spawn(async move {
+            let (stream, _) = replacement.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let accepted =
+                format!(r#"{{"jsonrpc":"2.0","id":"{HELLO_ID}","result":{{"accepted":true}}}}"#);
+            let _ = socket.send(Message::Text(accepted.into())).await;
+            let mut received = 0;
+            while let Some(Ok(message)) = socket.next().await {
+                if message.is_text() {
+                    received += 1;
+                }
+            }
+            received
+        });
+
+        let result = timeout(DEADLINE, authenticate(&bootstrap)).await.unwrap();
+        let accepted = result.is_ok();
+        if let Ok(mut socket) = result {
+            socket
+                .send(Message::Text("terminal input".into()))
+                .await
+                .unwrap();
+        }
+        assert_eq!(timeout(DEADLINE, impostor).await.unwrap().unwrap(), 0);
+        assert!(!accepted);
+    }
 }

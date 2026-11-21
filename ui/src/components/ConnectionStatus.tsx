@@ -9,9 +9,17 @@ const LABEL: Record<ConnectionState, MessageKey> = {
 }
 
 /** Estado da conexão com o núcleo. A forma do ponto muda com o estado, para não depender só de cor. */
-export function ConnectionStatus({ state }: { state: ConnectionState }) {
+export function ConnectionStatus({
+  state,
+  desktop = false,
+}: {
+  state: ConnectionState
+  desktop?: boolean
+}) {
   const t = useT()
-  const label = `${t('connection.label')}: ${t(LABEL[state])}`
+  const relaunch = desktop && state === 'disconnected'
+  const key = relaunch ? 'connection.relaunchDesktop' : LABEL[state]
+  const label = `${t('connection.label')}: ${t(key)}`
   return (
     <p
       className={[styles.status, styles[state]].join(' ')}
@@ -20,7 +28,7 @@ export function ConnectionStatus({ state }: { state: ConnectionState }) {
       data-state={state}
     >
       <span className={styles.dot} aria-hidden="true" />
-      <span className={styles.text} aria-hidden="true">
+      <span className={styles.text} data-relaunch={relaunch} aria-hidden="true">
         {label}
       </span>
     </p>

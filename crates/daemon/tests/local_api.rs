@@ -111,7 +111,24 @@ async fn desktop_listener_requires_native_upgrade_and_token() {
         .unwrap()
         .for_desktop();
     let f = fixture_with_config(config, Arc::new(DisabledLauncher), HostConfig::defaults()).await;
-    let mut socket = connect(&f, None, None).await.unwrap();
+    let request = format!("ws://127.0.0.1:{}/", f.port)
+        .into_client_request()
+        .unwrap();
+    let nonce = request.headers()["sec-websocket-key"].clone();
+    let stream = TcpStream::connect(("127.0.0.1", f.port)).await.unwrap();
+    let client = stream.local_addr().unwrap();
+    let server = stream.peer_addr().unwrap();
+    let (mut socket, response) = bounded(tokio_tungstenite::client_async(request, stream))
+        .await
+        .unwrap();
+    let proof = &response.headers()[ads_contracts::desktop_proof::HEADER];
+    assert!(ads_contracts::desktop_proof::verify(
+        &f.token,
+        nonce.as_bytes(),
+        client,
+        server,
+        proof.as_bytes(),
+    ));
     transmit(
         &mut socket,
         &command("auth.hello", json!({"token": &f.token})),

@@ -150,6 +150,14 @@ Estado da mitigação, em cada risco:
 - **Mitigação existente.** O Rust autentica pelo WebSocket, mantém o token fora do JavaScript e encaminha mensagens por IPC somente à janela principal. Um teste confere a recusa de `http://tauri.localhost`.
 - **Plano B.** Invalidar a credencial reiniciando o daemon. Se a restrição por janela falhar, suspender o modo desktop até corrigir a fronteira IPC.
 
+### Outra conta ocupa a porta do daemon após a saída
+
+- **Descrição.** Uma conta local pode ocupar a porta depois de o daemon encerrar, enquanto a janela ainda estiver aberta.
+- **Impacto.** Um servidor nessa porta pode interromper a reconexão.
+- **Dono.** Casca e daemon.
+- **Teto.** A casca só envia o token e a entrada do usuário se o servidor provar conhecer a credencial recebida pelo pipe, com uma prova vinculada à conexão. Um teste confirma que a porta reocupada não recebe mensagens da casca.
+- **Plano B.** Reabrir a janela pelo lançador para receber a porta e o token da nova execução.
+
 ### Outra conta ocupa vagas de autenticação pendente
 
 - **Descrição.** Outra conta local pode manter conexões TCP abertas e renová-las para ocupar as vagas pendentes.
