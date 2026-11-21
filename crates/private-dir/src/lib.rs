@@ -254,6 +254,25 @@ impl ControlDir {
         &self.path
     }
 
+    /// Requires an existing file to belong to the current user and grant access only to
+    /// that user and SYSTEM. An absent entry is allowed. The name is relative to this folder.
+    #[cfg(windows)]
+    pub fn check_user_owned_file_if_present(&self, name: &str) -> io::Result<()> {
+        let refuse = |reason| refusal("file", &self.path.join(name), reason);
+        if name.is_empty() || matches!(name, "." | "..") || name.contains(['/', '\\', ':', '\0']) {
+            return Err(refuse("does not have a plain file name"));
+        }
+        let file = match win::open_for_inspection(&self.dir, name) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        if win::kind(&file)? != Kind::File {
+            return Err(refuse("is not a plain file"));
+        }
+        check_windows_private(&self.local, &win::security(&file)?, true).map_err(refuse)
+    }
+
     /// The same folder, with its files judged as `local`'s.
     #[cfg(feature = "test-support")]
     pub fn judged_as(self, local: Identity) -> Self {
@@ -485,6 +504,22 @@ mod tests {
         let elevated = local(USER, "S-1-5-32-544");
         assert!(windows_private(&elevated, &security("S-1-5-32-544", &entries)).is_ok());
         assert!(windows_private(&local("", ""), &security("", &entries)).is_err());
+    }
+
+    #[test]
+    fn strict_windows_decision_rejects_administrators_access_and_ownership() {
+        let admins = "S-1-5-32-544";
+        let elevated = local(USER, admins);
+        for security in [
+            security(
+                USER,
+                &[Entry::Allow(USER.into()), Entry::Allow(admins.into())],
+            ),
+            security(admins, &[Entry::Allow(USER.into())]),
+        ] {
+            assert!(windows_private(&elevated, &security).is_ok());
+            assert!(check_windows_private(&elevated, &security, true).is_err());
+        }
     }
 
     #[test]

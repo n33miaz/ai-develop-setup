@@ -1,7 +1,7 @@
 //! Composition of the persistent audit log with the product vault.
 
 use std::{
-    fs::{self, File, OpenOptions, TryLockError},
+    fs::{self, File, TryLockError},
     path::{Path, PathBuf},
 };
 
@@ -198,15 +198,22 @@ fn vault_directory() -> Result<PathBuf, StorageError> {
     Ok(root.join("ads"))
 }
 
+fn audit_access_error(error: std::io::Error) -> StorageError {
+    match error.kind() {
+        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::NotADirectory => {
+            StorageError::AuditDirectoryNotPrivate
+        }
+        _ => error.into(),
+    }
+}
+
 fn lock_binding(directory: &Path) -> Result<File, StorageError> {
     // SQLite serializes a single file. The vault pin spans all configured paths.
-    fs::create_dir_all(directory)?;
-    let lock = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(directory.join("audit-binding.lock"))?;
+    let directory = ControlDir::open_user_owned(directory, true).map_err(audit_access_error)?;
+    let lock = directory
+        .lock_file("audit-binding.lock")
+        .map_err(audit_access_error)?;
+
     lock.try_lock().map_err(|error| match error {
         TryLockError::WouldBlock => StorageError::Busy,
         TryLockError::Error(error) => error.into(),
@@ -238,7 +245,7 @@ fn check_audit_location(path: &Path, workdirs: &[PathBuf]) -> Result<(), Storage
             let roots = crate::gate::spellings(workdir).map_err(|_| StorageError::Configuration)?;
             if paths
                 .iter()
-                .any(|path| roots.iter().any(|root| path.is_loosely_within(root)))
+                .any(|path| roots.iter().any(|root| path.matches_denied_root(root)))
             {
                 return Err(StorageError::AuditDatabaseInWorkdir);
             }
@@ -284,14 +291,20 @@ fn canonical_anchor<V: Vault>(
         Err(error) => return Err(error.into()),
     };
     check_audit_location(&resolved.join("audit.db"), workdirs)?;
-    let held = ControlDir::open_user_owned(&resolved, create_dir && path == configured).map_err(
-        |error| match error.kind() {
-            std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::NotADirectory => {
-                StorageError::AuditDirectoryNotPrivate
-            }
-            _ => error.into(),
-        },
-    )?;
+    let held = ControlDir::open_user_owned(&resolved, create_dir && path == configured)
+        .map_err(audit_access_error)?;
+    #[cfg(windows)]
+    {
+        let name = configured
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or(StorageError::CantOpen)?;
+        for suffix in ["", "-wal", "-shm", "-journal"] {
+            held.check_user_owned_file_if_present(&format!("{name}{suffix}"))
+                .map_err(audit_access_error)?;
+        }
+    }
+
     let canonical = normalized_path(&configured)?;
     if canonical.parent() != Some(resolved.as_path()) || normalized_path(path)? != canonical {
         return Err(StorageError::NonCanonicalDatabase);
@@ -1212,6 +1225,93 @@ mod tests {
             StorageError::AuditDirectoryNotPrivate
         );
         assert!(!path.exists());
+    }
+
+    #[cfg(windows)]
+    fn grant_windows_access(path: &Path, ace: &str) {
+        let output = std::process::Command::new("icacls")
+            .arg(path)
+            .args(["/grant", ace])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn audit_folder_open_to_administrators_is_refused() {
+        let root = fixture();
+        grant_windows_access(&root, "*S-1-5-32-544:(OI)(CI)F");
+        let path = root.join("audit.db");
+        assert_eq!(
+            open_configured(&path, &configured_for(&path), &MemoryVault::default()).unwrap_err(),
+            StorageError::AuditDirectoryNotPrivate
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn audit_files_open_to_other_accounts_are_refused() {
+        for suffix in ["", "-wal", "-shm", "-journal"] {
+            let root = fixture();
+            let path = root.join("custom.db");
+            let exposed = root.join(format!("custom.db{suffix}"));
+            fs::write(&exposed, []).unwrap();
+            grant_windows_access(&exposed, "*S-1-1-0:R");
+            assert_eq!(
+                open_configured(&path, &configured_for(&path), &MemoryVault::default())
+                    .unwrap_err(),
+                StorageError::AuditDirectoryNotPrivate,
+                "{suffix}"
+            );
+            assert_eq!(fs::metadata(&exposed).unwrap().len(), 0, "{suffix}");
+        }
+    }
+
+    #[test]
+    fn custom_audit_path_leaves_the_default_folder_private() {
+        let root = fixture();
+        grant_access_to_others(&root);
+        let vault_dir = root.join("ads");
+        let custom = root.join("custom").join("audit.db");
+        drop(
+            open_product_in(
+                &vault_dir,
+                &custom,
+                &configured_for(&custom),
+                Box::new(Keys),
+                MemoryVault::default(),
+                None,
+                &[],
+            )
+            .unwrap(),
+        );
+
+        let default = vault_dir.join("audit.db");
+        drop(
+            open_configured(&default, &configured_for(&default), &MemoryVault::default()).unwrap(),
+        );
+    }
+
+    #[test]
+    fn audit_folder_resolving_inside_workdir_is_refused() {
+        let root = fixture();
+        let work = root.join("work");
+        let destination = work.join("private");
+        fs::create_dir_all(&destination).unwrap();
+        let link = root.join("link");
+        link_folder(&link, &destination);
+        let path = link.join("audit.db");
+        let result = canonical_anchor(
+            &path,
+            &configured_for(&path),
+            true,
+            MemoryVault::default(),
+            &[work],
+        );
+        unlink_folder(&link);
+        assert!(matches!(result, Err(StorageError::AuditDatabaseInWorkdir)));
+        assert!(!destination.join("audit.db").exists());
     }
 
     #[test]

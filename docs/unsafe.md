@@ -10,7 +10,7 @@ A contagem só sobe com justificativa aqui.
 | `ads-adapter-fs` | 4 | chamadas da API do Windows para abrir, mover e apagar por identificador aberto, listadas abaixo; no Linux as mesmas operações vêm do `rustix`, sem `unsafe` |
 | `ads-testkit` | 7 | só de teste, fora de qualquer binário do produto; listados abaixo |
 | `ads-adapter-vault` | 6 | operações por nome no cofre do Windows e tratamento da memória devolvida |
-| `ads-private-dir` | 20 | chamadas da API do Windows para criar pastas privadas e arquivos de controle só do usuário, conferir dono e lista de acesso e operar relativo à pasta aberta, listadas abaixo (3 delas habilitadas em testes ou com `test-support`); no Unix o mesmo vem da biblioteca padrão e do `rustix`, sem `unsafe` |
+| `ads-private-dir` | 21 | chamadas da API do Windows para criar pastas privadas e arquivos de controle só do usuário, conferir dono e lista de acesso e operar relativo à pasta aberta, listadas abaixo (3 delas habilitadas em testes ou com `test-support`); no Unix o mesmo vem da biblioteca padrão e do `rustix`, sem `unsafe` |
 | `ads-launcher` | 3 | tratador de interrupções do console, com 2 blocos de teste |
 | `ads-shell` | 2 | retirar e fechar a entrada padrão herdada antes de iniciar a WebView |
 | `ads-storage` | 0 | SQLite e cifra pelas APIs seguras das dependências; herda `forbid` |
@@ -84,9 +84,9 @@ A biblioteca padrão não cria pasta nem arquivo com lista de acesso própria, n
 | `create_dir` | 1 | `CreateDirectoryW` | criar a pasta privada com esse descritor, entrada herdada pelos arquivos de dentro |
 | `is_network_path` | 1 | `GetDriveTypeW` | detectar unidade de rede pela raiz terminada em NUL antes de abrir o banco de auditoria |
 | `kind` | 1 | `GetFileInformationByHandleEx` | ler do identificador aberto se a entrada é pasta, arquivo ou ponto de reanálise |
-| `open_at` | 2 | `NtCreateFile`, `OwnedHandle::from_raw_handle` | abrir ou criar a trava, o estado temporário e os sinais por um nome só, relativos à pasta aberta, sem seguir ponto de reanálise, e criar arquivo já com o descritor privado |
+| `open_at` | 2 | `NtCreateFile`, `OwnedHandle::from_raw_handle` | abrir os arquivos existentes da auditoria e abrir ou criar a trava, o estado temporário e os sinais por um nome só, relativos à pasta aberta, sem seguir ponto de reanálise, e criar arquivo já com o descritor privado |
 | `apply` | 1 | `NtSetInformationFile` | mover o estado temporário sobre o estado e apagar um sinal, os dois pelo identificador em que foram conferidos |
-| `security` | 4 | `GetSecurityInfo` (dono e lista de acesso), `GetAclInformation`, `GetAce`, leitura do cabeçalho da entrada | conferir o dono e cada entrada da lista de acesso da pasta, da trava e de cada sinal, no identificador aberto |
+| `security` | 4 | `GetSecurityInfo` (dono e lista de acesso), `GetAclInformation`, `GetAce`, leitura do cabeçalho da entrada | conferir o dono e cada entrada da lista de acesso da pasta, dos arquivos da auditoria, da trava e de cada sinal, no identificador aberto |
 | `access_list_text`, `canonical_access_list` e `descriptor_text` (testes ou `test-support`) | 3 | `GetSecurityInfo`, conversões de descritor de segurança | comparar a lista de acesso com a forma de escrita do Windows, incluindo proteção, herança e abreviação de identificadores |
 
 ## `ads-launcher` (`crates/launcher/src/console/win.rs`)

@@ -1,13 +1,13 @@
 //! Windows calls for the control folder: identity and access lists, and every entry opened
 //! relative to the folder held open (`NtCreateFile` with a root handle), as itself and never
 //! through a reparse point, then renamed or removed by its own handle
-//! (`NtSetInformationFile`); also the console interruption handler.
+//! (`NtSetInformationFile`).
 //! Each block is a single call or the read of data the previous call filled, with a `SAFETY`
 //! comment; see docs/unsafe.md.
 
 // The rename structure below is laid out by hand for 64-bit Windows.
 #[cfg(not(target_pointer_width = "64"))]
-compile_error!("ads-launcher supports Windows on 64-bit targets only");
+compile_error!("ads-private-dir supports Windows on 64-bit targets only");
 
 use std::ffi::c_void;
 use std::fs::{File, OpenOptions};
@@ -27,10 +27,10 @@ use windows::Wdk::Storage::FileSystem::{
     NtCreateFile, NtSetInformationFile,
 };
 use windows::Win32::Foundation::{
-    ERROR_SUCCESS, HANDLE, HLOCAL, LocalFree, NTSTATUS, OBJECT_ATTRIBUTE_FLAGS,
-    STATUS_ACCESS_DENIED, STATUS_INVALID_INFO_CLASS, STATUS_INVALID_PARAMETER,
-    STATUS_NOT_SUPPORTED, STATUS_OBJECT_NAME_COLLISION, STATUS_OBJECT_NAME_NOT_FOUND,
-    STATUS_OBJECT_PATH_NOT_FOUND, UNICODE_STRING,
+    ERROR_SUCCESS, HANDLE, HLOCAL, LocalFree, NTSTATUS, OBJ_CASE_INSENSITIVE, STATUS_ACCESS_DENIED,
+    STATUS_INVALID_INFO_CLASS, STATUS_INVALID_PARAMETER, STATUS_NOT_SUPPORTED,
+    STATUS_OBJECT_NAME_COLLISION, STATUS_OBJECT_NAME_NOT_FOUND, STATUS_OBJECT_PATH_NOT_FOUND,
+    UNICODE_STRING,
 };
 use windows::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo,
@@ -295,7 +295,7 @@ fn open_at(
         Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
         RootDirectory: raw(root),
         ObjectName: &raw const text,
-        Attributes: OBJECT_ATTRIBUTE_FLAGS(0),
+        Attributes: OBJ_CASE_INSENSITIVE,
         SecurityDescriptor: descriptor
             .map_or(std::ptr::null(), |memory| memory.0.cast_const().cast()),
         SecurityQualityOfService: std::ptr::null(),
@@ -395,6 +395,12 @@ pub(super) fn create_new(root: &File, name: &str, local: &Identity) -> io::Resul
         FILE,
         Some(&descriptor),
     )
+}
+
+/// Opens an existing entry for inspection without affecting SQLite's own sharing.
+pub(super) fn open_for_inspection(root: &File, name: &str) -> io::Result<File> {
+    let access = FILE_ACCESS_RIGHTS(FILE_READ_ATTRIBUTES.0 | READ_CONTROL.0);
+    open_at(root, name, access, SHARED, FILE_OPEN, ITSELF, None)
 }
 
 /// Opens the entry `name` of the folder itself, to read its owner and access list and then

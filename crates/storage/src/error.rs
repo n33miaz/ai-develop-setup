@@ -57,7 +57,7 @@ impl fmt::Display for StorageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::AuditDirectoryNotPrivate => f.write_str(
-                "storage: audit folder must be owned by your account with access only for your account and SYSTEM; select a private local folder or ask its owner to restrict access",
+                "storage: check ownership and permissions on the audit folder and database files; on Windows, open Properties > Security > Advanced, set your account as owner, disable inheritance, and keep access only for your account and SYSTEM",
             ),
             Self::AuditDatabaseOnNetwork => f.write_str(
                 "storage: set audit_database_path to a local drive",

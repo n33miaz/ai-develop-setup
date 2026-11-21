@@ -58,12 +58,12 @@ allow = []
 path = "crates/e2e"
 allow = ["ads-contracts"]
 
-# Supervisor estável: contratos e política de ambiente dos filhos.
-
+# Pastas e arquivos privados do usuário.
 [crates.ads-private-dir]
 path = "crates/private-dir"
 allow = []
 
+# Supervisor estável: contratos e política de ambiente dos filhos.
 [crates.ads-launcher]
 path = "crates/launcher"
 allow = ["ads-contracts", "ads-core", "ads-private-dir"]
