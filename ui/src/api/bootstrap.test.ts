@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { replaySettings, selectCoreClient, selectDesktopClient } from './bootstrap'
 import { newCommand } from './command'
+import { desktopSocketFactory } from './desktop'
 import { createFakeCoreClient } from './fake'
 
 beforeEach(() => {
@@ -212,6 +213,90 @@ describe('desktop client selection', () => {
       client.disconnect()
       vi.useRealTimers()
     }
+  })
+
+  it('ends disconnected without retrying when the first connection fails for another reason', async () => {
+    vi.useFakeTimers()
+    const invoke = vi
+      .fn<(command: string, args: Record<string, unknown>) => Promise<void>>(() =>
+        Promise.resolve(),
+      )
+      .mockRejectedValueOnce('unexpected failure')
+    const { client } = selectDesktopClient({ core: { invoke, Channel } }, {}, 25, 50)
+    try {
+      await expect(client.connect()).rejects.toMatchObject({ code: 'not_connected' })
+      expect(client.getState()).toBe('disconnected')
+      await vi.advanceTimersByTimeAsync(500)
+      expect(invoke.mock.calls.map(([command]) => command)).toEqual([
+        'desktop_connect',
+        'desktop_disconnect',
+      ])
+      expect(client.getState()).toBe('disconnected')
+    } finally {
+      client.disconnect()
+      vi.useRealTimers()
+    }
+  })
+
+  it('fails the pending request and reconnects when sending over IPC fails', async () => {
+    vi.useFakeTimers()
+    const invoke = vi.fn((command: string) =>
+      command === 'desktop_send' ? Promise.reject(new Error('ipc failed')) : Promise.resolve(),
+    )
+    const { client } = selectDesktopClient({ core: { invoke, Channel } }, {}, 25, 50)
+    try {
+      await client.connect()
+      await expect(client.listHarnesses()).rejects.toMatchObject({ code: 'not_connected' })
+      expect(client.getState()).toBe('connecting')
+      await vi.advanceTimersByTimeAsync(25)
+      expect(client.getState()).toBe('connected')
+      expect(client.getGeneration()).toBe(2)
+      const connects = invoke.mock.calls.filter(([command]) => command === 'desktop_connect')
+      expect(connects).toHaveLength(2)
+      const ids = invoke.mock.calls.map((call) => (call as unknown[])[1] as { id: string })
+      expect(ids[0]?.id).not.toBe(ids.at(-1)?.id)
+    } finally {
+      client.disconnect()
+      vi.useRealTimers()
+    }
+  })
+
+  it('serializes a replacement connection behind the one being closed', async () => {
+    const calls: string[] = []
+    const opened: string[] = []
+    let finishFirst: (() => void) | undefined
+    const invoke = vi.fn((command: string, args: Record<string, unknown>) => {
+      calls.push(`${command} ${String(args.id)}`)
+      if (command === 'desktop_connect' && finishFirst === undefined) {
+        return new Promise<void>((resolve) => {
+          finishFirst = resolve
+        })
+      }
+      return Promise.resolve()
+    })
+    const factory = desktopSocketFactory({ invoke, Channel })
+    const first = factory(false)
+    first.addEventListener('open', () => opened.push('first'))
+    await Promise.resolve()
+    const [firstConnect] = calls
+    first.close()
+    const second = factory(false)
+    second.addEventListener('open', () => opened.push('second'))
+    for (let turn = 0; turn < 10; turn++) await Promise.resolve()
+    expect(calls).toEqual([firstConnect])
+    finishFirst?.()
+    await vi.waitFor(() => {
+      expect(opened).toEqual(['second'])
+    })
+    const firstId = firstConnect?.split(' ')[1] ?? ''
+    expect(calls.slice(0, 2)).toEqual([
+      `desktop_connect ${firstId}`,
+      `desktop_disconnect ${firstId}`,
+    ])
+    expect(calls).toHaveLength(3)
+    expect(calls[2]).toMatch(/^desktop_connect /)
+    expect(calls[2]).not.toBe(`desktop_connect ${firstId}`)
+    second.close()
   })
 
   it('uses scoped IPC for commands and reconnects without exchanging credentials', async () => {

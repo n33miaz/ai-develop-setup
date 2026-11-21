@@ -1,8 +1,10 @@
 """Dependency rule between workspace crates (P2).
 
 Reads `cargo metadata --no-deps` and compares it with `defaults/dependency-matrix.toml`.
+Also requires every crate to inherit the workspace lints, or to copy them with only
+`unsafe_code` relaxed to "deny" (docs/unsafe.md), so a new workspace lint reaches every crate.
 
-  python tools/check_deps.py check        # rule + modules map + generated doc up to date
+  python tools/check_deps.py check        # rule + lints + modules map + generated doc up to date
   python tools/check_deps.py write-doc    # regenerate docs/dependency-matrix.md from the matrix
 
 Exit code 0 when everything holds, 1 on any violation (one `VIOLATION:` line each), 2 on usage errors.
@@ -87,6 +89,44 @@ def check_graph(metadata, kinds, crates):
     return problems
 
 
+def check_lints(workspace_lints, manifests):
+    """Return violations for crates whose `[lints]` differ from the workspace tables.
+
+    `manifests` maps a crate name to its parsed Cargo.toml. A crate either inherits
+    (`[lints] workspace = true`) or copies every table, with `unsafe_code` at most relaxed to "deny".
+    """
+    problems = []
+    for name, manifest in sorted(manifests.items()):
+        lints = manifest.get("lints")
+        if lints == {"workspace": True}:
+            continue
+        if not isinstance(lints, dict) or "workspace" in lints:
+            problems.append("%s neither inherits the workspace lints nor copies them" % name)
+            continue
+        own = {table: dict(rules) for table, rules in lints.items()}
+        expected = {table: dict(rules) for table, rules in workspace_lints.items()}
+        unsafe = own.get("rust", {}).pop("unsafe_code", None)
+        expected.get("rust", {}).pop("unsafe_code", None)
+        if unsafe not in ("deny", "forbid"):
+            problems.append("%s sets unsafe_code to %r; only deny or forbid are allowed" % (name, unsafe))
+        if own != expected:
+            problems.append(
+                "%s copies the workspace lints but differs from them; copy [workspace.lints] again" % name
+            )
+    return problems
+
+
+def load_manifests(metadata):
+    workspace = Path(metadata["workspace_root"]) / "Cargo.toml"
+    with open(workspace, "rb") as fh:
+        workspace_lints = tomllib.load(fh).get("workspace", {}).get("lints", {})
+    manifests = {}
+    for package in metadata["packages"]:
+        with open(package["manifest_path"], "rb") as fh:
+            manifests[package["name"]] = tomllib.load(fh)
+    return workspace_lints, manifests
+
+
 def check_modules_map(crates, modules_text):
     return [
         "%s has no entry in docs/modules.md" % name
@@ -144,7 +184,10 @@ def main(argv=None):
         print("wrote %s" % args.doc)
         return 0
 
-    problems = check_graph(load_metadata(args.metadata), kinds, crates)
+    metadata = load_metadata(args.metadata)
+    problems = check_graph(metadata, kinds, crates)
+    if not args.metadata:
+        problems += check_lints(*load_manifests(metadata))
     problems += check_modules_map(crates, args.modules.read_text(encoding="utf-8"))
     current = args.doc.read_text(encoding="utf-8") if args.doc.exists() else ""
     if current != render_doc(kinds, crates):

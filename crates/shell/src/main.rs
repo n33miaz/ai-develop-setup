@@ -202,6 +202,30 @@ mod tests {
         }
     }
 
+    /// The IPC check reads the main document URL, not the caller's origin, so no frame or
+    /// plugin content may load inside the window.
+    #[test]
+    fn window_policy_blocks_frames_and_plugins() {
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let csp = config["app"]["security"]["csp"].as_str().unwrap();
+        let directives: Vec<Vec<&str>> = csp
+            .split(';')
+            .map(|directive| directive.split_whitespace().collect())
+            .collect();
+        // A browser applies only the first occurrence of a repeated directive.
+        for name in ["frame-src", "object-src"] {
+            let first = directives
+                .iter()
+                .find(|directive| directive.first() == Some(&name));
+            assert_eq!(
+                first.map(Vec::as_slice),
+                Some([name, "'none'"].as_slice()),
+                "{name} must first appear as 'none' in {csp}"
+            );
+        }
+    }
+
     #[test]
     fn menu_ids_are_distinct() {
         assert_ne!(MENU_SHOW, MENU_QUIT);

@@ -98,7 +98,56 @@ class Docs(unittest.TestCase):
         self.assertEqual(len(check_deps.check_modules_map(MATRIX, "`a-contracts` `a-core`")), 1)
 
 
+WORKSPACE_LINTS = {
+    "rust": {"unsafe_code": "forbid"},
+    "clippy": {"dbg_macro": "warn", "todo": "warn"},
+}
+
+
+def copied(**changes):
+    lints = {table: dict(rules) for table, rules in WORKSPACE_LINTS.items()}
+    lints["rust"]["unsafe_code"] = "deny"
+    for table, rules in changes.items():
+        lints[table] = rules
+    return {"lints": lints}
+
+
+class CheckLints(unittest.TestCase):
+    def test_inherited_and_faithful_copies_pass(self):
+        manifests = {"a-core": {"lints": {"workspace": True}}, "a-shell": copied()}
+        self.assertEqual(check_deps.check_lints(WORKSPACE_LINTS, manifests), [])
+
+    def test_copy_missing_a_workspace_lint_fails(self):
+        manifests = {"a-shell": copied(clippy={"dbg_macro": "warn"})}
+        problems = check_deps.check_lints(WORKSPACE_LINTS, manifests)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("a-shell", problems[0])
+
+    def test_copy_missing_a_workspace_table_fails(self):
+        manifests = {"a-shell": {"lints": {"rust": {"unsafe_code": "deny"}}}}
+        self.assertEqual(len(check_deps.check_lints(WORKSPACE_LINTS, manifests)), 1)
+
+    def test_unsafe_code_cannot_be_relaxed_below_deny(self):
+        manifests = {"a-shell": copied(rust={"unsafe_code": "allow"})}
+        self.assertEqual(len(check_deps.check_lints(WORKSPACE_LINTS, manifests)), 1)
+
+    def test_crate_without_lints_fails(self):
+        self.assertEqual(len(check_deps.check_lints(WORKSPACE_LINTS, {"a-core": {}})), 1)
+
+
 class RealRepository(unittest.TestCase):
+    def test_every_crate_follows_the_workspace_lints(self):
+        metadata = {
+            "workspace_root": str(check_deps.ROOT),
+            "packages": [
+                {"name": path.parent.name, "manifest_path": str(path)}
+                for path in check_deps.ROOT.glob("crates/**/Cargo.toml")
+                if "target" not in path.parts and "node_modules" not in path.parts
+            ],
+        }
+        self.assertEqual(check_deps.check_lints(*check_deps.load_manifests(metadata)), [])
+
+
     def test_matrix_file_is_valid(self):
         kinds, crates = check_deps.load_matrix(check_deps.MATRIX)
         self.assertTrue(kinds <= check_deps.KINDS)
