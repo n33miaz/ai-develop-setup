@@ -1,8 +1,9 @@
 //! Windows calls for the control folder: identity and access lists, and every entry opened
 //! relative to the folder held open (`NtCreateFile` with a root handle), as itself and never
 //! through a reparse point, then renamed or removed by its own handle
-//! (`NtSetInformationFile`). Each block is a single call or the read of data the previous call
-//! filled, with a `SAFETY` comment; see docs/unsafe.md.
+//! (`NtSetInformationFile`); also the console interruption handler.
+//! Each block is a single call or the read of data the previous call filled, with a `SAFETY`
+//! comment; see docs/unsafe.md.
 
 // The rename structure below is laid out by hand for 64-bit Windows.
 #[cfg(not(target_pointer_width = "64"))]
@@ -559,4 +560,36 @@ fn descriptor_text(descriptor: PSECURITY_DESCRIPTOR) -> io::Result<String> {
         )
     }?;
     take_text(text)
+}
+
+static STOP_REQUESTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+unsafe extern "system" fn console_control(event: u32) -> windows::core::BOOL {
+    use windows::Win32::System::Console::{CTRL_BREAK_EVENT, CTRL_C_EVENT};
+    let stopping = matches!(event, CTRL_C_EVENT | CTRL_BREAK_EVENT);
+    if stopping {
+        STOP_REQUESTED.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    windows::core::BOOL::from(stopping)
+}
+
+pub(super) fn install_console_handler() -> io::Result<()> {
+    use windows::Win32::System::Console::SetConsoleCtrlHandler;
+    // SAFETY: the callback has static lifetime and touches only an atomic flag.
+    unsafe { SetConsoleCtrlHandler(Some(console_control), true) }.map_err(os_error)
+}
+
+pub(super) fn console_stop_requested() -> bool {
+    STOP_REQUESTED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(test)]
+pub(crate) fn generate_console_interrupt() -> io::Result<()> {
+    use windows::Win32::System::Console::{
+        CTRL_C_EVENT, GenerateConsoleCtrlEvent, SetConsoleCtrlHandler,
+    };
+    // SAFETY: this resets the inherited ignore flag only in the isolated test process.
+    unsafe { SetConsoleCtrlHandler(None, false) }.map_err(os_error)?;
+    // SAFETY: the test starts this process in a new console with no unrelated clients.
+    unsafe { GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0) }.map_err(os_error)
 }

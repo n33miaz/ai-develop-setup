@@ -6,7 +6,8 @@
 //! changes which folder was opened, and that folder is the one checked and used. On Windows
 //! the handle also keeps the folder, and every folder above it, from being renamed while the
 //! launcher runs. Each file is checked on its own handle too, and a signal is removed through
-//! the handle it was checked on.
+//! the handle it was checked on. This system layer also handles Windows console interrupts
+//! and asks a child on Unix to close.
 
 #[cfg(unix)]
 mod unix;
@@ -49,6 +50,25 @@ impl Identity {
     pub(crate) fn owns(&self, owner: &str) -> bool {
         !self.user.is_empty() && (owner == self.user || owner == self.default_owner)
     }
+}
+
+#[cfg(unix)]
+pub(crate) use unix::request_close;
+
+pub(crate) fn install_console_handler() -> io::Result<()> {
+    #[cfg(windows)]
+    win::install_console_handler()?;
+    Ok(())
+}
+
+#[cfg(all(test, windows))]
+pub(crate) use win::generate_console_interrupt;
+
+pub(crate) fn console_stop_requested() -> bool {
+    #[cfg(windows)]
+    return win::console_stop_requested();
+    #[cfg(unix)]
+    false
 }
 
 /// One entry of a Windows access list, reduced to what the decision needs.
