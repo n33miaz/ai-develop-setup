@@ -185,38 +185,123 @@ fn started_actions_close_after_lowering_clock_tolerance() {
 }
 
 #[test]
-fn pending_approval_expires_after_lowering_clock_tolerance() {
+fn pending_approval_closes_after_lowering_clock_tolerance() {
     let tolerant = policy(
         POSIX_HOME,
         "approval_item_limit = 1\ngate_clock_rewind_seconds = 5",
     );
     let strict = policy(POSIX_HOME, "approval_item_limit = 1");
     let action_id = id("action-1");
-    let mut journal = plan_journal(&tolerant);
-    let mut requested = event_meta(1, 'C');
-    requested.ts = at("2030-01-02T03:04:00Z");
-    let pending = JournalGate::new(&tolerant, &mut journal)
-        .apply(&action_id, request_approval(), requested)
+    let changed = policy(
+        POSIX_HOME,
+        "approval_item_limit = 1\nquarantine_enabled = false",
+    );
+    for deny in [false, true] {
+        let (
+            mut journal,
+            Command::Grant {
+                approval_id,
+                plan_hash,
+                ..
+            },
+        ) = pending_journal(&tolerant, rewound_meta(1, 'C'))
+        else {
+            unreachable!();
+        };
+        let warning = Some(JournalError::HistoryOutOfOrder);
+        assert_eq!(
+            JournalGate::new(&changed, &mut journal)
+                .inspect(&action_id)
+                .unwrap()
+                .policy_warning,
+            Some(JournalError::PolicyChanged)
+        );
+        let mut gate = JournalGate::new(&strict, &mut journal);
+        assert_eq!(gate.inspect(&action_id).unwrap().policy_warning, warning);
+
+        let (command, expected) = if deny {
+            (
+                Command::Deny {
+                    action_id: action_id.clone(),
+                    approval_id,
+                    plan_hash,
+                    reason: None,
+                },
+                State::ApprovalDenied,
+            )
+        } else {
+            (
+                Command::Expire {
+                    action_id: action_id.clone(),
+                    approval_id,
+                    plan_hash,
+                },
+                State::ApprovalExpired,
+            )
+        };
+        let mut close = event_meta(2, 'D');
+        close.ts = at("2030-01-02T03:05:05Z");
+        let snapshot = gate.apply(&action_id, command, close).unwrap();
+        assert_eq!(snapshot.state, expected);
+        assert_eq!(snapshot.policy_warning, warning);
+        assert_eq!(snapshot, gate.inspect(&action_id).unwrap());
+    }
+}
+
+#[test]
+fn pending_approval_with_recorded_rewind_is_denied_after_lowering_tolerance() {
+    let tolerant = policy(
+        POSIX_HOME,
+        "approval_item_limit = 1\ngate_clock_rewind_seconds = 5",
+    );
+    let strict = policy(POSIX_HOME, "approval_item_limit = 1");
+    let action_id = id("action-1");
+    let (mut journal, grant) = pending_journal(&tolerant, rewound_meta(1, 'C'));
+    let mut gate = JournalGate::new(&strict, &mut journal);
+    assert_eq!(
+        gate.apply(&action_id, grant, event_meta(2, 'D')),
+        Err(JournalError::HistoryOutOfOrder)
+    );
+    assert_eq!(
+        gate.inspect(&action_id).unwrap().state,
+        State::ApprovalDenied
+    );
+    let events = &journal.history.as_ref().unwrap().events;
+    let [_, _, Event::ApprovalDenied(denial)] = events.as_slice() else {
+        panic!("expected a recorded approval denial");
+    };
+    assert_eq!(
+        denial.data().reason,
+        Some(ShortText::new("E_CLOCK_POLICY_CHANGED").unwrap())
+    );
+}
+
+#[test]
+fn approved_action_with_recorded_rewind_fails_after_lowering_tolerance() {
+    let tolerant = policy(
+        POSIX_HOME,
+        "approval_item_limit = 1\ngate_clock_rewind_seconds = 5",
+    );
+    let strict = policy(POSIX_HOME, "approval_item_limit = 1");
+    let action_id = id("action-1");
+    let (mut journal, grant) = pending_journal(&tolerant, event_meta(1, 'C'));
+    JournalGate::new(&tolerant, &mut journal)
+        .apply(&action_id, grant, rewound_meta(2, 'D'))
         .unwrap();
 
     let mut gate = JournalGate::new(&strict, &mut journal);
-    let mut expired = event_meta(2, 'D');
-    expired.ts = at("2030-01-02T03:05:05Z");
-    let snapshot = gate
-        .apply(
-            &action_id,
-            Command::Expire {
-                action_id: action_id.clone(),
-                approval_id: id("approval-1"),
-                plan_hash: pending.plan_hash,
-            },
-            expired,
-        )
-        .unwrap();
-    assert_eq!(snapshot.state, State::ApprovalExpired);
     assert_eq!(
-        gate.inspect(&action_id).unwrap().state,
-        State::ApprovalExpired
+        gate.authorize(&action_id, event_meta(2, 'E')),
+        Err(JournalError::HistoryOutOfOrder)
+    );
+    assert_eq!(gate.inspect(&action_id).unwrap().state, State::Failed);
+    let events = &journal.history.as_ref().unwrap().events;
+    let [_, _, _, Event::ActionFailed(failure)] = events.as_slice() else {
+        panic!("expected a recorded action failure");
+    };
+    assert_eq!(
+        failure.data().error_code,
+        ErrorCode::new("E_CLOCK_POLICY_CHANGED").unwrap()
     );
 }
 
@@ -328,12 +413,21 @@ fn request_approval() -> Command {
     }
 }
 
-fn pending_journal(original: &ads_core::gate::GatePolicy) -> (MemoryJournal, Command) {
+fn rewound_meta(seq: u64, suffix: char) -> ads_core::gate::EventMeta {
+    let mut event = event_meta(seq, suffix);
+    event.ts = at("2030-01-02T03:04:00Z");
+    event
+}
+
+fn pending_journal(
+    original: &ads_core::gate::GatePolicy,
+    requested: ads_core::gate::EventMeta,
+) -> (MemoryJournal, Command) {
     let action_id = id("action-1");
     let mut journal = plan_journal(original);
     let mut gate = JournalGate::new(original, &mut journal);
     let snapshot = gate
-        .apply(&action_id, request_approval(), event_meta(1, 'C'))
+        .apply(&action_id, request_approval(), requested)
         .unwrap();
     let grant = Command::Grant {
         action_id,
@@ -416,7 +510,7 @@ fn changed_policy_refuses_and_denies_a_pending_approval() {
         "approval_item_limit = 1\nquarantine_enabled = false",
     );
     let action_id = id("action-1");
-    let (mut journal, grant) = pending_journal(&original);
+    let (mut journal, grant) = pending_journal(&original, event_meta(1, 'C'));
 
     let mut gate = JournalGate::new(&changed, &mut journal);
     assert_eq!(
@@ -471,7 +565,7 @@ fn changed_policy_refuses_and_closes_an_approved_action() {
         "approval_item_limit = 1\nquarantine_enabled = false",
     );
     let action_id = id("action-1");
-    let (mut journal, grant) = pending_journal(&original);
+    let (mut journal, grant) = pending_journal(&original, event_meta(1, 'C'));
     JournalGate::new(&original, &mut journal)
         .apply(&action_id, grant, event_meta(2, 'D'))
         .unwrap();

@@ -25,7 +25,7 @@ pub enum JournalError {
     Transition,
     /// The incoming timestamp is too early. Retry with a current timestamp.
     OutOfOrder,
-    /// Inspection warning for a recorded rewind beyond the current tolerance.
+    /// A recorded rewind exceeds the current tolerance.
     HistoryOutOfOrder,
     Unavailable,
 }
@@ -137,25 +137,12 @@ impl<'a> JournalGate<'a> {
         let history = self.journal.load(action_id)?;
         let mut snapshot =
             load_action(self.policy, self.work_root, action_id, &history)?.snapshot();
-        let tolerance = self.policy.gate_clock_rewind_seconds();
-        snapshot.policy_warning = match current_verdict(self.policy, &history.plan) {
-            Ok(_) => history
-                .events
-                .windows(2)
-                .any(|pair| pair[1].ts().precedes_by_more_than(pair[0].ts(), tolerance))
-                .then_some(JournalError::HistoryOutOfOrder),
-            Err(
-                error @ (JournalError::PolicyChanged
-                | JournalError::PlanNormalizationFailed
-                | JournalError::ClassificationBudgetExceeded(_)),
-            ) => Some(error),
-            Err(error) => return Err(error),
-        };
+        snapshot.policy_warning = policy_warning(eligible_verdict(self.policy, &history).err())?;
         Ok(snapshot)
     }
 
     /// Applies a command. A grant invalidated by policy records a denial before returning
-    /// [`JournalError::PolicyChanged`].
+    /// the policy error.
     pub fn apply(
         &mut self,
         action_id: &Id,
@@ -170,40 +157,44 @@ impl<'a> JournalGate<'a> {
             let (command, meta) = input.take().ok_or(JournalError::Transition)?;
             let action = load_action(policy, work_root, action_id, history)?;
             let (updated, event) = action.try_apply(command, meta).map_err(transition_error)?;
-            if matches!(&event, Event::ApprovalRequested(_)) {
-                current_verdict(policy, &history.plan)?;
+            let eligibility = eligible_verdict(policy, history);
+            if matches!(&event, Event::ApprovalRequested(_))
+                && let Err(&error) = eligibility.as_ref()
+                && error != JournalError::HistoryOutOfOrder
+            {
+                return Err(error);
             }
-            if let Event::ApprovalGranted(granted) = &event {
-                match current_verdict(policy, &history.plan) {
-                    Err(JournalError::PolicyChanged) => {
-                        let data = granted.data();
-                        let denial = Command::Deny {
-                            action_id: data.action_id.clone(),
-                            approval_id: data.approval_id.clone(),
-                            plan_hash: data.plan_hash.clone(),
-                            reason: Some(ShortText::new("E_POLICY_CHANGED").expect("valid reason")),
-                        };
-                        let (_, denied) = action
-                            .try_apply(denial, event.meta())
-                            .map_err(transition_error)?;
-                        validate_next(history, &denied)?;
-                        next = Some(Err(JournalError::PolicyChanged));
-                        return Ok(denied);
-                    }
-                    result => {
-                        result?;
-                    }
+            if let Event::ApprovalGranted(granted) = &event
+                && let Err(&error) = eligibility.as_ref()
+            {
+                if let Some(code) = policy_refusal_code(error) {
+                    let data = granted.data();
+                    let denial = Command::Deny {
+                        action_id: data.action_id.clone(),
+                        approval_id: data.approval_id.clone(),
+                        plan_hash: data.plan_hash.clone(),
+                        reason: Some(ShortText::new(code).expect("valid reason")),
+                    };
+                    let (_, denied) = action
+                        .try_apply(denial, event.meta())
+                        .map_err(transition_error)?;
+                    validate_next(history, &denied)?;
+                    next = Some(Err(error));
+                    return Ok(denied);
                 }
+                return Err(error);
             }
             validate_next(history, &event)?;
-            next = Some(Ok(updated.snapshot()));
+            let mut snapshot = updated.snapshot();
+            snapshot.policy_warning = policy_warning(eligibility.err())?;
+            next = Some(Ok(snapshot));
             Ok(event)
         })?;
         next.ok_or(JournalError::Transition)?
     }
 
-    /// Starts an eligible action, or records its failure before returning
-    /// [`JournalError::PolicyChanged`] when its current verdict differs.
+    /// Starts an eligible action, or records its failure when the current policy
+    /// invalidates its verdict or recorded clock history.
     pub fn authorize(
         &mut self,
         action_id: &Id,
@@ -219,19 +210,22 @@ impl<'a> JournalGate<'a> {
             if !matches!(action.state(), State::Planned | State::Approved { .. }) {
                 return Err(JournalError::Transition);
             }
-            let verdict = match current_verdict(policy, &history.plan) {
-                Err(JournalError::PolicyChanged) => {
+            let verdict = match eligible_verdict(policy, history) {
+                Ok(verdict) => verdict,
+                Err(error) => {
+                    let Some(code) = policy_refusal_code(error) else {
+                        return Err(error);
+                    };
                     let command = Command::Fail {
-                        error_code: ErrorCode::new("E_POLICY_CHANGED").expect("valid error code"),
+                        error_code: ErrorCode::new(code).expect("valid error code"),
                     };
                     let (_, event) = action
                         .apply(command, meta)
                         .map_err(|refused| transition_error(refused.error))?;
                     validate_next(history, &event)?;
-                    started = Some(Err(JournalError::PolicyChanged));
+                    started = Some(Err(error));
                     return Ok(event);
                 }
-                result => result?,
             };
             let (_, permit, event) = action
                 .authorize(verdict.plan(), meta)
@@ -342,6 +336,40 @@ fn load_action(
             .map_err(|_| JournalError::Integrity)?;
     }
     Ok(action)
+}
+
+fn eligible_verdict(policy: &GatePolicy, history: &GateHistory) -> Result<Verdict, JournalError> {
+    let verdict = current_verdict(policy, &history.plan)?;
+    let tolerance = policy.gate_clock_rewind_seconds();
+    if history
+        .events
+        .windows(2)
+        .any(|pair| pair[1].ts().precedes_by_more_than(pair[0].ts(), tolerance))
+    {
+        return Err(JournalError::HistoryOutOfOrder);
+    }
+    Ok(verdict)
+}
+
+fn policy_warning(error: Option<JournalError>) -> Result<Option<JournalError>, JournalError> {
+    match error {
+        None => Ok(None),
+        Some(
+            error @ (JournalError::PolicyChanged
+            | JournalError::PlanNormalizationFailed
+            | JournalError::ClassificationBudgetExceeded(_)
+            | JournalError::HistoryOutOfOrder),
+        ) => Ok(Some(error)),
+        Some(error) => Err(error),
+    }
+}
+
+fn policy_refusal_code(error: JournalError) -> Option<&'static str> {
+    match error {
+        JournalError::PolicyChanged => Some("E_POLICY_CHANGED"),
+        JournalError::HistoryOutOfOrder => Some("E_CLOCK_POLICY_CHANGED"),
+        _ => None,
+    }
 }
 
 fn current_verdict(
