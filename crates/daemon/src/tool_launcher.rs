@@ -173,11 +173,13 @@ where
     C: claude::Probe,
     X: codex::Probe,
 {
-    /// Binds actions to the working folder used to open this session on the host.
+    /// Binds actions to the working folder used to open this session on the host. The state of
+    /// the product is denied as a target whatever `policy` says.
     pub fn session_gate(
         &self,
         opened: &OpenParams,
         policy: GatePolicy,
+        product: &crate::gate::ProductState,
         fence: &Path,
     ) -> Result<crate::gate::SessionGate, String> {
         let cwd = opened
@@ -202,7 +204,7 @@ where
                 }
             }
         }
-        crate::gate::SessionGate::new(root, roots, policy, fence)
+        crate::gate::SessionGate::new(root, roots, policy, product, fence)
     }
 }
 

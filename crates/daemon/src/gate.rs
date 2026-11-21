@@ -1,13 +1,105 @@
 //! Composition of the file executor with the anchored gate journal.
 
-use std::path::Path;
+use std::{
+    ffi::OsString,
+    io::ErrorKind,
+    path::{Path, PathBuf},
+};
 
 use ads_adapter_fs::{Executor, Failure, Report, Stop};
 use ads_core::gate::{
     AbsPath, ActionPlan, ActionSnapshot, Command, EventMeta, GatePolicy, Id, JournalError,
     JournalGate, PlanError, PlanRequest,
 };
-use ads_storage::EventLog;
+use ads_storage::{EventLog, StorageConfig, StorageError};
+
+/// Suffixes SQLite gives the files beside the database; losing one loses committed history.
+const DATABASE_SIDECARS: [&str; 3] = ["-wal", "-shm", "-journal"];
+
+/// The files and folders that hold the state of the product itself, taken from its
+/// configuration: no action of a session may touch them, whatever the user policy says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProductState {
+    paths: Vec<AbsPath>,
+}
+
+impl ProductState {
+    /// The audit database (`audit_database_path`, or its place in the vault folder) with its
+    /// side files, the vault folder that holds the binding lock and, when the daemon was
+    /// started by the launcher, its control folder (the folder of `--instance-lock`). Each
+    /// path is kept as configured and as resolved on disk. Refuses what it cannot resolve.
+    pub fn from_config(
+        storage: &StorageConfig,
+        control_dir: Option<&Path>,
+    ) -> Result<Self, String> {
+        let database = crate::audit::canonical_path(storage).map_err(|error| error.to_string())?;
+        let mut sources = vec![database.clone()];
+        for suffix in DATABASE_SIDECARS {
+            let mut name = OsString::from(database.as_os_str());
+            name.push(suffix);
+            sources.push(PathBuf::from(name));
+        }
+        match crate::audit::vault_directory() {
+            Ok(vault) => sources.push(vault),
+            // Only where the vault does not exist; the audit log does not open there either.
+            Err(StorageError::AnchorUnavailable) if !cfg!(windows) => {}
+            Err(error) => return Err(error.to_string()),
+        }
+        sources.extend(control_dir.map(Path::to_path_buf));
+        let mut paths = Vec::new();
+        for source in &sources {
+            for path in spellings(source)? {
+                if !paths.contains(&path) {
+                    paths.push(path);
+                }
+            }
+        }
+        Ok(Self { paths })
+    }
+
+    pub fn paths(&self) -> &[AbsPath] {
+        &self.paths
+    }
+}
+
+/// `path` as written and as the system resolves it: the deepest folder that exists is
+/// resolved (links, short names, case) and the rest is appended.
+fn spellings(path: &Path) -> Result<Vec<AbsPath>, String> {
+    if !path.is_absolute() {
+        return Err(format!("product path is not absolute: {}", path.display()));
+    }
+    // The resolved spelling of a Windows path carries the `\\?\` prefix; a share is refused.
+    let parse = |path: &Path| {
+        let text = path
+            .to_str()
+            .ok_or_else(|| format!("product path is not valid text: {}", path.display()))?;
+        let text = match text.strip_prefix(r"\\?\") {
+            Some(rest) if rest.starts_with(r"UNC\") => {
+                return Err(format!("product path is on a network share: {text}"));
+            }
+            Some(rest) => rest,
+            None => text,
+        };
+        AbsPath::parse(text).map_err(|error| format!("{text}: {error}"))
+    };
+    let mut found = vec![parse(path)?];
+    for existing in path.ancestors() {
+        let resolved = match std::fs::canonicalize(existing) {
+            Ok(resolved) => resolved,
+            Err(error) if error.kind() == ErrorKind::NotFound => continue,
+            Err(error) => return Err(format!("{}: {error}", existing.display())),
+        };
+        let rest = path
+            .strip_prefix(existing)
+            .map_err(|error| error.to_string())?;
+        let resolved = parse(&resolved.join(rest))?;
+        if !found.contains(&resolved) {
+            found.push(resolved);
+        }
+        break;
+    }
+    Ok(found)
+}
 
 #[derive(Debug)]
 pub enum PlanActionError {
@@ -27,12 +119,15 @@ impl SessionGate {
         root: AbsPath,
         roots: Vec<AbsPath>,
         policy: GatePolicy,
+        product: &ProductState,
         fence: &Path,
     ) -> Result<Self, String> {
         if !roots.contains(&root) {
             return Err("session working folder is no longer configured".to_owned());
         }
-        let policy = policy.with_work_roots(roots);
+        let policy = policy
+            .with_work_roots(roots)
+            .with_product_paths(product.paths().iter().cloned());
         let executor = Executor::new(fence, policy.clone()).map_err(|error| error.to_string())?;
         Ok(Self {
             root,

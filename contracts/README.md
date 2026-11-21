@@ -187,7 +187,7 @@ Campos:
 - `quarantined` e `destination`: quando `quarantined` é `true`, o apagar pedido foi reescrito como mover para a pasta de quarentena, e `destination` é essa pasta (o destino reescrito). Em `fs.move`, `destination` é o destino pedido. Nos demais casos é `null`.
 - `plan_hash` cobre o plano **em vigor**: o reescrito, quando há quarentena. É o mesmo hash de `action.planned`, das aprovações e de `action.started`, `action.executed` e `action.failed`. O nome da pasta de quarentena sai do hash do plano como pedido, o que este registro não reconfere.
 
-Códigos de regra em uso (código novo não muda a versão do Schema). Onde há `<proteção>`, ela é uma de `filesystem_root`, `user_home`, `user_home_ancestor`, `user_profile`, `system_dir`, `other_path_style`.
+Códigos de regra em uso (código novo não muda a versão do Schema). Onde há `<proteção>`, ela é uma de `filesystem_root`, `user_home`, `user_home_ancestor`, `user_profile`, `system_dir`, `other_path_style`, `product_data`.
 
 | Veredito | Códigos |
 |---|---|

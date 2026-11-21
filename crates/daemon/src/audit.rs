@@ -182,7 +182,7 @@ pub fn canonical_path(config: &StorageConfig) -> Result<PathBuf, StorageError> {
     Ok(vault_directory()?.join("audit.db"))
 }
 
-fn vault_directory() -> Result<PathBuf, StorageError> {
+pub(crate) fn vault_directory() -> Result<PathBuf, StorageError> {
     if !cfg!(windows) {
         return Err(StorageError::AnchorUnavailable);
     }
@@ -441,8 +441,13 @@ mod tests {
                 .unwrap(),
             )
             .unwrap();
+        let product = crate::gate::ProductState::from_config(
+            &configured_for(&fs::canonicalize(&root).unwrap().join("events.db")),
+            None,
+        )
+        .unwrap();
         let mut gate = launcher
-            .session_gate(&opened, policy.clone(), &fence)
+            .session_gate(&opened, policy.clone(), &product, &fence)
             .unwrap();
         let open_in = |cwd| {
             let mut params = opened.clone();
@@ -454,6 +459,7 @@ mod tests {
                 .session_gate(
                     &open_in(child("unconfigured").try_into().unwrap()),
                     policy.clone(),
+                    &product,
                     &fence
                 )
                 .is_err()
@@ -462,6 +468,7 @@ mod tests {
             .session_gate(
                 &open_in(fence_path.to_owned().try_into().unwrap()),
                 policy,
+                &product,
                 &fence,
             )
             .unwrap();
@@ -577,6 +584,156 @@ mod tests {
             Err(JournalError::Transition)
         ));
         assert!(project.join(".git").is_file());
+    }
+
+    /// A session whose work root holds the audit database never gets a plan that removes or
+    /// moves it, under any spelling, by wildcard, or with the quarantine turned off.
+    #[test]
+    fn session_actions_never_target_the_product_state() {
+        use std::num::NonZeroU64;
+
+        use crate::api::Launcher;
+        use crate::tool_launcher::ToolLauncher;
+        use ads_core::gate::{
+            Actor, ActorKind, DataClass, Estimate, EventMeta, GateJournal, GatePolicy, HostFacts,
+            Id, OperationRequest, PlanRequest, State, TargetRequest, Timestamp, Ulid,
+        };
+        use ads_core::tool_launch::{DiskProbe, HostRules};
+
+        let mut unique = [0_u8; 16];
+        getrandom::fill(&mut unique).unwrap();
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.test-tmp")
+            .join(format!("product-gate-{:032x}", u128::from_be_bytes(unique)));
+        let fence = root.join("fence");
+        fs::create_dir_all(fence.join("work").join("data")).unwrap();
+        let resolved = fs::canonicalize(&fence).unwrap();
+        let resolved = resolved.to_str().unwrap();
+        let fence_path = resolved
+            .strip_prefix(r"\\?\")
+            .unwrap_or(resolved)
+            .to_owned();
+        let sep = std::path::MAIN_SEPARATOR;
+        let work = format!("{fence_path}{sep}work");
+        let database = PathBuf::from(format!("{work}{sep}data{sep}audit.db"));
+        let note = PathBuf::from(format!("{work}{sep}note.txt"));
+        fs::write(&note, "note").unwrap();
+
+        let vault = MemoryVault::default();
+        let mut log = open_configured(&database, &configured_for(&database), &vault).unwrap();
+        assert!(database.is_file());
+
+        let program = ads_adapter_claude::HARNESS_ID;
+        let launcher = ToolLauncher::from_toml_str(
+            &format!(
+                "[workdirs]\nworkspace = '{work}'\n[tools.{program}]\nprogram = '{}'",
+                note.display()
+            ),
+            HostRules::host(),
+            std::iter::empty::<(&str, &str)>(),
+            DiskProbe,
+            DiskProbe,
+        )
+        .unwrap();
+        let opened = launcher
+            .prepare(
+                &serde_json::from_value(serde_json::json!({
+                    "session_id": "example",
+                    "harness": program,
+                    "workdir_alias": "workspace",
+                    "cols": 80,
+                    "rows": 24,
+                    "_meta": {"origin": "local", "idempotency_key": "01ARZ3NDEKTSV4RRFFQ69G5FAB"}
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        // The configured spelling differs from the one on disk; the resolved one is kept too.
+        let configured = PathBuf::from(format!("{work}{sep}DATA{sep}audit.db"));
+        let product =
+            crate::gate::ProductState::from_config(&configured_for(&configured), None).unwrap();
+        let home = format!("{fence_path}{sep}fake-home");
+        let meta = |event: u64| EventMeta {
+            seq: NonZeroU64::MIN,
+            id: Ulid::new(format!("01J{event:023}")).unwrap(),
+            ts: Timestamp::new("2030-01-02T03:04:05Z").unwrap(),
+            actor: Actor {
+                kind: ActorKind::Daemon,
+                id: Id::new("daemon").unwrap(),
+            },
+            cause: None,
+            data_class: DataClass::Internal,
+        };
+        let request = |operation, target: &str, bytes| PlanRequest {
+            operation,
+            work_root: work.clone(),
+            targets: vec![TargetRequest {
+                path: target.to_owned(),
+                repo_root: false,
+            }],
+            estimate: Some(Estimate { items: 1, bytes }),
+        };
+        let mut planned = 0;
+        for overrides in ["", "quarantine_enabled = false"] {
+            let policy =
+                GatePolicy::from_toml_str(overrides, &HostFacts { user_home: &home }).unwrap();
+            let gate = launcher
+                .session_gate(&opened, policy, &product, &fence)
+                .unwrap();
+            let moved = OperationRequest::Move {
+                destination: format!("{work}{sep}moved"),
+            };
+            for (operation, target) in [
+                (
+                    OperationRequest::Delete,
+                    format!("{work}{sep}data{sep}audit.db"),
+                ),
+                (
+                    OperationRequest::Delete,
+                    format!("{work}{sep}data{sep}audit.db-wal"),
+                ),
+                (
+                    OperationRequest::Delete,
+                    format!("{work}{sep}Data{sep}AUDIT.DB"),
+                ),
+                (
+                    OperationRequest::Delete,
+                    format!("{work}{sep}data{sep}*.db"),
+                ),
+                (
+                    OperationRequest::DeleteRecursive,
+                    format!("{work}{sep}data"),
+                ),
+                (moved, format!("{work}{sep}data{sep}audit.db")),
+            ] {
+                planned += 1;
+                let id = Id::new(format!("product-{planned}")).unwrap();
+                let snapshot = gate
+                    .plan(
+                        &mut log,
+                        id.clone(),
+                        request(operation, &target, 1),
+                        meta(planned),
+                    )
+                    .unwrap();
+                assert_eq!(snapshot.state, State::Denied, "{overrides:?} {target}");
+                let plan = log.load(&id).unwrap().plan;
+                let reasons = &plan.fields().verdict.reasons;
+                assert!(
+                    reasons
+                        .iter()
+                        .any(|reason| reason.rule.as_str() == "protected.product_data"),
+                    "{target}: {reasons:?}"
+                );
+            }
+            // What sits beside the product state is still an ordinary target.
+            planned += 1;
+            let id = Id::new(format!("product-{planned}")).unwrap();
+            let beside = request(OperationRequest::Delete, &note.display().to_string(), 4);
+            let snapshot = gate.plan(&mut log, id, beside, meta(planned)).unwrap();
+            assert_ne!(snapshot.state, State::Denied, "{overrides:?}");
+        }
+        assert!(database.is_file());
     }
 
     #[test]
