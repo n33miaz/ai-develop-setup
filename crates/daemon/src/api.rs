@@ -185,6 +185,10 @@ pub struct ApiConfig {
     /// The ceiling, in bytes, of one `approval.list` response.
     pub approval_list_max_bytes: usize,
 }
+
+/// The highest `approval_list_max_bytes`: half of the 16 MiB frame the desktop client takes,
+/// so that a page, and the oldest action listed even when it passes the ceiling, still reach it.
+const MAX_APPROVAL_LIST_BYTES: usize = 8_388_608;
 impl ApiConfig {
     pub fn for_desktop(mut self) -> Self {
         self.desktop = true;
@@ -224,7 +228,7 @@ impl ApiConfig {
         if positive.iter().any(|n| *n == 0 || *n > 1_048_576)
             || self.max_write_bytes > 65536
             || self.max_message_bytes < 1024
-            || !(1_048_576..=268_435_456).contains(&self.approval_list_max_bytes)
+            || !(1_048_576..=MAX_APPROVAL_LIST_BYTES).contains(&self.approval_list_max_bytes)
             || [
                 self.accept_retry_ms,
                 self.auth_timeout_ms,
@@ -1699,6 +1703,23 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_approval_list_ceiling_stays_within_the_desktop_frame() {
+        let ceiling = |bytes: usize| {
+            ApiConfig::from_toml_str(&format!("approval_list_max_bytes = {bytes}"))
+                .map(|config| config.approval_list_max_bytes)
+        };
+        assert_eq!(ceiling(8_388_608), Ok(8_388_608));
+        assert_eq!(ceiling(1_048_576), Ok(1_048_576));
+        assert!(ceiling(8_388_609).is_err());
+        assert!(ceiling(268_435_456).is_err());
+        assert!(ceiling(1_048_575).is_err());
+        let default = ApiConfig::from_toml_str("")
+            .unwrap()
+            .approval_list_max_bytes;
+        assert!(default <= MAX_APPROVAL_LIST_BYTES);
+    }
 
     #[test]
     fn malformed_credentials_never_escape_validation_errors() {

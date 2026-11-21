@@ -1,12 +1,15 @@
 //! Authenticated column cipher, independent of SQLite.
 use chacha20poly1305::{
     XChaCha20Poly1305,
-    aead::{Aead, KeyInit, Payload},
+    aead::{Aead, AeadCore, KeyInit, Payload},
 };
 use std::fmt;
-use storage_sha2::{Digest, Sha256};
+use storage_sha2::{Digest, Sha256, digest::typenum::Unsigned};
 use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
+
+/// Bytes added to the plaintext in the encrypted data column. The nonce is separate.
+pub const DATA_TAG_BYTES: usize = <XChaCha20Poly1305 as AeadCore>::TagSize::USIZE;
 
 const DATA_DOMAIN: &[u8] = b"urn:ads:cipher:column:1";
 const CHECK_DOMAIN: &[u8] = b"urn:ads:cipher:key-check:1";
