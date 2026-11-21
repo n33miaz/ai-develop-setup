@@ -459,6 +459,8 @@ jobs:
         run: cargo clippy --locked -p ads-adapter-fs --all-targets -- -D warnings
       - name: Testes do executor (inclui a junção)
         run: cargo test --locked -p ads-adapter-fs -- --nocapture
+      - name: Forma canônica dos efeitos com a ordem de inserção do serde_json ligada
+        run: cargo test --locked -p ads-adapter-fs --lib --features serde_json/preserve_order canonical_form
 
   storage-windows:
     name: storage-windows
