@@ -182,6 +182,8 @@ pub struct SessionGate {
     policy: GatePolicy,
     product: ProductState,
     executor: Executor,
+    #[cfg(test)]
+    pub(crate) before_execute: Option<Box<dyn FnOnce() + Send>>,
 }
 
 impl SessionGate {
@@ -205,6 +207,8 @@ impl SessionGate {
             policy,
             product,
             executor,
+            #[cfg(test)]
+            before_execute: None,
         })
     }
 
@@ -223,7 +227,10 @@ impl SessionGate {
         if log.state() != &self.product {
             return Err(JournalError::PolicyChanged);
         }
-        Ok(log.log())
+        log.log().map_err(|error| match error {
+            ads_storage::StorageError::Busy => JournalError::Busy,
+            _ => JournalError::Unavailable,
+        })
     }
 
     pub fn plan(
@@ -284,6 +291,10 @@ impl SessionGate {
             finish.ts = start.ts.clone();
         }
         let started = gate.authorize(action_id, start)?;
+        #[cfg(test)]
+        if let Some(before_execute) = self.before_execute.take() {
+            before_execute();
+        }
         match self.executor.execute_recorded(started) {
             Ok(completed) => {
                 let (recorded, report) = completed.record(&mut gate, action_id, finish);

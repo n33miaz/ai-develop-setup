@@ -6,6 +6,7 @@ pub enum StorageError {
     Configuration,
     Io,
     Busy,
+    Unavailable,
     Constraint,
     ReadOnly,
     Permission,

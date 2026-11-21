@@ -90,14 +90,8 @@ impl AnchorStore for Anchor {
     }
 }
 
-fn open_log(path: &Path, anchor: &Anchor) -> EventLog {
-    EventLog::open(
-        path,
-        &StorageConfig::defaults(),
-        Box::new(Keys),
-        Box::new(anchor.clone()),
-    )
-    .unwrap()
+fn open_log(path: &Path, anchor: &Anchor, config: &StorageConfig) -> EventLog {
+    EventLog::open(path, config, Box::new(Keys), Box::new(anchor.clone())).unwrap()
 }
 
 fn id(text: &str) -> CommonIdV1 {
@@ -109,6 +103,7 @@ struct Bench {
     folder: Folder,
     anchor: Anchor,
     queue: String,
+    config: StorageConfig,
 }
 impl Bench {
     fn new(name: &str) -> Self {
@@ -116,11 +111,16 @@ impl Bench {
             folder: Folder::new(name),
             anchor: Anchor::default(),
             queue: name.to_owned(),
+            config: StorageConfig::defaults(),
         }
     }
     fn open_as(&self, owner_id: &str) -> Result<LoggedQueue, QueueOpenError> {
         LoggedQueue::bind(
-            Arc::new(Mutex::new(open_log(&self.folder.db(), &self.anchor))),
+            Arc::new(Mutex::new(open_log(
+                &self.folder.db(),
+                &self.anchor,
+                &self.config,
+            ))),
             id(&self.queue),
             QueueOwner {
                 owner_id: id(owner_id),
@@ -151,7 +151,7 @@ impl Bench {
             "data": data,
         }))
         .unwrap();
-        open_log(&self.folder.db(), &self.anchor)
+        open_log(&self.folder.db(), &self.anchor, &self.config)
             .append(&event)
             .unwrap();
     }
@@ -172,7 +172,7 @@ impl Bench {
     }
     /// Every event of the queue stream as JSON, read through a second connection.
     fn audit(&self) -> Vec<Value> {
-        open_log(&self.folder.db(), &self.anchor)
+        open_log(&self.folder.db(), &self.anchor, &self.config)
             .read_queue(&id(&self.queue))
             .unwrap()
             .into_iter()
@@ -437,7 +437,8 @@ impl QueueControl for ObservedStop {
 
 #[tokio::test]
 async fn a_locked_queue_stop_does_not_stall_other_connections() {
-    let bench = Bench::new("queue-stop-lock");
+    let mut bench = Bench::new("queue-stop-lock");
+    bench.config = StorageConfig::from_toml_str("busy_timeout_ms = 60000").unwrap();
     let (entered, waiting) = tokio::sync::oneshot::channel();
     let f = fixture(Some(Arc::new(ObservedStop {
         queue: bench.open(),

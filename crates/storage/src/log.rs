@@ -536,6 +536,10 @@ fn check_log_schema(tx: &Transaction<'_>) -> Result<(), StorageError> {
 }
 
 impl EventLog {
+    pub fn busy_timeout_ms(&self) -> u32 {
+        self.config.busy_timeout_ms()
+    }
+
     /// Checks the independent vault commitment and authenticates the full chain
     /// under one write lock. Verification processes all stored ciphertext.
     pub fn open(
@@ -1130,6 +1134,7 @@ fn journal_error(error: StorageError) -> JournalError {
         | StorageError::Tampered
         | StorageError::UnsupportedSchema
         | StorageError::InvalidEvent => JournalError::Integrity,
+        StorageError::Busy => JournalError::Busy,
         _ => JournalError::Unavailable,
     }
 }

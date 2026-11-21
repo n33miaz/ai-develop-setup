@@ -27,6 +27,7 @@ pub enum JournalError {
     OutOfOrder,
     /// A recorded rewind exceeds the current tolerance.
     HistoryOutOfOrder,
+    Busy,
     Unavailable,
 }
 

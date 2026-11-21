@@ -104,6 +104,7 @@ pub struct LoggedQueue {
 }
 struct Inner {
     log: Arc<Mutex<EventLog>>,
+    busy_timeout: std::time::Duration,
     record: RecordTaskQueueV1,
     owner: QueueOwner,
     /// Id of the stop command whose event could not be written; the event is written later
@@ -219,6 +220,7 @@ impl LoggedQueue {
                 state: Stopped,
             },
             log,
+            busy_timeout: std::time::Duration::ZERO,
             owner,
             pending_stop: None,
         };
@@ -229,11 +231,11 @@ impl LoggedQueue {
     }
 
     fn restore(mut inner: Inner, create: Option<&QueuePolicy>) -> Result<Inner, QueueOpenError> {
-        let stored = inner
-            .log
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .read_queue(&inner.record.id)?;
+        let stored = {
+            let log = inner.log.lock().map_err(|_| StorageError::Unavailable)?;
+            inner.busy_timeout = std::time::Duration::from_millis(log.busy_timeout_ms().into());
+            log.read_queue(&inner.record.id)?
+        };
         if stored.is_empty() {
             let initial_policy = create.ok_or(QueueOpenError::NotCreated)?;
             let (record, created) = new_local_stopped(
@@ -314,7 +316,7 @@ impl Inner {
             json!({"kind": "daemon", "id": "core"})
         };
         let schema = format!("urn:ads:event:queue.{kind}");
-        let mut log = self.log.lock().unwrap_or_else(|error| error.into_inner());
+        let mut log = crate::audit::lock_with_timeout(&self.log, self.busy_timeout)?;
         let seq = match seq {
             Some(seq) => seq,
             None => log.head(&stream)? + 1,
@@ -345,7 +347,10 @@ impl Inner {
         };
         let data = data.map_err(|_| ApiError::Storage)?;
         self.append(kind, true, data, Some(cause))
-            .map_err(|_| ApiError::Storage)
+            .map_err(|error| match error {
+                QueueOpenError::Storage(error) => ApiError::from_storage(error),
+                _ => ApiError::Storage,
+            })
     }
 
     /// Writes the owner stop that an earlier failure left out of the stream.

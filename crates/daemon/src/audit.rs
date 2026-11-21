@@ -4,6 +4,7 @@ use std::{
     fs::{self, File, TryLockError},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
+    time::{Duration, Instant},
 };
 
 use ads_adapter_vault::OsVault;
@@ -326,16 +327,45 @@ pub fn open(
     EventLog::open(&path, config, keys, Box::new(anchor))
 }
 
+pub(crate) fn lock_with_timeout<T>(
+    mutex: &Mutex<T>,
+    timeout: Duration,
+) -> Result<MutexGuard<'_, T>, StorageError> {
+    use std::sync::TryLockError;
+
+    let deadline = Instant::now() + timeout;
+    loop {
+        match mutex.try_lock() {
+            Ok(guard) => return Ok(guard),
+            Err(TryLockError::Poisoned(_)) => return Err(StorageError::Unavailable),
+            Err(TryLockError::WouldBlock) => {}
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(StorageError::Busy);
+        }
+        std::thread::sleep(remaining.min(Duration::from_millis(1)));
+        if Instant::now() >= deadline {
+            return Err(StorageError::Busy);
+        }
+    }
+}
+
 /// The audit log with the product state it was opened with. A session gate is built from it
 /// and only acts on a log with the same state, so what the gate protects is the log it writes.
 pub struct ProductLog {
     log: Arc<Mutex<EventLog>>,
     state: ProductState,
+    busy_timeout: Duration,
 }
 
 impl ProductLog {
-    pub fn log(&self) -> MutexGuard<'_, EventLog> {
-        self.log.lock().unwrap_or_else(|error| error.into_inner())
+    pub fn log(&self) -> Result<MutexGuard<'_, EventLog>, StorageError> {
+        lock_with_timeout(&self.log, self.busy_timeout)
+    }
+
+    pub(crate) fn busy_timeout(&self) -> Duration {
+        self.busy_timeout
     }
 
     /// Gives another component access to the same audit connection.
@@ -415,6 +445,7 @@ fn open_product_in<V: Vault + Send + 'static>(
     Ok(ProductLog {
         log: Arc::new(Mutex::new(log)),
         state,
+        busy_timeout: Duration::from_millis(config.busy_timeout_ms().into()),
     })
 }
 
@@ -620,7 +651,53 @@ mod tests {
     }
 
     #[test]
-    fn audit_fixture_removes_only_its_own_files_and_directories() {
+    fn a_poisoned_audit_connection_refuses_both_gate_access_and_queue_writes() {
+        use crate::api::ApiError;
+        use crate::auth::Token;
+        use crate::queue::{LoggedQueue, QueueControl, QueueOwner};
+        use ads_contracts::{CommonIdV1, RecordTaskQueueV1State};
+
+        let root = Fixture::new("poisoned-audit", &["audit", "vault"]);
+        let log = test_product_log(&root, "", &TestVault::default());
+        let token = Token::generate().unwrap();
+        let bootstrap = token.desktop_bootstrap(0);
+        let session = token
+            .open_session(bootstrap.split_once(' ').unwrap().1)
+            .unwrap();
+        let id = CommonIdV1::new("poisoned-log-queue").unwrap();
+        let shared = log.shared_log();
+        let queue = LoggedQueue::open(
+            &session,
+            shared.clone(),
+            id.clone(),
+            QueueOwner {
+                owner_id: CommonIdV1::new("owner").unwrap(),
+                device_id: CommonIdV1::new("device").unwrap(),
+            },
+        )
+        .unwrap();
+        let cause = crate::events::new_id().unwrap();
+        queue.start(&session, &id, &cause).unwrap();
+
+        assert!(
+            std::thread::spawn(move || {
+                let _guard = shared.lock().unwrap();
+                panic!("poison the audit connection");
+            })
+            .join()
+            .is_err()
+        );
+
+        assert_eq!(log.log().unwrap_err(), StorageError::Unavailable);
+        assert_eq!(queue.stop(&session, &id, &cause), Err(ApiError::Storage));
+        assert_eq!(
+            queue.state(&session, &id),
+            Ok(RecordTaskQueueV1State::Stopped)
+        );
+    }
+
+    #[test]
+    fn audit_fixture_removes_its_listed_directories() {
         let sibling = fixture();
         let keep = sibling.join("keep");
         fs::write(&keep, b"keep").unwrap();
@@ -750,7 +827,11 @@ mod tests {
         let mut log = open_product_in(
             &real_root.join("vault"),
             &database,
-            &configured_for(&database),
+            &StorageConfig::from_toml_str(&format!(
+                "audit_database_path = '{}'\nbusy_timeout_ms = 50",
+                database.display()
+            ))
+            .unwrap(),
             Box::new(FixtureKey),
             MemoryVault::default(),
             None,
@@ -809,6 +890,7 @@ mod tests {
         gate.plan(&mut log, id.clone(), request, meta(1)).unwrap();
         assert_eq!(
             log.log()
+                .unwrap()
                 .load(&id)
                 .unwrap()
                 .plan
@@ -834,11 +916,55 @@ mod tests {
             Err(JournalError::Missing)
         ));
         assert!(file.is_file());
-        assert_eq!(log.log().verify_chain(), Ok(1));
+        assert_eq!(log.log().unwrap().verify_chain(), Ok(1));
+        use crate::auth::Token;
+        use crate::queue::{LoggedQueue, QueueControl, QueueOwner};
+        use ads_contracts::CommonIdV1;
+
+        let token = Token::generate().unwrap();
+        let bootstrap = token.desktop_bootstrap(0);
+        let session = token
+            .open_session(bootstrap.split_once(' ').unwrap().1)
+            .unwrap();
+        let queue_id = CommonIdV1::new("file-gate-queue").unwrap();
+        let log_handle = log.shared_log();
+        let queue = LoggedQueue::open(
+            &session,
+            Arc::clone(&log_handle),
+            queue_id.clone(),
+            QueueOwner {
+                owner_id: CommonIdV1::new("owner").unwrap(),
+                device_id: CommonIdV1::new("device").unwrap(),
+            },
+        )
+        .unwrap();
+        let cause = crate::events::new_id().unwrap();
+        queue.start(&session, &queue_id, &cause).unwrap();
+
+        let (entered, waiting) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        gate.before_execute = Some(Box::new(move || {
+            entered.send(()).unwrap();
+            let _ = released.recv_timeout(Duration::from_secs(10));
+        }));
         let start = meta(2);
         let mut finish = meta(3);
         finish.ts = Timestamp::new("2030-01-02T03:04:04.999999Z").unwrap();
-        let result = gate.execute(&mut log, &id, start.clone(), finish).unwrap();
+        let result = std::thread::scope(|scope| {
+            let executing = scope.spawn(|| gate.execute(&mut log, &id, start.clone(), finish));
+            waiting.recv_timeout(Duration::from_secs(10)).unwrap();
+            let (done, stopped) = std::sync::mpsc::channel();
+            let (queue, session, queue_id, cause) = (&queue, &session, &queue_id, &cause);
+            scope.spawn(move || done.send(queue.stop(session, queue_id, cause)).unwrap());
+            let outcome = stopped.recv_timeout(Duration::from_secs(2));
+            let _ = release.send(());
+            assert_eq!(outcome.unwrap(), Err(crate::api::ApiError::StorageBusy));
+            assert_eq!(
+                queue.state(session, queue_id),
+                Ok(ads_contracts::RecordTaskQueueV1State::Stopped)
+            );
+            executing.join().unwrap().unwrap()
+        });
         root.track_staging(match &result.operation {
             Ok(report) => report,
             Err(failure) => &failure.report,
@@ -847,9 +973,12 @@ mod tests {
         assert!(!file.exists());
         assert_eq!(result.recorded.unwrap().state, State::Executed);
         assert_eq!(gate.inspect(&mut log, &id).unwrap().state, State::Executed);
-        assert_eq!(log.log().load(&id).unwrap().events[2].ts(), &start.ts);
+        assert_eq!(
+            log.log().unwrap().load(&id).unwrap().events[2].ts(),
+            &start.ts
+        );
 
-        assert_eq!(log.log().verify_chain(), Ok(3));
+        assert_eq!(log.log().unwrap().verify_chain(), Ok(5));
         assert!(matches!(
             gate.execute(&mut log, &id, meta(4), meta(5)),
             Err(JournalError::Transition)
@@ -877,7 +1006,7 @@ mod tests {
                 .state,
             State::Denied
         );
-        let history = log.log().load(&denied_id).unwrap();
+        let history = log.log().unwrap().load(&denied_id).unwrap();
         let repo = format!("{pack}{}project", std::path::MAIN_SEPARATOR);
         assert!(
             history
@@ -899,33 +1028,10 @@ mod tests {
         ));
         assert!(project.join(".git").is_file());
 
-        use crate::auth::Token;
-        use crate::queue::{LoggedQueue, QueueControl, QueueOwner};
-        use ads_contracts::CommonIdV1;
-
-        let token = Token::generate().unwrap();
-        let bootstrap = token.desktop_bootstrap(0);
-        let session = token
-            .open_session(bootstrap.split_once(' ').unwrap().1)
-            .unwrap();
-        let queue_id = CommonIdV1::new("file-gate-queue").unwrap();
-        let log_handle = log.shared_log();
-        let queue = LoggedQueue::open(
-            &session,
-            Arc::clone(&log_handle),
-            queue_id.clone(),
-            QueueOwner {
-                owner_id: CommonIdV1::new("owner").unwrap(),
-                device_id: CommonIdV1::new("device").unwrap(),
-            },
-        )
-        .unwrap();
-        let cause = crate::events::new_id().unwrap();
-        queue.start(&session, &queue_id, &cause).unwrap();
-        assert!(queue.stop(&session, &queue_id, &cause).unwrap());
-        let queue_events = log.log().read_queue(&queue_id).unwrap();
+        assert!(!queue.stop(&session, &queue_id, &cause).unwrap());
+        let queue_events = log.log().unwrap().read_queue(&queue_id).unwrap();
         assert_eq!(queue_events.len(), 3);
-        assert_eq!(log.log().verify_chain(), Ok(7));
+        assert_eq!(log.log().unwrap().verify_chain(), Ok(7));
         assert_eq!(gate.inspect(&mut log, &id).unwrap().state, State::Executed);
 
         drop(other);
@@ -1103,13 +1209,13 @@ mod tests {
             .unwrap();
         planned += 1;
         let id = Id::new(format!("product-{planned}")).unwrap();
-        let snapshot = JournalGate::new(&blind, &mut *log.log())
+        let snapshot = JournalGate::new(&blind, &mut *log.log().unwrap())
             .for_work_root(&work_root)
             .plan(id.clone(), &observed, meta(planned, 1))
             .unwrap();
         assert_eq!(snapshot.state, State::Planned);
         planned += 1;
-        let started = JournalGate::new(&blind, &mut *log.log())
+        let started = JournalGate::new(&blind, &mut *log.log().unwrap())
             .for_work_root(&work_root)
             .authorize(&id, meta(planned, 2))
             .unwrap();
@@ -1153,7 +1259,7 @@ mod tests {
                     )
                     .unwrap();
                 assert_eq!(snapshot.state, State::Denied, "{overrides:?} {target}");
-                let plan = log.log().load(&id).unwrap().plan;
+                let plan = log.log().unwrap().load(&id).unwrap().plan;
                 let reasons = &plan.fields().verdict.reasons;
                 assert!(
                     reasons
