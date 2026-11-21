@@ -15,7 +15,14 @@ import {
   type CommandRequestV1,
   type EventEnvelopeV1,
 } from './contracts'
-import { isApprovalList, isHarnessList, isLocalCommand, isQueueGet, isServerMessage } from './wire'
+import {
+  isApprovalList,
+  isHarnessList,
+  isLocalCommand,
+  isQueueConfigured,
+  isQueueGet,
+  isServerMessage,
+} from './wire'
 
 type Reply = LocalCommandReply | CommandHarnessListResponseV1
 
@@ -296,6 +303,7 @@ export function createCoreClient(
               request &&
               (isHarnessList(response) !== (request.method === 'harness.list') ||
                 isQueueGet(response) !== (request.method === 'queue.get') ||
+                isQueueConfigured(response) !== (request.method === 'queue.configured') ||
                 isApprovalList(response) !== (request.method === 'approval.list'))
             ) {
               fail()

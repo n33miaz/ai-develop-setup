@@ -24,6 +24,10 @@ use RecordTaskQueueV1State::{Enabled, Stopped};
 /// What the local API asks of the queue. Each call takes the proof that the connection passed
 /// the token check; the owner and the device come from the implementation, never the request.
 pub trait QueueControl: Send + Sync + 'static {
+    /// The id of the queue this core serves, created or not.
+    fn configured(&self, _: &LocalSession) -> Result<CommonIdV1, ApiError> {
+        Err(ApiError::QueueNotConfigured)
+    }
     fn create(&self, _: &LocalSession, _: &CommonIdV1, _: &str) -> Result<(), ApiError> {
         Err(ApiError::QueueNotConfigured)
     }
@@ -322,7 +326,7 @@ impl LoggedQueue {
         // A panic while holding the lock leaves the state readable; stopping must still work.
         let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if inner.record.id != *queue_id {
-            return Err(ApiError::QueueNotConfigured);
+            return Err(ApiError::QueueNotFound);
         }
         Ok(inner)
     }
@@ -468,13 +472,17 @@ impl LocalQueue {
 
     fn lock(&self, id: &CommonIdV1) -> Result<MutexGuard<'_, Option<LoggedQueue>>, ApiError> {
         if self.id != *id {
-            return Err(ApiError::QueueNotConfigured);
+            return Err(ApiError::QueueNotFound);
         }
         self.bound.lock().map_err(|_| ApiError::Storage)
     }
 }
 
 impl QueueControl for LocalQueue {
+    fn configured(&self, _: &LocalSession) -> Result<CommonIdV1, ApiError> {
+        Ok(self.id.clone())
+    }
+
     fn create(&self, _: &LocalSession, id: &CommonIdV1, cause: &str) -> Result<(), ApiError> {
         let mut bound = self.lock(id)?;
         if bound.is_some() {
@@ -507,7 +515,7 @@ impl QueueControl for LocalQueue {
     ) -> Result<RecordTaskQueueV1State, ApiError> {
         self.lock(id)?
             .as_ref()
-            .ok_or(ApiError::QueueNotConfigured)?
+            .ok_or(ApiError::QueueNotCreated)?
             .state(session, id)
     }
 
@@ -518,26 +526,36 @@ impl QueueControl for LocalQueue {
     ) -> Result<CommandQueueGetResponseV2Result, ApiError> {
         self.lock(id)?
             .as_ref()
-            .ok_or(ApiError::QueueNotConfigured)?
+            .ok_or(ApiError::QueueNotCreated)?
             .get(session, id)
     }
 
     fn start(&self, session: &LocalSession, id: &CommonIdV1, cause: &str) -> Result<(), ApiError> {
         self.lock(id)?
             .as_ref()
-            .ok_or(ApiError::QueueNotConfigured)?
+            .ok_or(ApiError::QueueNotCreated)?
             .start(session, id, cause)
     }
 
     fn stop(&self, session: &LocalSession, id: &CommonIdV1, cause: &str) -> Result<bool, ApiError> {
         self.lock(id)?
             .as_ref()
-            .ok_or(ApiError::QueueNotConfigured)?
+            .ok_or(ApiError::QueueNotCreated)?
             .stop(session, id, cause)
     }
 }
 
 impl QueueControl for LoggedQueue {
+    fn configured(&self, _: &LocalSession) -> Result<CommonIdV1, ApiError> {
+        Ok(self
+            .inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .record
+            .id
+            .clone())
+    }
+
     fn create(&self, _: &LocalSession, id: &CommonIdV1, _: &str) -> Result<(), ApiError> {
         drop(self.lock(id)?);
         Err(ApiError::QueueAlreadyCreated)

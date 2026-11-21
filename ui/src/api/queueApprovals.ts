@@ -1,12 +1,13 @@
 import type { CommandApprovalAnswerV1 } from '../../../contracts/generated/ts/command.approval.answer.v1'
 import type { CommandApprovalListV1 } from '../../../contracts/generated/ts/command.approval.list.v1'
+import type { CommandQueueConfiguredV1 } from '../../../contracts/generated/ts/command.queue.configured.v1'
 import type { CommandQueueCreateV1 } from '../../../contracts/generated/ts/command.queue.create.v1'
 import type { CommandQueueGetV1 } from '../../../contracts/generated/ts/command.queue.get.v1'
 import type { CommandQueueStartV1 } from '../../../contracts/generated/ts/command.queue.start.v1'
 import type { CommandQueueStopV1 } from '../../../contracts/generated/ts/command.queue.stop.v1'
 import type { CoreClient } from './client'
 import { newCommand } from './command'
-import { isApprovalList, isQueueGet } from './wire'
+import { isApprovalList, isQueueConfigured, isQueueGet } from './wire'
 
 export class CommandRefusal extends Error {
   readonly code: number
@@ -19,6 +20,7 @@ export class CommandRefusal extends Error {
 
 type Request =
   | CommandQueueGetV1
+  | CommandQueueConfiguredV1
   | CommandQueueCreateV1
   | CommandQueueStartV1
   | CommandQueueStopV1
@@ -38,6 +40,7 @@ export function queueApprovals(client: Pick<CoreClient, 'send'>) {
     if (response.error) throw new CommandRefusal(response.error.code)
     if (
       method !== 'queue.get' &&
+      method !== 'queue.configured' &&
       method !== 'approval.list' &&
       (!response.result || !('accepted' in response.result))
     ) {
@@ -53,6 +56,12 @@ export function queueApprovals(client: Pick<CoreClient, 'send'>) {
         throw new Error('invalid queue response')
       }
       return response.result
+    },
+    /** O id da fila que o núcleo serve, criada ou não. */
+    async configured() {
+      const response = await request('queue.configured', {})
+      if (!isQueueConfigured(response)) throw new Error('invalid queue response')
+      return response.result.queue_id
     },
     create: (queue_id: Params<'queue.create'>['queue_id']) => request('queue.create', { queue_id }),
     start: (queue_id: Params<'queue.start'>['queue_id']) => request('queue.start', { queue_id }),

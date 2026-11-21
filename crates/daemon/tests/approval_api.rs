@@ -182,12 +182,12 @@ async fn exchange(ws: &mut Socket, value: &Value) -> Value {
     };
     let reply: Value = serde_json::from_str(&text).unwrap();
     assert!(
-        valid("urn:ads:contract:local-api.server-message:7", &reply),
+        valid("urn:ads:contract:local-api.server-message:8", &reply),
         "{reply}"
     );
     if let Some(code) = reply["error"].get("code") {
         assert!(
-            valid("urn:ads:contract:local-api.error-code:5", code),
+            valid("urn:ads:contract:local-api.error-code:6", code),
             "{reply}"
         );
     }

@@ -126,7 +126,7 @@ política `[env]`; o daemon guarda só o resultado, sem as variáveis negadas.
 ## Comandos, limites e recuperação
 
 Os nomes, valores e significados dos erros emitidos pela API local estão no
-[contrato de códigos de erro](../../contracts/schemas/contract.local-api.error-code.v5.schema.json).
+[contrato de códigos de erro](../../contracts/schemas/contract.local-api.error-code.v6.schema.json).
 
 | Nome | Código na resposta |
 |---|---|
@@ -151,6 +151,8 @@ Os nomes, valores e significados dos erros emitidos pela API local estão no
 | `APPROVAL_OUT_OF_ORDER` | `-32022` |
 | `APPROVAL_NOT_APPROVABLE` | `-32023` |
 | `APPROVAL_READABLE` | `-32025` |
+| `QUEUE_NOT_FOUND` | `-32026` |
+| `QUEUE_NOT_CREATED` | `-32027` |
 
 `api::Launcher::prepare` recebe os parâmetros gerados de `session.open` (ferramenta,
 apelido de pasta, identificador e tamanho) e devolve `OpenParams` do ptyhost.
@@ -219,8 +221,13 @@ recebe `REMOTE_ORIGIN_REFUSED`.
   parada em `cause` e o `ts` do momento da gravação. Se o processo terminar
   antes, a causa se perde: a próxima abertura grava a parada como
   `reason: restart`, com o daemon como ator.
-- Fila que o daemon não serve, ou daemon sem fila ligada, recebe
-  `QUEUE_NOT_CONFIGURED`.
+- Daemon sem controles de fila recebe `QUEUE_NOT_CONFIGURED`; id que não é o
+  da fila configurada recebe `QUEUE_NOT_FOUND`; a fila configurada ainda não
+  criada recebe `QUEUE_NOT_CREATED` em `queue.get`, `queue.start` e
+  `queue.stop`.
+- `queue.configured` informa à sessão local o id da fila configurada, criada
+  ou não, sem que a interface precise ler o arquivo de identidades. É só
+  leitura e fica fora da cache de idempotência, como `queue.get`.
 
 `queue::LoggedQueue::bind` liga uma fila já criada ao stream `queue/<id>` do log
 ancorado: recusa um stream criado por outro dono e, a cada abertura, restaura a
