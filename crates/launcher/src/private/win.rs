@@ -17,6 +17,7 @@ use std::os::windows::ffi::OsStrExt;
 use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::Path;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use windows::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows::Wdk::Storage::FileSystem::{
@@ -27,7 +28,7 @@ use windows::Wdk::Storage::FileSystem::{
     NtCreateFile, NtSetInformationFile,
 };
 use windows::Win32::Foundation::{
-    ERROR_SUCCESS, HANDLE, HLOCAL, LocalFree, NTSTATUS, OBJECT_ATTRIBUTE_FLAGS,
+    ERROR_SUCCESS, FILETIME, HANDLE, HLOCAL, LocalFree, NTSTATUS, OBJECT_ATTRIBUTE_FLAGS,
     STATUS_ACCESS_DENIED, STATUS_INVALID_INFO_CLASS, STATUS_INVALID_PARAMETER,
     STATUS_NOT_SUPPORTED, STATUS_OBJECT_NAME_COLLISION, STATUS_OBJECT_NAME_NOT_FOUND,
     STATUS_OBJECT_PATH_NOT_FOUND, UNICODE_STRING,
@@ -49,7 +50,7 @@ use windows::Win32::Storage::FileSystem::{
     GetFileInformationByHandleEx, READ_CONTROL, SYNCHRONIZE,
 };
 use windows::Win32::System::IO::IO_STATUS_BLOCK;
-use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes, OpenProcessToken};
 use windows::core::{PCWSTR, PWSTR};
 
 use super::{Entry, Identity, Kind, Security};
@@ -592,4 +593,30 @@ pub(crate) fn generate_console_interrupt() -> io::Result<()> {
     unsafe { SetConsoleCtrlHandler(None, false) }.map_err(os_error)?;
     // SAFETY: the test starts this process in a new console with no unrelated clients.
     unsafe { GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0) }.map_err(os_error)
+}
+
+pub(crate) fn process_started() -> io::Result<SystemTime> {
+    let mut created = FILETIME::default();
+    let mut exited = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    // SAFETY: the current process pseudo-handle is valid and each output is writable.
+    unsafe {
+        GetProcessTimes(
+            GetCurrentProcess(),
+            &mut created,
+            &mut exited,
+            &mut kernel,
+            &mut user,
+        )
+    }?;
+    let ticks = (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime);
+    let unix_ticks = ticks
+        .checked_sub(116_444_736_000_000_000)
+        .ok_or_else(|| io::Error::other("invalid launcher creation time"))?;
+    Ok(UNIX_EPOCH
+        + Duration::new(
+            unix_ticks / 10_000_000,
+            (unix_ticks % 10_000_000) as u32 * 100,
+        ))
 }

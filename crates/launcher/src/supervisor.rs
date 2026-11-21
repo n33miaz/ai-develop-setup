@@ -5,7 +5,7 @@ use std::{
     path::Path,
     process::{Child, Command, ExitStatus, Stdio},
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use serde::Serialize;
@@ -364,8 +364,21 @@ impl Publication {
 
     /// `Some(true)` when the signal was accepted; a foreign signal file is reported and ignored.
     fn signal(&mut self, operation: &str, control: &ControlDir, name: &str) -> Option<bool> {
-        match self.attempt(operation, control.signal(name, true))? {
-            Signal::Accepted => Some(true),
+        self.record_signal(operation, control, name, control.signal(name, true))
+    }
+
+    fn record_signal(
+        &mut self,
+        operation: &str,
+        control: &ControlDir,
+        name: &str,
+        result: io::Result<Signal>,
+    ) -> Option<bool> {
+        match self.attempt(
+            &format!("{operation} {}", control.path().join(name).display()),
+            result,
+        )? {
+            Signal::Accepted | Signal::Stale => Some(true),
             Signal::Absent => Some(false),
             Signal::Foreign => {
                 self.report(format!(
@@ -384,6 +397,7 @@ pub(crate) fn run(
     daemon: Command,
     host: Command,
     shell: Option<Command>,
+    started: SystemTime,
 ) -> io::Result<()> {
     run_with_interrupt(
         config,
@@ -391,6 +405,7 @@ pub(crate) fn run(
         daemon,
         host,
         shell,
+        started,
         private::console_stop_requested,
     )
 }
@@ -401,6 +416,7 @@ fn run_with_interrupt(
     mut daemon: Command,
     mut host: Command,
     mut shell: Option<Command>,
+    started: SystemTime,
     mut interrupted: impl FnMut() -> bool,
 ) -> io::Result<()> {
     let control = ControlDir::open(control, &Identity::current()?)?;
@@ -418,12 +434,14 @@ fn run_with_interrupt(
     // Declared after the daemon so that, on any exit, the window closes before it.
     let mut window = Window::new(config);
 
-    let startup_stop = control.signal(stop, true)?;
+    let mut publication = Publication::default();
+    publication.stop_pending_at_startup = publication.record_signal(
+        "discard stale stop signal",
+        &control,
+        stop,
+        control.dated_stop(stop, started, true),
+    ) == Some(true);
     // Publish before starting children so an unusable state path fails early.
-    let mut publication = Publication {
-        stop_pending_at_startup: matches!(startup_stop, Signal::Accepted),
-        ..Publication::default()
-    };
     if let Err(error) = write_state(&control, state, &daemon, &host, false, &publication) {
         publication.signal("consume stop signal", &control, stop);
         return Err(error);
@@ -433,8 +451,11 @@ fn run_with_interrupt(
     loop {
         if !stopping {
             let console_stop = interrupted();
-            let file_stop = publication.signal("consume stop signal", &control, stop);
-            stopping = console_stop || file_stop == Some(true);
+            let file_stop = control.dated_stop(stop, started, false);
+            let stale = matches!(file_stop, Ok(Signal::Stale));
+            let consumed =
+                publication.record_signal("consume stop signal", &control, stop, file_stop);
+            stopping = console_stop || (!stale && consumed == Some(true));
         }
         let stopped = if stopping {
             let daemon_stopped = publication.attempt("stop daemon", daemon.stop()).is_some();
@@ -444,10 +465,8 @@ fn run_with_interrupt(
                 .is_some();
             publication.attempt("check host exit", host.tick_exit_only());
             publication.dirty = true;
-            let stop_cleared = publication
-                .signal("consume stop signal", &control, stop)
-                .is_some();
-            daemon_stopped && window_closed && restart_cleared && stop_cleared
+            publication.signal("consume stop signal", &control, stop);
+            daemon_stopped && window_closed && restart_cleared
         } else {
             restarting |=
                 publication.signal("consume restart signal", &control, restart) == Some(true);
@@ -533,7 +552,17 @@ pub(crate) mod tests {
     use serde_json::Value;
     use std::fs;
     use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::UNIX_EPOCH;
+
+    fn run(
+        config: &Config,
+        control: &Path,
+        daemon: Command,
+        host: Command,
+        shell: Option<Command>,
+    ) -> io::Result<()> {
+        super::run(config, control, daemon, host, shell, SystemTime::now())
+    }
 
     pub(crate) struct TestDir(pub(crate) PathBuf);
 
@@ -745,6 +774,7 @@ pub(crate) mod tests {
             fixture(None),
             fixture(None),
             None,
+            SystemTime::now(),
             || {
                 fs::write(&stop, []).unwrap();
                 true
@@ -753,30 +783,152 @@ pub(crate) mod tests {
         .unwrap();
         assert_eq!(state_value(&state).unwrap()["stopped"], true);
         assert!(!stop.exists());
+    }
 
-        // Also simulate an abandoned signal, as after an abrupt exit.
+    #[test]
+    fn discards_abandoned_stop_before_starting_children() {
+        let dir = TestDir::new();
+        let settings = config();
+        let stop = dir.0.join(&settings.stop_file);
+        let state = dir.0.join(&settings.state_file);
         fs::write(&stop, []).unwrap();
+        let modified = fs::metadata(&stop).unwrap().modified().unwrap();
+        let started = modified + private::STALE_SIGNAL_MARGIN + Duration::from_secs(1);
         let host_release = dir.0.join("release-host");
         let daemon_release = dir.0.join("release-daemon");
-        let mut started = false;
-        let mut waited = 0;
+        let daemon = fixture(Some(&daemon_release));
+        let host = fixture(Some(&host_release));
+        let (interrupt, interrupted) = std::sync::mpsc::channel();
+        let worker = thread::spawn(move || {
+            run_with_interrupt(&settings, &dir.0, daemon, host, None, started, || {
+                interrupted.try_recv().is_ok()
+            })
+        });
+        let active = until(|| {
+            state_value(&state)
+                .filter(|state| state["daemon"]["pid"].is_u64() && state["ptyhost"]["pid"].is_u64())
+        });
+        assert_eq!(active["stop_pending_at_startup"], true);
+        assert!(!stop.exists());
+        interrupt.send(()).unwrap();
+        worker.join().unwrap().unwrap();
+        fs::write(host_release, []).unwrap();
+    }
+
+    #[test]
+    fn honors_stop_created_after_instance_start() {
+        let dir = TestDir::new();
+        let settings = config();
+        let started = SystemTime::now() - Duration::from_secs(1);
+        let stop = dir.0.join(&settings.stop_file);
+        fs::write(&stop, []).unwrap();
+        let mut checked = false;
         run_with_interrupt(
             &settings,
             &dir.0,
-            fixture(Some(&daemon_release)),
-            fixture(Some(&host_release)),
+            fixture(None),
+            fixture(None),
             None,
+            started,
             || {
-                let state = state_value(&state).unwrap();
-                assert_eq!(state["stop_pending_at_startup"], true);
-                started = state["daemon"]["pid"].is_u64() && state["ptyhost"]["pid"].is_u64();
-                waited += 1;
-                started || waited == 100
+                assert!(!checked, "the first poll must honor the startup stop");
+                checked = true;
+                false
             },
         )
         .unwrap();
-        fs::write(host_release, []).unwrap();
-        assert!(started);
+        let state = state_value(&dir.0.join(&settings.state_file)).unwrap();
+        assert_eq!(state["stopped"], true);
+        assert_eq!(state["stop_pending_at_startup"], false);
+        assert_eq!(state["ptyhost"]["pid"], Value::Null);
+        assert!(!stop.exists());
+    }
+
+    #[test]
+    fn honors_stop_dated_just_before_instance_start() {
+        // File times may lag the start time (coarse clock or rounding to the second).
+        let dir = TestDir::new();
+        let settings = config();
+        let stop = dir.0.join(&settings.stop_file);
+        fs::write(&stop, []).unwrap();
+        let metadata = fs::metadata(&stop).unwrap();
+        let modified = metadata.modified().unwrap();
+        let dated = modified.max(metadata.created().unwrap_or(modified));
+        let started = dated + Duration::from_millis(500);
+        let mut checked = false;
+        run_with_interrupt(
+            &settings,
+            &dir.0,
+            fixture(None),
+            fixture(None),
+            None,
+            started,
+            || {
+                assert!(!checked, "the first poll must honor the recent stop");
+                checked = true;
+                false
+            },
+        )
+        .unwrap();
+        let state = state_value(&dir.0.join(&settings.state_file)).unwrap();
+        assert_eq!(state["stopped"], true);
+        assert_eq!(state["stop_pending_at_startup"], false);
+        assert!(!stop.exists());
+    }
+
+    #[test]
+    fn removes_stale_stop_found_while_running_without_stopping() {
+        let dir = TestDir::new();
+        let settings = config();
+        let stop = dir.0.join(&settings.stop_file);
+        let state = dir.0.join(&settings.state_file);
+        // Any file written now is dated before this start.
+        let started = SystemTime::now() + private::STALE_SIGNAL_MARGIN + Duration::from_secs(60);
+        let (interrupt, interrupted) = std::sync::mpsc::channel();
+        let worker = thread::spawn(move || {
+            run_with_interrupt(
+                &settings,
+                &dir.0,
+                fixture(None),
+                fixture(None),
+                None,
+                started,
+                || interrupted.try_recv().is_ok(),
+            )
+        });
+        until(|| state_value(&state).filter(|state| state["daemon"]["pid"].is_u64()));
+        fs::write(&stop, []).unwrap();
+        until(|| (!stop.exists()).then_some(()));
+        thread::sleep(Duration::from_millis(200));
+        assert!(
+            !worker.is_finished(),
+            "a stale stop must not stop the launcher"
+        );
+        assert_eq!(state_value(&state).unwrap()["stopped"], false);
+        interrupt.send(()).unwrap();
+        worker.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn consumes_stop_arriving_during_shutdown() {
+        let dir = TestDir::new();
+        let settings = config();
+        let stop = dir.0.join(&settings.stop_file);
+        fs::write(dir.0.join(&settings.restart_file), []).unwrap();
+        let late_stop = stop.clone();
+        private::BEFORE_REMOVE.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || fs::write(late_stop, []).unwrap()));
+        });
+        run_with_interrupt(
+            &settings,
+            &dir.0,
+            fixture(None),
+            fixture(None),
+            None,
+            SystemTime::now(),
+            || true,
+        )
+        .unwrap();
         assert!(!stop.exists());
     }
 
@@ -784,11 +936,73 @@ pub(crate) mod tests {
     fn initial_state_write_failure_is_fatal_and_clears_stop() {
         let dir = TestDir::new();
         let settings = config();
+        let started = SystemTime::now() - Duration::from_secs(1);
         let stop = dir.0.join(&settings.stop_file);
         fs::write(&stop, []).unwrap();
         fs::create_dir(dir.0.join(&settings.state_file)).unwrap();
-        assert!(run(&settings, &dir.0, fixture(None), fixture(None), None).is_err());
+        assert!(
+            run_with_interrupt(
+                &settings,
+                &dir.0,
+                fixture(None),
+                fixture(None),
+                None,
+                started,
+                || panic!("initial publication must fail before polling"),
+            )
+            .is_err()
+        );
         assert!(!stop.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn locked_stop_allows_startup_and_console_shutdown() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = TestDir::new();
+        let settings = config();
+        let stop = dir.0.join(&settings.stop_file);
+        let state = dir.0.join(&settings.state_file);
+        let blocked_signal = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .share_mode(3)
+            .open(&stop)
+            .unwrap();
+        let started = SystemTime::now();
+        let (interrupt, interrupted) = std::sync::mpsc::channel();
+        let worker = thread::spawn(move || {
+            run_with_interrupt(
+                &settings,
+                &dir.0,
+                fixture(None),
+                fixture(None),
+                None,
+                started,
+                || interrupted.try_recv().is_ok(),
+            )
+        });
+        until(|| {
+            assert!(
+                !worker.is_finished(),
+                "launcher exited before starting its children"
+            );
+            state_value(&state).filter(|state| state["daemon"]["pid"].is_u64())
+        });
+        interrupt.send(()).unwrap();
+        until(|| worker.is_finished().then_some(()));
+        worker.join().unwrap().unwrap();
+        let stopped = state_value(&state).unwrap();
+        assert_eq!(stopped["stopped"], true);
+        assert!(
+            stopped["last_error"]
+                .as_str()
+                .unwrap()
+                .contains(&*stop.to_string_lossy())
+        );
+        assert!(stop.exists());
+        drop(blocked_signal);
     }
 
     #[test]
@@ -902,6 +1116,7 @@ pub(crate) mod tests {
             fixture(None),
             fixture(None),
             None,
+            SystemTime::now(),
             || true,
         )
         .unwrap();
@@ -913,6 +1128,7 @@ pub(crate) mod tests {
             fixture(None),
             fixture(None),
             None,
+            SystemTime::now(),
             || true,
         )
         .unwrap();
@@ -938,6 +1154,7 @@ pub(crate) mod tests {
             fixture(None),
             fixture(None),
             None,
+            SystemTime::now(),
             || true,
         )
         .unwrap();
