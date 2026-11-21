@@ -170,7 +170,7 @@ fn is_smoke_reply(text: &str, request_id: Option<&str>) -> bool {
         return false;
     };
     serde_json::from_str::<Value>(text).is_ok_and(|reply| {
-        reply["jsonrpc"] == "2.0" && reply["id"] == request_id && reply.get("result").is_some()
+        reply["jsonrpc"] == "2.0" && reply["id"] == request_id && !reply["result"].is_null()
     })
 }
 
@@ -305,6 +305,10 @@ mod tests {
         ));
         assert!(!is_smoke_reply(
             r#"{"jsonrpc":"2.0","id":"window","error":{"code":-32603}}"#,
+            Some("window")
+        ));
+        assert!(!is_smoke_reply(
+            r#"{"jsonrpc":"2.0","id":"window","result":null}"#,
             Some("window")
         ));
         assert!(is_smoke_reply(reply, Some("window")));

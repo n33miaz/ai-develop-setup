@@ -349,6 +349,29 @@ fn classification_budget_refusal_leaves_the_journal_empty() {
         .unwrap();
 }
 
+#[test]
+fn reopening_under_a_zero_classification_budget_starts_nothing() {
+    let mut journal = planned_journal();
+    let action_id = id("action-1");
+    let exceeded =
+        JournalError::ClassificationBudgetExceeded(ads_core::gate::ClassificationBudgetExceeded);
+    let restricted = policy(POSIX_HOME, "classification_match_steps = 0");
+    let mut gate = JournalGate::new(&restricted, &mut journal);
+    let snapshot = gate.inspect(&action_id).unwrap();
+    assert_eq!(snapshot.state, State::Planned);
+    assert_eq!(snapshot.policy_warning, Some(exceeded));
+    assert_eq!(
+        gate.authorize(&action_id, event_meta(2, 'C')),
+        Err(exceeded)
+    );
+    assert_eq!(journal.history.as_ref().unwrap().events.len(), 1);
+
+    let defaults = policy(POSIX_HOME, "");
+    JournalGate::new(&defaults, &mut journal)
+        .authorize(&action_id, event_meta(2, 'C'))
+        .unwrap();
+}
+
 fn event_meta(seq: u64, suffix: char) -> ads_core::gate::EventMeta {
     let mut event = meta(NOW, seq);
     event.id = Ulid::new(format!("01ARZ3NDEKTSV4RRFFQ69G5FA{suffix}")).unwrap();
