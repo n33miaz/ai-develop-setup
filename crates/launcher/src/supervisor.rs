@@ -455,6 +455,20 @@ pub(crate) fn run(
     )
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Stands in for the identity of the session, which a test cannot elevate.
+    static SESSION: std::cell::RefCell<Option<Identity>> = const { std::cell::RefCell::new(None) };
+}
+
+fn session_identity() -> io::Result<Identity> {
+    #[cfg(test)]
+    if let Some(local) = SESSION.with(|session| session.borrow().clone()) {
+        return Ok(local);
+    }
+    Identity::current()
+}
+
 fn run_with_interrupt(
     config: &Config,
     control: &Path,
@@ -464,7 +478,16 @@ fn run_with_interrupt(
     started: SystemTime,
     mut interrupted: impl FnMut() -> bool,
 ) -> io::Result<()> {
-    let control = ControlDir::open(control, &Identity::current()?)?;
+    let local = session_identity()?;
+    // The daemon and the host would create files the next run refuses; stop before any of
+    // them, or the control folder, exists.
+    if !local.creates_as_user() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            ads_private_dir::ELEVATED_SESSION,
+        ));
+    }
+    let control = ControlDir::open(control, &local)?;
     let _lock = open_lock(&control, &config.lock_file)?;
     // The daemon opens its lock by path; checking it here refuses one left open to other
     // accounts, which could hold it and keep every daemon of this installation from starting.
@@ -752,6 +775,33 @@ pub(crate) mod tests {
         );
         verify(&dir.0);
         None
+    }
+
+    #[test]
+    fn a_session_that_creates_as_administrators_starts_nothing() {
+        let dir = TestDir::new();
+        let control = dir.0.join("control");
+        let user = Identity::current().unwrap().user;
+        SESSION.with(|session| {
+            *session.borrow_mut() = Some(Identity {
+                user,
+                default_owner: "S-1-5-32-544".into(),
+            });
+        });
+        let refused = run_with_interrupt(
+            &config(),
+            &control,
+            fixture(None),
+            fixture(None),
+            None,
+            SystemTime::now(),
+            || panic!("nothing may run in this session"),
+        );
+        SESSION.with(|session| session.borrow_mut().take());
+        let error = refused.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(error.to_string(), ads_private_dir::ELEVATED_SESSION);
+        assert!(!control.exists());
     }
 
     #[test]

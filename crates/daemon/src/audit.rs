@@ -212,7 +212,7 @@ fn audit_access_error(error: std::io::Error) -> StorageError {
 #[cfg(test)]
 thread_local! {
     /// Stands in for the identity of the session, which a test cannot elevate.
-    static SESSION: std::cell::RefCell<Option<Identity>> = const { std::cell::RefCell::new(None) };
+    pub(crate) static SESSION: std::cell::RefCell<Option<Identity>> = const { std::cell::RefCell::new(None) };
 }
 
 fn session_identity() -> std::io::Result<Identity> {
@@ -660,6 +660,7 @@ mod tests {
         Fixture::new(
             "audit-anchor",
             &[
+                "absent",
                 "ads",
                 "custom",
                 "first",
@@ -1814,7 +1815,7 @@ mod tests {
     #[test]
     fn session_that_gives_new_files_another_owner_is_refused_before_creating_them() {
         let root = fixture();
-        let path = root.join("private").join("audit.db");
+        let path = root.join("absent").join("audit.db");
         let user = Identity::current().unwrap().user;
         SESSION.with(|session| {
             *session.borrow_mut() = Some(Identity {
@@ -1825,11 +1826,10 @@ mod tests {
         let refused = open_configured(&path, &configured_for(&path), &MemoryVault::default());
         SESSION.with(|session| session.borrow_mut().take());
         assert_eq!(refused.unwrap_err(), StorageError::ElevatedSession);
-        assert!(!path.exists());
-        assert!(
-            StorageError::ElevatedSession
-                .to_string()
-                .contains("non-elevated")
+        assert!(!path.parent().unwrap().exists());
+        assert_eq!(
+            StorageError::ElevatedSession.to_string(),
+            format!("storage: {}", ads_private_dir::ELEVATED_SESSION)
         );
         drop(open_configured(&path, &configured_for(&path), &MemoryVault::default()).unwrap());
     }

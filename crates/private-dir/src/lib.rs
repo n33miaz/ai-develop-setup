@@ -59,6 +59,9 @@ impl Identity {
     }
 }
 
+/// Why a session that does not create as the user is refused, and what to do.
+pub const ELEVATED_SESSION: &str = "this program is running as administrator (elevated), so the files it creates would belong to the Administrators group and be refused afterwards; close it and start it again from a normal, non-elevated session";
+
 /// One entry of a Windows access list, reduced to what the decision needs.
 #[cfg_attr(not(windows), allow(dead_code))]
 #[derive(Clone, Debug)]
