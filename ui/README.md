@@ -98,14 +98,17 @@ desativado nessa janela. O bundle é o mesmo da interface web.
 
 Com a conexão autenticada, abra **Fila de tarefas** e informe o
 `queue_id` de `local-identities.toml`, conforme o [guia do daemon](../crates/daemon/README.md).
-Consulte o estado para criar a fila, ligá-la ou pará-la. A API local devolve
-o estado da fila, e os limites em vigor ficam indisponíveis na interface.
+Consulte o estado para criar a fila, ligá-la ou pará-la. A consulta mostra o
+estado e os limites da última política registrada no histórico da fila, ou avisa
+que a fila ainda não tem limites registrados.
 
 Abra **Aprovações** para consultar as ações pendentes. Confira a lista registrada
 de alvos, efeitos e caminhos na quarentena. Para aprovar, confira essa lista e
 selecione **Confirmar aprovação**. Ações sem ensaio aprovável explicam a
 restrição e podem ser negadas. Quando houver mais itens, consulte novamente
-depois de responder aos itens exibidos. Os dois painéis usam a mesma API local no
+depois de responder aos itens exibidos. Se o daemon deixou de fora pedidos com
+histórico ilegível, o painel mostra quantos são; os ids ficam no log do daemon e
+saem por `approval.close`. Os dois painéis usam a mesma API local no
 navegador e na janela de desktop.
 
 ## Uso e contas

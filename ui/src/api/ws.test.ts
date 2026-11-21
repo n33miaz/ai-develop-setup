@@ -33,7 +33,7 @@ class FakeSocket extends EventTarget {
     this.dispatchEvent(new Event('close'))
   }
   receive(message: unknown) {
-    valid('urn:ads:contract:local-api.server-message:5', message)
+    valid('urn:ads:contract:local-api.server-message:7', message)
     this.receiveRaw(message)
   }
   /** Entrega sem conferir: simula um núcleo que manda o que o contrato não aceita. */
@@ -49,6 +49,17 @@ class FakeSocket extends EventTarget {
   }
 }
 const token = 'a'.repeat(43)
+const policy = {
+  attempt_limit: 2,
+  admission_limit: 1000,
+  window_seconds: 3600,
+  window_admissions: 10,
+  manual_window_admissions: 10,
+  bug_rule_window_admissions: 3,
+  clock_skew_seconds: 5,
+  clock_rewind_seconds: 300,
+  host_confirm_seconds: 60,
+}
 function setup(listTimeoutMs?: number) {
   const socket = new FakeSocket()
   const urls: string[] = []
@@ -98,9 +109,9 @@ describe('local WebSocket client', () => {
     socket.receive({
       jsonrpc: '2.0',
       id: socket.sent.at(-1)?.id,
-      result: { queue_id: 'queue-01', state: 'stopped' },
+      result: { queue_id: 'queue-01', state: 'stopped', policy },
     })
-    await expect(queue).resolves.toEqual({ queue_id: 'queue-01', state: 'stopped' })
+    await expect(queue).resolves.toEqual({ queue_id: 'queue-01', state: 'stopped', policy })
 
     for (const action of ['create', 'start', 'stop'] as const) {
       const result = api[action]('queue-01')
@@ -117,9 +128,9 @@ describe('local WebSocket client', () => {
     socket.receive({
       jsonrpc: '2.0',
       id: socket.sent.at(-1)?.id,
-      result: { approvals: [], more: true },
+      result: { approvals: [], more: true, unreadable: 2 },
     })
-    await expect(list).resolves.toEqual({ approvals: [], more: true })
+    await expect(list).resolves.toEqual({ approvals: [], more: true, unreadable: 2 })
 
     const params = {
       action_id: 'action-01',

@@ -87,8 +87,8 @@ describe('desktop client selection', () => {
         methods.push(request.method)
         const result =
           request.method === 'queue.get'
-            ? { queue_id: request.params.queue_id, state: 'enabled' }
-            : { approvals: [], more: false }
+            ? { queue_id: request.params.queue_id, state: 'enabled', policy: null }
+            : { approvals: [], more: false, unreadable: 0 }
         channel?.onmessage({
           kind: 'message',
           text: JSON.stringify({ jsonrpc: '2.0', id: request.id, result }),
@@ -100,8 +100,12 @@ describe('desktop client selection', () => {
     try {
       await client.connect()
       const api = queueApprovals(client)
-      await expect(api.get('queue-01')).resolves.toEqual({ queue_id: 'queue-01', state: 'enabled' })
-      await expect(api.list()).resolves.toEqual({ approvals: [], more: false })
+      await expect(api.get('queue-01')).resolves.toEqual({
+        queue_id: 'queue-01',
+        state: 'enabled',
+        policy: null,
+      })
+      await expect(api.list()).resolves.toEqual({ approvals: [], more: false, unreadable: 0 })
       expect(methods).toEqual(['queue.get', 'approval.list'])
     } finally {
       client.disconnect()

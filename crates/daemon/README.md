@@ -177,10 +177,10 @@ Como só lê, não passa pela cache de idempotência: repetir a chave devolve a
 lista de novo, nunca `replayed`. `api::Launcher::catalog` fornece a lista; o
 padrão é vazio, como em `DisabledLauncher`. Essa resposta exige a
 `local-api.server-message:2`; quem não envia `harness.list`, `queue.get` nem
-`approval.list` continua recebendo só mensagens da `:1`. O daemon escreve a `:5`,
-cuja resposta de `approval.list` é a `approval.list.response:2`: ela troca a da
-`:4` sem negociação de versão, então quem envia `approval.list` precisa aceitar a
-`:5`. Um daemon anterior ao comando o recusa
+`approval.list` continua recebendo só mensagens da `:1`. O daemon escreve a `:7`,
+cuja resposta de `approval.list` é a `approval.list.response:3`: ela troca a das
+versões anteriores sem negociação de versão, então quem envia `approval.list`
+precisa aceitar a `:7`. Um daemon anterior ao comando o recusa
 com `METHOD_NOT_FOUND`, e a interface mostra que o daemon precisa ser atualizado.
 
 ## Fila de tarefas
@@ -283,8 +283,8 @@ recebe `REMOTE_ORIGIN_REFUSED`. O dono e o aparelho vêm do daemon
 (`approvals::ApprovalOwner`), nunca do pedido, e cada chamada a
 `approvals::ApprovalControl` exige a prova `auth::LocalSession`.
 
-- `approval.list` (só `_meta`) responde `{"approvals": [...], "more": ...}`
-  ([`command.approval.list.response:2`](../../contracts/README.md#api-local)):
+- `approval.list` (só `_meta`) responde `{"approvals": [...], "more": ..., "unreadable": ...}`
+  ([`command.approval.list.response:3`](../../contracts/README.md#api-local)):
   da mais antiga à mais nova, cada ação cuja aprovação foi pedida e ainda não
   foi concedida, negada nem expirada, com `approval_id`, `risk`, `summary`,
   `requested_at`, `expires_at`, `not_approvable`, o registro do plano
@@ -307,8 +307,9 @@ recebe `REMOTE_ORIGIN_REFUSED`. O dono e o aparelho vêm do daemon
   dos efeitos. O tempo sob a trava também inclui a autenticação da cadeia
   inteira e a leitura dos históricos de outras pastas ou ilegíveis, inclusive
   ao procurar mais um pedido listável após atingir o limite de itens. O daemon
-  omite pedidos cujo histórico é ilegível, registra o `action_id` no log e
-  segue a listagem. O portão precisa de um histórico legível para negar ou
+  omite pedidos cujo histórico é ilegível, registra o `action_id` no log,
+  conta-os em `unreadable` (de qualquer pasta, até onde a listagem chegou:
+  todos quando `more` é `false`) e segue a listagem. O portão precisa de um histórico legível para negar ou
   expirar um pedido; um pedido ilegível sai por `approval.close` (abaixo). Pedido ou decisão gravados fora do formato do
   portão são ignorados. Só lê e fica fora da cache de idempotência.
 - O que o registro do plano garante: a operação, os alvos como foram pedidos
@@ -382,14 +383,18 @@ recebe `REMOTE_ORIGIN_REFUSED`. O dono e o aparelho vêm do daemon
   pedido do portão (senão `APPROVAL_NOT_FOUND`), se o histórico é legível
   (`APPROVAL_READABLE`: continua só por `approval.answer`) e quais pedidos
   seguem sem decisão (nenhum: `APPROVAL_ALREADY_ANSWERED`), até 64, cada um com
-  o `plan_hash` lido da própria linha. Nada é gravado nessas recusas. Depois o
+  o `plan_hash` e o `expires_at` lidos da própria linha. `expire` antes do
+  `expires_at` de qualquer um desses pedidos é recusado com `INVALID_PARAMS`,
+  porque gravaria uma expiração que não aconteceu; `deny` vale a qualquer
+  momento. Nada é gravado nessas recusas. Depois o
   daemon grava `closure.recorded:1` em `closure/<action_id>` (aparelho do dono,
   dono, decisão, pedidos e chave de idempotência, `cause` no id do comando) e,
   para cada pedido, `approval.denied:2` (motivo `E_HISTORY_UNREADABLE`) ou
   `approval.expired:2` com `cause` nesse registro, por
   `EventLog::close_unreadable_request`. Essa escrita confere de novo, na mesma
   transação, que o histórico segue ilegível, que o pedido é da ação, está aberto
-  e tem aquele hash, e que o tipo é negação ou expiração; nunca grava
+  e tem aquele hash, que o tipo é negação ou expiração e que uma expiração não
+  vem antes do prazo do pedido; nunca grava
   `approval.granted` e o histórico continua sem ler, então nenhuma licença sai
   dele. A mesma chave com a mesma decisão não grava outro registro: fecha só o
   que o registro nomeou e ficou aberto e volta `replayed: true`; com outra

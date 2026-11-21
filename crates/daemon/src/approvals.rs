@@ -45,7 +45,7 @@ const UNREADABLE_REASON: &str = "E_HISTORY_UNREADABLE";
 /// the token check; the owner and the device come from the implementation, never the request.
 pub trait ApprovalControl: Send + Sync + 'static {
     /// The actions waiting for the owner, oldest first, as the `result` of
-    /// `command.approval.list.response:2`.
+    /// `command.approval.list.response:3`.
     fn pending(&self, session: &LocalSession) -> Result<Pending, ApiError>;
     /// Records the answer, then lets the gate act on it. `cause` is the command id. Returns
     /// whether the outcome is the one of an earlier answer with the same idempotency key.
@@ -66,12 +66,14 @@ pub trait ApprovalControl: Send + Sync + 'static {
     ) -> Result<bool, ApiError>;
 }
 
-/// One page of `approval.list`: the actions that fit, oldest first, and whether the ceiling of
-/// bytes left others out.
+/// One page of `approval.list`: the actions that fit, oldest first, whether the ceiling of
+/// bytes left others out, and how many pending requests with an unreadable history the walk
+/// passed over (all of them when `more` is false).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Pending {
     pub approvals: Vec<Value>,
     pub more: bool,
+    pub unreadable: u64,
 }
 
 /// No gate bound to the audit log: every approval command is refused.
@@ -493,8 +495,9 @@ impl ApprovalControl for ApprovalDesk {
         let mut page = Pending {
             approvals: Vec::new(),
             more: false,
+            unreadable: 0,
         };
-        // The envelope of the response and `"more":false`.
+        // The envelope of the response, `"more":false` and the count of unreadable requests.
         let mut used = 128;
         let mut failed = None;
         let visited = desk
@@ -506,6 +509,7 @@ impl ApprovalControl for ApprovalDesk {
                     StoredPending::History(history) => history,
                     StoredPending::Unreadable(action_id) => {
                         log::warn!("pending approval of {action_id} not readable; not listed");
+                        page.unreadable += 1;
                         return Visit::Skip;
                     }
                 };
@@ -754,26 +758,32 @@ impl ApprovalDesk {
             Closable::Requests(open) => open,
         };
         let ts = now_ts()?;
-        let (record, open) = match &earlier {
+        let open: Vec<_> = match &earlier {
             // The same key again: only what the recorded closing named and is still open.
             Some(event) => {
                 let named = event["data"]["approval_ids"]
                     .as_array()
                     .ok_or(ApiError::Storage)?;
-                let open: Vec<_> = open
-                    .into_iter()
+                open.into_iter()
                     .filter(|request| named.iter().any(|id| id == &request.approval_id))
-                    .collect();
-                let record = event["id"].as_str().ok_or(ApiError::Storage)?.to_owned();
-                (record, open)
+                    .collect()
             }
             None if open.is_empty() => return Err(ApiError::ApprovalAlreadyAnswered),
+            None => open,
+        };
+        // An expiry before a deadline would record one that did not happen: nothing is written.
+        if close.decision == Closing::Expire && !open.iter().all(|request| request.expired_at(&ts))
+        {
+            return Err(ApiError::Invalid);
+        }
+        let record = match &earlier {
+            Some(event) => event["id"].as_str().ok_or(ApiError::Storage)?.to_owned(),
             None => {
                 let ids: Vec<&str> = open
                     .iter()
                     .map(|request| request.approval_id.as_str())
                     .collect();
-                (desk.record_closing(close, &ids, &ts, cause)?, open)
+                desk.record_closing(close, &ids, &ts, cause)?
             }
         };
         for request in &open {
@@ -1141,9 +1151,9 @@ mod tests {
         let pending = desk.pending(&session).unwrap().approvals;
         let reply = json!({
             "jsonrpc": "2.0", "id": new_id().unwrap(),
-            "result": {"approvals": pending, "more": false}
+            "result": {"approvals": pending, "more": false, "unreadable": 0}
         });
-        checked("urn:ads:command:approval.list.response:2", reply).unwrap();
+        checked("urn:ads:command:approval.list.response:3", reply).unwrap();
         let [item] = &pending[..] else {
             panic!("expected one pending approval: {pending:?}");
         };
@@ -1631,7 +1641,7 @@ mod tests {
         };
         assert_eq!(item["action_id"], actions[0].as_str());
         assert!(item["effects"].is_object());
-        let reply = json!({"approvals": page.approvals, "more": page.more});
+        let reply = json!({"approvals": page.approvals, "more": page.more, "unreadable": u64::MAX});
         assert!(serde_json::to_vec(&reply).unwrap().len() <= max);
     }
 
@@ -2402,6 +2412,8 @@ mod tests {
         let page = desk.pending(&session()).unwrap();
         assert_eq!(only(&page.approvals)["action_id"], fine.as_str());
         assert!(!page.more);
+        // Left out, but counted, so the owner learns it is there.
+        assert_eq!(page.unreadable, 1);
         let deny = params(&fine, &approval, &hash, "deny");
         assert_eq!(
             desk.answer(&session(), &deny, &new_id().unwrap()),
@@ -2413,9 +2425,17 @@ mod tests {
     }
 
     /// An action waiting for approval whose history holds more requests than a history does:
-    /// four more, written by no gate of this core. Returns the action and its five approvals.
-    fn unreadable(bench: &mut Bench, gate: &SessionGate, name: &str) -> (Id, Vec<String>) {
-        let (action, approval, _) = bench.waiting(gate, name);
+    /// four more, written by no gate of this core, asked `hours` ago with a validity of one
+    /// hour; `last_expires_at` replaces the deadline of the last one. Returns the action and its
+    /// five approvals.
+    fn unreadable_since(
+        bench: &mut Bench,
+        gate: &SessionGate,
+        name: &str,
+        hours: i64,
+        last_expires_at: Option<&str>,
+    ) -> (Id, Vec<String>) {
+        let (action, approval, _) = bench.waiting_since(gate, name, hours);
         let mut approvals = vec![approval.as_str().to_owned()];
         let mut log = bench.log.as_mut().unwrap().log().unwrap();
         let requested = log.load(&action).unwrap().events[1].to_json();
@@ -2425,6 +2445,9 @@ mod tests {
             json["id"] = json!(new_id().unwrap());
             json["stream"] = json!(format!("approval/{approval}"));
             json["data"]["approval_id"] = json!(approval);
+            if let Some(expires_at) = last_expires_at.filter(|_| extra == 3) {
+                json["data"]["expires_at"] = json!(expires_at);
+            }
             let event = Event::from_json(json).unwrap();
             GateJournal::append(&mut *log, &action, 2 + extra, &event).unwrap();
             approvals.push(approval);
@@ -2471,7 +2494,10 @@ mod tests {
         for decision in ["deny", "expire"] {
             let mut bench = Bench::new();
             let gate = bench.gate(OVER_LIMIT);
-            let (broken, approvals) = unreadable(&mut bench, &gate, "act-broken");
+            // An expiry needs a validity that is over; a denial does not.
+            let hours = if decision == "expire" { 2 } else { 0 };
+            let (broken, approvals) =
+                unreadable_since(&mut bench, &gate, "act-broken", hours, None);
             let (fine, _, _) = bench.waiting(&gate, "act-fine");
             let desk = bench.desk(vec![gate]);
             let session = session();
@@ -2530,6 +2556,39 @@ mod tests {
             );
             assert_eq!(stream(&desk, "closure/act-broken").len(), 1);
         }
+    }
+
+    #[test]
+    fn an_unreadable_request_is_never_expired_before_its_deadline() {
+        let mut bench = Bench::new();
+        let gate = bench.gate(OVER_LIMIT);
+        // Asked two hours ago with a validity of one hour, but one request is still valid.
+        let (broken, approvals) = unreadable_since(
+            &mut bench,
+            &gate,
+            "act-broken",
+            2,
+            Some("2999-01-01T00:00:00Z"),
+        );
+        let desk = bench.desk(vec![gate]);
+        let session = session();
+        let close = close_params(&broken, "expire");
+        assert_eq!(
+            desk.close(&session, &close, &new_id().unwrap()),
+            Err(ApiError::Invalid)
+        );
+        // Refused before anything is written: no closing record and no decision.
+        assert!(stream(&desk, "closure/act-broken").is_empty());
+        let streams: Vec<String> = approvals
+            .iter()
+            .map(|approval| format!("approval/{approval}"))
+            .collect();
+        assert!(of_type(&desk, &streams, "urn:ads:event:approval.expired:").is_empty());
+        assert_eq!(unreadable_pending(&desk), ["act-broken"]);
+        // Denying stays allowed before the deadline.
+        let deny = close_params(&broken, "deny");
+        assert_eq!(desk.close(&session, &deny, &new_id().unwrap()), Ok(false));
+        assert!(unreadable_pending(&desk).is_empty());
     }
 
     fn again_close(close: &CommandApprovalCloseV1Params) -> CommandApprovalCloseV1Params {
