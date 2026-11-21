@@ -212,6 +212,10 @@ recebe `REMOTE_ORIGIN_REFUSED`.
 `queue::LoggedQueue::bind` liga uma fila já criada ao stream `queue/<id>` do log
 ancorado: recusa um stream criado por outro dono e, a cada abertura, restaura a
 fila parada e grava `queue.stopped` com `reason: restart` se o log dizia ligada.
+Quando a composição usa um `ProductLog`, passe `ProductLog::shared_log()` à fila
+para usar a mesma conexão SQLite do portão. A API executa as operações da fila
+em tarefas bloqueantes, mantendo o atendimento de assinaturas e do terminal
+enquanto uma gravação espera pelo SQLite.
 Com o stream vazio, `bind` recusa com `NotCreated` e não grava nada. Criar a fila
 (`queue.created:2`, com o aparelho do dono como ator e a política inicial) é ato
 do dono: `open` (política embutida em `defaults/queue.toml`) e `open_with_policy`

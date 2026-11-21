@@ -151,7 +151,7 @@ impl Desk {
         cause: &str,
     ) -> Result<String, ApiError> {
         let stream = answer_stream(&answer.approval_id)?;
-        let log = self.log.log();
+        let mut log = self.log.log();
         let seq = log.head(&stream).map_err(|_| ApiError::Storage)? + 1;
         let id = new_id()?;
         let value = json!({
@@ -223,7 +223,7 @@ fn decided_by(history: &GateHistory, answer_id: &Value) -> Option<Result<(), Api
 
 impl ApprovalControl for ApprovalDesk {
     fn pending(&self, _: &LocalSession) -> Result<Vec<Value>, ApiError> {
-        let mut desk = self.lock();
+        let desk = self.lock();
         let roots: Vec<AbsPath> = desk
             .gates
             .iter()

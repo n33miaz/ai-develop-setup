@@ -5,6 +5,7 @@ use std::{
     fs,
     io::ErrorKind,
     path::{Component, Path, PathBuf},
+    sync::MutexGuard,
 };
 
 use ads_adapter_fs::{Executor, Failure, Report, Stop};
@@ -218,7 +219,7 @@ impl SessionGate {
         &mut self.executor
     }
 
-    fn bound<'a>(&self, log: &'a mut ProductLog) -> Result<&'a mut EventLog, JournalError> {
+    fn bound<'a>(&self, log: &'a ProductLog) -> Result<MutexGuard<'a, EventLog>, JournalError> {
         if log.state() != &self.product {
             return Err(JournalError::PolicyChanged);
         }
@@ -232,14 +233,14 @@ impl SessionGate {
         mut request: PlanRequest,
         meta: EventMeta,
     ) -> Result<ActionSnapshot, PlanActionError> {
-        let log = self.bound(log).map_err(PlanActionError::Journal)?;
+        let mut log = self.bound(log).map_err(PlanActionError::Journal)?;
         request.work_root = self.root.to_string();
         let plan = ActionPlan::normalize(&request).map_err(PlanActionError::Invalid)?;
         let observed = self
             .executor
             .observe_plan(&plan)
             .map_err(PlanActionError::Inspect)?;
-        self.journal(log)
+        self.journal(&mut log)
             .plan(action_id, &observed, meta)
             .map_err(PlanActionError::Journal)
     }
@@ -249,8 +250,8 @@ impl SessionGate {
         log: &mut ProductLog,
         action_id: &Id,
     ) -> Result<ActionSnapshot, JournalError> {
-        let log = self.bound(log)?;
-        self.journal(log).inspect(action_id)
+        let mut log = self.bound(log)?;
+        self.journal(&mut log).inspect(action_id)
     }
 
     pub fn apply(
@@ -260,8 +261,8 @@ impl SessionGate {
         command: Command,
         meta: EventMeta,
     ) -> Result<ActionSnapshot, JournalError> {
-        let log = self.bound(log)?;
-        self.journal(log).apply(action_id, command, meta)
+        let mut log = self.bound(log)?;
+        self.journal(&mut log).apply(action_id, command, meta)
     }
 
     fn journal<'a>(&'a self, log: &'a mut EventLog) -> JournalGate<'a> {
@@ -277,8 +278,8 @@ impl SessionGate {
         start: EventMeta,
         mut finish: EventMeta,
     ) -> Result<ExecutionOutcome, JournalError> {
-        let log = self.bound(log)?;
-        let mut gate = JournalGate::new(&self.policy, log).for_work_root(&self.root);
+        let mut log = self.bound(log)?;
+        let mut gate = JournalGate::new(&self.policy, &mut *log).for_work_root(&self.root);
         if finish.ts.is_before(&start.ts) {
             finish.ts = start.ts.clone();
         }

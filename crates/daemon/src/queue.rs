@@ -2,7 +2,7 @@
 //! stream of the anchored audit log.
 
 use std::collections::HashSet;
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use ads_contracts::{
     CommonIdV1, EventEnvelopeV1, RecordTaskQueueV1, RecordTaskQueueV1State,
@@ -103,7 +103,7 @@ pub struct LoggedQueue {
     inner: Mutex<Inner>,
 }
 struct Inner {
-    log: EventLog,
+    log: Arc<Mutex<EventLog>>,
     record: RecordTaskQueueV1,
     owner: QueueOwner,
     /// Id of the stop command whose event could not be written; the event is written later
@@ -123,7 +123,7 @@ impl LoggedQueue {
     /// when the log last said enabled. An empty stream is refused with `NotCreated` and nothing is
     /// written: creating the queue is an owner act and takes a [`LocalSession`].
     pub fn bind(
-        log: EventLog,
+        log: Arc<Mutex<EventLog>>,
         queue_id: CommonIdV1,
         owner: QueueOwner,
     ) -> Result<Self, QueueOpenError> {
@@ -137,7 +137,7 @@ impl LoggedQueue {
     /// ```compile_fail
     /// use ads_contracts::CommonIdV1;
     /// use ads_daemon::queue::{LoggedQueue, QueueOwner};
-    /// fn create(log: ads_storage::EventLog, id: CommonIdV1, owner: QueueOwner) {
+    /// fn create(log: std::sync::Arc<std::sync::Mutex<ads_storage::EventLog>>, id: CommonIdV1, owner: QueueOwner) {
     ///     let _ = LoggedQueue::open(log, id, owner);
     /// }
     /// ```
@@ -147,13 +147,13 @@ impl LoggedQueue {
     /// ```
     /// use ads_contracts::CommonIdV1;
     /// use ads_daemon::{auth::LocalSession, queue::{LoggedQueue, QueueOwner}};
-    /// fn create(s: &LocalSession, log: ads_storage::EventLog, id: CommonIdV1, owner: QueueOwner) {
+    /// fn create(s: &LocalSession, log: std::sync::Arc<std::sync::Mutex<ads_storage::EventLog>>, id: CommonIdV1, owner: QueueOwner) {
     ///     let _ = LoggedQueue::open(s, log, id, owner);
     /// }
     /// ```
     pub fn open(
         session: &LocalSession,
-        log: EventLog,
+        log: Arc<Mutex<EventLog>>,
         queue_id: CommonIdV1,
         owner: QueueOwner,
     ) -> Result<Self, QueueOpenError> {
@@ -169,7 +169,7 @@ impl LoggedQueue {
     /// use ads_contracts::CommonIdV1;
     /// use ads_core::queue::QueuePolicy;
     /// use ads_daemon::queue::{LoggedQueue, QueueOwner};
-    /// fn create(log: ads_storage::EventLog, id: CommonIdV1, owner: QueueOwner, p: &QueuePolicy) {
+    /// fn create(log: std::sync::Arc<std::sync::Mutex<ads_storage::EventLog>>, id: CommonIdV1, owner: QueueOwner, p: &QueuePolicy) {
     ///     let _ = LoggedQueue::open_with_policy(log, id, owner, p);
     /// }
     /// ```
@@ -180,7 +180,7 @@ impl LoggedQueue {
     /// use ads_daemon::{auth::LocalSession, queue::{LoggedQueue, QueueOwner}};
     /// fn create(
     ///     s: &LocalSession,
-    ///     log: ads_storage::EventLog,
+    ///     log: std::sync::Arc<std::sync::Mutex<ads_storage::EventLog>>,
     ///     id: CommonIdV1,
     ///     owner: QueueOwner,
     ///     p: &QueuePolicy,
@@ -190,7 +190,7 @@ impl LoggedQueue {
     /// ```
     pub fn open_with_policy(
         _: &LocalSession,
-        log: EventLog,
+        log: Arc<Mutex<EventLog>>,
         queue_id: CommonIdV1,
         owner: QueueOwner,
         initial_policy: &QueuePolicy,
@@ -199,7 +199,7 @@ impl LoggedQueue {
     }
 
     fn acquire(
-        log: EventLog,
+        log: Arc<Mutex<EventLog>>,
         queue_id: CommonIdV1,
         owner: QueueOwner,
         create: Option<&QueuePolicy>,
@@ -229,7 +229,11 @@ impl LoggedQueue {
     }
 
     fn restore(mut inner: Inner, create: Option<&QueuePolicy>) -> Result<Inner, QueueOpenError> {
-        let stored = inner.log.read_queue(&inner.record.id)?;
+        let stored = inner
+            .log
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .read_queue(&inner.record.id)?;
         if stored.is_empty() {
             let initial_policy = create.ok_or(QueueOpenError::NotCreated)?;
             let (record, created) = new_local_stopped(
@@ -238,7 +242,7 @@ impl LoggedQueue {
                 initial_policy,
             );
             let data = serde_json::to_value(created).map_err(|_| QueueOpenError::Contract)?;
-            inner.append_at(1, "created:2", true, data, None)?;
+            inner.append_at(Some(1), "created:2", true, data, None)?;
             inner.record = record;
             return Ok(inner);
         }
@@ -292,14 +296,12 @@ impl Inner {
         data: Value,
         cause: Option<&str>,
     ) -> Result<(), QueueOpenError> {
-        let stream = queue_stream(&self.record.id);
-        let seq = self.log.head(&stream)? + 1;
-        self.append_at(seq, kind, by_device, data, cause)
+        self.append_at(None, kind, by_device, data, cause)
     }
 
     fn append_at(
         &mut self,
-        seq: u64,
+        seq: Option<u64>,
         kind: &str,
         by_device: bool,
         data: Value,
@@ -312,6 +314,11 @@ impl Inner {
             json!({"kind": "daemon", "id": "core"})
         };
         let schema = format!("urn:ads:event:queue.{kind}");
+        let mut log = self.log.lock().unwrap_or_else(|error| error.into_inner());
+        let seq = match seq {
+            Some(seq) => seq,
+            None => log.head(&stream)? + 1,
+        };
         let value = json!({
             "id": new_id().map_err(|_| QueueOpenError::Contract)?, "type": schema,
             "ts": now_ts().map_err(|_| QueueOpenError::Contract)?, "stream": stream.as_str(),
@@ -320,7 +327,7 @@ impl Inner {
         let value = checked(&schema, value).map_err(|_| QueueOpenError::Contract)?;
         let event: EventEnvelopeV1 =
             serde_json::from_value(value).map_err(|_| QueueOpenError::Contract)?;
-        self.log.append(&event)?;
+        log.append(&event)?;
         Ok(())
     }
 
@@ -506,7 +513,11 @@ mod tests {
         let anchor = Anchor::default();
         let queue = id("queue-unit-create");
         assert!(matches!(
-            LoggedQueue::bind(folder.log(&anchor), queue.clone(), owner()),
+            LoggedQueue::bind(
+                Arc::new(Mutex::new(folder.log(&anchor))),
+                queue.clone(),
+                owner()
+            ),
             Err(QueueOpenError::NotCreated)
         ));
         assert!(stored(&folder, &anchor, &queue).is_empty());
@@ -516,7 +527,7 @@ mod tests {
         let open = |policy: &QueuePolicy| {
             LoggedQueue::open_with_policy(
                 &session,
-                folder.log(&anchor),
+                Arc::new(Mutex::new(folder.log(&anchor))),
                 queue.clone(),
                 owner(),
                 policy,
@@ -541,9 +552,24 @@ mod tests {
         );
 
         // An existing stream keeps its creation, whatever policy the reopening offers.
-        drop(LoggedQueue::bind(folder.log(&anchor), queue.clone(), owner()).unwrap());
+        drop(
+            LoggedQueue::bind(
+                Arc::new(Mutex::new(folder.log(&anchor))),
+                queue.clone(),
+                owner(),
+            )
+            .unwrap(),
+        );
         drop(open(&policy("attempt_limit = 9\nadmission_limit = 5\n")));
-        drop(LoggedQueue::open(&session, folder.log(&anchor), queue.clone(), owner()).unwrap());
+        drop(
+            LoggedQueue::open(
+                &session,
+                Arc::new(Mutex::new(folder.log(&anchor))),
+                queue.clone(),
+                owner(),
+            )
+            .unwrap(),
+        );
         assert_eq!(stored(&folder, &anchor, &queue), events);
     }
 
@@ -555,7 +581,7 @@ mod tests {
         let token = Token::generate().unwrap();
         let opened = LoggedQueue::open(
             &session(&token),
-            folder.log(&anchor),
+            Arc::new(Mutex::new(folder.log(&anchor))),
             queue.clone(),
             owner(),
         );
@@ -581,7 +607,7 @@ mod tests {
         let open = |policy: &QueuePolicy| {
             LoggedQueue::open_with_policy(
                 &session,
-                folder.log(&anchor),
+                Arc::new(Mutex::new(folder.log(&anchor))),
                 queue.clone(),
                 owner(),
                 policy,
