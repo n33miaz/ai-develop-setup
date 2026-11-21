@@ -538,6 +538,24 @@ fn policy_changes_require_the_authenticated_owner_and_current_sequence() {
     assert_eq!(QueuePolicy::from_event(&data.policy), Some(configured));
 }
 
+/// Unlike enabling, changing the policy and re-anchoring the clock accept every channel,
+/// the remote one included, as their contracts do.
+#[test]
+fn policy_change_and_reanchor_accept_the_remote_channel() {
+    let phone = device("phone-01", "owner-01", RemoteDevice);
+    let queue = stopped_record(id("queue-01"), &phone);
+    assert_eq!(RemoteDevice.enabled_via(), None);
+    let data = change_queue_policy(&queue, Some(&phone), &policy(), 5, 5).unwrap();
+    assert_eq!(data.via, EventQueuePolicyChangedV1DataVia::RemoteDevice);
+    let anchor =
+        reanchor_admission_clock(&queue, Some(&phone), &ts("2030-01-02T03:04:05Z"), 5, 5).unwrap();
+    assert_eq!(anchor.via(), RemoteDevice);
+    assert_eq!(
+        anchor.event_data().via,
+        EventQueueClockReanchoredV1DataVia::RemoteDevice
+    );
+}
+
 #[test]
 fn replay_requires_an_owner_policy_event_to_raise_the_ceiling() {
     let initial = policy();

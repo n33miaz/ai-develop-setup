@@ -655,7 +655,7 @@ fn match_name(
 
 #[cfg(test)]
 mod tests {
-    use super::may_name;
+    use super::{MatchBudget, match_name, may_name};
 
     #[test]
     fn wildcard_names_what_it_could_match_in_any_case() {
@@ -684,13 +684,41 @@ mod tests {
     }
 
     /// The texts come from the request, with no size limit before the rules: the match must
-    /// neither take exponential time nor grow the stack with them.
+    /// neither take exponential time nor grow the stack with them. A slow matcher fails here
+    /// on the step count or on the clock instead of holding the job until its timeout.
     #[test]
     fn wildcard_match_is_bounded_in_time_and_in_stack() {
         let greedy = format!("{}b", "*a".repeat(60));
-        assert!(!may_name(&greedy, &"a".repeat(100)));
         let long = "a".repeat(200_000);
-        assert!(may_name(&format!("{long}?"), &format!("{long}a")));
-        assert!(!may_name(&format!("{long}?"), &long));
+        let cases = [
+            (greedy, "a".repeat(100), false),
+            (format!("{long}?"), format!("{long}a"), true),
+            (format!("{long}?"), long, false),
+        ];
+        for (pattern, name, expected) in &cases {
+            // Two case folds, each quadratic at worst.
+            let (p, n) = (pattern.len() as u64, name.len() as u64);
+            let steps = 2 * (1 + p + n + (p + 1) * (n + 1));
+            assert_eq!(
+                match_name(pattern, name, &mut MatchBudget(steps)),
+                Ok(*expected),
+                "{} chars against {}",
+                p,
+                n
+            );
+        }
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let answers: Vec<bool> = cases
+                .iter()
+                .map(|(pattern, name, _)| may_name(pattern, name))
+                .collect();
+            let _ = done.send(answers);
+        });
+        assert_eq!(
+            finished.recv_timeout(std::time::Duration::from_secs(30)),
+            Ok(vec![false, true, false]),
+            "the match did not finish in time"
+        );
     }
 }
