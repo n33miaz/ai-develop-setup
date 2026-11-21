@@ -34,7 +34,7 @@ Base: as dez últimas execuções verdes de push na `develop` (de 01:40 a 06:41 
 
 ### Lint da casca
 
-Desde o fim da amostra acima, o `shell-check` roda `cargo clippy -p ads-shell --all-targets` antes dos testes da casca, em série com os demais passos. Nas seis primeiras execuções verdes com o passo (pushes 44900418240 e 44902766285; PRs 44900034328, 44901649324, 44902756290 e 44902832474), o lint levou de 48 a 69 s, praticamente empatado com a compilação da interface (56 a 65 s) como passo mais longo do job. O `shell-check` inteiro levou de 219 a 267 s, contra 135 a 243 s na amostra acima. Do início da execução ao fim do `ci-ok`, de 233 a 282 s; o `shell-check` foi o último job a terminar em 5 das 6, e a folga para o alvo de 5 minutos caiu para cerca de 18 s no pior caso.
+Desde o fim da amostra acima, o `shell-check` roda `cargo clippy -p ads-shell --all-targets` antes dos testes da casca, em série com os demais passos. Nas seis primeiras execuções verdes com o passo (pushes 44900418240 e 44902766285; PRs 44900034328, 44901649324, 44902756290 e 44902832474), o lint levou de 48 a 69 s, o segundo passo mais longo do job; só passou a compilação da interface (56 a 65 s) em 1 das 6. O `shell-check` inteiro levou de 219 a 267 s, contra 135 a 243 s na amostra acima. Do início da execução ao fim do `ci-ok`, de 233 a 282 s; o `shell-check` foi o último job a terminar em 5 das 6, e a folga para o alvo de 5 minutos caiu para cerca de 18 s no pior caso.
 
 ### Opções para recuperar folga (não aplicadas)
 

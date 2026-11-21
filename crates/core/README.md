@@ -304,10 +304,10 @@ exceder o limite.
 O diário reclassifica o plano gravado sob o teto vigente a cada consulta. Com um teto menor do
 que o plano exige, `JournalGate::inspect` reconstrói o estado pelo histórico autenticado e
 devolve `ClassificationBudgetExceeded` em `policy_warning`. Negar, expirar e registrar o
-resultado de uma ação já iniciada (`Executed` ou `Fail`) continuam aceitos e gravados com o
-mesmo aviso. Pedir aprovação, conceder a aprovação e iniciar (`authorize`) devolvem o erro sem
-gravar nada e sem emitir licença. Só é preciso subir o teto para pedir, conceder ou iniciar uma
-ação acima dele; nos outros casos, negue a ação e divida o plano.
+resultado de uma ação já iniciada (`Executed` ou `Fail`) continuam aceitos e gravados; a resposta
+traz o mesmo aviso em `policy_warning`. Pedir aprovação, conceder a aprovação e iniciar
+(`authorize`) devolvem o erro sem gravar nada e sem emitir licença. Para uma ação que ainda
+aguarda aprovação ou início, suba o teto ou negue a ação e divida o plano.
 
 Quarentena por padrão: apagar e apagar recursivo saem do veredito reescritos como "mover para `<raiz de trabalho>/<quarantine_dir>/<16 primeiros hexadecimais do hash do plano pedido>`". É o plano reescrito que recebe o `plan_hash`, a aprovação e a execução.
 
