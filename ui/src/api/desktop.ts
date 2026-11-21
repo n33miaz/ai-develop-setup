@@ -9,14 +9,17 @@ export interface DesktopBridge {
   }
 }
 
-export function desktopSocketFactory(core: DesktopBridge['core']): () => CoreSocket {
+export function desktopSocketFactory(
+  core: DesktopBridge['core'],
+  { initialMs = 250, maxMs = 5000 } = {},
+): () => CoreSocket {
   let lifecycle = Promise.resolve()
   const changeConnection: DesktopBridge['core']['invoke'] = (command, args) => {
     const change = lifecycle.then(() => core.invoke(command, args))
     lifecycle = change.catch(() => undefined)
     return change
   }
-  return () => new DesktopSocket(core, changeConnection)
+  return () => new DesktopSocket(core, changeConnection, initialMs, maxMs)
 }
 
 class DesktopSocket extends EventTarget implements CoreSocket {
@@ -27,7 +30,14 @@ class DesktopSocket extends EventTarget implements CoreSocket {
   private closed = false
   private outgoing = Promise.resolve()
 
-  constructor(core: DesktopBridge['core'], changeConnection: DesktopBridge['core']['invoke']) {
+  private retryTimer: ReturnType<typeof setTimeout> | undefined
+
+  constructor(
+    core: DesktopBridge['core'],
+    changeConnection: DesktopBridge['core']['invoke'],
+    initialMs: number,
+    maxMs: number,
+  ) {
     super()
     this.core = core
     this.changeConnection = changeConnection
@@ -41,12 +51,33 @@ class DesktopSocket extends EventTarget implements CoreSocket {
         this.dispatchEvent(new MessageEvent('message', { data: frame.text }))
       }
     }
-    void changeConnection('desktop_connect', { id: this.id, frames: this.frames }).then(
-      () => {
-        if (!this.closed) this.dispatchEvent(new Event('open'))
-      },
-      () => this.dispatchEvent(new Event('error')),
-    )
+    const connect = (delay: number) => {
+      if (this.closed) return
+      void changeConnection('desktop_connect', { id: this.id, frames: this.frames }).then(
+        () => {
+          if (!this.closed) this.dispatchEvent(new Event('open'))
+        },
+        (reason: unknown) => {
+          if (this.closed) return
+          switch (reason) {
+            case 'desktop connection retry':
+              this.retryTimer = setTimeout(() => {
+                connect(Math.min(delay * 2, maxMs))
+              }, delay)
+              break
+            case 'desktop protocol incompatible':
+              this.dispatchEvent(new CustomEvent('error', { detail: 'incompatible' }))
+              break
+            case 'desktop relaunch required':
+              this.dispatchEvent(new CustomEvent('error', { detail: 'relaunch_required' }))
+              break
+            default:
+              this.dispatchEvent(new Event('error'))
+          }
+        },
+      )
+    }
+    connect(Math.min(initialMs, maxMs))
   }
 
   send(text: string) {
@@ -62,6 +93,7 @@ class DesktopSocket extends EventTarget implements CoreSocket {
   close() {
     if (this.closed) return
     this.closed = true
+    clearTimeout(this.retryTimer)
     this.frames.onmessage = () => undefined
     void this.changeConnection('desktop_disconnect', { id: this.id }).catch(() => undefined)
   }

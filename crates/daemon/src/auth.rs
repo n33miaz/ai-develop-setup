@@ -1,6 +1,8 @@
 //! Credencial por execução e conferência da fronteira HTTP antes do upgrade.
 
-use std::fmt;
+use std::{fmt, net::SocketAddr};
+
+use ads_contracts::desktop_proof;
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use subtle::ConstantTimeEq;
@@ -39,6 +41,10 @@ impl Token {
     pub(crate) fn open_session(&self, candidate: &str) -> Option<LocalSession> {
         self.matches(candidate)
             .then_some(LocalSession { _sealed: () })
+    }
+
+    pub fn desktop_proof(&self, nonce: &[u8], client: SocketAddr, server: SocketAddr) -> String {
+        desktop_proof::sign(&self.0, nonce, client, server)
     }
 
     pub fn desktop_bootstrap(&self, port: u16) -> String {

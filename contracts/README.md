@@ -310,6 +310,16 @@ WebSocket em loopback entre a interface (navegador ou casca) e o núcleo. Como a
 
 `server-message` é `anyOf`, não `oneOf`: as duas alternativas são objetos fechados e cada uma exige um campo que a outra recusa (`jsonrpc` na resposta; `type` no evento), então nenhum documento cabe nas duas e `anyOf` aceita exatamente o mesmo que `oneOf` aceitaria. Na `:2` vale o mesmo para a terceira alternativa: o `result` de `command.response:2` é fechado e exige `accepted`, que o de `harness.list.response:1`, também fechado, recusa; e a resposta de `harness.list` exige `result`, que a recusa (`error`) não tem. Na `:3`, o `result` fechado de `queue.get.response:1` exige `queue_id` e `state`, que os de `harness.list.response:1` e de `command.response:2` recusam, e vice-versa. O gerador de Rust só traduz `oneOf` com um campo de valor fixo que distinga as alternativas.
 
+#### Prova do daemon no desktop
+
+No upgrade WebSocket do listener desktop, o daemon envia no cabeçalho
+`ads-desktop-proof` o HMAC-SHA-256 codificado em base64url sem preenchimento.
+A chave é o token da execução na forma textual recebida pelo pipe. A
+mensagem concatena `urn:ads:handshake:desktop-proof:1`, o endereço do
+cliente, o endereço do servidor (IPv4 e porta em decimal, separados por
+`:`) e o valor de `Sec-WebSocket-Key`, separados por LF. A casca verifica
+essa prova antes de enviar `auth.hello` na mesma conexão.
+
 ## Fila contínua
 
 A criação fica registrada em `queue.created`, sempre em `stopped`. Na partida, o núcleo restaura toda fila em `stopped`, inclusive se o retrato persistido ou o último evento de estado da fila indicar `enabled`. Se qualquer um dos dois indicar `enabled`, ele anexa `queue.stopped` com `reason: restart`. Assim, uma queda entre anexar `queue.enabled` e gravar o retrato também fica registrada. Uma nova ativação precisa de `queue.enabled` após a partida.

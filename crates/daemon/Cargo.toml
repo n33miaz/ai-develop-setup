@@ -16,7 +16,7 @@ ads-adapter-vault = { path = "../adapters/vault" }
 ads-adapter-fs = { path = "../adapters/fs" }
 ads-core = { workspace = true }
 ads-storage = { workspace = true }
-ads-contracts = { workspace = true }
+ads-contracts = { workspace = true, features = ["desktop-proof"] }
 base64 = { workspace = true }
 futures-util = { workspace = true }
 getrandom = { workspace = true }

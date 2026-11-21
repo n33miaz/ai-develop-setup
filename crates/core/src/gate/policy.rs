@@ -108,6 +108,7 @@ pub struct GatePolicy {
     posix_user_parents: Vec<AbsPath>,
     approval_item_limit: u64,
     approval_byte_limit: u64,
+    gate_clock_rewind_seconds: u64,
     quarantine_enabled: bool,
     quarantine_dir: Vec<String>,
 }
@@ -122,6 +123,8 @@ struct Layer {
     posix_user_parents: Option<Vec<String>>,
     approval_item_limit: Option<u64>,
     approval_byte_limit: Option<u64>,
+    #[serde(alias = "clock_rewind_seconds")]
+    gate_clock_rewind_seconds: Option<u64>,
     quarantine_enabled: Option<bool>,
     quarantine_dir: Option<String>,
 }
@@ -240,6 +243,11 @@ impl GatePolicy {
                 over.approval_item_limit,
                 base.approval_item_limit,
             )?,
+            gate_clock_rewind_seconds: pick(
+                "gate_clock_rewind_seconds",
+                over.gate_clock_rewind_seconds,
+                base.gate_clock_rewind_seconds,
+            )?,
             approval_byte_limit: pick(
                 "approval_byte_limit",
                 over.approval_byte_limit,
@@ -331,6 +339,10 @@ impl GatePolicy {
         self.approval_byte_limit
     }
 
+    pub fn gate_clock_rewind_seconds(&self) -> u64 {
+        self.gate_clock_rewind_seconds
+    }
+
     pub fn quarantine_enabled(&self) -> bool {
         self.quarantine_enabled
     }
@@ -384,6 +396,13 @@ impl GatePolicy {
         // Last on purpose: the rules above name the reason when they can.
         (path.style() != self.user_home.style()).then_some(Protection::OtherPathStyle)
     }
+}
+
+pub(super) fn default_gate_clock_rewind_seconds() -> u64 {
+    parse(DEFAULTS_TOML)
+        .expect("valid bundled gate policy")
+        .gate_clock_rewind_seconds
+        .expect("bundled gate clock tolerance")
 }
 
 fn parse(text: &str) -> Result<Layer, PolicyError> {

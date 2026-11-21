@@ -1214,13 +1214,21 @@ async fn connection(
         state,
         slot,
     } = admission;
+    let endpoints = if config.desktop {
+        Some((
+            stream.peer_addr().map_err(|_| ApiError::Unavailable)?,
+            stream.local_addr().map_err(|_| ApiError::Unavailable)?,
+        ))
+    } else {
+        None
+    };
     let deadline = Instant::now() + Duration::from_millis(config.auth_timeout_ms);
     let upgrade = async {
         let ws = timeout_at(
             deadline,
             tokio_tungstenite::accept_hdr_async_with_config(
                 stream,
-                |request: &HttpRequest, response: Response| {
+                |request: &HttpRequest, mut response: Response| {
                     // A troca para UPGRADED acontece antes de o 101 sair: depois dele a conexão não pode ser expulsa.
                     if permits_upgrade(
                         request,
@@ -1235,6 +1243,14 @@ async fn connection(
                         )
                         .is_ok()
                     {
+                        if let Some((client, server)) = endpoints {
+                            let nonce = &request.headers()["sec-websocket-key"];
+                            let proof = token.desktop_proof(nonce.as_bytes(), client, server);
+                            response.headers_mut().insert(
+                                ads_contracts::desktop_proof::HEADER,
+                                proof.parse().expect("base64url header"),
+                            );
+                        }
                         Ok(response)
                     } else {
                         Err(tokio_tungstenite::tungstenite::http::Response::builder()

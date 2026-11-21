@@ -1717,7 +1717,7 @@ fn epoch_seconds_follow_the_calendar() {
         ("2030-01-02T03:04:05.5Z", 1_893_553_445),
         ("2024-02-29T23:59:60Z", 1_709_251_200),
     ] {
-        assert_eq!(epoch_seconds(&ts(text)), Some(seconds), "{text}");
+        assert_eq!(epoch_seconds(ts(text).as_str()), Some(seconds), "{text}");
     }
 }
 

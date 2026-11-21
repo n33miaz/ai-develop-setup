@@ -244,7 +244,11 @@ fn a_tampered_queue_event_is_refused() {
         let unanchored =
             EventLog::open_unanchored(&fixture.db(), &StorageConfig::defaults(), keys("key-a", 1))
                 .unwrap();
-        let read = read_back(&unanchored).unwrap_err();
+        // Without the anchor the queue read refuses; each row is still authenticated.
+        assert_eq!(read_back(&unanchored), Err(StorageError::AnchorUnavailable));
+        let read = unanchored
+            .read_stream(&queue_stream(&queue_id("queue-01")), 1, u32::MAX)
+            .unwrap_err();
         if *what == "deleted" {
             assert_eq!(read, StorageError::ChainBroken { position: 6 }, "{what}");
         } else {
@@ -461,4 +465,78 @@ fn an_unbound_queue_row_is_left_from(version: i64, stream: &str) {
             .unwrap(),
         1
     );
+}
+
+/// The queue events, then a stop: the decisive state sits on the last row of the whole log.
+fn stopped_queue(log: &mut EventLog) -> Vec<EventEnvelopeV1> {
+    let mut events = queue_events();
+    events.push(envelope(
+        7,
+        "stopped:1",
+        ("daemon", "core-01"),
+        serde_json::json!({ "queue_id": "queue-01", "reason": "restart" }),
+    ));
+    for event in &events {
+        log.append(event).unwrap();
+    }
+    events
+}
+
+#[test]
+fn reading_a_queue_refuses_a_cut_tail_on_an_open_log() {
+    let fixture = Fixture::new();
+    let anchor = MemoryAnchor::default();
+    let log = &mut open(&fixture.db(), &anchor, "").unwrap();
+    let events = stopped_queue(log);
+    assert_eq!(read_back(log).unwrap(), events);
+
+    // Without the stop the replay would see the queue still enabled.
+    tamper(&fixture.db(), "DELETE FROM event WHERE position = 7", None);
+    assert_eq!(read_back(log), Err(StorageError::AnchorMismatch));
+}
+
+#[test]
+fn reading_a_queue_refuses_a_broken_chain_on_an_open_log() {
+    // Rows of another queue, so the stream read alone would not see them.
+    for (what, sql) in [
+        ("deleted", "DELETE FROM event WHERE position = 4"),
+        ("data", "UPDATE event SET data_ct = ?1 WHERE position = 4"),
+    ] {
+        let fixture = Fixture::new();
+        let anchor = MemoryAnchor::default();
+        let log = &mut open(&fixture.db(), &anchor, "").unwrap();
+        for event in queue_events() {
+            let mut other = event.clone();
+            other.id =
+                ads_contracts::CommonUlidV1::new(format!("01ARZ3NDEKTSV4RS{:010}", event.seq))
+                    .unwrap();
+            other.stream = queue_stream(&queue_id("queue-02"));
+            other.data["queue_id"] = "queue-02".into();
+            log.append(&event).unwrap();
+            log.append(&other).unwrap();
+        }
+        let blob = (what == "data").then(|| {
+            let mut bytes = data_ct(&fixture.db(), 4);
+            bytes[0] ^= 1;
+            bytes
+        });
+        tamper(&fixture.db(), sql, blob);
+        let position = if what == "deleted" { 5 } else { 4 };
+        assert_eq!(
+            read_back(log),
+            Err(StorageError::ChainBroken { position }),
+            "{what}"
+        );
+    }
+}
+
+#[test]
+fn reading_a_queue_requires_the_anchor() {
+    let fixture = Fixture::new();
+    let anchor = MemoryAnchor::default();
+    stopped_queue(&mut open(&fixture.db(), &anchor, "").unwrap());
+    let unanchored =
+        EventLog::open_unanchored(&fixture.db(), &StorageConfig::defaults(), keys("key-a", 1))
+            .unwrap();
+    assert_eq!(read_back(&unanchored), Err(StorageError::AnchorUnavailable));
 }
