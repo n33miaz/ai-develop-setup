@@ -311,18 +311,15 @@ fn judge(plan: &ActionPlan, policy: &GatePolicy) -> Vec<Finding> {
         find(Rule::WorkRootProtected(protection), work_root);
     }
     let same_root = |root: &AbsPath| root.is_within(work_root) && work_root.is_within(root);
-    let mut other_quarantines = Vec::new();
-    if let Some(roots) = policy.work_roots() {
-        if !roots.iter().any(same_root) {
-            find(Rule::WorkRootUnknown, work_root);
-        }
-        other_quarantines.extend(
-            roots
-                .iter()
-                .filter(|root| !same_root(root))
-                .map(|root| policy.quarantine_root(root)),
-        );
+    let roots = policy.work_roots().unwrap_or_default();
+    if !roots.iter().any(same_root) {
+        find(Rule::WorkRootUnknown, work_root);
     }
+    let other_quarantines: Vec<_> = roots
+        .iter()
+        .filter(|root| !same_root(root))
+        .map(|root| policy.quarantine_root(root))
+        .collect();
     let repository_metadata = |path: &AbsPath| {
         path.components()
             .iter()

@@ -16,7 +16,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use ads_adapter_fs::{Executor, Journal, JournalError, Limits};
 use ads_core::gate::{
-    Action, ActionPlan, Actor, ActorKind, Command, DataClass, Estimate, Event, EventMeta,
+    AbsPath, Action, ActionPlan, Actor, ActorKind, Command, DataClass, Estimate, Event, EventMeta,
     ExecutionPermit, GatePolicy, HostFacts, Id, OperationRequest, PlanRequest, ShortText,
     TargetRequest, Timestamp, Ulid, Verdict, Via, classify,
 };
@@ -98,6 +98,7 @@ impl Sandbox {
     /// The policy of the tests: the shipped defaults, the home being a text inside the fence.
     pub fn policy(&self, overrides: &str) -> GatePolicy {
         policy_for(&self.text("fake-home"), overrides)
+            .with_work_roots(vec![AbsPath::parse(&self.work_root()).unwrap()])
     }
 
     /// An executor that removes for good on every system (`definitive_delete = "isolated"`),
@@ -171,8 +172,8 @@ pub fn policy_for(home: &str, overrides: &str) -> GatePolicy {
 pub fn junction(link: &Path, target: &Path) {
     let status = std::process::Command::new("cmd")
         .args(["/C", "mklink", "/J"])
-        .arg(link)
-        .arg(target)
+        .arg(link.to_string_lossy().replace('/', "\\"))
+        .arg(target.to_string_lossy().replace('/', "\\"))
         .stdout(std::process::Stdio::null())
         .status()
         .unwrap();

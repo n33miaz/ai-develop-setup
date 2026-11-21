@@ -5,7 +5,7 @@
 mod common;
 
 use ads_core::gate::{
-    Action, ActionPlan, Actor, ActorKind, DataClass, Decision, Estimate, Event, EventMeta,
+    AbsPath, Action, ActionPlan, Actor, ActorKind, DataClass, Decision, Estimate, Event, EventMeta,
     GatePolicy, HostFacts, Id, Operation, OperationRequest, PlanRequest, State, TargetRequest,
     Timestamp, Ulid, classify,
 };
@@ -369,6 +369,7 @@ fn generate(rng: &mut Rng) -> Case {
         }),
     };
     let work_root_text = work_root.spell(rng, None);
+    let policy = policy.with_work_roots(vec![AbsPath::parse(&work_root_text).unwrap()]);
     Case {
         request: PlanRequest {
             operation,

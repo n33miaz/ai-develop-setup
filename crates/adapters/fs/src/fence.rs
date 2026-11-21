@@ -407,8 +407,31 @@ impl Fence {
 
     /// Opens the last name of `rel` in its open folder. `None` when it does not exist.
     fn step(&self, parent: &Node, rel: &[String]) -> Result<Option<Entry>, Stop> {
+        self.step_with_budget(parent, rel, &mut None)
+    }
+
+    fn step_with_budget(
+        &self,
+        parent: &Node,
+        rel: &[String],
+        budget: &mut Option<usize>,
+    ) -> Result<Option<Entry>, Stop> {
         let name = rel.last().expect("a step has a name");
         check_name(name)?;
+        if cfg!(windows) && budget.is_some() {
+            let names = crate::survey::list_with_budget(self, parent, rel, budget)?;
+            if names.contains(name) {
+                return crate::survey::open_listed(self, parent, rel, name).map(Some);
+            }
+            return match parent.listed(name) {
+                Err(sys::Error::Missing(_)) => Ok(None),
+                Err(error) => Err(Stop::io("opening", self.text_of(rel), error)),
+                Ok(_) => Err(Stop::new(
+                    Reason::NotPhysical,
+                    format!("{} is another spelling of an entry", self.text_of(rel)),
+                )),
+            };
+        }
         let node = match parent.child(name) {
             Ok(node) => node,
             Err(sys::Error::Missing(_)) => return Ok(None),
@@ -430,13 +453,21 @@ impl Fence {
     /// Opens the folder `rel`, name by name from the fence. Every name has to be a folder:
     /// a link on the way is refused, never followed.
     pub(crate) fn open_dir(&self, rel: &[String]) -> Result<Node, Stop> {
+        self.open_dir_with_budget(rel, &mut None)
+    }
+
+    pub(crate) fn open_dir_with_budget(
+        &self,
+        rel: &[String],
+        budget: &mut Option<usize>,
+    ) -> Result<Node, Stop> {
         let mut node = self
             .root
             .again()
             .map_err(|error| Stop::io("opening", self.text(), error))?;
         for depth in 1..=rel.len() {
             let upto = &rel[..depth];
-            let Some(entry) = self.step(&node, upto)? else {
+            let Some(entry) = self.step_with_budget(&node, upto, budget)? else {
                 return Err(Stop::new(
                     Reason::Missing,
                     format!("{} does not exist", self.text_of(upto)),
@@ -522,14 +553,18 @@ impl Fence {
     /// is accepted only as the last name, and is opened as a link: what it points to is never
     /// looked at.
     pub(crate) fn locate(&self, rel: &[String]) -> Result<Spot, Stop> {
+        self.locate_with_budget(rel, &mut None)
+    }
+
+    fn locate_with_budget(&self, rel: &[String], budget: &mut Option<usize>) -> Result<Spot, Stop> {
         let Some((name, folder)) = rel.split_last() else {
             return Err(Stop::new(
                 Reason::NotPhysical,
                 "the fence itself is not an entry",
             ));
         };
-        let parent = self.open_dir(folder)?;
-        let entry = self.step(&parent, rel)?;
+        let parent = self.open_dir_with_budget(folder, budget)?;
+        let entry = self.step_with_budget(&parent, rel, budget)?;
         Ok(Spot {
             parent,
             name: name.clone(),
@@ -539,7 +574,15 @@ impl Fence {
 
     /// Like [`Self::locate`], for an entry that has to exist.
     pub(crate) fn existing(&self, rel: &[String]) -> Result<(Spot, Entry), Stop> {
-        let mut spot = self.locate(rel)?;
+        self.existing_with_budget(rel, &mut None)
+    }
+
+    pub(crate) fn existing_with_budget(
+        &self,
+        rel: &[String],
+        budget: &mut Option<usize>,
+    ) -> Result<(Spot, Entry), Stop> {
+        let mut spot = self.locate_with_budget(rel, budget)?;
         match spot.entry.take() {
             Some(entry) => Ok((spot, entry)),
             None => Err(Stop::new(

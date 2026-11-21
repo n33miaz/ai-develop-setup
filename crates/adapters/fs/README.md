@@ -219,7 +219,7 @@ Um código nunca muda de sentido; motivo novo ganha código novo.
 | `E_FS_APPROVAL_MISSING` | a política confiável exige aprovação e a licença não traz |
 | `E_FS_QUARANTINE_BYPASSED` | apagar de verdade o que a política manda para a quarentena |
 | `E_FS_FACTS_CONTRADICT_PLAN` | o disco contradiz o declarado de um jeito que muda o veredito |
-| `E_FS_NESTED_REPOSITORY` | a árvore de um alvo contém um repositório |
+| `E_FS_NESTED_REPOSITORY` | defesa em profundidade contra repositório aninhado. A reclassificação normalmente recusa antes com `E_FS_FACTS_CONTRADICT_PLAN` e a regra `repository_root` |
 | `E_FS_OVERFLOW` | uma contagem de itens ou de bytes não cabe em 64 bits |
 | `E_FS_ACTION_ID_UNUSABLE` | o `action_id` não serve de nome de pasta |
 | `E_FS_DESTINATION_TAKEN` | a pasta da ação (na quarentena ou na pasta privada), ou um lugar dentro dela, já existe |
@@ -233,7 +233,8 @@ Um código nunca muda de sentido; motivo novo ganha código novo.
 | `E_FS_DELETE_UNCONTAINED` | apagar definitivo onde o sistema não segura a pasta no lugar, ou com `definitive_delete = "refuse"` |
 | `E_FS_DISPLACED` | uma pasta que estava sendo esvaziada não está mais onde o executor a pôs |
 | `E_FS_UNCONFIRMED` | a alteração foi feita, mas o sistema não confirmou que está no disco |
-| `E_FS_TOO_DEEP` | árvore mais funda que `max_depth` |
+| `E_FS_TOO_DEEP` | árvore ou caminho inspecionado no planejamento mais fundo que `max_depth` |
+| `E_FS_PLAN_ENTRY_LIMIT` | inspeção do plano excede `max_plan_entries` ao examinar alvos e listar nomes, inclusive os que um curinga não seleciona |
 | `E_FS_IO` | o sistema operacional recusou a operação |
 
 ## O que não é executado

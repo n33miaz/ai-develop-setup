@@ -377,8 +377,9 @@ mod tests {
         use crate::api::Launcher;
         use crate::tool_launcher::ToolLauncher;
         use ads_core::gate::{
-            Actor, ActorKind, DataClass, Estimate, EventMeta, GateJournal, GatePolicy, HostFacts,
-            Id, JournalError, OperationRequest, PlanRequest, State, TargetRequest, Timestamp, Ulid,
+            Actor, ActorKind, Command, DataClass, Estimate, EventMeta, GateJournal, GatePolicy,
+            HostFacts, Id, JournalError, OperationRequest, PlanRequest, State, TargetRequest,
+            Timestamp, Ulid,
         };
         use ads_core::tool_launch::{DiskProbe, HostRules};
         use ads_storage::cipher::{CipherError, KeyId, SecretKey};
@@ -440,7 +441,30 @@ mod tests {
                 .unwrap(),
             )
             .unwrap();
-        let mut gate = launcher.session_gate(&opened, policy, &fence).unwrap();
+        let mut gate = launcher
+            .session_gate(&opened, policy.clone(), &fence)
+            .unwrap();
+        let open_in = |cwd| {
+            let mut params = opened.clone();
+            params.cwd = Some(cwd);
+            params
+        };
+        assert!(
+            launcher
+                .session_gate(
+                    &open_in(child("unconfigured").try_into().unwrap()),
+                    policy.clone(),
+                    &fence
+                )
+                .is_err()
+        );
+        let mut other = launcher
+            .session_gate(
+                &open_in(fence_path.to_owned().try_into().unwrap()),
+                policy,
+                &fence,
+            )
+            .unwrap();
         let request = PlanRequest {
             operation: OperationRequest::Delete,
             work_root: child("forged"),
@@ -476,6 +500,24 @@ mod tests {
             log.load(&id).unwrap().plan.fields().work_root.as_str(),
             work
         );
+        assert_eq!(other.inspect(&mut log, &id), Err(JournalError::Missing));
+        assert_eq!(
+            other.apply(
+                &mut log,
+                &id,
+                Command::Fail {
+                    error_code: ads_adapter_fs::Reason::Io.error_code()
+                },
+                meta(2)
+            ),
+            Err(JournalError::Missing),
+        );
+        assert!(matches!(
+            other.execute(&mut log, &id, meta(2), meta(3)),
+            Err(JournalError::Missing)
+        ));
+        assert!(file.is_file());
+        assert_eq!(log.verify_chain(), Ok(1));
         let result = gate.execute(&mut log, &id, meta(2), meta(3)).unwrap();
         assert!(result.operation.is_ok(), "{:?}", result.operation);
         assert_eq!(result.recorded.unwrap().state, State::Executed);

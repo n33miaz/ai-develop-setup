@@ -10,6 +10,12 @@
 # recusada antes de qualquer alteracao.
 max_depth = 128
 
+# Entradas examinadas no planejamento de uma acao, somadas entre todos os alvos.
+# Conta alvos e todos os nomes listados, inclusive os que um curinga nao seleciona. No Windows,
+# conta tambem os nomes listados para conferir a grafia exata de cada componente do caminho.
+# Ao exceder o teto, a inspecao para e recusa o plano. max_depth tambem vale nessa inspecao.
+max_plan_entries = 10000
+
 # Quando uma entrada pode ser apagada de verdade (e nao movida para a quarentena): a purga da quarentena e
 # o apagar com `quarantine_enabled = false` na politica. Apagar age sobre um nome dentro de uma pasta aberta;
 # se outro processo tira essa pasta de dentro da cerca entre a ultima conferencia e a chamada, a exclusao

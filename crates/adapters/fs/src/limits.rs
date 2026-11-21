@@ -22,6 +22,8 @@ pub enum DefinitiveDelete {
 pub struct Limits {
     /// How many folders deep a tree may go before the executor refuses it.
     pub max_depth: u32,
+    /// The maximum entries examined across one plan inspection.
+    pub max_plan_entries: usize,
     /// The largest manifest the executor writes or reads back, in bytes.
     pub max_manifest_bytes: u64,
     pub definitive_delete: DefinitiveDelete,
@@ -63,6 +65,7 @@ impl std::error::Error for LimitsError {
 #[serde(deny_unknown_fields)]
 struct Layer {
     max_depth: Option<u32>,
+    max_plan_entries: Option<usize>,
     max_manifest_bytes: Option<u64>,
     definitive_delete: Option<DefinitiveDelete>,
     private_dir: Option<String>,
@@ -99,6 +102,10 @@ impl Limits {
                 .max_depth
                 .or(base.max_depth)
                 .ok_or(LimitsError::MissingKey("max_depth"))?,
+            max_plan_entries: over
+                .max_plan_entries
+                .or(base.max_plan_entries)
+                .ok_or(LimitsError::MissingKey("max_plan_entries"))?,
             max_manifest_bytes: over
                 .max_manifest_bytes
                 .or(base.max_manifest_bytes)

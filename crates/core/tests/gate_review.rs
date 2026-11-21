@@ -6,8 +6,9 @@ mod common;
 use std::marker::PhantomData;
 
 use ads_core::gate::{
-    Action, ActionPlan, Command, Decision, Estimate, ExecutionPermit, OperationRequest as Op, Rule,
-    ShortText, State, Timestamp, TransitionError, Verdict, Via, classify,
+    AbsPath, Action, ActionPlan, Command, Decision, Estimate, ExecutionPermit,
+    OperationRequest as Op, Rule, ShortText, State, Timestamp, TransitionError, Verdict, Via,
+    classify,
 };
 use common::{POSIX_HOME, WIN_HOME, at, id, meta, policy, request};
 
@@ -188,7 +189,8 @@ fn approval_of_one_action_does_not_fit_another_action_of_the_same_plan() {
 /// An allowed root inside another root could be deleted.
 #[test]
 fn allowed_root_inside_another_root_is_not_a_target() {
-    let policy = policy(POSIX_HOME, "allowed_roots = ['/work/shared/data']");
+    let policy = policy(POSIX_HOME, "allowed_roots = ['/work/shared/data']")
+        .with_work_roots(vec![AbsPath::parse("/work").unwrap()]);
     for target in ["/work/shared/data", "/work/shared", "/work/SHARED/*"] {
         for operation in [Op::DeleteRecursive, Op::Overwrite, Op::CleanUntracked] {
             let asked = request(operation, "/work", &[target]);
@@ -236,8 +238,12 @@ fn limit_of_zero_always_asks_for_approval() {
 /// spelled that way was taken for the root, and a permit came out for a target outside it.
 #[test]
 fn unicode_look_alike_of_a_root_is_outside_it() {
-    let policy = policy(WIN_HOME, "allowed_roots = ['D:\\data\\K']");
     let root = "C:\\work\\K";
+    let policy = policy(WIN_HOME, "allowed_roots = ['D:\\data\\K']").with_work_roots(
+        [root, "C:\\work\\\u{C5}"]
+            .map(|path| AbsPath::parse(path).unwrap())
+            .to_vec(),
+    );
     let judge = |operation: Op, target: &str| {
         let asked = request(operation, root, &[target]);
         classify(&ActionPlan::normalize(&asked).unwrap(), &policy)
@@ -577,7 +583,9 @@ fn quarantine_configured_in_a_protected_folder_is_refused_at_load() {
     ];
     for (home, root, overrides, dir) in cases {
         let separator = if home == WIN_HOME { "\\" } else { "/" };
-        let policy = load(home, overrides).unwrap_or_else(|err| panic!("{overrides}: {err}"));
+        let policy = load(home, overrides)
+            .unwrap_or_else(|err| panic!("{overrides}: {err}"))
+            .with_work_roots(vec![AbsPath::parse(root).unwrap()]);
         let target = format!("{root}{separator}build");
         let asked = request(Op::DeleteRecursive, root, &[&target]);
         let verdict = classify(&ActionPlan::normalize(&asked).unwrap(), &policy);
@@ -596,7 +604,9 @@ fn quarantine_configured_in_a_protected_folder_is_refused_at_load() {
 
         // The same with quarantine off: it loads, and the delete is the delete.
         let off = format!("quarantine_enabled = false\n{overrides}");
-        let policy = load(home, &off).unwrap_or_else(|err| panic!("{off}: {err}"));
+        let policy = load(home, &off)
+            .unwrap_or_else(|err| panic!("{off}: {err}"))
+            .with_work_roots(vec![AbsPath::parse(root).unwrap()]);
         let asked = request(Op::DeleteRecursive, root, &[&target]);
         let verdict = classify(&ActionPlan::normalize(&asked).unwrap(), &policy);
         assert_eq!(verdict.decision(), Decision::Allowed, "{off}");
@@ -741,7 +751,8 @@ fn unicode_spellings_of_a_root_never_grant() {
             ),
         ] {
             let separator = if home == WIN_HOME { "\\" } else { "/" };
-            let policy = common::policy(home, "");
+            let policy =
+                common::policy(home, "").with_work_roots(vec![AbsPath::parse(&root).unwrap()]);
             let judge = |operation: Op, target: &str| {
                 let asked = request(operation, &root, &[target]);
                 classify(&ActionPlan::normalize(&asked).unwrap(), &policy)

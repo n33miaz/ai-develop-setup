@@ -79,12 +79,14 @@ pub enum Reason {
     Unconfirmed,
     /// The tree is deeper than the limit.
     TooDeep,
+    /// Planning exceeded its entry budget.
+    PlanEntryLimit,
     /// The operating system refused the operation.
     Io,
 }
 
 impl Reason {
-    pub const ALL: [Reason; 35] = [
+    pub const ALL: [Reason; 36] = [
         Self::StartedMismatch,
         Self::JournalRefused,
         Self::PermitReused,
@@ -119,6 +121,7 @@ impl Reason {
         Self::Displaced,
         Self::Unconfirmed,
         Self::TooDeep,
+        Self::PlanEntryLimit,
         Self::Io,
     ];
 
@@ -158,6 +161,7 @@ impl Reason {
             Self::Displaced => "E_FS_DISPLACED",
             Self::Unconfirmed => "E_FS_UNCONFIRMED",
             Self::TooDeep => "E_FS_TOO_DEEP",
+            Self::PlanEntryLimit => "E_FS_PLAN_ENTRY_LIMIT",
             Self::Io => "E_FS_IO",
         }
     }

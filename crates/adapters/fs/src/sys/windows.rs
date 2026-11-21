@@ -357,7 +357,10 @@ impl Node {
         let node = self.listed(name)?;
         let wanted: Vec<u16> = name.encode_utf16().collect();
         let mut found = false;
-        self.scan(|units| found |= units == wanted)?;
+        self.scan(|units| {
+            found = units == wanted;
+            !found
+        })?;
         if !found {
             return Err(Error::Alias);
         }
@@ -379,11 +382,18 @@ impl Node {
 
     /// The names in this folder, sorted.
     pub fn names(&self) -> io::Result<Vec<String>> {
+        self.names_limited(usize::MAX)
+    }
+
+    pub fn names_limited(&self, limit: usize) -> io::Result<Vec<String>> {
         let mut names = Vec::new();
         let mut not_text = false;
-        self.scan(|units| match String::from_utf16(units) {
-            Ok(name) => names.push(name),
-            Err(_) => not_text = true,
+        self.scan(|units| {
+            match String::from_utf16(units) {
+                Ok(name) => names.push(name),
+                Err(_) => not_text = true,
+            }
+            !not_text && names.len() <= limit
         })?;
         if not_text {
             return Err(io::Error::new(
@@ -396,7 +406,7 @@ impl Node {
     }
 
     /// Hands every name of this folder to `each`, as the folder lists it.
-    fn scan(&self, mut each: impl FnMut(&[u16])) -> io::Result<()> {
+    fn scan(&self, mut each: impl FnMut(&[u16]) -> bool) -> io::Result<()> {
         let broken = || io::Error::new(io::ErrorKind::InvalidData, "a listing that does not fit");
         let mut words = vec![0u64; 8192];
         let mut class = FileFullDirectoryRestartInfo;
@@ -417,8 +427,8 @@ impl Node {
                     .collect::<Option<Vec<u16>>>()
                     .ok_or_else(broken)?;
                 const DOT: u16 = b'.' as u16;
-                if units != [DOT] && units != [DOT, DOT] {
-                    each(&units);
+                if units != [DOT] && units != [DOT, DOT] && !each(&units) {
+                    return Ok(());
                 }
                 if next == 0 {
                     break;

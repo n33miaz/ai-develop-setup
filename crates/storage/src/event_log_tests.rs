@@ -2288,6 +2288,9 @@ mod gate_journal {
             user_home: "/home/test",
         })
         .unwrap()
+        .with_work_roots(vec![
+            ads_core::gate::AbsPath::parse("/home/test/work").unwrap(),
+        ])
     }
 
     fn create(log: &mut EventLog, action_id: &Id, serial: u64) {

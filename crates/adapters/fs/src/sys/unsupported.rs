@@ -56,6 +56,10 @@ impl Node {
     }
 
     pub fn names(&self) -> io::Result<Vec<String>> {
+        self.names_limited(usize::MAX)
+    }
+
+    pub fn names_limited(&self, _limit: usize) -> io::Result<Vec<String>> {
         match self.never {}
     }
 

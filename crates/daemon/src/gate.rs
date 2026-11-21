@@ -29,10 +29,7 @@ impl SessionGate {
         policy: GatePolicy,
         fence: &Path,
     ) -> Result<Self, String> {
-        if !roots
-            .iter()
-            .any(|path| root.is_within(path) && path.is_within(&root))
-        {
+        if !roots.contains(&root) {
             return Err("session working folder is no longer configured".to_owned());
         }
         let policy = policy.with_work_roots(roots);
@@ -81,9 +78,11 @@ impl SessionGate {
     }
 
     fn journal<'a>(&'a self, log: &'a mut EventLog) -> JournalGate<'a> {
-        JournalGate::new(&self.policy, log)
+        JournalGate::new(&self.policy, log).for_work_root(&self.root)
     }
 
+    /// Records the start before touching disk. A failed outcome write preserves the
+    /// operation report and leaves the durable start spent.
     pub fn execute(
         &mut self,
         log: &mut EventLog,
@@ -91,51 +90,30 @@ impl SessionGate {
         start: EventMeta,
         finish: EventMeta,
     ) -> Result<ExecutionOutcome, JournalError> {
-        execute(
-            log,
-            &self.policy,
-            &mut self.executor,
-            action_id,
-            start,
-            finish,
-        )
+        let mut gate = JournalGate::new(&self.policy, log).for_work_root(&self.root);
+        let started = gate.authorize(action_id, start)?;
+        match self.executor.execute_recorded(started) {
+            Ok(completed) => {
+                let (recorded, report) = completed.record(&mut gate, action_id, finish);
+                Ok(ExecutionOutcome {
+                    operation: Ok(report),
+                    recorded,
+                })
+            }
+            Err(failure) => {
+                let command = Command::Fail {
+                    error_code: failure.reason.error_code(),
+                };
+                Ok(ExecutionOutcome {
+                    operation: Err(failure),
+                    recorded: gate.apply(action_id, command, finish),
+                })
+            }
+        }
     }
 }
 
 pub struct ExecutionOutcome {
     pub operation: Result<Report, Box<Failure>>,
     pub recorded: Result<ActionSnapshot, JournalError>,
-}
-
-/// Starts an action after the caller completed the required rehearsal and decision.
-/// A refused start leaves the executor untouched. An outcome write failure preserves
-/// the operation report and leaves the durable start spent.
-pub fn execute(
-    log: &mut EventLog,
-    policy: &GatePolicy,
-    executor: &mut Executor,
-    action_id: &Id,
-    start: EventMeta,
-    finish: EventMeta,
-) -> Result<ExecutionOutcome, JournalError> {
-    let mut gate = JournalGate::new(policy, log);
-    let started = gate.authorize(action_id, start)?;
-    match executor.execute_recorded(started) {
-        Ok(completed) => {
-            let (recorded, report) = completed.record(&mut gate, action_id, finish);
-            Ok(ExecutionOutcome {
-                operation: Ok(report),
-                recorded,
-            })
-        }
-        Err(failure) => {
-            let command = Command::Fail {
-                error_code: failure.reason.error_code(),
-            };
-            Ok(ExecutionOutcome {
-                operation: Err(failure),
-                recorded: gate.apply(action_id, command, finish),
-            })
-        }
-    }
 }

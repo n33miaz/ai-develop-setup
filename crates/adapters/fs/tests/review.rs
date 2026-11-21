@@ -585,6 +585,56 @@ fn wildcard_observation_protects_metadata_and_child_repositories() {
 }
 
 #[test]
+fn planning_caps_entries_across_targets_and_limits_tree_depth() {
+    let sandbox = Sandbox::new("plan-budget");
+    for i in 0..12 {
+        sandbox.file(&format!("work/a/{i}.txt"), "a");
+        sandbox.file(&format!("work/b/{i}.txt"), "b");
+    }
+    sandbox.dir("work/deep/child/grandchild");
+    let plan = |targets: &[&str]| {
+        ActionPlan::normalize(&PlanRequest {
+            operation: OperationRequest::DeleteRecursive,
+            targets: targets
+                .iter()
+                .map(|path| TargetRequest {
+                    path: sandbox.text(path),
+                    repo_root: false,
+                })
+                .collect(),
+            work_root: sandbox.work_root(),
+            estimate: None,
+        })
+        .unwrap()
+    };
+    let executor = sandbox
+        .executor("")
+        .with_limits(common::limits("max_plan_entries = 24\nmax_depth = 2"));
+    assert!(executor.observe_plan(&plan(&["work/a"])).is_ok());
+    assert_eq!(
+        executor
+            .observe_plan(&plan(&["work/a", "work/b"]))
+            .unwrap_err()
+            .reason,
+        Reason::PlanEntryLimit
+    );
+    assert_eq!(
+        executor
+            .observe_plan(&plan(&["work/a/*.log", "work/b/*.log"]))
+            .unwrap_err()
+            .reason,
+        Reason::PlanEntryLimit
+    );
+    assert_eq!(
+        executor
+            .observe_plan(&plan(&["work/deep"]))
+            .unwrap_err()
+            .reason,
+        Reason::TooDeep
+    );
+}
+
+#[test]
 fn executor_refuses_a_permit_with_a_forged_work_root() {
     let sandbox = Sandbox::new("foreign-quarantine");
     sandbox.file("work/.ads/quarantine/batch/file", "fixture");
@@ -593,7 +643,19 @@ fn executor_refuses_a_permit_with_a_forged_work_root() {
     let executor = Executor::new(&sandbox.fence, policy).unwrap();
     let mut request = delete(&sandbox, "act-forged", &["work/.ads/quarantine/batch/file"]);
     request.work_root = sandbox.text("work/.ads");
-    let flow = through_gate(&sandbox.policy(""), request);
+    let declaring = sandbox
+        .policy("")
+        .with_work_roots(vec![AbsPath::parse(&request.work_root).unwrap()]);
+    let flow = through_gate(&declaring, request);
+    let unbound = common::policy_for(&sandbox.text("fake-home"), "");
+    let failure = Executor::new(&sandbox.fence, unbound)
+        .unwrap()
+        .rehearse(&flow.permit)
+        .unwrap_err();
+    assert_eq!(failure.reason, Reason::PolicyDenies);
+    assert!(failure.detail.contains("work_root_unknown"), "{failure:?}");
+    assert!(failure.report.untouched());
+
     let failure = executor.rehearse(&flow.permit).unwrap_err();
     assert_eq!(failure.reason, Reason::PolicyDenies);
     assert!(failure.detail.contains("work_root_unknown"), "{failure:?}");

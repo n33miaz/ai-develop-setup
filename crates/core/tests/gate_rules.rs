@@ -873,6 +873,18 @@ fn recursive_delete_above_a_limit_requires_approval() {
 }
 
 #[test]
+fn unconfigured_work_roots_are_denied() {
+    let plan = plan(Op::Overwrite, POSIX_ROOT, &["/home/user-a/work/proj/file"]);
+    let policy = GatePolicy::defaults(&HostFacts {
+        user_home: POSIX_HOME,
+    })
+    .unwrap();
+    for policy in [policy.clone(), policy.with_work_roots(Vec::new())] {
+        denied_by(&classify(&plan, &policy), Rule::WorkRootUnknown);
+    }
+}
+
+#[test]
 fn limits_come_from_the_policy() {
     let target = ["/home/user-a/work/proj/build"];
     let plan = plan(Op::DeleteRecursive, POSIX_ROOT, &target);

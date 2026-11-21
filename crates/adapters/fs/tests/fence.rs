@@ -5,6 +5,7 @@ mod common;
 
 use std::path::Path;
 
+use ads_adapter_fs::Executor;
 use ads_adapter_fs::{Reason, Status};
 use ads_core::gate::{AbsPath, Decision, OperationRequest, PlanRequest, TargetRequest, classify};
 
@@ -53,7 +54,9 @@ fn the_sandbox_is_under_the_temporary_folder_of_the_target_directory() {
 #[test]
 fn a_target_outside_the_fence_is_refused() {
     let sandbox = Sandbox::new("outside");
-    let policy = sandbox.policy("");
+    let policy = sandbox
+        .policy("")
+        .with_work_roots(vec![AbsPath::parse(&sandbox.outside_text(".")).unwrap()]);
     // The gate allows it: the work root declared is the sibling folder, and the text agrees.
     let flow = through_gate(
         &policy,
@@ -66,7 +69,10 @@ fn a_target_outside_the_fence_is_refused() {
         },
     );
     let before = tree(&sandbox.root);
-    let failure = sandbox.executor("").rehearse(&flow.permit).unwrap_err();
+    let failure = Executor::new(&sandbox.fence, policy)
+        .unwrap()
+        .rehearse(&flow.permit)
+        .unwrap_err();
     assert_eq!(failure.reason, Reason::OutsideFence);
     assert_eq!(tree(&sandbox.root), before);
 }
@@ -174,8 +180,11 @@ fn a_work_root_that_is_a_link_is_refused() {
     if !folder_link(&sandbox.path("linked"), &sandbox.outside) {
         return;
     }
+    let policy = sandbox
+        .policy("")
+        .with_work_roots(vec![AbsPath::parse(&sandbox.text("linked")).unwrap()]);
     let flow = through_gate(
-        &sandbox.policy(""),
+        &policy,
         Request {
             action_id: "act-1",
             operation: OperationRequest::DeleteRecursive,
@@ -184,7 +193,10 @@ fn a_work_root_that_is_a_link_is_refused() {
             estimate: estimate(1, 12),
         },
     );
-    let failure = sandbox.executor("").rehearse(&flow.permit).unwrap_err();
+    let failure = Executor::new(&sandbox.fence, policy)
+        .unwrap()
+        .rehearse(&flow.permit)
+        .unwrap_err();
     assert_eq!(failure.reason, Reason::LinkInPath);
     assert!(sandbox.sentinel_is_intact());
 }

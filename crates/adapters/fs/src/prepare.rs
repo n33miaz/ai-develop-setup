@@ -13,7 +13,9 @@ use crate::manifest::{
 };
 use crate::reason::{Reason, Stop};
 use crate::report::{Effect, Laid, Report, Scaffold, Staged, Status, Step};
-use crate::survey::{Facts, Seen, list, open_listed, survey, total};
+use crate::survey::{
+    Facts, Seen, charge_entries, list_with_budget, open_listed, survey, survey_with_budget, total,
+};
 use crate::sys;
 
 /// One mutation of the plan, on names below the fence.
@@ -219,7 +221,7 @@ pub(crate) fn prepare(
     // Every name down to the work root has to be a folder; a link is refused.
     fence.open_dir(&work)?;
 
-    let targets = inspect_targets(fence, limits, plan, &work)?;
+    let targets = inspect_targets(fence, limits, plan, &work, None)?;
     check_facts(fence, policy, permit, declared.decision(), &targets)?;
     if let Some(wildcard) = plan
         .targets()
@@ -349,8 +351,12 @@ fn inspect_targets(
     limits: &Limits,
     plan: &ActionPlan,
     work: &[String],
+    mut budget: Option<usize>,
 ) -> Result<Vec<Target>, Stop> {
     let mut targets = Vec::new();
+    if budget.is_some() {
+        fence.open_dir_with_budget(work, &mut budget)?;
+    }
     for target in plan.targets() {
         let scope = target.path().scope();
         let rel = fence.relative(scope)?;
@@ -363,8 +369,17 @@ fn inspect_targets(
                 format!("{scope} is not strictly inside the work root"),
             ));
         }
-        let mut inspect = |rel: Vec<String>, entry: crate::fence::Entry| {
-            let (seen, facts) = survey(fence, &entry, &rel, limits.max_depth)?;
+        charge_entries(&mut budget, 1)?;
+        if budget.is_some() && rel.len() - work.len() > limits.max_depth as usize {
+            return Err(Stop::new(
+                Reason::TooDeep,
+                format!("{scope} exceeds max_depth"),
+            ));
+        }
+        let mut inspect = |rel: Vec<String>,
+                           entry: crate::fence::Entry,
+                           budget: &mut Option<usize>| {
+            let (seen, facts) = survey_with_budget(fence, &entry, &rel, limits.max_depth, budget)?;
             targets.push(Target {
                 text: fence.text_of(&rel),
                 rel,
@@ -374,17 +389,17 @@ fn inspect_targets(
             Ok::<_, Stop>(())
         };
         if let Some(pattern) = target.path().pattern() {
-            let dir = fence.open_dir(&rel)?;
-            for name in list(fence, &dir, &rel)? {
+            let dir = fence.open_dir_with_budget(&rel, &mut budget)?;
+            for name in list_with_budget(fence, &dir, &rel, &mut budget)? {
                 if may_name(pattern, &name) {
                     let path = child(&rel, &name);
                     let entry = open_listed(fence, &dir, &path, &name)?;
-                    inspect(path, entry)?;
+                    inspect(path, entry, &mut budget)?;
                 }
             }
         } else {
-            let (_, entry) = fence.existing(&rel)?;
-            inspect(rel, entry)?;
+            let (_, entry) = fence.existing_with_budget(&rel, &mut budget)?;
+            inspect(rel, entry, &mut budget)?;
         }
     }
     Ok(targets)
@@ -469,8 +484,7 @@ pub(crate) fn observe_plan(
         return Ok(plan.clone());
     }
     let work = fence.relative(plan.work_root())?;
-    fence.open_dir(&work)?;
-    let targets = inspect_targets(fence, limits, plan, &work)?;
+    let targets = inspect_targets(fence, limits, plan, &work, Some(limits.max_plan_entries))?;
     with_repository_targets(fence, plan, &targets, plan.estimate())
 }
 
