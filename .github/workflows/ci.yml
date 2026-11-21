@@ -459,6 +459,8 @@ jobs:
         run: cargo clippy --locked -p ads-adapter-fs --all-targets -- -D warnings
       - name: Testes do executor (inclui a junção)
         run: cargo test --locked -p ads-adapter-fs -- --nocapture
+      - name: Forma canônica dos efeitos com a ordem de inserção do serde_json ligada
+        run: cargo test --locked -p ads-adapter-fs --lib --features serde_json/preserve_order canonical_form
 
   storage-windows:
     name: storage-windows
@@ -518,7 +520,8 @@ jobs:
         run: cargo test --locked -p ads-adapter-vault -j 2
 
   # O lançador supervisiona processos e aplica atualizações no Windows: o lint e os testes rodam aqui também
-  # (no Linux eles já rodam no job `rust`), e só quando uma entrada do job muda.
+  # (no Linux eles já rodam no job `rust`), e só quando uma entrada do job muda. As pastas privadas, que ele
+  # usa, têm o código Windows (`platform/win.rs`) conferido aqui.
   launcher-windows:
     name: launcher-windows
     needs: changes
@@ -543,10 +546,10 @@ jobs:
         with:
           shared-key: launcher-windows
           save-if: ${{ github.ref == 'refs/heads/develop' && github.event_name != 'pull_request' }}
-      - name: Lint do lançador no Windows (avisos como erro)
-        run: cargo clippy --locked -p ads-launcher --all-targets -j 2 -- -D warnings
-      - name: Testes do lançador
-        run: cargo test --locked -p ads-launcher -j 2
+      - name: Lint do lançador e das pastas privadas no Windows (avisos como erro)
+        run: cargo clippy --locked -p ads-launcher -p ads-private-dir --all-targets -j 2 -- -D warnings
+      - name: Testes do lançador e das pastas privadas
+        run: cargo test --locked -p ads-launcher -p ads-private-dir -j 2
 
   ci-ok:
     name: ci-ok

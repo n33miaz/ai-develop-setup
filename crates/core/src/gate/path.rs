@@ -141,6 +141,8 @@ impl AbsPath {
         self.is_loosely_within(root)
     }
 
+    /// Equal to `base` or inside it under any Unicode case mapping. Deny only, never grant:
+    /// it makes names equal that no file system does, so it can only widen a refusal.
     pub(crate) fn is_loosely_within(&self, base: &AbsPath) -> bool {
         self.within(base, same_name_loosely)
     }

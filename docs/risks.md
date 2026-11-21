@@ -166,7 +166,7 @@ Estado da mitigação, em cada risco:
 ### Outra conta ocupa a porta do daemon após a saída
 
 - **Descrição.** Uma conta local pode ocupar a porta depois de o daemon encerrar, enquanto a janela ainda estiver aberta.
-- **Impacto.** Indisponibilidade: com a credencial antiga, a janela não consegue abrir conexão, seja numa tentativa já em curso, seja ao recarregar a interface. Uma prova inválida bloqueia novas aberturas até o fim dessa execução da casca.
+- **Impacto.** Indisponibilidade: com a credencial antiga, a janela não consegue abrir conexão, seja numa tentativa já em curso, seja ao recarregar a interface. Uma prova ausente ou inválida bloqueia novas aberturas até o fim dessa execução da casca.
 - **Dono.** Casca e daemon.
 - **Teto.** A casca só envia o token e a entrada do usuário se o servidor provar conhecer a credencial recebida pelo pipe, com uma prova vinculada à conexão. Um teste confirma que a porta reocupada não recebe mensagens da casca.
 - **Plano B.** Quando o lançador consegue iniciar uma nova execução do daemon, ele substitui a janela, que recebe a porta e o token novos. Se ele desistiu ou o daemon não foi reiniciado, crie o arquivo `restart` na pasta de controle do [lançador](../crates/launcher/README.md). Abrir outro lançador não resolve: a trava da pasta de controle recusa a segunda instância.

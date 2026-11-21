@@ -62,9 +62,11 @@ export const ptBR = {
   'connection.bootstrapFailed': 'A janela não recebeu a conexão do núcleo.',
   'connection.disconnected': 'desconectado',
   'connection.proofMissing':
-    'o serviço na porta local não comprovou sua identidade. Reabra pelo lançador.',
-  'connection.relaunchDesktop': 'conexão indisponível. Reabra pelo lançador.',
-  'connection.retryExhausted': 'limite de tentativas de conexão atingido. Reabra pelo lançador.',
+    'o serviço na porta local não comprovou sua identidade. Confira se a janela e o núcleo têm a mesma versão. Reinicie o núcleo pelo sinal restart do lançador ou pare e inicie o lançador.',
+  'connection.relaunchDesktop':
+    'conexão indisponível. Reinicie o núcleo pelo sinal restart do lançador ou pare e inicie o lançador.',
+  'connection.retryExhausted':
+    'limite de tentativas de conexão atingido. Reinicie o núcleo pelo sinal restart do lançador ou pare e inicie o lançador.',
   'connection.connecting': 'conectando',
   'connection.connected': 'conectado',
   'theme.button': 'Tema: {mode}',
@@ -149,9 +151,11 @@ export const en: Record<MessageKey, string> = {
   'connection.bootstrapFailed': 'The window did not receive the core connection.',
   'connection.disconnected': 'disconnected',
   'connection.proofMissing':
-    'the service on the local port did not prove its identity. Reopen from the launcher.',
-  'connection.relaunchDesktop': 'connection unavailable. Reopen from the launcher.',
-  'connection.retryExhausted': 'connection attempt limit reached. Reopen from the launcher.',
+    'the service on the local port did not prove its identity. Check that the window and the core have the same version. Restart the core with the launcher restart signal, or stop and start the launcher.',
+  'connection.relaunchDesktop':
+    'connection unavailable. Restart the core with the launcher restart signal, or stop and start the launcher.',
+  'connection.retryExhausted':
+    'connection attempt limit reached. Restart the core with the launcher restart signal, or stop and start the launcher.',
   'connection.connecting': 'connecting',
   'connection.connected': 'connected',
   'theme.button': 'Theme: {mode}',

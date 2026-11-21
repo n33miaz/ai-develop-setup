@@ -129,8 +129,10 @@ para configurar as próximas tentativas.
   inclusive após quedas sucessivas ou falhas de protocolo.
 - `VITE_DESKTOP_RETRY_STABLE_MS` (10000) define por quanto tempo uma conexão
   deve ficar aberta para restaurar a espera inicial e o limite de tentativas.
-- `VITE_DESKTOP_RETRY_MAX_ATTEMPTS` (12) limita as tentativas após a abertura
-  inicial, incluindo falhas genéricas durante a reconexão.
+- `VITE_DESKTOP_RETRY_MAX_ATTEMPTS` (12) limita as novas tentativas seguidas,
+  contadas desde a primeira chamada (também quando a primeira abertura nunca
+  conclui) e incluindo falhas genéricas durante a reconexão. Esgotado o limite,
+  a janela para de tentar e mostra `retry_exhausted`.
 
 Use inteiros positivos e limite os tempos a 2147483647 ms. Valores inválidos
 usam o padrão e a espera inicial respeita o teto.

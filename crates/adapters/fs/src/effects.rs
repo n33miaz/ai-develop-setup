@@ -98,9 +98,10 @@ impl Effects {
     /// The canonical form of the record, the one that is measured and hashed: compact JSON
     /// with the keys of every object in byte order (see the contract).
     pub fn to_bytes(&self) -> Vec<u8> {
-        // A `Value` keeps its keys sorted; the record holds only text, integers and lists.
         let value = serde_json::to_value(self).expect("a record of effects is plain data");
-        serde_json::to_vec(&value).expect("a record of effects is plain data")
+        let mut out = Vec::new();
+        write_canonical(&value, &mut out);
+        out
     }
 
     /// Larger than `max_effects_bytes` is refused: the rehearsal records nothing.
@@ -135,6 +136,39 @@ fn flatten(seen: &Seen, path: &mut Vec<String>, out: &mut Vec<EffectEntry>) {
         path.push(name.clone());
         flatten(child, path, out);
         path.pop();
+    }
+}
+
+/// Sorts the keys itself: a `Value` keeps insertion order once any crate in the build turns on
+/// `serde_json/preserve_order`, which would change every stored hash.
+fn write_canonical(value: &serde_json::Value, out: &mut Vec<u8>) {
+    use serde_json::Value;
+    match value {
+        Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort_unstable();
+            out.push(b'{');
+            for (at, key) in keys.into_iter().enumerate() {
+                if at > 0 {
+                    out.push(b',');
+                }
+                serde_json::to_writer(&mut *out, key).expect("a key is text");
+                out.push(b':');
+                write_canonical(&map[key.as_str()], out);
+            }
+            out.push(b'}');
+        }
+        Value::Array(items) => {
+            out.push(b'[');
+            for (at, item) in items.iter().enumerate() {
+                if at > 0 {
+                    out.push(b',');
+                }
+                write_canonical(item, out);
+            }
+            out.push(b']');
+        }
+        scalar => serde_json::to_writer(&mut *out, scalar).expect("a scalar is plain data"),
     }
 }
 
