@@ -26,6 +26,8 @@ pub struct Limits {
     pub max_plan_entries: usize,
     /// The largest manifest the executor writes or reads back, in bytes.
     pub max_manifest_bytes: u64,
+    /// The largest record of concrete effects a rehearsal hands out, in bytes.
+    pub max_effects_bytes: u64,
     pub definitive_delete: DefinitiveDelete,
     /// The names, below the work root, of the folder where a tree is held while it is
     /// removed for good.
@@ -67,6 +69,7 @@ struct Layer {
     max_depth: Option<u32>,
     max_plan_entries: Option<usize>,
     max_manifest_bytes: Option<u64>,
+    max_effects_bytes: Option<u64>,
     definitive_delete: Option<DefinitiveDelete>,
     private_dir: Option<String>,
 }
@@ -110,6 +113,10 @@ impl Limits {
                 .max_manifest_bytes
                 .or(base.max_manifest_bytes)
                 .ok_or(LimitsError::MissingKey("max_manifest_bytes"))?,
+            max_effects_bytes: over
+                .max_effects_bytes
+                .or(base.max_effects_bytes)
+                .ok_or(LimitsError::MissingKey("max_effects_bytes"))?,
         })
     }
 }
@@ -122,6 +129,9 @@ mod tests {
     fn defaults_load_and_a_layer_replaces_one_key() {
         let defaults = Limits::defaults();
         assert!(defaults.max_depth > 0 && defaults.max_manifest_bytes > 0);
+        assert!(defaults.max_effects_bytes > 0);
+        let layered = Limits::from_toml_str("max_effects_bytes = 10").unwrap();
+        assert_eq!(layered.max_effects_bytes, 10);
         let layered = Limits::from_toml_str("max_depth = 3").unwrap();
         assert_eq!(layered.max_depth, 3);
         assert_eq!(layered.max_manifest_bytes, defaults.max_manifest_bytes);

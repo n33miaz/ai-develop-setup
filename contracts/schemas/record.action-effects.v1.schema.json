@@ -1,0 +1,163 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:record:action-effects:1",
+  "title": "Efeitos concretos de uma ação",
+  "description": "O que o ensaio de uma ação achou no disco e o que a execução vai fazer, alvo por alvo: o caminho, o efeito, onde a quarentena guarda o alvo ou de onde a restauração o tira, e cada entrada da árvore (nomes abaixo do alvo, tipo, tamanho de arquivo e identidade no volume). Na restauração, manifest é o resumo dos bytes do manifesto de onde vieram os pares; um item do manifesto que não está mais na quarentena aparece sem entradas. É o que a aprovação cobre: a execução refaz o ensaio e recusa antes de tocar o disco se achar outro registro. O tamanho é limitado pelo parâmetro max_effects_bytes do executor.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "action_id",
+    "plan_hash",
+    "manifest",
+    "steps"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "action_id": {
+      "$ref": "urn:ads:common:id:1"
+    },
+    "plan_hash": {
+      "$ref": "urn:ads:common:sha256:1"
+    },
+    "manifest": {
+      "anyOf": [
+        {
+          "$ref": "urn:ads:common:sha256:1"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "target",
+          "effect",
+          "stored",
+          "entries"
+        ],
+        "properties": {
+          "target": {
+            "$ref": "urn:ads:common:abspath:2"
+          },
+          "effect": {
+            "enum": [
+              "quarantine",
+              "restore",
+              "delete",
+              "delete_recursive"
+            ]
+          },
+          "stored": {
+            "anyOf": [
+              {
+                "$ref": "urn:ads:common:abspath:2"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "path",
+                "kind",
+                "bytes",
+                "id"
+              ],
+              "properties": {
+                "path": {
+                  "type": "array",
+                  "maxItems": 128,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 255,
+                    "pattern": "^[^\\\\/]+$"
+                  }
+                },
+                "kind": {
+                  "enum": [
+                    "dir",
+                    "file",
+                    "link"
+                  ]
+                },
+                "bytes": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "id": {
+                  "type": "string",
+                  "maxLength": 64,
+                  "pattern": "^[0-9]{1,20}:[0-9]{1,39}$"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "version": 1,
+      "action_id": "act-07",
+      "plan_hash": "sha256:5486cc58827bffeb2204a994db3d77fe6c8f2c863eb73de6e2a60802784293cb",
+      "manifest": null,
+      "steps": [
+        {
+          "target": "C:\\work\\proj\\.ads\\quarantine\\act-01",
+          "effect": "delete_recursive",
+          "stored": null,
+          "entries": [
+            {
+              "path": [],
+              "kind": "dir",
+              "bytes": 0,
+              "id": "2869847911:1125899906842681"
+            },
+            {
+              "path": [
+                "items"
+              ],
+              "kind": "dir",
+              "bytes": 0,
+              "id": "2869847911:1125899906842682"
+            },
+            {
+              "path": [
+                "items",
+                "build.log"
+              ],
+              "kind": "file",
+              "bytes": 2048,
+              "id": "2869847911:1125899906842683"
+            },
+            {
+              "path": [
+                "manifest.json"
+              ],
+              "kind": "file",
+              "bytes": 412,
+              "id": "2869847911:1125899906842684"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

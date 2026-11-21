@@ -3,7 +3,7 @@
 
 use ads_contracts::CommandApprovalAnswerV1Params;
 use ads_daemon::api::{ApiConfig, ApiError, DisabledLauncher, LocalApi};
-use ads_daemon::approvals::ApprovalControl;
+use ads_daemon::approvals::{ApprovalControl, Pending};
 use ads_daemon::auth::LocalSession;
 use ads_daemon::events::new_id;
 use ads_daemon::pty_client::{ClientConfig, PtyClient};
@@ -32,7 +32,7 @@ struct Counting {
     from_log: std::sync::atomic::AtomicBool,
 }
 impl ApprovalControl for Counting {
-    fn pending(&self, _: &LocalSession) -> Result<Vec<Value>, ApiError> {
+    fn pending(&self, _: &LocalSession) -> Result<Pending, ApiError> {
         self.calls
             .lock()
             .unwrap()
@@ -41,12 +41,17 @@ impl ApprovalControl for Counting {
             "../../../contracts/golden/record.action-plan.v2/valid/02-requires-approval.json"
         ))
         .unwrap();
-        Ok(vec![json!({
+        let approvals = vec![json!({
             "action_id": "act-03", "approval_id": "appr-03", "plan_hash": HASH,
             "risk": "medium", "summary": "Limpar temporários",
             "requested_at": "2030-01-02T03:04:05Z", "expires_at": "2030-01-02T03:19:05Z",
-            "not_approvable": ["estimate_unknown", "wildcard_target", "definitive_recursive_delete"], "plan": plan
-        })])
+            "not_approvable": ["estimate_unknown", "wildcard_target", "definitive_recursive_delete"], "plan": plan,
+            "effects_hash": null, "effects": null, "effects_error": null
+        })];
+        Ok(Pending {
+            approvals,
+            more: false,
+        })
     }
     fn answer(
         &self,
@@ -161,7 +166,7 @@ async fn exchange(ws: &mut Socket, value: &Value) -> Value {
     };
     let reply: Value = serde_json::from_str(&text).unwrap();
     assert!(
-        valid("urn:ads:contract:local-api.server-message:4", &reply),
+        valid("urn:ads:contract:local-api.server-message:5", &reply),
         "{reply}"
     );
     if let Some(code) = reply["error"].get("code") {
@@ -228,7 +233,7 @@ async fn list_answers_with_the_plan_and_answer_reaches_the_gate_once() {
     let list = command("approval.list", json!({}));
     let reply = exchange(&mut ws, &list).await;
     assert!(
-        valid("urn:ads:command:approval.list.response:1", &reply),
+        valid("urn:ads:command:approval.list.response:2", &reply),
         "{reply}"
     );
     assert_eq!(

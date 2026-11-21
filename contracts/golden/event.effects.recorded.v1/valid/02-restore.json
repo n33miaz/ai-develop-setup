@@ -1,0 +1,45 @@
+{
+  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAD",
+  "type": "urn:ads:event:effects.recorded:1",
+  "ts": "2030-01-02T03:04:05Z",
+  "stream": "effects/act-08",
+  "seq": 1,
+  "actor": {
+    "kind": "daemon",
+    "id": "core"
+  },
+  "cause": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+  "data_class": "internal",
+  "data": {
+    "action_id": "act-08",
+    "plan_hash": "sha256:5486cc58827bffeb2204a994db3d77fe6c8f2c863eb73de6e2a60802784293cb",
+    "effects_hash": "sha256:20ed3b8a469b1bb25648299f47293b596ea8beff42e20a4b264b48b49c8c3cef",
+    "effects": {
+      "version": 1,
+      "action_id": "act-08",
+      "plan_hash": "sha256:5486cc58827bffeb2204a994db3d77fe6c8f2c863eb73de6e2a60802784293cb",
+      "manifest": "sha256:0c1d2e3f405162738495a6b7c8d9eafb0c1d2e3f405162738495a6b7c8d9eafb",
+      "steps": [
+        {
+          "target": "/home/dev/proj/notes.txt",
+          "effect": "restore",
+          "stored": "/home/dev/proj/.ads/quarantine/act-01/items/notes.txt",
+          "entries": [
+            {
+              "path": [],
+              "kind": "file",
+              "bytes": 5,
+              "id": "64769:1311243"
+            }
+          ]
+        },
+        {
+          "target": "/home/dev/proj/gone.txt",
+          "effect": "restore",
+          "stored": "/home/dev/proj/.ads/quarantine/act-01/items/gone.txt",
+          "entries": []
+        }
+      ]
+    }
+  }
+}

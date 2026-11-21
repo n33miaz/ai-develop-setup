@@ -4,6 +4,17 @@ Formato: uma seção por data. Contrato novo, campo opcional acrescentado, vers�
 
 ## 2026-11-21
 
+Efeitos concretos das ações aprovadas.
+
+- Contratos novos (`:1`):
+  - Registro `record.action-effects`: o que o ensaio de uma ação achou no disco, passo a passo, com cada entrada (nomes, tipo, tamanho e identidade) e o resumo do manifesto de uma restauração.
+  - Evento `effects.recorded`: esse registro e o seu hash (SHA-256 da forma canônica do registro), gravados pelo núcleo uma vez só (`seq` 1) no stream `effects/<action_id>`. Família de stream nova `effects`, amarrada a `action_id`.
+  - Evento `effects.refused`: o código da recusa do ensaio, no mesmo stream e no lugar de `effects.recorded`.
+- Versões novas, convivendo com a `:1`:
+  - `answer.recorded:2`: acrescenta `effects_hash` obrigatório (`null` quando a ação não tem efeitos gravados). O núcleo passa a gravar a `:2`.
+  - `approval.list.response:2`: cada aprovação traz `effects`, `effects_hash` e `effects_error` (ou `null`), os motivos novos `effects_refused`, `effects_unreadable` e `effects_not_listed`, e o `result` traz `more`. O núcleo passa a responder a `:2`.
+- Versão nova, convivendo com a `:1` à `:4`: `local-api.server-message:5`, com a resposta de `approval.list` na `:2`. O núcleo passa a escrever a `:5`; para quem envia `approval.list`, a resposta muda de forma, sem negociação.
+
 Aprovações do portão de ações pela API local.
 
 - Contratos novos (`:1`):

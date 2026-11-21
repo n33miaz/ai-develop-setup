@@ -239,7 +239,8 @@ pub struct Failure {
 }
 
 impl Failure {
-    pub(crate) fn before_anything(stop: Stop) -> Box<Self> {
+    /// A refusal before anything on disk was looked at for a change.
+    pub fn before_anything(stop: Stop) -> Box<Self> {
         Box::new(Self {
             reason: stop.reason,
             detail: stop.detail,

@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:event:effects.recorded:1",
+  "title": "Efeitos concretos registrados",
+  "description": "O registro record.action-effects:1 que o ensaio de uma ação achou, gravado pelo núcleo logo depois do plano, no stream effects/<action_id>, uma vez só (seq 1; um ensaio recusado grava effects.refused:1 no lugar). effects_hash é o SHA-256 da forma canônica do registro: JSON compacto, sem espaços, com as chaves de cada objeto em ordem de bytes UTF-8 (ver README). A resposta do dono (answer.recorded:2) repete esse hash, e a execução só começa se o ensaio dela achar o mesmo registro.",
+  "allOf": [
+    {
+      "$ref": "urn:ads:event:envelope:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "type",
+        "stream",
+        "seq",
+        "data",
+        "actor"
+      ],
+      "properties": {
+        "type": {
+          "const": "urn:ads:event:effects.recorded:1"
+        },
+        "stream": {
+          "type": "string",
+          "pattern": "^effects/"
+        },
+        "seq": {
+          "const": 1
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action_id",
+            "plan_hash",
+            "effects_hash",
+            "effects"
+          ],
+          "properties": {
+            "action_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "plan_hash": {
+              "$ref": "urn:ads:common:sha256:1"
+            },
+            "effects_hash": {
+              "$ref": "urn:ads:common:sha256:1"
+            },
+            "effects": {
+              "$ref": "urn:ads:record:action-effects:1"
+            }
+          }
+        },
+        "actor": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "kind": {
+              "const": "daemon"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAC",
+      "type": "urn:ads:event:effects.recorded:1",
+      "ts": "2030-01-02T03:04:05Z",
+      "stream": "effects/act-07",
+      "seq": 1,
+      "actor": {
+        "kind": "daemon",
+        "id": "core"
+      },
+      "cause": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+      "data_class": "internal",
+      "data": {
+        "action_id": "act-07",
+        "plan_hash": "sha256:5486cc58827bffeb2204a994db3d77fe6c8f2c863eb73de6e2a60802784293cb",
+        "effects_hash": "sha256:627cd83d8cfa08f8a0fde24dae357b54ba07198da755e9dc1f0e806003578bd3",
+        "effects": {
+          "version": 1,
+          "action_id": "act-07",
+          "plan_hash": "sha256:5486cc58827bffeb2204a994db3d77fe6c8f2c863eb73de6e2a60802784293cb",
+          "manifest": null,
+          "steps": [
+            {
+              "target": "C:\\work\\proj\\.ads\\quarantine\\act-01",
+              "effect": "delete_recursive",
+              "stored": null,
+              "entries": [
+                {
+                  "path": [],
+                  "kind": "dir",
+                  "bytes": 0,
+                  "id": "2869847911:1125899906842681"
+                },
+                {
+                  "path": [
+                    "items"
+                  ],
+                  "kind": "dir",
+                  "bytes": 0,
+                  "id": "2869847911:1125899906842682"
+                },
+                {
+                  "path": [
+                    "items",
+                    "build.log"
+                  ],
+                  "kind": "file",
+                  "bytes": 2048,
+                  "id": "2869847911:1125899906842683"
+                },
+                {
+                  "path": [
+                    "manifest.json"
+                  ],
+                  "kind": "file",
+                  "bytes": 412,
+                  "id": "2869847911:1125899906842684"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

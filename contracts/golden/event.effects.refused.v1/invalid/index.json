@@ -1,0 +1,17 @@
+{
+  "01-second-record.json": {
+    "rule": "O stream de efeitos tem um evento só.",
+    "keyword": "const",
+    "instancePath": "/seq"
+  },
+  "02-not-a-code.json": {
+    "rule": "A recusa é um código.",
+    "keyword": "pattern",
+    "instancePath": "/data/error_code"
+  },
+  "03-device-actor.json": {
+    "rule": "Quem grava a recusa é o núcleo.",
+    "keyword": "const",
+    "instancePath": "/actor/kind"
+  }
+}

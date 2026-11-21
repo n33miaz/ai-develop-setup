@@ -248,38 +248,74 @@ recebe `REMOTE_ORIGIN_REFUSED`. O dono e o aparelho vêm do daemon
 (`approvals::ApprovalOwner`), nunca do pedido, e cada chamada a
 `approvals::ApprovalControl` exige a prova `auth::LocalSession`.
 
-- `approval.list` (só `_meta`) responde `{"approvals": [...]}`
-  ([`command.approval.list.response:1`](../../contracts/README.md#api-local)):
+- `approval.list` (só `_meta`) responde `{"approvals": [...], "more": ...}`
+  ([`command.approval.list.response:2`](../../contracts/README.md#api-local)):
   da mais antiga à mais nova, cada ação cuja aprovação foi pedida e ainda não
   foi concedida, negada nem expirada, com `approval_id`, `risk`, `summary`,
-  `requested_at`, `expires_at`, `not_approvable` e o registro do plano
-  (`record.action-plan:2`) como o portão o julgou. Só ações de uma pasta de
+  `requested_at`, `expires_at`, `not_approvable`, o registro do plano
+  (`record.action-plan:2`) como o portão o julgou e os efeitos concretos
+  (`record.action-effects:1`) com o seu `effects_hash`, ou os dois `null`, e o
+  código da recusa do ensaio em `effects_error`. Só ações de uma pasta de
   sessão servida aqui: o filtro vem antes do limite, então pedidos de outras
   pastas nunca ocupam a página. No máximo `read_page_limit` da configuração do
   armazenamento por pedido, e nunca mais de 1000 (o limite do contrato da
-  resposta). Só lê e fica fora da cache de idempotência.
-- O que o registro garante: a operação, os alvos como foram pedidos (caminho e
-  curinga), o destino, se há quarentena, a estimativa e as regras. Ele não lista
-  o conteúdo de uma pasta alvo, os nomes que um curinga vai casar nem os itens
-  do manifesto de uma restauração: o executor os lê no disco na execução. Com
-  estimativa, o executor recusa antes de mudar qualquer coisa se encontrar mais
-  itens ou bytes do que o aprovado.
-- Por isso a API só aprova ação cujo efeito concreto o registro fixa.
-  `not_approvable` (`approvals::not_approvable`) lista por que não:
-  `estimate_unknown` (sem estimativa, sem teto), `wildcard_target` (alvo com
-  curinga), `definitive_recursive_delete` (`fs.delete_recursive` ou
-  `fs.clean_untracked` sem quarentena) e `restore_from_manifest` (mover de volta
-  à raiz de trabalho: os pares origem e destino vêm do manifesto). Aprovar uma
-  dessas grava a resposta e volta `APPROVAL_NOT_APPROVABLE`, com a ação ainda
-  aguardando; negar continua permitido. Ver efeitos concretos antes de aprovar
-  pede registrá-los no ensaio, o que esta versão não faz.
+  resposta). A resposta inteira cabe em `approval_list_max_bytes`: as ações
+  entram da mais antiga à mais nova enquanto couberem, a mais antiga sempre, e
+  `more: true` diz que outras ficaram de fora; elas aparecem quando as primeiras
+  forem respondidas. Um registro de efeitos maior que metade desse teto não é
+  mostrado e a ação fica com `effects_not_listed`. Sob a trava da mesa só se lê
+  o log; a resposta é montada e medida depois. Só lê e fica fora da cache de
+  idempotência.
+- O que o registro do plano garante: a operação, os alvos como foram pedidos
+  (caminho e curinga), o destino, se há quarentena, a estimativa e as regras.
+  Ele não lista o conteúdo de uma pasta alvo nem os itens do manifesto de uma
+  restauração. Isso fica nos efeitos concretos: quando o veredito pede
+  aprovação, `SessionGate::plan` ensaia o plano que o portão entrega ao executor
+  (`Executor::rehearse_effects`) e grava o resultado em `effects.recorded:1`, uma
+  vez só, no stream `effects/<action_id>` (o log recusa um segundo `seq` 1).
+  Ensaio recusado (por exemplo maior que `max_effects_bytes`, com
+  `E_FS_EFFECTS_TOO_LARGE`) grava `effects.refused:1` com o código no mesmo
+  lugar, e registro que o log ou o contrato recusam grava
+  `E_EFFECTS_UNRECORDABLE`; se nem isso for gravado, fica um aviso no log do
+  processo. O que o executor compara é nome, tipo, identidade no volume e, de
+  arquivo, tamanho: conteúdo reescrito no mesmo objeto, com o mesmo tamanho, e
+  datas não entram.
+- A API só aprova ação cujo efeito concreto está fixado. `not_approvable`
+  (`approvals::not_approvable`) lista por que não: `estimate_unknown` (sem
+  estimativa e sem efeitos gravados), `wildcard_target` (alvo com curinga, que o
+  executor não executa), `definitive_recursive_delete` (`fs.clean_untracked`
+  sem quarentena, ou `fs.delete_recursive` sem quarentena e sem efeitos
+  gravados) e `restore_from_manifest` (mover de volta à raiz de trabalho sem
+  efeitos gravados). Quando o plano precisa de efeitos e não há o que mostrar,
+  vem também o porquê: `effects_refused` (o ensaio foi recusado),
+  `effects_unreadable` (o registro gravado não passa na leitura, com aviso no
+  log do processo; a listagem das outras ações segue) ou `effects_not_listed`.
+  Aprovar uma dessas grava a resposta e volta `APPROVAL_NOT_APPROVABLE`, com a
+  ação ainda aguardando; negar continua permitido e nunca lê os efeitos.
+- Na execução, `SessionGate::execute` confere os efeitos **antes de pedir a
+  licença ao portão**: com a ação aprovada, lê o `effects_hash` da resposta que
+  causou a concessão, exige que seja o do registro gravado, refaz o ensaio e
+  exige o mesmo registro. O executor confere de novo antes da primeira
+  alteração (`Executor::execute_approved`). Diferença, registro ausente ou
+  aprovação sem registro para um plano que precisa dele: o disco não é tocado, a
+  ação termina em `action.failed` com `E_FS_EFFECTS_CHANGED` e só um plano novo,
+  com aprovação nova, volta a executar. Política ou tolerância do relógio
+  mudada desde a aprovação é recusada antes dessa conferência, pelo portão,
+  como `E_POLICY_CHANGED` ou `E_CLOCK_POLICY_CHANGED`.
+- Isso deixa a execução aprovada mais estrita do que antes: toda ação aprovada
+  pela API com efeitos gravados, inclusive um apagar com estimativa que vai para
+  a quarentena, é recusada a qualquer diferença no disco desde o plano (numa
+  pasta em que uma ferramenta continua escrevendo, por exemplo), e uma
+  concessão vinda de fora da API (bandeja) para um plano que precisa de efeitos
+  falha fechada.
 - `approval.answer` leva `action_id`, `approval_id`, `plan_hash` (o que o dono
   viu) e `decision` (`approve` ou `deny`). Antes de gravar qualquer coisa, o
   daemon confere que a ação existe e que a aprovação é a pedida no histórico
   dela, em qualquer estado (`APPROVAL_NOT_FOUND`), e que a ação ainda aguarda
   resposta (`APPROVAL_ALREADY_ANSWERED`); nessas recusas nada é gravado. Depois
-  grava `answer.recorded:1` no stream `answer/<approval_id>`: o aparelho como
-  ator, o dono, o `ts` do relógio do daemon, a decisão, o hash, a chave de
+  grava `answer.recorded:2` no stream `answer/<approval_id>`: o aparelho como
+  ator, o dono, o `ts` do relógio do daemon, a decisão, o hash do plano, o
+  `effects_hash` dos efeitos gravados da ação (ou `null`), a chave de
   idempotência e o id do comando em `cause`. Se essa gravação falhar, a
   resposta é `INTERNAL_ERROR` e o portão não age. Só então o portão registra
   `approval.granted:2` ou `approval.denied:2`, com o mesmo ator e `cause`
@@ -336,6 +372,7 @@ Padrões em [defaults/daemon.toml](../../defaults/daemon.toml), aplicados ao ini
 | `accept_retry_ms` | 50 | Espera após erro de aceitação TCP; reduz tentativas sob falta de recursos. |
 | `max_message_bytes` | 131072 | Limite de mensagem e quadro WebSocket recebido; reduzir pode impedir escritas grandes. |
 | `send_timeout_ms` | 5000 | Prazo por envio; cliente lento é desconectado. |
+| `approval_list_max_bytes` | 4194304 | Teto de uma resposta de `approval.list`, de 1 MiB a 256 MiB. Ações além dele ficam para a próxima listagem (`more`); registro de efeitos maior que a metade não é mostrado nem aprovável pela API. |
 | `host_timeout_ms` | 10000 | Prazo único por comando no host e na conexão inicial. Cada chamada ao host começa dentro do prazo, e uma resposta já recebida vale mesmo se o prazo vencer enquanto o daemon trata um evento do host. Falha encerra o serviço para evitar repetir efeito incerto. Duas exceções não encerram: no fechamento automático o prazo esgotado conta como tentativa falha, e na preparação depois de um `session.open` confirmado ele responde `SESSION_SETUP_FAILED`, como qualquer outra falha dessa etapa (ver abaixo). |
 | `retired_sessions` | 1024 | Ids de sessões podadas que não podem ser reabertos nesta execução (acima do limite, o mais antigo volta a ser aceito) e, em separado, streams assinados antes do `session.open` (acima do limite, a espera mais antiga termina com `SUBSCRIPTION_REPLAY_UNAVAILABLE` no id da assinatura, mesmo se a conexão estiver ociosa). |
 | `subscription_ids_per_stream` | 2 | Ids de assinatura por conexão: este valor vezes `max_sessions`. Reassinar a mesma encarnação na mesma conexão soma um id, que só sai quando o stream termina; ids de encarnação já terminada não contam. A interface mantém uma assinatura por stream e conexão, então raramente passa de um id por stream; aumente para clientes que reassinam muito. |

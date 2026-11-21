@@ -13,6 +13,7 @@ export const STREAM_ID_FIELD = {
   queue: "queue_id",
   handoff: "handoff_id",
   answer: "approval_id",
+  effects: "action_id",
 };
 
 // Devolve o texto do problema, ou null quando o stream nomeia a mesma entidade que `data`.
@@ -97,11 +98,47 @@ export function actionPlanErrors(plan) {
   return errors;
 }
 
+// A forma canônica de um valor JSON sem números fracionários: compacta, sem espaços, com as chaves de cada
+// objeto em ordem de bytes UTF-8 (README, "Efeitos concretos e effects_hash").
+export function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const keys = Object.keys(value).sort(compareText);
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+export function effectsHash(effects) {
+  return `sha256:${createHash("sha256").update(canonicalJson(effects), "utf8").digest("hex")}`;
+}
+
+// Um registro de efeitos e o hash e a ação que o acompanham.
+export function effectsErrors(effects, hash, actionId, planHash) {
+  const errors = [];
+  const expected = effectsHash(effects);
+  if (hash !== expected) errors.push(`effects_hash não é o da forma canônica (esperado ${expected})`);
+  if (effects.action_id !== actionId) errors.push("o registro de efeitos é de outra ação");
+  if (effects.plan_hash !== planHash) errors.push("o registro de efeitos é de outro plano");
+  return errors;
+}
+
 // Regras que valem para os dourados válidos da pasta `key` (`<tipo>.<nome>.v<versão>`).
 export function crossRuleErrors(key, data) {
   if (key.startsWith("event.")) {
     const problem = streamBindingError(data);
-    return problem ? [problem] : [];
+    const errors = problem ? [problem] : [];
+    if (/^event\.effects\.recorded\.v\d+$/.test(key)) {
+      errors.push(...effectsErrors(data.data.effects, data.data.effects_hash, data.data.action_id, data.data.plan_hash));
+    }
+    return errors;
+  }
+  if (/^command\.approval\.list\.response\.v([2-9]|\d{2,})$/.test(key)) {
+    return data.result.approvals.flatMap((item, at) =>
+      item.effects === null
+        ? []
+        : effectsErrors(item.effects, item.effects_hash, item.action_id, item.plan_hash).map((e) => `approvals[${at}]: ${e}`),
+    );
   }
   if (/^record\.action-plan\.v\d+$/.test(key)) return actionPlanErrors(data);
   if (/^record\.queue-task\.v\d+$/.test(key)) return queueTaskErrors(data);

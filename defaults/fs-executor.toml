@@ -40,3 +40,10 @@ private_dir = ".ads/tmp"
 # Maior manifesto de quarentena, em bytes. Vale nos dois sentidos: uma leva cujo manifesto passaria disso e
 # recusada antes de qualquer alteracao, e na restauracao a leitura para neste tamanho.
 max_manifest_bytes = 16777216
+
+# Maior registro de efeitos concretos que um ensaio entrega, em bytes (a lista de cada entrada que uma acao vai
+# mover ou apagar, com tamanho e identidade, e o resumo do manifesto de uma restauracao). E o que a aprovacao
+# cobre: o daemon grava o registro no log de auditoria, e a execucao recusa antes de tocar o disco se o ensaio
+# dela achar outro. Ensaio maior que isto e recusado e nada e gravado: a acao continua sem poder ser aprovada
+# pela API. Fica abaixo de `max_event_bytes` do armazenamento (1 MiB), com folga para o envelope do evento.
+max_effects_bytes = 524288
