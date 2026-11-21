@@ -648,8 +648,23 @@ mod tests {
                 .unwrap(),
             )
             .unwrap();
-        // The configured spelling differs from the one on disk; the resolved one is kept too.
-        let configured = PathBuf::from(format!("{work}{sep}DATA{sep}audit.db"));
+        // The configured path reaches the database through a link: only the spelling resolved
+        // on disk names what the plans name.
+        let link = Path::new(&fence_path).with_file_name("linked-data");
+        let data = Path::new(&work).join("data");
+        #[cfg(windows)]
+        {
+            let made = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(&link)
+                .arg(&data)
+                .output()
+                .unwrap();
+            assert!(made.status.success(), "{made:?}");
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&data, &link).unwrap();
+        let configured = link.join("audit.db");
         let product =
             crate::gate::ProductState::from_config(&configured_for(&configured), None).unwrap();
         let home = format!("{fence_path}{sep}fake-home");
