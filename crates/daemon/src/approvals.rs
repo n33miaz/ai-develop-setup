@@ -1167,11 +1167,19 @@ mod tests {
         answer.clone()
     }
 
+    /// Executes `action` with the next `seq` of its stream for the start and the outcome, so
+    /// that an error comes from the gate and never from a sequence the journal refuses.
     fn execute(desk: &ApprovalDesk, action: &Id) -> Result<(), JournalError> {
         let now = now_ts().unwrap();
+        let next = stream(desk, &format!("action/{}", action.as_str())).len() as u64 + 1;
         desk.with_gates_ok(|log, gates| {
             gates[0]
-                .execute(log, action, daemon_meta(1, &now), daemon_meta(1, &now))
+                .execute(
+                    log,
+                    action,
+                    daemon_meta(next, &now),
+                    daemon_meta(next + 1, &now),
+                )
                 .map(|_| ())
         })
     }
@@ -1527,6 +1535,190 @@ mod tests {
         let deny = params(&odd, &odd_approval, &odd_hash, "deny");
         assert_eq!(desk.answer(&session, &deny, &new_id().unwrap()), Ok(false));
         assert_eq!(state(&desk, &odd), State::ApprovalDenied);
+    }
+
+    /// A purge of the folder `name` waiting for approval under `gate`, made with `overrides`, whose record of effects holds what a
+    /// rehearsal finds but names `hash_of` those effects as its hash. The record is written
+    /// first; a scratch log gives its content. Returns what [`purge`] returns and that hash.
+    fn purge_recorded_with(
+        bench: &mut Bench,
+        gate: &SessionGate,
+        overrides: &str,
+        name: &str,
+        hash_of: impl FnOnce(&Effects) -> String,
+    ) -> (Id, Id, String, String, String) {
+        let scratch_root = bench.root.join(format!("scratch-{name}"));
+        let scratch =
+            crate::audit::test_product_log(&scratch_root, &bench.storage, &TestVault::default());
+        let main = bench.log.replace(scratch).unwrap();
+        // A gate over the scratch log: the policy of a gate names the files of its log.
+        let scratch_gate = bench.gate(overrides);
+        let (_, _, rehearsed_hash, _) = purge_in(bench, &scratch_gate, name, name);
+        drop(scratch_gate);
+        let scratch = bench.log.replace(main).unwrap();
+        let stream_name: EventEnvelopeV1Stream =
+            serde_json::from_value(json!(format!("effects/{name}"))).unwrap();
+        let read = scratch
+            .log()
+            .unwrap()
+            .read_stream(&stream_name, 1, 2)
+            .unwrap();
+        let [stored] = &read[..] else {
+            panic!("expected the rehearsal record: {read:?}");
+        };
+        let mut record = serde_json::to_value(&stored.event).unwrap();
+        drop(scratch);
+        for suffix in ["", "-wal", "-shm", "-journal"] {
+            let _ = fs::remove_file(scratch_root.join("audit").join(format!("audit.db{suffix}")));
+        }
+        assert_eq!(record["type"], "urn:ads:event:effects.recorded:1");
+        let effects: Effects = serde_json::from_value(record["data"]["effects"].clone()).unwrap();
+        let hash = hash_of(&effects);
+        record["id"] = json!(new_id().unwrap());
+        record["data"]["effects_hash"] = json!(hash);
+        let event: EventEnvelopeV1 = serde_json::from_value(record).unwrap();
+        bench
+            .log
+            .as_mut()
+            .unwrap()
+            .log()
+            .unwrap()
+            .append(&event)
+            .unwrap();
+
+        let (action, approval, plan_hash, seen) = purge_in(bench, gate, name, name);
+        assert_eq!(
+            plan_hash, rehearsed_hash,
+            "the same plan as the one rehearsed"
+        );
+        (action, approval, plan_hash, seen, hash)
+    }
+
+    #[test]
+    fn a_record_hashed_in_another_form_is_unreadable_and_never_executed() {
+        const OVERRIDES: &str = "quarantine_enabled = false";
+        let mut bench = Bench::new();
+        let gate = bench.gate(OVERRIDES);
+        let canonical = crate::gate::effects_hash;
+        // The bytes the record had before the keys were sorted by hand: the fields in the order
+        // of the struct, as a `Value` keeping insertion order would also give.
+        let legacy = |effects: &Effects| -> String {
+            let bytes = serde_json::to_vec(effects).unwrap();
+            format!("sha256:{:x}", <sha2::Sha256 as sha2::Digest>::digest(bytes))
+        };
+        let (same, same_approval, same_hash, same_seen, same_effects) =
+            purge_recorded_with(&mut bench, &gate, OVERRIDES, "act-same-form", canonical);
+        let (other, other_approval, other_hash, other_seen, _) =
+            purge_recorded_with(&mut bench, &gate, OVERRIDES, "act-other-form", |effects| {
+                assert_ne!(legacy(effects), canonical(effects));
+                legacy(effects)
+            });
+        let (granted, granted_approval, granted_hash, granted_seen, granted_effects) =
+            purge_recorded_with(&mut bench, &gate, OVERRIDES, "act-granted-form", legacy);
+        let desk = bench.desk(vec![gate]);
+        let session = session();
+
+        let pending = desk.pending(&session).unwrap().approvals;
+        let item = |id: &Id| {
+            pending
+                .iter()
+                .find(|item| item["action_id"] == id.as_str())
+                .unwrap()
+                .clone()
+        };
+        let same_item = item(&same);
+        assert_eq!(same_item["not_approvable"], json!([]));
+        assert_eq!(same_item["effects_hash"], same_effects.as_str());
+        let other_item = item(&other);
+        assert_eq!(other_item["effects"], Value::Null);
+        assert_eq!(
+            other_item["not_approvable"],
+            json!([
+                "estimate_unknown",
+                "definitive_recursive_delete",
+                "effects_unreadable"
+            ])
+        );
+
+        assert_eq!(
+            item(&granted)["not_approvable"],
+            other_item["not_approvable"]
+        );
+        let approve = params(&other, &other_approval, &other_hash, "approve");
+        assert_eq!(
+            desk.answer(&session, &approve, &new_id().unwrap()),
+            Err(ApiError::ApprovalNotApprovable)
+        );
+        let deny = params(&other, &other_approval, &other_hash, "deny");
+        assert_eq!(desk.answer(&session, &deny, &new_id().unwrap()), Ok(false));
+        assert_eq!(state(&desk, &other), State::ApprovalDenied);
+        assert!(Path::new(&other_seen).is_file());
+
+        // An approval naming that hash, granted anyway: the execution stops before the license.
+        let answer = new_id().unwrap();
+        let ts = now_ts().unwrap();
+        let answers = format!("answer/{}", granted_approval.as_str());
+        let seq = stream(&desk, &answers).len() + 1;
+        let value = checked(
+            ANSWER,
+            json!({
+                "id": answer, "type": ANSWER, "ts": ts, "stream": answers, "seq": seq,
+                "actor": {"kind": "device", "id": "device-01"}, "cause": new_id().unwrap(),
+                "data_class": "internal",
+                "data": {
+                    "approval_id": granted_approval, "action_id": granted, "plan_hash": granted_hash,
+                    "effects_hash": granted_effects, "decision": "approve",
+                    "owner_id": "owner-01", "via": "local_ui", "idempotency_key": new_id().unwrap()
+                }
+            }),
+        )
+        .unwrap();
+        let event: EventEnvelopeV1 = serde_json::from_value(value).unwrap();
+        let next = stream(&desk, &format!("action/{}", granted.as_str())).len() as u64 + 1;
+        desk.with_gates_ok(|log, gates| {
+            log.log().unwrap().append(&event).unwrap();
+            let mut meta = daemon_meta(next, &ts);
+            meta.actor = Actor {
+                kind: ActorKind::Device,
+                id: Id::new("device-01").unwrap(),
+            };
+            meta.cause = Some(Ulid::new(answer).unwrap());
+            gates[0]
+                .apply(
+                    log,
+                    &granted,
+                    Command::Grant {
+                        action_id: granted.clone(),
+                        approval_id: granted_approval.clone(),
+                        plan_hash: PlanHash::new(granted_hash.clone()).unwrap(),
+                        via: Via::LocalUi,
+                    },
+                    meta,
+                )
+                .unwrap();
+        });
+        assert!(matches!(state(&desk, &granted), State::Approved { .. }));
+        let outcome = execute(&desk, &granted);
+        assert_eq!(outcome, Err(JournalError::Integrity));
+        let events = stream(&desk, &format!("action/{}", granted.as_str()));
+        assert!(
+            events
+                .iter()
+                .all(|(_, event)| event["type"] != "urn:ads:event:action.started:1"),
+            "no license was issued"
+        );
+        assert!(Path::new(&granted_seen).is_file());
+
+        // The record in the canonical form is approved and executed.
+        let approve = params(&same, &same_approval, &same_hash, "approve");
+        assert_eq!(
+            desk.answer(&session, &approve, &new_id().unwrap()),
+            Ok(false)
+        );
+        let outcome = run(&desk, &same);
+        outcome.operation.unwrap();
+        assert_eq!(outcome.recorded.unwrap().state, State::Executed);
+        assert!(!Path::new(&same_seen).exists());
     }
 
     #[test]

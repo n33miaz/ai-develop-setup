@@ -6,6 +6,11 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[features]
+# Only for the CI check that the canonical form of the effects holds when a `Value` keeps
+# insertion order; nothing in the workspace turns it on.
+preserve-order = ["serde_json/preserve_order"]
+
 [dependencies]
 ads-core = { workspace = true }
 serde = { workspace = true }

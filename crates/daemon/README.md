@@ -175,8 +175,11 @@ pode receber `INVALID_PARAMS` em `session.open` se o programa ou a pasta não ex
 Como só lê, não passa pela cache de idempotência: repetir a chave devolve a
 lista de novo, nunca `replayed`. `api::Launcher::catalog` fornece a lista; o
 padrão é vazio, como em `DisabledLauncher`. Essa resposta exige a
-`local-api.server-message:2`; quem não envia `harness.list` nem `queue.get`
-continua recebendo só mensagens da `:1`. O daemon escreve a `:4`, que acrescenta a resposta de `approval.list`. Um daemon anterior ao comando o recusa
+`local-api.server-message:2`; quem não envia `harness.list`, `queue.get` nem
+`approval.list` continua recebendo só mensagens da `:1`. O daemon escreve a `:5`,
+cuja resposta de `approval.list` é a `approval.list.response:2`: ela troca a da
+`:4` sem negociação de versão, então quem envia `approval.list` precisa aceitar a
+`:5`. Um daemon anterior ao comando o recusa
 com `METHOD_NOT_FOUND`, e a interface mostra que o daemon precisa ser atualizado.
 
 ## Fila de tarefas
@@ -219,9 +222,10 @@ recebe `REMOTE_ORIGIN_REFUSED`.
 ancorado: recusa um stream criado por outro dono e, a cada abertura, restaura a
 fila parada e grava `queue.stopped` com `reason: restart` se o log dizia ligada.
 Quando a composição usa um `ProductLog`, passe `ProductLog::shared_log()` à fila
-para usar a mesma conexão SQLite do portão. A espera por cada aquisição da
-trava da conexão usa o `busy_timeout_ms` do armazenamento, assim como a espera
-por uma trava do SQLite. Se o portão ainda estiver usando a conexão ao fim do
+para usar a mesma conexão SQLite do portão. A primeira aquisição da trava da
+conexão, em `bind` e `open`, é a que lê o `busy_timeout_ms` do armazenamento e
+por isso espera sem prazo enquanto o portão usa a conexão; cada aquisição
+seguinte usa esse prazo, assim como a espera por uma trava do SQLite. Se o portão ainda estiver usando a conexão ao fim do
 prazo, a API responde `INTERNAL_ERROR` com a mensagem `audit log busy`. A fila
 já estará parada se o comando era `queue.stop`. Os controles da fila rodam em
 tarefas bloqueantes, mantendo o atendimento de assinaturas e do terminal

@@ -141,6 +141,9 @@ impl AbsPath {
         self.is_loosely_within(root)
     }
 
+    /// Equal to `base` or inside it when each component matches in its Unicode lowercase or
+    /// uppercase form (not title case or full case folding). Deny only, never grant:
+    /// it makes names equal that no file system does, so it can only widen a refusal.
     pub(crate) fn is_loosely_within(&self, base: &AbsPath) -> bool {
         self.within(base, same_name_loosely)
     }
@@ -164,7 +167,8 @@ impl AbsPath {
 }
 
 /// Whether two names could be the same folder on some file system: equal after either Unicode
-/// case mapping. Wider than any real file system on purpose, so it only ever serves to deny.
+/// lowercase or uppercase mapping (no title case or full case folding). Wider than any real
+/// file system on purpose, so it only ever serves to deny.
 pub(crate) fn same_name_loosely(a: &str, b: &str) -> bool {
     a.to_lowercase() == b.to_lowercase() || a.to_uppercase() == b.to_uppercase()
 }

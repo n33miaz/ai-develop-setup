@@ -16,9 +16,9 @@ SCANNED = ("crates/daemon/src", "crates/core/src", "crates/launcher/src", "crate
 # Ways to list the environment instead of asking for one name.
 FORBIDDEN = (
     re.compile(r"\benv\s*::\s*(vars|vars_os|Vars|VarsOs)\b"),
-    re.compile(r"\buse\s+std\s*::\s*env\s*::\s*\{[^}]*\b(vars|vars_os|Vars|VarsOs)\b"),
-    re.compile(r"\buse\s+std\s*::\s*env\s+as\s+\w+"),
-    re.compile(r"\buse\s+std\s*::\s*env\s*::\s*(?:\*|\{[^}]*\*)"),
+    re.compile(r"\buse\s+(?:::\s*)?std\s*::\s*env\s*::\s*\{[^}]*\b(vars|vars_os|Vars|VarsOs)\b"),
+    re.compile(r"\buse\s+(?:::\s*)?std\s*::\s*env\s+as\s+\w+"),
+    re.compile(r"\buse\s+(?:::\s*)?std\s*::\s*env\s*::\s*(?:\*|\{[^}]*\*)"),
     re.compile(r"\buse\s+(?:::\s*)?std\s*::\s*env\s*::\s*\{[^}]*\bself\s+as\b"),
     # The same through a braced group of `std` (`use std::{fs, env as e}`, `use std::{env::*}`).
     re.compile(
@@ -187,6 +187,15 @@ class EnvEnumerationTests(unittest.TestCase):
                      "use std::env::{var, *}; vars_os()"):
             with self.subTest(code=code):
                 self.assertTrue(any(pattern.search(code) for pattern in FORBIDDEN))
+
+    def test_detector_reads_absolute_std_paths(self):
+        for code in ("use ::std::env::{vars};", "use ::std::env as e;", "use ::std::env::*;",
+                     "use :: std :: env :: { var, vars_os };"):
+            with self.subTest(code=code):
+                self.assertTrue(any(pattern.search(code) for pattern in FORBIDDEN))
+        for code in ("use ::std::env::{var};", "use ::std::env;", "use ::std::env::var_os;"):
+            with self.subTest(code=code):
+                self.assertFalse(any(pattern.search(code) for pattern in FORBIDDEN))
 
     def test_detector_reads_braced_std_imports(self):
         for code in ("use std::{env as e}; e::vars()", "use std::{fs, env as e};",

@@ -30,7 +30,8 @@ A reautenticação roda dentro do lock de escrita. Enquanto ela dura, outro escr
 | Erro | Quando | O que fazer |
 |---|---|---|
 | `Conflict` | o `seq` já não é o próximo do stream | ler `head` de novo e remontar o evento |
-| `Busy` | o SQLite não conseguiu obter um lock em `busy_timeout_ms` | conferir o banco contra a âncora antes de tentar gravar de novo |
+| `Busy` | o SQLite não conseguiu obter um lock em `busy_timeout_ms`; no daemon, também a espera pela trava do log compartilhado entre as conexões do mesmo processo passou de `busy_timeout_ms` | conferir o banco contra a âncora antes de tentar gravar de novo |
+| `Unavailable` | no daemon, a trava do log compartilhado ficou envenenada porque uma thread entrou em pânico com ela | reiniciar o daemon; o log segue íntegro no disco, e a reabertura confere a cadeia contra a âncora |
 | `AnchorUnavailable` | falha de acesso ao cofre | restabelecer o acesso antes de tentar gravar de novo |
 | `AnchorMissing` | entrada da âncora ausente | parar a escrita e seguir a recuperação |
 | `AuditDirectoryNotPrivate` | pasta ou arquivo com dono ou permissões incompatíveis; uma execução como administrador (elevada) deixa os arquivos que criou com o grupo Administradores como dono | no Windows, abra Propriedades > Segurança > Avançado, defina sua conta como proprietária, desative a herança e mantenha acesso apenas para ela e SYSTEM |
