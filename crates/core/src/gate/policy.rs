@@ -7,6 +7,7 @@ use serde::Deserialize;
 use super::path::{AbsPath, PathError, PathStyle, parse_relative, same_name_loosely};
 
 const DEFAULTS_TOML: &str = include_str!("../../../../defaults/action-gate.toml");
+const MAX_CLASSIFICATION_MATCH_STEPS: u64 = 10_000_000;
 
 /// What only the caller can know about the machine. The core reads no environment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,7 +68,7 @@ pub enum PolicyError {
         value: String,
         error: PathError,
     },
-    /// A folder name, the quarantine sub-path or the user home in a shape that is not accepted.
+    /// A policy value outside its accepted range or shape.
     /// For `quarantine_dir`, also a sub-path that, in the style of the policy, would put the
     /// quarantine of some work root in a protected folder.
     Invalid {
@@ -113,6 +114,7 @@ pub struct GatePolicy {
     windows_user_parents: Vec<String>,
     posix_user_parents: Vec<AbsPath>,
     approval_item_limit: u64,
+    classification_match_steps: u64,
     approval_byte_limit: u64,
     gate_clock_rewind_seconds: u64,
     quarantine_enabled: bool,
@@ -128,6 +130,7 @@ struct Layer {
     windows_user_parents: Option<Vec<String>>,
     posix_user_parents: Option<Vec<String>>,
     approval_item_limit: Option<u64>,
+    classification_match_steps: Option<u64>,
     approval_byte_limit: Option<u64>,
     #[serde(alias = "clock_rewind_seconds")]
     gate_clock_rewind_seconds: Option<u64>,
@@ -205,6 +208,18 @@ impl GatePolicy {
             value: quarantine_text,
         })?;
 
+        let classification_match_steps = pick(
+            "classification_match_steps",
+            over.classification_match_steps,
+            base.classification_match_steps,
+        )?;
+        if classification_match_steps > MAX_CLASSIFICATION_MATCH_STEPS {
+            return Err(PolicyError::Invalid {
+                key: "classification_match_steps",
+                value: classification_match_steps.to_string(),
+            });
+        }
+
         let policy = Self {
             user_home,
             work_roots: None,
@@ -245,6 +260,7 @@ impl GatePolicy {
                     base.posix_user_parents,
                 )?,
             )?,
+            classification_match_steps,
             approval_item_limit: pick(
                 "approval_item_limit",
                 over.approval_item_limit,
@@ -353,6 +369,10 @@ impl GatePolicy {
 
     pub fn allowed_roots(&self) -> &[AbsPath] {
         &self.allowed_roots
+    }
+
+    pub fn classification_match_steps(&self) -> u64 {
+        self.classification_match_steps
     }
 
     pub fn approval_item_limit(&self) -> u64 {
@@ -519,10 +539,30 @@ mod tests {
     }
 
     #[test]
+    fn classification_budget_accepts_zero_through_the_maximum() {
+        for steps in [0, MAX_CLASSIFICATION_MATCH_STEPS] {
+            let overrides = format!("classification_match_steps = {steps}");
+            let policy = GatePolicy::from_toml_str(&overrides, &WINDOWS).unwrap();
+            assert_eq!(policy.classification_match_steps(), steps);
+        }
+        for steps in [MAX_CLASSIFICATION_MATCH_STEPS + 1, i64::MAX as u64] {
+            let overrides = format!("classification_match_steps = {steps}");
+            assert_eq!(
+                GatePolicy::from_toml_str(&overrides, &WINDOWS),
+                Err(PolicyError::Invalid {
+                    key: "classification_match_steps",
+                    value: steps.to_string(),
+                })
+            );
+        }
+    }
+
+    #[test]
     fn bad_values_are_refused() {
         for bad in [
             "unknown_key = 1",
             "approval_item_limit = -1",
+            "classification_match_steps = -1",
             "quarantine_dir = '../outside'",
             "quarantine_dir = '/abs'",
             "quarantine_dir = ''",

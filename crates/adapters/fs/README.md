@@ -219,6 +219,7 @@ Um código nunca muda de sentido; motivo novo ganha código novo.
 | `E_FS_APPROVAL_MISSING` | a política confiável exige aprovação e a licença não traz |
 | `E_FS_QUARANTINE_BYPASSED` | apagar de verdade o que a política manda para a quarentena |
 | `E_FS_FACTS_CONTRADICT_PLAN` | o disco contradiz o declarado de um jeito que muda o veredito |
+| `E_FS_FACTS_CLASSIFICATION_BUDGET` | os repositórios encontrados no disco fazem o plano exceder o orçamento de classificação antes da primeira alteração |
 | `E_FS_NESTED_REPOSITORY` | defesa em profundidade contra repositório aninhado. A reclassificação normalmente recusa antes com `E_FS_FACTS_CONTRADICT_PLAN` e a regra `repository_root` |
 | `E_FS_OVERFLOW` | uma contagem de itens ou de bytes não cabe em 64 bits |
 | `E_FS_ACTION_ID_UNUSABLE` | o `action_id` não serve de nome de pasta |

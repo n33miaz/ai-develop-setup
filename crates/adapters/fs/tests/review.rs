@@ -548,6 +548,39 @@ fn a_repository_deeper_in_the_target_refuses() {
 }
 
 #[test]
+fn repository_facts_can_exhaust_classification_before_any_mutation() {
+    let sandbox = Sandbox::new("repo-budget");
+    sandbox.file("work/pack/project/.git/HEAD", "fixture");
+    sandbox.file("work/pack/plain.txt", "unchanged");
+    let destination = sandbox.text("work/out");
+    let target = sandbox.text("work/pack");
+    let target_depth = AbsPath::parse(&target).unwrap().depth();
+    // Fund the declared move of "pack", with up to two extra bytes for a Windows drive prefix.
+    let budget = 2 + target_depth + destination.len() + 1 + "pack".len();
+    let overrides = format!("quarantine_enabled = false\nclassification_match_steps = {budget}");
+    let flow = through_gate(
+        &sandbox.policy(&overrides),
+        Request {
+            action_id: "act-repo-budget",
+            operation: OperationRequest::Move { destination },
+            work_root: sandbox.work_root(),
+            targets: vec![target],
+            estimate: estimate(50, 4096),
+        },
+    );
+    let before = tree(&sandbox.root);
+    let mut executor = sandbox.executor(&overrides);
+    let rehearsal = executor.rehearse(&flow.permit).unwrap_err();
+    let failure = execute(&mut executor, flow).unwrap_err();
+
+    assert_eq!(rehearsal.reason, Reason::FactsClassificationBudget);
+    assert_eq!(failure.reason, rehearsal.reason);
+    assert_eq!(failure.stage, Stage::Checks);
+    assert!(failure.report.untouched());
+    assert_eq!(tree(&sandbox.root), before);
+}
+
+#[test]
 fn wildcard_observation_protects_metadata_and_child_repositories() {
     let sandbox = Sandbox::new("wildcard-repository");
     sandbox.file("work/pack/.git/HEAD", "fixture");
@@ -566,7 +599,7 @@ fn wildcard_observation_protects_metadata_and_child_repositories() {
     })
     .unwrap();
     let observed = executor.observe_plan(&plan).unwrap();
-    let verdict = classify(&observed, &policy);
+    let verdict = classify(&observed, &policy).unwrap();
     assert_eq!(verdict.decision(), Decision::Denied);
     assert!(verdict.has(Rule::RepositoryMetadata));
     assert!(verdict.has(Rule::RepositoryRoot));

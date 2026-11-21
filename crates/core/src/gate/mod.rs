@@ -15,7 +15,7 @@ mod path;
 mod plan;
 mod policy;
 
-pub use classify::{Finding, Rule, Verdict, classify, may_name};
+pub use classify::{ClassificationBudgetExceeded, Finding, Rule, Verdict, classify, may_name};
 pub use event::{
     ActionDenied, ActionExecuted, ActionFailed, ActionPlanFields, ActionPlanRecord,
     ActionPlanRecordV1, ActionPlanned, ActionStarted, Actor, ActorKind, ApprovalDenied,

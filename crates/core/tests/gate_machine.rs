@@ -31,7 +31,8 @@ fn approval_needed(targets: &[&str]) -> Verdict {
     let verdict = classify(
         &ActionPlan::normalize(&request).unwrap(),
         &policy(WIN_HOME, ""),
-    );
+    )
+    .unwrap();
     assert_eq!(verdict.decision(), Decision::RequiresApproval);
     verdict
 }
@@ -253,7 +254,8 @@ fn denied_event_lists_each_denying_rule_once_and_no_approval_rule() {
     let verdict = classify(
         &ActionPlan::normalize(&request).unwrap(),
         &policy(WIN_HOME, ""),
-    );
+    )
+    .unwrap();
     let fired: Vec<String> = verdict
         .findings()
         .iter()
@@ -660,7 +662,8 @@ fn estimate_is_part_of_what_was_approved() {
     let measured = classify(
         &ActionPlan::normalize(&measured).unwrap(),
         &policy(WIN_HOME, ""),
-    );
+    )
+    .unwrap();
     refused(
         action.authorize(measured.plan(), meta(T1, 2)),
         TransitionError::PlanHashMismatch,
@@ -832,7 +835,7 @@ fn failure_cannot_precede_previous_event() {
 #[test]
 fn rewind_at_exact_limit_is_accepted() {
     let plan = plan(Op::Delete, WIN_ROOT, &[BUILD]);
-    let verdict = classify(&plan, &policy(WIN_HOME, "gate_clock_rewind_seconds = 5"));
+    let verdict = classify(&plan, &policy(WIN_HOME, "gate_clock_rewind_seconds = 5")).unwrap();
     let action = Action::plan(id("act-01"), &verdict, meta("2030-01-02T00:00:02.1Z", 1))
         .unwrap()
         .0;
@@ -846,7 +849,7 @@ fn rewind_at_exact_limit_is_accepted() {
 #[test]
 fn rewind_one_microsecond_over_limit_is_refused() {
     let plan = plan(Op::Delete, WIN_ROOT, &[BUILD]);
-    let verdict = classify(&plan, &policy(WIN_HOME, "gate_clock_rewind_seconds = 5"));
+    let verdict = classify(&plan, &policy(WIN_HOME, "gate_clock_rewind_seconds = 5")).unwrap();
     let action = Action::plan(id("act-01"), &verdict, meta("2030-01-02T00:00:02.1Z", 1))
         .unwrap()
         .0;
