@@ -300,14 +300,15 @@ Além dos cinco do JSON-RPC 2.0 (`-32700`, `-32600`, `-32601`, `-32602`, `-32603
 WebSocket em loopback entre a interface (navegador ou casca) e o núcleo. Como a conexão é autenticada está na [ADR 0020](../docs/adr/0020-local-api-authentication.md). Cada mensagem é um texto JSON.
 
 - Da interface ao núcleo: comandos `command.request:1`, cada método com Schema próprio que fixa `method` e fecha `params` (tabela [API local](#api-local-1)). O primeiro comando de toda conexão é `auth.hello`; antes dele o núcleo não aceita outro.
-- Do núcleo à interface: `urn:ads:contract:local-api.server-message:2`, que é a resposta `command.response:2` a um comando, a resposta `command.harness.list.response:1` a `harness.list` ou um evento `event.envelope:1` de um stream assinado por `events.subscribe`. A saída do terminal chega como evento `session.output:1`. A `:1` (sem a resposta de `harness.list`) continua no repositório, sem alteração.
+- Do núcleo à interface: `urn:ads:contract:local-api.server-message:3`, que é a resposta `command.response:2` a um comando, a resposta `command.harness.list.response:1` a `harness.list`, a resposta `command.queue.get.response:1` a `queue.get` ou um evento `event.envelope:1` de um stream assinado por `events.subscribe`. A saída do terminal chega como evento `session.output:1`. A `:1` (sem a resposta de `harness.list`) e a `:2` (sem a resposta de `queue.get`) continuam no repositório, sem alteração.
+- `queue.get`, `queue.start` e `queue.stop` nomeiam a fila em `params.queue_id` e não levam mais nada: o dono e o aparelho vêm do núcleo, nunca do pedido. `queue.get` só lê e, como `harness.list`, fica fora da cache de idempotência. `queue.start` recusa a fila já ligada com `QUEUE_ALREADY_ENABLED`. `queue.stop` expressa o estado desejado: é sempre aceito, não consulta a cache de idempotência (repetir uma parada antiga depois de religar para a fila de novo) e responde `replayed: true` quando a fila já estava parada e nada foi gravado. Fila que o núcleo não serve volta `QUEUE_NOT_CONFIGURED`. A `:3` segue a mesma regra aditiva da `:2`: só quem envia `queue.get` recebe a resposta nova.
 - `harness.list` só lê: devolve os identificadores das ferramentas ligadas e os apelidos de pasta de trabalho da configuração do usuário, para a interface saber o que pode abrir. O `params` é um objeto só com o `_meta` obrigatório do envelope. O `result` é fechado e só leva nomes; programa, argumentos, ambiente e caminho nunca saem do núcleo. Comando recusado volta como `command.response:2` com `error`.
 - A `:2` é uma extensão aditiva, acionada pelo pedido: não há negociação de versão no `auth.hello` nem marcador na mensagem. O núcleo só manda a resposta de `harness.list` a quem enviou `harness.list`; para um cliente que nunca o envia, toda mensagem continua cabendo na `:1`. Um núcleo anterior ao comando o recusa com `METHOD_NOT_FOUND`; a interface mostra, sem botões de abertura, que o núcleo precisa ser atualizado.
 - A interface escolhe a ferramenta pelo identificador do adaptador (`harness`) e a pasta pelo apelido (`workdir_alias`). `session.open` recusa `program`, `args`, `env` e `cwd`: o que roda, com que argumentos, em que ambiente e em que pasta sai só da configuração do usuário no núcleo.
 - Limites: colunas e linhas de 1 a 1000 (os mesmos do `pty-host/1`); `session.write` leva de 1 a 65536 bytes (87384 caracteres em base64), o que cabe com folga no quadro padrão do `pty-host/1` (`max_frame_bytes` de 1 MiB). Texto maior vai em vários comandos, na ordem.
 - O Schema aceita `origin: "remote"` no `_meta`, como o envelope de comando. Quem recusa comando remoto na API local é o núcleo (ADR 0020), não o Schema: o mesmo comando pode chegar, assinado, pelo transporte remoto.
 
-`server-message` é `anyOf`, não `oneOf`: as duas alternativas são objetos fechados e cada uma exige um campo que a outra recusa (`jsonrpc` na resposta; `type` no evento), então nenhum documento cabe nas duas e `anyOf` aceita exatamente o mesmo que `oneOf` aceitaria. Na `:2` vale o mesmo para a terceira alternativa: o `result` de `command.response:2` é fechado e exige `accepted`, que o de `harness.list.response:1`, também fechado, recusa; e a resposta de `harness.list` exige `result`, que a recusa (`error`) não tem. O gerador de Rust só traduz `oneOf` com um campo de valor fixo que distinga as alternativas.
+`server-message` é `anyOf`, não `oneOf`: as duas alternativas são objetos fechados e cada uma exige um campo que a outra recusa (`jsonrpc` na resposta; `type` no evento), então nenhum documento cabe nas duas e `anyOf` aceita exatamente o mesmo que `oneOf` aceitaria. Na `:2` vale o mesmo para a terceira alternativa: o `result` de `command.response:2` é fechado e exige `accepted`, que o de `harness.list.response:1`, também fechado, recusa; e a resposta de `harness.list` exige `result`, que a recusa (`error`) não tem. Na `:3`, o `result` fechado de `queue.get.response:1` exige `queue_id` e `state`, que os de `harness.list.response:1` e de `command.response:2` recusam, e vice-versa. O gerador de Rust só traduz `oneOf` com um campo de valor fixo que distinga as alternativas.
 
 #### Prova do daemon no desktop
 
@@ -386,7 +387,7 @@ O manifesto (`urn:ads:record:update-manifest:1`) é assinado no CI. A assinatura
 
 ### API local
 
-Os sete comandos estendem `urn:ads:command:request:1` com `allOf`, fixam `method` e fecham `params` (o `_meta` continua o do envelope).
+Os dez comandos estendem `urn:ads:command:request:1` com `allOf`, fixam `method` e fecham `params` (o `_meta` continua o do envelope).
 
 | Schema | O que descreve |
 |---|---|
@@ -399,8 +400,14 @@ Os sete comandos estendem `urn:ads:command:request:1` com `allOf`, fixam `method
 | `urn:ads:contract:local-api.server-message:1` | O que o núcleo manda à interface pelo WebSocket: resposta `command.response:2` ou evento `event.envelope:1`. |
 | `urn:ads:command:harness.list:1` | Pede, só para leitura, as ferramentas ligadas na configuração do usuário e os apelidos de pasta de trabalho. |
 | `urn:ads:command:harness.list.response:1` | Resposta aceita de `harness.list`: identificadores das ferramentas e apelidos de pasta, só nomes, nunca programa, argumentos, ambiente ou caminho. |
-| `urn:ads:contract:local-api.server-message:2` | A `:1` mais a resposta de `harness.list`. É a que o núcleo escreve; a `:1` não é alterada. |
-| `urn:ads:contract:local-api.error-code:1` | [Códigos emitidos pela API local](schemas/contract.local-api.error-code.v1.schema.json), com nomes e significados. Recusas encaminhadas do host seguem o contrato [pty-host/1](#contrato-pty-host1). |
+| `urn:ads:contract:local-api.server-message:2` | A `:1` mais a resposta de `harness.list`. Versão anterior à `:3`, sem alteração. |
+| `urn:ads:command:queue.get:1` | Pede, só para leitura, o estado de uma fila de tarefas (`stopped` ou `enabled`). |
+| `urn:ads:command:queue.get.response:1` | Resposta aceita de `queue.get`: o id da fila e o estado. |
+| `urn:ads:command:queue.start:1` | O dono liga a fila pela interface local; o núcleo registra `queue.enabled` antes de admitir tarefas. |
+| `urn:ads:command:queue.stop:1` | O dono para a fila; sempre aceito, e a fila já parada não ganha evento. |
+| `urn:ads:contract:local-api.server-message:3` | A `:2` mais a resposta de `queue.get`. É a que o núcleo escreve; a `:1` e a `:2` não são alteradas. |
+| `urn:ads:contract:local-api.error-code:1` | [Códigos da API local](schemas/contract.local-api.error-code.v1.schema.json) até `SESSION_SETUP_FAILED`, com nomes e significados. Recusas encaminhadas do host seguem o contrato [pty-host/1](#contrato-pty-host1). |
+| `urn:ads:contract:local-api.error-code:2` | [Códigos emitidos pela API local](schemas/contract.local-api.error-code.v2.schema.json): os da `:1` mais `QUEUE_NOT_CONFIGURED` e `QUEUE_ALREADY_ENABLED`. É a que o núcleo emite; a `:1` não é alterada. |
 
 ### Eventos de sessão
 

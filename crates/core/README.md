@@ -75,7 +75,7 @@ Se o relógio do núcleo salta para a frente, `ts` e `now` podem avançar juntos
 
 Os limites da janela se liberam sozinhos com o tempo. Uma fila que atingiu o total só volta a admitir quando o dono aumenta `admission_limit`. Criar outra fila também resolve, mas a chave de deduplicação inclui a fila: a fila nova não herda as origens reservadas, e a mesma issue pode ser admitida de novo.
 
-`AuthenticatedDevice` não tem construtor público. Toda função pública deste crate pode ser chamada por qualquer crate que dependa dele, e a matriz de dependências deixa a camada de autenticação fora do núcleo. Por isso nenhum construtor aqui distingue a camada de autenticação de um chamador que copia o id do aparelho de um pedido. O construtor entra junto com essa camada e com o cadastro de aparelhos.
+`AuthenticatedDevice` não tem construtor público. Toda função pública deste crate pode ser chamada por qualquer crate que dependa dele, e a matriz de dependências deixa a camada de autenticação fora do núcleo. Por isso nenhum construtor aqui distingue a camada de autenticação de um chamador que copia o id do aparelho de um pedido. O construtor entra junto com essa camada e com o cadastro de aparelhos. Para o dono agindo pela interface local, cuja conexão a composição já autenticou, `change_local_queue_state` aplica a mesma transição de `change_queue_state` recebendo o dono como dado, sempre com o canal `LocalUi`, e não produz `AuthenticatedDevice`; por isso não abre nenhuma outra política reservada ao dono (política da fila, reancoragem, aceite de tarefa).
 
 ## Ambiente do processo filho (`src/child_env.rs`)
 
