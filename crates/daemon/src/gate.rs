@@ -13,14 +13,14 @@ use ads_contracts::{EventEnvelopeV1, EventEnvelopeV1Stream};
 use ads_core::gate::{
     AbsPath, ActionPlan, ActionPlanRecord, ActionSnapshot, Command, Decision, Estimate, Event,
     EventMeta, GateHistory, GateJournal, GatePolicy, Id, JournalError, JournalGate,
-    OperationRequest, PlanError, PlanOperation, PlanRequest, State, TargetRequest, classify,
+    OperationRequest, PlanError, PlanOperation, PlanRequest, StartedExecution, State,
+    TargetRequest, classify,
 };
 use ads_storage::{EventLog, PendingReads, StorageError, StoredEvent};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::api::checked;
-use crate::approvals::not_approvable;
 use crate::audit::ProductLog;
 use crate::events::new_id;
 
@@ -368,8 +368,8 @@ impl SessionGate {
         }
         // Before the license: the effects the owner approved have to be the ones on disk now.
         let approved = match self.approved_effects(log, action_id)? {
-            Approved::Effects(effects) => Some(effects),
-            Approved::NotNeeded => None,
+            Approved::Verified(approval) => ExecutionEvidence::Approved(approval),
+            Approved::NotNeeded => ExecutionEvidence::WithoutApproval,
             Approved::Refused(stop) => {
                 let command = Command::Fail {
                     error_code: stop.reason.error_code(),
@@ -382,15 +382,15 @@ impl SessionGate {
             }
         };
         let mut gate = JournalGate::new(&self.policy, log).for_work_root(&self.root);
-        let started = gate.authorize(action_id, start)?;
+        let license = FileExecutionLicense {
+            started: gate.authorize(action_id, start)?,
+            evidence: approved,
+        };
         #[cfg(test)]
         if let Some(before_execute) = self.before_execute.take() {
             before_execute();
         }
-        let ran = match &approved {
-            Some(effects) => self.executor.execute_approved(started, effects),
-            None => self.executor.execute_recorded(started),
-        };
+        let ran = license.run(&mut self.executor);
         match ran {
             Ok(completed) => {
                 let (recorded, report) = completed.record(&mut gate, action_id, finish);
@@ -412,10 +412,46 @@ impl SessionGate {
     }
 }
 
+struct VerifiedApproval(Effects);
+
+enum ExecutionEvidence {
+    WithoutApproval,
+    Approved(VerifiedApproval),
+}
+
+/// Licença de execução da composição local.
+///
+/// ```compile_fail,E0451
+/// fn fabricate(started: ads_core::gate::StartedExecution) {
+///     let _ = ads_daemon::gate::FileExecutionLicense { started, evidence: todo!() };
+/// }
+/// ```
+pub struct FileExecutionLicense {
+    started: StartedExecution,
+    evidence: ExecutionEvidence,
+}
+
+impl FileExecutionLicense {
+    fn run(self, executor: &mut Executor) -> Result<ads_adapter_fs::Completed, Box<Failure>> {
+        match self.evidence {
+            ExecutionEvidence::WithoutApproval if self.started.permit().approval_id().is_none() => {
+                executor.execute_recorded(self.started)
+            }
+            ExecutionEvidence::WithoutApproval => Err(Failure::before_anything(Stop::new(
+                Reason::EffectsChanged,
+                "the started approval has no verified effects",
+            ))),
+            ExecutionEvidence::Approved(VerifiedApproval(effects)) => {
+                executor.execute_approved(self.started, &effects)
+            }
+        }
+    }
+}
+
 enum Approved {
     /// Approved with this record: the execution has to find it again.
-    Effects(Effects),
-    /// No approval with a record of effects, and none is needed.
+    Verified(VerifiedApproval),
+    /// No approval to verify on this path.
     NotNeeded,
     /// Refused before the license.
     Refused(Stop),
@@ -438,15 +474,10 @@ impl SessionGate {
             return Ok(Approved::NotNeeded);
         }
         let history = log.load(action_id)?;
-        let fields = history.plan.fields();
-        let needed = !not_approvable(fields, false).is_empty();
         let refused =
             |detail: &str| Ok(Approved::Refused(Stop::new(Reason::EffectsChanged, detail)));
         let Some(committed) = approved_hash(log, &history)? else {
-            if needed {
-                return refused("the approval names no record of effects");
-            }
-            return Ok(Approved::NotNeeded);
+            return refused("the approval has no local answer naming a record of effects");
         };
         let Recorded::Effects(recorded, hash) = recorded_effects(log, &history.plan)? else {
             return refused("the record of effects the approval names is missing");
@@ -458,7 +489,7 @@ impl SessionGate {
             return refused("the plan is not the one recorded under the current policy");
         };
         match self.executor.rehearse_effects(action_id, &plan) {
-            Ok(found) if found == recorded => Ok(Approved::Effects(recorded)),
+            Ok(found) if found == recorded => Ok(Approved::Verified(VerifiedApproval(recorded))),
             Ok(_) => refused("the disk no longer holds what was approved"),
             Err(stop) => Ok(Approved::Refused(stop)),
         }
@@ -726,9 +757,15 @@ fn approved_hash(
     let Some(answer) = crate::approvals::answer_by_id(log, approval, cause)? else {
         return Ok(None);
     };
+    let answer =
+        checked("urn:ads:event:answer.recorded:2", answer).map_err(|_| JournalError::Integrity)?;
     let data = &answer["data"];
     let fields = history.plan.fields();
-    if data["action_id"] != fields.action_id.as_str()
+    if data["via"] != "local_ui"
+        || granted["data"]["via"] != "local_ui"
+        || answer["actor"] != granted["actor"]
+        || data["approval_id"] != approval
+        || data["action_id"] != fields.action_id.as_str()
         || data["decision"] != "approve"
         || data["plan_hash"] != fields.plan_hash.as_str()
     {
