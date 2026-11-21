@@ -11,7 +11,8 @@ import {
 export type Unsubscribe = () => void
 
 /** Estado da ligação com o núcleo. É estado do cliente, não mensagem: não vem dos contratos. */
-export type ConnectionState = 'disconnected' | 'connecting' | 'connected'
+export type ConnectionState =
+  'disconnected' | 'connecting' | 'connected' | 'incompatible' | 'relaunch_required'
 
 export { SESSION_CLOSE_PENDING, SESSION_SETUP_FAILED, SUBSCRIPTION_REPLAY_UNAVAILABLE }
 

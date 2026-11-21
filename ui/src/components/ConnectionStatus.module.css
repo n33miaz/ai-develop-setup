@@ -40,7 +40,7 @@
 }
 
 @media (width < 30rem) {
-  .text:not([data-relaunch='true']) {
+  .text:not([data-actionable='true']) {
     display: none;
   }
 }

@@ -72,6 +72,16 @@ export function desktopBridge(browser: Window): DesktopBridge | undefined {
 export function selectDesktopClient(
   { core }: DesktopBridge,
   replay: ReplaySettings,
+  retryInitial?: unknown,
+  retryMax?: unknown,
 ): { client: CoreClient; live: true } {
-  return { client: createCoreClient(desktopSocketFactory(core), replay), live: true }
+  const delay = (value: unknown) => {
+    const parsed = positive(value)
+    return parsed !== undefined && parsed <= 2_147_483_647 ? parsed : undefined
+  }
+  const socketFactory = desktopSocketFactory(core, {
+    initialMs: delay(retryInitial),
+    maxMs: delay(retryMax),
+  })
+  return { client: createCoreClient(socketFactory, replay), live: true }
 }

@@ -61,6 +61,8 @@ export const ptBR = {
   'connection.label': 'Núcleo',
   'connection.bootstrapFailed': 'A janela não recebeu a conexão do núcleo.',
   'connection.disconnected': 'desconectado',
+  'connection.incompatibleDesktop':
+    'prova de identidade ausente. Confira se a casca e o daemon têm a mesma versão.',
   'connection.relaunchDesktop': 'conexão indisponível. Reabra pelo lançador.',
   'connection.connecting': 'conectando',
   'connection.connected': 'conectado',
@@ -145,6 +147,8 @@ export const en: Record<MessageKey, string> = {
   'connection.label': 'Core',
   'connection.bootstrapFailed': 'The window did not receive the core connection.',
   'connection.disconnected': 'disconnected',
+  'connection.incompatibleDesktop':
+    'identity proof missing. Check that the shell and daemon are the same version.',
   'connection.relaunchDesktop': 'connection unavailable. Reopen from the launcher.',
   'connection.connecting': 'connecting',
   'connection.connected': 'connected',

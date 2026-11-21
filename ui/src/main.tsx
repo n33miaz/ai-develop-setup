@@ -52,7 +52,12 @@ function render(root: HTMLElement) {
   const react = createRoot(root)
   try {
     const { client, live } = bridge
-      ? selectDesktopClient(bridge, replay)
+      ? selectDesktopClient(
+          bridge,
+          replay,
+          import.meta.env.VITE_DESKTOP_RETRY_INITIAL_MS,
+          import.meta.env.VITE_DESKTOP_RETRY_MAX_MS,
+        )
       : selectCoreClient(window, undefined, replay)
     react.render(
       <StrictMode>
@@ -60,7 +65,6 @@ function render(root: HTMLElement) {
           <App
             client={client}
             live={live}
-            desktop={Boolean(bridge)}
             sessionStreams={sessionStreams}
             harnesses={harnesses}
             workdir={workdir}
