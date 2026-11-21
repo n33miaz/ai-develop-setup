@@ -84,3 +84,8 @@ class WindowsPathFiltersTest(unittest.TestCase):
                     )
                 if "ads-contracts" in visited:
                     self.assertRegex("contracts/schemas/example.json", path_filter)
+                if variable == "SHELL_PATHS":
+                    # A janela empacota a interface e o teste dela roda pelo script de fumaça.
+                    for path in ("ui/src/main.ts", "tools/smoke_desktop.py"):
+                        self.assertRegex(path, path_filter, f"{variable} misses {path}")
+                    self.assertNotRegex("tools/smoke_desktop.py.bak", path_filter)
