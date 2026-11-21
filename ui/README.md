@@ -82,6 +82,15 @@ desenvolvimento, sem compilação dinâmica no navegador nem alteração de CSP.
 Replay desde zero aceita o início do histórico ainda retido; depois disso,
 uma lacuna na sequência encerra a conexão. Eventos repetidos são ignorados.
 
+## Uso e contas
+
+Abra **Uso e contas** abaixo do cabeçalho. No modo de exemplo, o painel mostra
+perfis fictícios, o perfil da próxima sessão, a cota observada e restante por
+janela, o saldo do orçamento da tarefa em USD e a sugestão de roteamento. Os
+dados vêm dos exemplos de referência dos contratos. A sugestão é exibida para
+consulta e o seletor fica desativado. No modo conectado, o painel avisa que a
+API local ainda não oferece esses dados.
+
 ## Instalar a interface como aplicativo
 
 Em `ui/`, execute `npm ci`, `npm run build` e `npm run preview` para

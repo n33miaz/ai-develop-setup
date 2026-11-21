@@ -1,0 +1,89 @@
+.panel {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.panel summary {
+  min-height: 2.75rem;
+  padding: 0.625rem 1rem;
+  cursor: pointer;
+}
+
+.panel summary:focus-visible {
+  outline-offset: -3px;
+}
+
+.content {
+  max-height: 50dvh;
+  overflow: auto;
+  padding: 0.5rem 1rem 1rem;
+  overflow-wrap: anywhere;
+}
+
+.tool {
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+}
+
+.tool h2,
+.tool h3,
+.content p {
+  margin: 0 0 0.5rem;
+}
+
+.tool h2 {
+  font-size: 1.125rem;
+}
+
+.tool h3 {
+  font-size: 1rem;
+}
+
+.picker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.picker select {
+  max-width: 100%;
+  min-height: 2.75rem;
+  padding-inline: 0.5rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 0.5rem;
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  opacity: 1;
+}
+
+.profiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr));
+  gap: 0.5rem;
+  padding: 0;
+  list-style: none;
+}
+
+.profiles li {
+  padding: 0.75rem;
+  background: var(--surface-2);
+  border-radius: 0.5rem;
+}
+
+.profiles dl,
+.profiles dd {
+  margin: 0;
+}
+
+.profiles dl {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.profiles dt {
+  font-weight: 600;
+}

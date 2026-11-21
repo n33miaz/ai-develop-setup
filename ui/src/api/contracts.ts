@@ -31,6 +31,9 @@ import type { EventUsageRecordedV1 } from '../../../contracts/generated/ts/event
 
 import type { CommandHarnessListResponseV1 } from '../../../contracts/generated/ts/command.harness.list.response.v1'
 
+export type { EventRoutingProposedV2 } from '../../../contracts/generated/ts/event.routing.proposed.v2'
+export type { RecordUsageEventV1 } from '../../../contracts/generated/ts/record.usage_event.v1'
+
 export type { CommandRequestV1 } from '../../../contracts/generated/ts/command.request.v1'
 export type { CommandResponseV2 } from '../../../contracts/generated/ts/command.response.v2'
 export type { CommandHarnessListResponseV1 }
