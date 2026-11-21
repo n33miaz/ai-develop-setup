@@ -286,10 +286,10 @@ impl Shown {
             Ok(Recorded::Effects(effects, hash)) => Self::Effects(effects, hash),
             Ok(Recorded::Refused(code)) => Self::Refused(code),
             Err(error) => {
-                log::warn!(
+                crate::diagnostic::warn(format_args!(
                     "record of effects of {} not readable: {error}",
                     action.as_str()
-                );
+                ));
                 Self::Unreadable
             }
         }
@@ -508,7 +508,9 @@ impl ApprovalControl for ApprovalDesk {
                 let history = match entry {
                     StoredPending::History(history) => history,
                     StoredPending::Unreadable(action_id) => {
-                        log::warn!("pending approval of {action_id} not readable; not listed");
+                        crate::diagnostic::warn(format_args!(
+                            "pending approval of {action_id} not readable; not listed"
+                        ));
                         page.unreadable += 1;
                         return Visit::Skip;
                     }
@@ -1712,6 +1714,11 @@ mod tests {
                 "effects_unreadable"
             ])
         );
+        assert!(
+            crate::diagnostic::seen()
+                .iter()
+                .any(|warning| warning.starts_with("record of effects of act-odd not readable"))
+        );
         assert_eq!(item(&fine)["not_approvable"], json!([]));
 
         let approve = params(&odd, &odd_approval, &odd_hash, "approve");
@@ -2412,8 +2419,12 @@ mod tests {
         let page = desk.pending(&session()).unwrap();
         assert_eq!(only(&page.approvals)["action_id"], fine.as_str());
         assert!(!page.more);
-        // Left out, but counted, so the owner learns it is there.
+        // Left out, but counted, so the owner learns it is there, and which one it is.
         assert_eq!(page.unreadable, 1);
+        assert!(
+            crate::diagnostic::seen()
+                .contains(&"pending approval of act-broken not readable; not listed".to_owned())
+        );
         let deny = params(&fine, &approval, &hash, "deny");
         assert_eq!(
             desk.answer(&session(), &deny, &new_id().unwrap()),

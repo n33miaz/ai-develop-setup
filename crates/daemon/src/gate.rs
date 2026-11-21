@@ -318,10 +318,10 @@ impl SessionGate {
             }
         };
         if let Err(error) = written {
-            log::warn!(
+            crate::diagnostic::warn(format_args!(
                 "effects of {} not recorded: {error}",
                 snapshot.action_id.as_str()
-            );
+            ));
         }
         Ok(snapshot)
     }
