@@ -94,7 +94,8 @@ que aparecer é honrado, qualquer que seja a data, inclusive depois de o relógi
 ou de um arquivo antigo ser movido para a pasta. A exceção é um `stop` que não pôde
 ser conferido ou removido na partida: até ele sair da pasta, a regra da data continua
 valendo; se for antigo, é descartado quando a remoção volta a funcionar, e o descarte
-aparece em `last_error`.
+aparece em `last_error` e fica marcado em `stop_pending_at_startup`, que um erro
+seguinte não apaga.
 Um pedido criado enquanto o lançador está abrindo vale mesmo antes da primeira
 publicação. Para identificar o estado atual, compare `launcher_pid` com o PID
 do processo que você iniciou e confira se `stopped` é `false`.

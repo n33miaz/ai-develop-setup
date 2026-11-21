@@ -546,6 +546,8 @@ fn run_with_interrupt(
             let consumed =
                 publication.record_signal("consume stop signal", &control, stop, file_stop);
             if stale {
+                // Kept apart from `last_error`, which the next error replaces.
+                publication.stop_pending_at_startup = true;
                 publication.report(format!(
                     "discard stale stop signal: removed {}, left from before this run",
                     control.path().join(stop).display()
@@ -1058,8 +1060,8 @@ pub(crate) mod tests {
     }
 
     /// A leftover `stop` that startup could not remove: `prepare` runs on the launcher thread
-    /// before it starts, and `unblock` once both children run. The leftover must be discarded
-    /// and a new `stop` must still be honored.
+    /// before it starts, and `unblock` once both children run. The leftover must be discarded,
+    /// with a record the next error cannot replace, and a new `stop` must still be honored.
     fn leftover_stop_is_discarded_then_new_one_honored(
         dir: &Path,
         prepare: impl FnOnce() + Send + 'static,
@@ -1096,6 +1098,10 @@ pub(crate) mod tests {
                     .is_some_and(|error| error.starts_with("discard stale stop signal: removed"))
             })
         });
+        assert_eq!(
+            discarded["stop_pending_at_startup"], true,
+            "the discard must stay recorded after the next error: {discarded}"
+        );
         let still_running = !worker.is_finished();
         fs::write(&stop, []).unwrap();
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -1113,6 +1119,7 @@ pub(crate) mod tests {
         assert!(honored, "a new stop must stop the launcher");
         let stopped = state_value(&state).unwrap();
         assert_eq!(stopped["stopped"], true);
+        assert_eq!(stopped["stop_pending_at_startup"], true);
         assert!(!stop.exists());
     }
 
