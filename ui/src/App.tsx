@@ -30,6 +30,9 @@ import { sessionInput } from './api/session'
 import styles from './App.module.css'
 import { ConnectionStatus } from './components/ConnectionStatus'
 import { Sidebar } from './components/Sidebar/Sidebar'
+import { queueApprovals } from './api/queueApprovals'
+import { QueuePanel } from './components/QueuePanel'
+import { ApprovalsPanel } from './components/ApprovalsPanel'
 import { UsagePanel } from './components/UsagePanel/UsagePanel'
 import { eventByteSource, staticByteSource } from './components/Terminal/byteSource'
 import { Terminal } from './components/Terminal/Terminal'
@@ -48,6 +51,15 @@ import type { ThemePreference } from './theme/theme'
 import { useTheme } from './theme/useTheme'
 import type { SessionEvent } from './api'
 import { UpdateNotice } from './pwa/UpdateNotice'
+
+function QueueAndApprovals({ api }: { api: ReturnType<typeof queueApprovals> }) {
+  return (
+    <>
+      <QueuePanel api={api} />
+      <ApprovalsPanel api={api} />
+    </>
+  )
+}
 
 const NO_STREAMS: readonly string[] = []
 
@@ -148,6 +160,7 @@ export function App({
   const sidebarId = useId()
   const connection = useConnectionState(client)
   const generation = useConnectionGeneration(client)
+  const controls = useMemo(() => queueApprovals(client), [client])
   const { preference, cycle } = useTheme()
   const compact = useSyncExternalStore(subscribeCompact, isCompact)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -626,6 +639,7 @@ export function App({
       <p className={styles.notice}>{t(live ? 'notice.live' : 'notice.wip')}</p>
       <UpdateNotice className={styles.notice} />
       <UsagePanel tools={live ? null : sampleUsage} />
+      {live && connection === 'connected' && <QueueAndApprovals key={generation} api={controls} />}
       <div className={styles.body}>
         <Sidebar
           id={sidebarId}

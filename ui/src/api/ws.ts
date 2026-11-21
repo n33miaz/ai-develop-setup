@@ -4,6 +4,7 @@ import {
   isSubscriptionEndCode,
   type ConnectionState,
   type CoreClient,
+  type LocalCommandReply,
   type SubscriptionEndCode,
 } from './client'
 import { newCommand } from './command'
@@ -12,12 +13,11 @@ import {
   SUBSCRIPTION_REPLAY_UNAVAILABLE,
   type CommandHarnessListResponseV1,
   type CommandRequestV1,
-  type CommandResponseV2,
   type EventEnvelopeV1,
 } from './contracts'
-import { isHarnessList, isLocalCommand, isServerMessage } from './wire'
+import { isApprovalList, isHarnessList, isLocalCommand, isQueueGet, isServerMessage } from './wire'
 
-type Reply = CommandResponseV2 | CommandHarnessListResponseV1
+type Reply = LocalCommandReply | CommandHarnessListResponseV1
 
 export type CoreSocket = Pick<WebSocket, 'send' | 'close' | 'addEventListener'>
 
@@ -41,7 +41,7 @@ export interface WsClientOptions {
 }
 
 function accepted(response: Reply): boolean {
-  return !isHarnessList(response) && 'result' in response
+  return response.result !== undefined && 'accepted' in response.result
 }
 
 /** Quantos ids de `harness.list` vencidos são lembrados para descartar a resposta tardia. */
@@ -292,8 +292,12 @@ export function createCoreClient(
             const request = pending.get(response.id)
             if ('error' in response) {
               response.error = { code: response.error.code, message: 'command rejected' }
-            } else if (request && isHarnessList(response) !== (request.method === 'harness.list')) {
-              // Cada resposta tem a forma do pedido: a lista só responde a harness.list.
+            } else if (
+              request &&
+              (isHarnessList(response) !== (request.method === 'harness.list') ||
+                isQueueGet(response) !== (request.method === 'queue.get') ||
+                isApprovalList(response) !== (request.method === 'approval.list'))
+            ) {
               fail()
               return
             }
@@ -349,7 +353,7 @@ export function createCoreClient(
     send(command) {
       if (state !== 'connected') return Promise.reject(unavailable())
       if (command.method === 'harness.list') return Promise.reject(new Error('use listHarnesses'))
-      return transmit(command) as Promise<CommandResponseV2>
+      return transmit(command) as ReturnType<CoreClient['send']>
     },
     listHarnesses() {
       if (state !== 'connected') return Promise.reject(unavailable())
