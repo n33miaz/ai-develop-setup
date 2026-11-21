@@ -1,5 +1,8 @@
 #![cfg(windows)]
 
+#[path = "common/temp.rs"]
+mod temp;
+
 use std::time::Duration;
 
 use ads_daemon::pty_client::{ClientConfig, ClientError, PtyClient};
@@ -10,8 +13,7 @@ use ads_ptyhost::HostConfig;
 /// it before sending `host.hello`.
 #[tokio::test]
 async fn endpoint_not_served_by_the_user_is_refused_before_hello() {
-    let path = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
-        .join(format!("daemon-not-a-pipe-{}", std::process::id()));
+    let path = temp::directory().join(format!("daemon-not-a-pipe-{}", std::process::id()));
     std::fs::write(&path, b"").unwrap();
     let config =
         HostConfig::from_toml_str(&format!("channel_path = '{}'\n", path.display())).unwrap();

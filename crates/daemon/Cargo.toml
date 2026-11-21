@@ -9,6 +9,11 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[[test]]
+name = "controls_binary"
+path = "tests/controls_binary/main.rs"
+harness = false
+
 [dependencies]
 ads-private-dir.workspace = true
 ads-adapter-claude = { path = "../adapters/claude" }

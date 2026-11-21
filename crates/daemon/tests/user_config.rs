@@ -3,8 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn user_file(name: &str, contents: &[u8]) -> PathBuf {
-    let path =
-        Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{name}-{}.toml", std::process::id()));
+    let path = temp::directory().join(format!("{name}-{}.toml", std::process::id()));
     std::fs::write(&path, contents).unwrap();
     path
 }
@@ -71,7 +70,7 @@ fn configuration_paths_must_be_literal_absolute_regular_small_files() {
             assert!(!error.contains("sentinel"), "{error}");
         }
         assert_eq!(
-            load(flag, env!("CARGO_TARGET_TMPDIR")).unwrap_err(),
+            load(flag, temp::directory()).unwrap_err(),
             format!("{flag} must name a regular file")
         );
         let large = user_file("daemon-large", &vec![b'#'; MAX_CONFIG_BYTES as usize + 1]);
@@ -79,7 +78,7 @@ fn configuration_paths_must_be_literal_absolute_regular_small_files() {
             load(flag, large).unwrap_err(),
             format!("{flag} file exceeds {MAX_CONFIG_BYTES} bytes")
         );
-        let missing = Path::new(env!("CARGO_TARGET_TMPDIR")).join("daemon-missing.toml");
+        let missing = temp::directory().join("daemon-missing.toml");
         assert_eq!(
             load(flag, missing).unwrap_err(),
             format!("cannot read {flag} file")
@@ -186,3 +185,5 @@ fn refuses_an_installation_with_a_live_daemon_lock() {
             .contains("invalid daemon arguments")
     );
 }
+#[path = "common/temp.rs"]
+mod temp;
