@@ -103,6 +103,8 @@ pub struct ApiConfig {
     pub ui_base_url: String,
     #[serde(default)]
     pub allowed_origins: Vec<String>,
+    #[serde(skip)]
+    desktop: bool,
     pub auth_timeout_ms: u64,
     pub max_sessions: usize,
     pub max_write_bytes: usize,
@@ -121,6 +123,11 @@ pub struct ApiConfig {
     pub close_retry_ms: u64,
 }
 impl ApiConfig {
+    pub fn for_desktop(mut self) -> Self {
+        self.desktop = true;
+        self
+    }
+
     pub fn from_toml_str(overrides: &str) -> Result<Self, ApiError> {
         let mut base: toml::Value = toml::from_str(include_str!("../../../defaults/daemon.toml"))
             .map_err(|_| ApiError::Invalid)?;
@@ -984,6 +991,9 @@ impl LocalApi {
             .map(|a| a.port())
             .map_err(|_| ApiError::Unavailable)
     }
+    pub fn desktop_bootstrap(&self) -> Result<String, ApiError> {
+        Ok(self.token.desktop_bootstrap(self.port()?))
+    }
     pub fn launch_url(&self) -> Result<String, ApiError> {
         Ok(self
             .token
@@ -1157,15 +1167,18 @@ async fn connection(
                 stream,
                 |request: &HttpRequest, response: Response| {
                     // A troca para UPGRADED acontece antes de o 101 sair: depois dele a conexão não pode ser expulsa.
-                    if permits_upgrade(request, port, &config.allowed_origins)
-                        && state
-                            .compare_exchange(
-                                BEFORE_UPGRADE,
-                                UPGRADED,
-                                Ordering::AcqRel,
-                                Ordering::Acquire,
-                            )
-                            .is_ok()
+                    if permits_upgrade(
+                        request,
+                        port,
+                        (!config.desktop).then_some(config.allowed_origins.as_slice()),
+                    ) && state
+                        .compare_exchange(
+                            BEFORE_UPGRADE,
+                            UPGRADED,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .is_ok()
                     {
                         Ok(response)
                     } else {

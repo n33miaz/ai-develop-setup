@@ -7,6 +7,14 @@ pasta definidos no TOML do usuário. Ferramenta sem programa recebe
 `HARNESS_NOT_CONFIGURED`. Ferramenta desconhecida, programa ou pasta
 inexistente e apelido de pasta fora da configuração recebem `INVALID_PARAMS`.
 
+## Modo desktop
+
+O lançador seleciona `--desktop` antes das opções de configuração e conecta
+a saída padrão do daemon ao pipe privado da casca. Nesse modo o daemon envia
+porta e token somente nesse canal. A API exige um upgrade sem cabeçalho
+`Origin` e mantém a conferência de `Host` e do token. O processo Rust da casca
+envia `auth.hello` antes de encaminhar mensagens da janela.
+
 ## Portão de ações de arquivo
 
 `ads_daemon::gate::execute` recebe o log ancorado, a política vigente e o executor da cerca. Quem chama fornece a medição e a decisão exigidas para o plano antes de solicitar a execução. O portão grava `action.started` antes de chamar o executor. Ao terminar, o daemon tenta gravar o resultado e devolve separadamente o relatório da operação e o status dessa gravação. Um início confirmado continua consumido mesmo se o resultado não puder ser gravado. A composição está disponível em Rust. A API local ainda não expõe comandos de execução de arquivos. Os instantes e identificadores de `start` e `finish` vêm de quem chama, e só o `ts` decide a validade da aprovação: quando a API existir, o daemon deve carimbar `ts` e `id` ele mesmo. Os itens da issue #26 que seguem abertos estão no [portão do núcleo](../core/README.md#máquina-de-estados).
@@ -285,8 +293,7 @@ pois o transporte tem diagnóstico capaz de mostrar payloads. Isso vale também
 em debug e não é configurável, por segurança. Não há logger nem arquivo de saída.
 `zeroize`, já presente no workspace, limpa o token ao descartá-lo e a URL logo
 após a impressão, inclusive quando o envio falha. O `auth.hello` é consumido
-antes do laço autenticado; sua cópia do token é limpa. A única
-exposição intencional do token é a linha inicial na saída padrão.
+antes do laço autenticado; sua cópia do token é limpa. O daemon entrega o token na linha inicial de conexão, ao navegador em desenvolvimento ou pelo pipe da casca no modo desktop.
 
 Os testes exercitam recusas de upgrade e autenticação, comandos negados,
 deduplicação entre conexões, limites, replay e eventos com o backend falso.

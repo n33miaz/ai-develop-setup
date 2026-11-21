@@ -61,6 +61,19 @@ async fn fixture_with_host(
     launcher: Arc<dyn Launcher>,
     host_config: HostConfig,
 ) -> Fixture {
+    fixture_with_config(
+        ApiConfig::from_toml_str(overrides).unwrap(),
+        launcher,
+        host_config,
+    )
+    .await
+}
+
+async fn fixture_with_config(
+    config: ApiConfig,
+    launcher: Arc<dyn Launcher>,
+    host_config: HostConfig,
+) -> Fixture {
     let backend = Arc::new(FakeBackend::with_echo());
     let host = Arc::new(PtyHost::new(backend.clone(), host_config).unwrap());
     let (near, far) = tokio::io::duplex(262144);
@@ -71,13 +84,7 @@ async fn fixture_with_host(
     ))
     .await
     .unwrap();
-    let api = LocalApi::bind(
-        ApiConfig::from_toml_str(overrides).unwrap(),
-        client,
-        launcher,
-    )
-    .await
-    .unwrap();
+    let api = LocalApi::bind(config, client, launcher).await.unwrap();
     let port = api.port().unwrap();
     let url = api.launch_url().unwrap();
     let (http, fragment) = url.split_once('#').unwrap();
@@ -98,6 +105,37 @@ async fn fixture_with_host(
         peer,
     }
 }
+#[tokio::test]
+async fn desktop_listener_requires_native_upgrade_and_token() {
+    let config = ApiConfig::from_toml_str("allowed_origins = ['http://127.0.0.1:5173']")
+        .unwrap()
+        .for_desktop();
+    let f = fixture_with_config(config, Arc::new(DisabledLauncher), HostConfig::defaults()).await;
+    let mut socket = connect(&f, None, None).await.unwrap();
+    transmit(
+        &mut socket,
+        &command("auth.hello", json!({"token": &f.token})),
+    )
+    .await;
+    assert!(receive(&mut socket).await.get("result").is_some());
+    let mut unauthenticated = connect(&f, None, None).await.unwrap();
+    transmit(&mut unauthenticated, &command("harness.list", json!({}))).await;
+    closed(&mut unauthenticated).await;
+    for wrong in [
+        "http://tauri.localhost",
+        "http://127.0.0.1:5173",
+        "null",
+        "",
+    ] {
+        let error = connect(&f, Some(wrong), None).await.unwrap_err();
+        assert!(matches!(
+            error,
+            tokio_tungstenite::tungstenite::Error::Http(response)
+                if response.status().as_u16() == 403
+        ));
+    }
+}
+
 async fn connect(
     f: &Fixture,
     origin: Option<&str>,

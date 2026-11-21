@@ -1,5 +1,16 @@
 # ads-shell
 
-Casca Tauri: janela, ícone de bandeja e painel, como cliente fino do núcleo.
+Casca Tauri para Windows. O Rust lê porta e token do pipe herdado, fecha a
+entrada padrão e autentica no WebSocket do daemon em loopback. A janela
+principal carrega o bundle, envia comandos e recebe respostas e eventos por
+IPC. A credencial fica no processo Rust. Recarregar a interface abre uma
+conexão nova com o daemon da execução atual.
 
-Estado: janela vazia que carrega a interface compilada (`ui/dist`) e ícone de bandeja com um menu mínimo (rótulos provisórios em inglês, ainda fora da i18n); ainda sem painel nem conexão com o núcleo. Compila no job `shell-check` do CI ([ADR 0007](../../docs/adr/0007-tauri-shell-from-the-first-milestone.md)).
+Fechar a janela a oculta na bandeja. A opção de saída encerra apenas a casca.
+Em uma nova execução do daemon, o lançador substitui a janela para usar a
+nova porta e o novo token. Os parâmetros da janela ficam na
+[configuração do lançador](../launcher/README.md).
+
+O job `shell-check` empacota a interface e abre a janela real. A opção interna
+`--smoke-test` exige a feature `desktop-smoke` e encerra a casca após encaminhar a primeira resposta autenticada ao IPC.
+O teste verifica que daemon e host continuam ativos.

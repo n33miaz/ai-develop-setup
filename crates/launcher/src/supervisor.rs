@@ -124,17 +124,7 @@ impl Process {
 
     fn stop(&mut self) -> io::Result<()> {
         if let Some(child) = &mut self.child {
-            let status = match child.try_wait()? {
-                Some(status) => status,
-                None => {
-                    if let Err(error) = child.kill()
-                        && child.try_wait()?.is_none()
-                    {
-                        return Err(error);
-                    }
-                    child.wait()?
-                }
-            };
+            let status = stop_child(child)?;
             self.record_exit(status);
         }
         Ok(())
@@ -157,6 +147,18 @@ impl Drop for Process {
             let _ = self.stop();
         }
     }
+}
+
+fn stop_child(child: &mut Child) -> io::Result<ExitStatus> {
+    if let Some(status) = child.try_wait()? {
+        return Ok(status);
+    }
+    if let Err(error) = child.kill()
+        && child.try_wait()?.is_none()
+    {
+        return Err(error);
+    }
+    child.wait()
 }
 
 fn detach(host: &mut Command) {
@@ -267,6 +269,7 @@ pub(crate) fn run(
     control: &Path,
     mut daemon: Command,
     mut host: Command,
+    mut shell: Option<Command>,
 ) -> io::Result<()> {
     let control = ControlDir::open(control, &Identity::current()?)?;
     let _lock = open_lock(&control, &config.lock_file)?;
@@ -275,6 +278,10 @@ pub(crate) fn run(
     let restart = config.restart_file.as_str();
     detach(&mut host);
     daemon.stdin(Stdio::null());
+    if shell.is_some() {
+        daemon.stdout(Stdio::piped());
+    }
+    let mut window = None;
     let mut daemon = Process::new(daemon, true);
     let mut host = Process::new(host, false);
 
@@ -312,6 +319,27 @@ pub(crate) fn run(
             let host_changed = publication.attempt("check host", host.tick(config)) == Some(true);
             let daemon_changed = !restarting
                 && publication.attempt("check daemon", daemon.tick(config)) == Some(true);
+            if let Some(window_process) = &mut window
+                && publication
+                    .attempt("check shell", Child::try_wait(window_process))
+                    .flatten()
+                    .is_some()
+            {
+                window = None;
+            }
+            if let Some(shell) = &mut shell
+                && let Some(daemon_output) =
+                    daemon.child.as_mut().and_then(|child| child.stdout.take())
+            {
+                let can_open = window.as_mut().is_none_or(|previous| {
+                    publication
+                        .attempt("replace previous shell", stop_child(previous))
+                        .is_some()
+                });
+                if can_open {
+                    window = publication.attempt("start shell", start_shell(shell, daemon_output));
+                }
+            }
             publication.dirty |= host_changed || daemon_changed;
             false
         };
@@ -334,6 +362,12 @@ pub(crate) fn run(
         }
         thread::sleep(Duration::from_millis(config.poll_ms));
     }
+}
+
+fn start_shell(command: &mut Command, bootstrap: impl Into<Stdio>) -> io::Result<Child> {
+    let child = command.stdin(bootstrap).spawn();
+    command.stdin(Stdio::null());
+    child
 }
 
 impl Process {
@@ -396,10 +430,42 @@ pub(crate) mod tests {
     #[test]
     fn child_fixture() {
         if let Some(path) = std::env::var_os("ADS_LAUNCHER_TEST_RELEASE") {
-            let start = Instant::now();
-            while !Path::new(&path).is_file() && start.elapsed() < Duration::from_secs(120) {
-                thread::sleep(Duration::from_millis(5));
-            }
+            wait_for_release(Path::new(&path));
+        }
+    }
+
+    const BOOTSTRAP_SENTINEL: &str = "desktop-pipe-sentinel";
+
+    #[test]
+    fn shell_pipe_fixture() {
+        if std::env::var_os("ADS_TEST_SHELL_PIPE").is_some() {
+            let mut input = String::new();
+            io::stdin().read_line(&mut input).unwrap();
+            assert!(input.trim_end() == format!("12345 {BOOTSTRAP_SENTINEL}"));
+            println!("bootstrap received");
+        }
+    }
+
+    #[test]
+    fn passes_bootstrap_only_through_inherited_pipe() {
+        use io::Write;
+        let (read, mut write) = io::pipe().unwrap();
+        writeln!(write, "12345 {BOOTSTRAP_SENTINEL}").unwrap();
+        drop(write);
+        let mut shell = Command::new(std::env::current_exe().unwrap());
+        shell
+            .args(["shell_pipe_fixture", "--nocapture"])
+            .env("ADS_TEST_SHELL_PIPE", "1")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let output = start_shell(&mut shell, read)
+            .unwrap()
+            .wait_with_output()
+            .unwrap();
+        assert!(output.status.success());
+        assert!(String::from_utf8_lossy(&output.stdout).contains("bootstrap received"));
+        for bytes in [output.stdout, output.stderr] {
+            assert!(!String::from_utf8_lossy(&bytes).contains(BOOTSTRAP_SENTINEL));
         }
     }
 
@@ -483,7 +549,7 @@ pub(crate) mod tests {
         fs::write(dir.0.join(&settings.stop_file), []).unwrap();
         let daemon = Command::new(dir.0.join("missing-daemon"));
         let host = Command::new(dir.0.join("missing-host"));
-        run(&settings, &dir.0, daemon, host).unwrap();
+        run(&settings, &dir.0, daemon, host, None).unwrap();
         let state = state_value(&dir.0.join(&settings.state_file)).unwrap();
         assert_eq!(state["stopped"], true);
         assert_eq!(state["stop_pending_at_startup"], true);
@@ -496,7 +562,7 @@ pub(crate) mod tests {
         let dir = TestDir::new();
         let settings = config();
         fs::create_dir(dir.0.join(&settings.state_file)).unwrap();
-        assert!(run(&settings, &dir.0, fixture(None), fixture(None)).is_err());
+        assert!(run(&settings, &dir.0, fixture(None), fixture(None), None).is_err());
     }
 
     #[test]
@@ -510,7 +576,7 @@ pub(crate) mod tests {
         let host_release = dir.0.join("release-host");
         let host = fixture(Some(&host_release));
         let control = dir.0.clone();
-        let worker = thread::spawn(move || run(&settings, &control, daemon, host).unwrap());
+        let worker = thread::spawn(move || run(&settings, &control, daemon, host, None).unwrap());
         let read = || state_value(&state);
         let initial = until(|| read().filter(|value| value["daemon"]["pid"].is_u64()));
         fs::rename(&state, dir.0.join("parked-state")).unwrap();
@@ -597,11 +663,11 @@ pub(crate) mod tests {
         fs::create_dir_all(&dir.0).unwrap();
         ControlDir::open(&control, &local).unwrap();
         fs::write(control.join(&settings.stop_file), []).unwrap();
-        run(&settings, &control, fixture(None), fixture(None)).unwrap();
+        run(&settings, &control, fixture(None), fixture(None), None).unwrap();
         assert_private(&control, &settings, &local);
         // The folder, lock and state now exist: a second run reuses and keeps them private.
         fs::write(control.join(&settings.stop_file), []).unwrap();
-        run(&settings, &control, fixture(None), fixture(None)).unwrap();
+        run(&settings, &control, fixture(None), fixture(None), None).unwrap();
         assert_private(&control, &settings, &local);
     }
 
@@ -619,7 +685,7 @@ pub(crate) mod tests {
         icacls(&dir.0, &["/grant", &format!("{user}:F")]);
         let folder = private::access_list_text(&dir.0).unwrap();
         assert!(!folder.contains("OI") && !folder.contains("CI"), "{folder}");
-        run(&settings, &dir.0, fixture(None), fixture(None)).unwrap();
+        run(&settings, &dir.0, fixture(None), fixture(None), None).unwrap();
         let file = private::canonical_access_list(&format!("D:P(A;;FA;;;{})", local.user)).unwrap();
         for name in [&settings.lock_file, &settings.state_file] {
             assert_eq!(private::access_list_text(&dir.0.join(name)).unwrap(), file);
@@ -635,7 +701,7 @@ pub(crate) mod tests {
         fs::write(&stop, []).unwrap();
         let daemon = Command::new(dir.0.join("missing-daemon"));
         let host = Command::new(dir.0.join("missing-host"));
-        let error = run(&settings, &dir.0, daemon, host).unwrap_err();
+        let error = run(&settings, &dir.0, daemon, host, None).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
         assert!(error.to_string().contains("another account"), "{error}");
         assert!(stop.exists());
@@ -654,7 +720,7 @@ pub(crate) mod tests {
         fs::write(&stop, []).unwrap();
         let daemon = Command::new(dir.0.join("missing-daemon"));
         let host = Command::new(dir.0.join("missing-host"));
-        let error = run(&settings, &dir.0, daemon, host).unwrap_err();
+        let error = run(&settings, &dir.0, daemon, host, None).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
         assert!(error.to_string().contains("another account"), "{error}");
         assert!(stop.exists());
@@ -834,7 +900,7 @@ pub(crate) mod tests {
         let daemon = fixture(Some(&daemon_release));
         let host = fixture(Some(&host_release));
         let control = dir.0.clone();
-        let worker = thread::spawn(move || run(&settings, &control, daemon, host).unwrap());
+        let worker = thread::spawn(move || run(&settings, &control, daemon, host, None).unwrap());
         let read = || state_value(&state);
         let initial = until(|| read().filter(|value| value["daemon"]["pid"].is_u64()));
         let blocked_signal = fs::OpenOptions::new()
@@ -861,6 +927,86 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn desktop_daemon_fixture() {
+        if let Some(release) = std::env::var_os("ADS_TEST_DESKTOP_RELEASE") {
+            println!("{} {BOOTSTRAP_SENTINEL}", std::process::id());
+            wait_for_release(Path::new(&release));
+        }
+    }
+
+    #[test]
+    fn desktop_window_fixture() {
+        if let Some(directory) = std::env::var_os("ADS_TEST_DESKTOP_DIRECTORY") {
+            use io::BufRead;
+            let daemon = io::stdin()
+                .lock()
+                .lines()
+                .map_while(Result::ok)
+                .find_map(|line| {
+                    let (daemon, token) = line.split_once(' ')?;
+                    (token == BOOTSTRAP_SENTINEL).then(|| daemon.parse::<u32>().unwrap())
+                })
+                .unwrap();
+            let directory = Path::new(&directory);
+            fs::write(directory.join(format!("window-{daemon}")), []).unwrap();
+            wait_for_release(&directory.join("release-window"));
+        }
+    }
+
+    fn wait_for_release(path: &Path) {
+        let start = Instant::now();
+        while !path.is_file() && start.elapsed() < Duration::from_secs(120) {
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn run_reconnects_desktop_to_restarted_daemon() {
+        let dir = TestDir::new();
+        let host_release = dir.0.join("release-host");
+        let mut daemon = Command::new(std::env::current_exe().unwrap());
+        daemon
+            .args([
+                "desktop_daemon_fixture",
+                "--quiet",
+                "--nocapture",
+                "--format",
+                "terse",
+            ])
+            .env("ADS_TEST_DESKTOP_RELEASE", dir.0.join("release-daemon"))
+            .stderr(Stdio::null());
+        let mut shell = Command::new(std::env::current_exe().unwrap());
+        shell
+            .args(["desktop_window_fixture", "--quiet"])
+            .env("ADS_TEST_DESKTOP_DIRECTORY", &dir.0)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let control = dir.0.clone();
+        let host = fixture(Some(&host_release));
+        let worker = thread::spawn(move || run(&config(), &control, daemon, host, Some(shell)));
+        let connected = |restarts| {
+            until(|| {
+                let state: Value =
+                    serde_json::from_slice(&fs::read(dir.0.join("state.json")).ok()?).unwrap();
+                let daemon = state["daemon"]["pid"].as_u64()?;
+                let host = state["ptyhost"]["pid"].as_u64()?;
+                (state["daemon"]["requested_restarts"] == restarts
+                    && dir.0.join(format!("window-{daemon}")).is_file())
+                .then_some((daemon, host))
+            })
+        };
+        let (first, host) = connected(0);
+        fs::write(dir.0.join("restart"), []).unwrap();
+        let (second, same_host) = connected(1);
+        fs::write(dir.0.join("stop"), []).unwrap();
+        fs::write(dir.0.join("release-window"), []).unwrap();
+        fs::write(host_release, []).unwrap();
+        worker.join().unwrap().unwrap();
+        assert_ne!(first, second);
+        assert_eq!(host, same_host);
+    }
+
+    #[test]
     fn publishes_state_consumes_signals_and_keeps_the_same_host() {
         let dir = TestDir::new();
         let daemon_release = dir.0.join("release-daemon");
@@ -874,12 +1020,12 @@ pub(crate) mod tests {
         let control = dir.0.clone();
         let daemon = fixture(Some(&daemon_release));
         let host = fixture(Some(&host_release));
-        let worker = thread::spawn(move || run(&config(), &control, daemon, host).unwrap());
+        let worker = thread::spawn(move || run(&config(), &control, daemon, host, None).unwrap());
         let initial = until(|| {
             read_state()
                 .filter(|value| value["daemon"]["pid"].is_u64() && value["ptyhost"]["pid"].is_u64())
         });
-        let lock = run(&config(), &dir.0, fixture(None), fixture(None)).unwrap_err();
+        let lock = run(&config(), &dir.0, fixture(None), fixture(None), None).unwrap_err();
         assert_eq!(lock.kind(), io::ErrorKind::AlreadyExists);
         assert!(lock.to_string().contains("another launcher"));
         let restart = dir.0.join("restart");

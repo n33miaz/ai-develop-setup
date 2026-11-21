@@ -82,6 +82,10 @@ desenvolvimento, sem compilação dinâmica no navegador nem alteração de CSP.
 Replay desde zero aceita o início do histórico ainda retido; depois disso,
 uma lacuna na sequência encerra a conexão. Eventos repetidos são ignorados.
 
+Na casca Tauri, o cliente envia comandos e recebe mensagens por IPC com o
+processo Rust, que autentica no daemon. A credencial fica no Rust. O service
+worker fica desativado nessa janela. O bundle é o mesmo da interface web.
+
 ## Uso e contas
 
 Abra **Uso e contas** abaixo do aviso “Em construção”. No modo de exemplo, o

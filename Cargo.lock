@@ -147,8 +147,15 @@ dependencies = [
 name = "ads-shell"
 version = "0.0.0"
 dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
+ "tokio",
+ "tokio-tungstenite",
+ "windows",
+ "zeroize",
 ]
 
 [[package]]

@@ -34,6 +34,10 @@ impl Token {
         self.0.as_bytes().ct_eq(candidate.as_bytes()).into()
     }
 
+    pub fn desktop_bootstrap(&self, port: u16) -> String {
+        format!("{port} {}", self.0)
+    }
+
     pub fn launch_url(&self, base: &str, port: u16) -> String {
         format!(
             "{}/#core=ws://127.0.0.1:{port}&token={}",
@@ -43,7 +47,7 @@ impl Token {
     }
 }
 
-pub fn permits_upgrade(request: &Request, port: u16, origins: &[String]) -> bool {
+pub fn permits_upgrade(request: &Request, port: u16, browser_origins: Option<&[String]>) -> bool {
     let headers = request.headers();
     let one = |key: &str| {
         let mut values = headers.get_all(key).iter();
@@ -59,5 +63,10 @@ pub fn permits_upgrade(request: &Request, port: u16, origins: &[String]) -> bool
         && one("host").is_some_and(|host| {
             host == format!("127.0.0.1:{port}") || host == format!("localhost:{port}")
         })
-        && one("origin").is_some_and(|origin| origins.iter().any(|allowed| allowed == origin))
+        && match browser_origins {
+            Some(origins) => {
+                one("origin").is_some_and(|origin| origins.iter().any(|allowed| allowed == origin))
+            }
+            None => !headers.contains_key("origin"),
+        }
 }
