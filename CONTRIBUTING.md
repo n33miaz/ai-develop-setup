@@ -8,7 +8,7 @@ O restante deste documento descreve o fluxo do mantenedor e dos agentes que trab
 
 ## Fluxo de branches
 
-`feature/<nº-da-issue>-<assunto>` (ou `fix/...`) → PR → `develop` → `homolog` → `main`.
+`feature/<nº-da-issue>-<assunto>` (ou `fix/...`, `ci/...`, `docs/...`) → PR → `develop` → `homolog` → `main`.
 
 | Branch | Modo expresso (agora) | Modo completo (depois) |
 |---|---|---|
