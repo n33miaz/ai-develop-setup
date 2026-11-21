@@ -8,6 +8,10 @@ pub mod command_auth_hello_v1;
 pub mod command_events_subscribe_v1;
 pub mod command_harness_list_response_v1;
 pub mod command_harness_list_v1;
+pub mod command_queue_get_response_v1;
+pub mod command_queue_get_v1;
+pub mod command_queue_start_v1;
+pub mod command_queue_stop_v1;
 pub mod command_request_v1;
 pub mod command_response_v1;
 pub mod command_response_v2;
@@ -35,6 +39,7 @@ pub mod contract_harness_adapter_v1;
 pub mod contract_local_api_error_code_v1;
 pub mod contract_local_api_server_message_v1;
 pub mod contract_local_api_server_message_v2;
+pub mod contract_local_api_server_message_v3;
 pub mod contract_pty_host_frame_v1;
 pub mod contract_pty_host_notification_v1;
 pub mod contract_pty_host_request_v1;
@@ -118,6 +123,10 @@ pub use command_auth_hello_v1::*;
 pub use command_events_subscribe_v1::*;
 pub use command_harness_list_response_v1::*;
 pub use command_harness_list_v1::*;
+pub use command_queue_get_response_v1::*;
+pub use command_queue_get_v1::*;
+pub use command_queue_start_v1::*;
+pub use command_queue_stop_v1::*;
 pub use command_request_v1::*;
 pub use command_response_v1::*;
 pub use command_response_v2::*;
@@ -145,6 +154,7 @@ pub use contract_harness_adapter_v1::*;
 pub use contract_local_api_error_code_v1::*;
 pub use contract_local_api_server_message_v1::*;
 pub use contract_local_api_server_message_v2::*;
+pub use contract_local_api_server_message_v3::*;
 pub use contract_pty_host_frame_v1::*;
 pub use contract_pty_host_notification_v1::*;
 pub use contract_pty_host_request_v1::*;
@@ -236,6 +246,13 @@ pub const SCHEMAS: &[(&str, &str)] = &[
         "urn:ads:command:harness.list.response:1",
     ),
     ("command.harness.list.v1", "urn:ads:command:harness.list:1"),
+    (
+        "command.queue.get.response.v1",
+        "urn:ads:command:queue.get.response:1",
+    ),
+    ("command.queue.get.v1", "urn:ads:command:queue.get:1"),
+    ("command.queue.start.v1", "urn:ads:command:queue.start:1"),
+    ("command.queue.stop.v1", "urn:ads:command:queue.stop:1"),
     ("command.request.v1", "urn:ads:command:request:1"),
     ("command.response.v1", "urn:ads:command:response:1"),
     ("command.response.v2", "urn:ads:command:response:2"),
@@ -292,6 +309,10 @@ pub const SCHEMAS: &[(&str, &str)] = &[
     (
         "contract.local-api.server-message.v2",
         "urn:ads:contract:local-api.server-message:2",
+    ),
+    (
+        "contract.local-api.server-message.v3",
+        "urn:ads:contract:local-api.server-message:3",
     ),
     (
         "contract.pty-host.frame.v1",
@@ -575,6 +596,12 @@ pub fn reencode(id: &str, value: Value) -> Option<Result<Value, serde_json::Erro
             support::reencode::<CommandHarnessListResponseV1>(value)
         }
         "urn:ads:command:harness.list:1" => support::reencode::<CommandHarnessListV1>(value),
+        "urn:ads:command:queue.get.response:1" => {
+            support::reencode::<CommandQueueGetResponseV1>(value)
+        }
+        "urn:ads:command:queue.get:1" => support::reencode::<CommandQueueGetV1>(value),
+        "urn:ads:command:queue.start:1" => support::reencode::<CommandQueueStartV1>(value),
+        "urn:ads:command:queue.stop:1" => support::reencode::<CommandQueueStopV1>(value),
         "urn:ads:command:request:1" => support::reencode::<CommandRequestV1>(value),
         "urn:ads:command:response:1" => support::reencode::<CommandResponseV1>(value),
         "urn:ads:command:response:2" => support::reencode::<CommandResponseV2>(value),
@@ -609,6 +636,9 @@ pub fn reencode(id: &str, value: Value) -> Option<Result<Value, serde_json::Erro
         }
         "urn:ads:contract:local-api.server-message:2" => {
             support::reencode::<ContractLocalApiServerMessageV2>(value)
+        }
+        "urn:ads:contract:local-api.server-message:3" => {
+            support::reencode::<ContractLocalApiServerMessageV3>(value)
         }
         "urn:ads:contract:pty-host.frame:1" => support::reencode::<ContractPtyHostFrameV1>(value),
         "urn:ads:contract:pty-host.notification:1" => {

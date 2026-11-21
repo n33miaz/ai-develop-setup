@@ -157,5 +157,7 @@ test("preserves the local API error code assigned to each name", async () => {
     CONFLICT: -32012,
     SESSION_CLOSE_PENDING: -32013,
     SESSION_SETUP_FAILED: -32014,
+    QUEUE_NOT_CONFIGURED: -32015,
+    QUEUE_ALREADY_ENABLED: -32016,
   });
 });

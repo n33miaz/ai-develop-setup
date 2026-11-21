@@ -157,10 +157,11 @@ impl Channel {
 
 /// Device, the owner it is registered to and channel, established by the authentication boundary.
 ///
-/// There is deliberately no public constructor. Any public function of this crate can be called
-/// by every crate that depends on it, and the dependency matrix keeps the authentication layer
-/// out of this crate, so no constructor here could tell the authentication layer from a caller
-/// that copies a device id out of a request. The constructor arrives together with that layer.
+/// Any public function of this crate can be called by every crate that depends on it, and the
+/// dependency matrix keeps the authentication layer out of this crate, so no constructor here can
+/// tell the authentication layer from a caller that copies a device id out of a request. The only
+/// constructor, [`AuthenticatedDevice::local_owner`], therefore yields the local interface channel
+/// and nothing else: remote and tray devices arrive with the device registry.
 pub struct AuthenticatedDevice {
     device_id: CommonIdV1,
     owner_id: CommonIdV1,
@@ -168,6 +169,17 @@ pub struct AuthenticatedDevice {
 }
 
 impl AuthenticatedDevice {
+    /// The owner acting through the local interface, for the composition that authenticated the
+    /// connection itself (the per-run token of the local API). Both ids come from the core's own
+    /// configuration and log, never from the request.
+    pub fn local_owner(device_id: CommonIdV1, owner_id: CommonIdV1) -> Self {
+        Self {
+            device_id,
+            owner_id,
+            via: Channel::LocalUi,
+        }
+    }
+
     pub fn device_id(&self) -> &CommonIdV1 {
         &self.device_id
     }

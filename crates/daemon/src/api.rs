@@ -3,6 +3,7 @@
 use crate::auth::{Token, permits_upgrade};
 use crate::events::{Closing, EventLog, Poll, Stream};
 use crate::pty_client::{ClientError, ErrorCode, Event, PtyClient};
+use crate::queue::{DisabledQueue, QueueControl};
 use ads_contracts::{
     CommandSessionOpenV1Params, ContractLocalApiErrorCodeV1CapacityExceeded as CapacityExceeded,
     ContractLocalApiErrorCodeV1Conflict as Conflict,
@@ -10,6 +11,8 @@ use ads_contracts::{
     ContractLocalApiErrorCodeV1InternalError as InternalError,
     ContractLocalApiErrorCodeV1InvalidParams as InvalidParams,
     ContractLocalApiErrorCodeV1MethodNotFound as MethodNotFound,
+    ContractLocalApiErrorCodeV1QueueAlreadyEnabled as QueueAlreadyEnabled,
+    ContractLocalApiErrorCodeV1QueueNotConfigured as QueueNotConfigured,
     ContractLocalApiErrorCodeV1RemoteOriginRefused as RemoteOriginRefused,
     ContractLocalApiErrorCodeV1SessionClosePending as SessionClosePending,
     ContractLocalApiErrorCodeV1SessionSetupFailed as SessionSetupFailed,
@@ -50,6 +53,11 @@ pub enum ApiError {
     /// Prazo do host esgotado num comando; o efeito é incerto e o serviço encerra.
     HostTimeout,
     Host(ErrorCode),
+    /// No queue bound to the audit log, or a queue id it does not serve.
+    QueueNotConfigured,
+    QueueAlreadyEnabled,
+    /// The audit log refused a queue event; unlike `Unavailable`, the service keeps running.
+    Storage,
 }
 impl ApiError {
     pub fn code(self) -> i64 {
@@ -63,7 +71,9 @@ impl ApiError {
             Self::Replay => SubscriptionReplayUnavailable::VALUE,
             Self::ClosePending => SessionClosePending::VALUE,
             Self::SetupFailed => SessionSetupFailed::VALUE,
-            Self::Unavailable | Self::HostTimeout => InternalError::VALUE,
+            Self::Unavailable | Self::HostTimeout | Self::Storage => InternalError::VALUE,
+            Self::QueueNotConfigured => QueueNotConfigured::VALUE,
+            Self::QueueAlreadyEnabled => QueueAlreadyEnabled::VALUE,
             Self::Host(code) => code.number(),
         }
     }
@@ -81,6 +91,9 @@ impl ApiError {
             Self::SetupFailed => "session setup failed",
             Self::HostTimeout => "service unavailable",
             Self::Host(_) => "host refused command",
+            Self::QueueNotConfigured => "queue not configured",
+            Self::QueueAlreadyEnabled => "queue already enabled",
+            Self::Storage => "service unavailable",
         }
     }
 }
@@ -278,6 +291,7 @@ struct Service {
     in_flight: Option<(SessionId, u64)>,
     host: PtyClient,
     launcher: Arc<dyn Launcher>,
+    queue: Arc<dyn QueueControl>,
     config: ApiConfig,
     log: Arc<Mutex<EventLog>>,
     sessions: HashMap<String, Session>,
@@ -438,6 +452,16 @@ impl Service {
                         params["after_seq"].as_u64().ok_or(ApiError::Invalid)?,
                     )
                     .map(Some);
+            }
+            "queue.start" | "queue.stop" => {
+                let queue_id = serde_json::from_value(params["queue_id"].clone())
+                    .map_err(|_| ApiError::Invalid)?;
+                let cause = cause.ok_or(ApiError::Invalid)?;
+                if method == "queue.start" {
+                    self.queue.start(&queue_id, cause)?;
+                } else {
+                    self.queue.stop(&queue_id, cause)?;
+                }
             }
             _ => return Err(ApiError::Method),
         }
@@ -963,6 +987,7 @@ impl LocalApi {
             in_flight: None,
             host,
             launcher,
+            queue: Arc::new(DisabledQueue),
             config: config.clone(),
             log,
             sessions: HashMap::new(),
@@ -980,6 +1005,12 @@ impl LocalApi {
             service,
             hooks,
         })
+    }
+    /// Serves `queue.get`, `queue.start` and `queue.stop` from `queue`; without it they answer
+    /// `QUEUE_NOT_CONFIGURED`.
+    pub fn with_queue(mut self, queue: Arc<dyn QueueControl>) -> Self {
+        self.service.queue = queue;
+        self
     }
     #[doc(hidden)]
     pub fn test_hooks(&self) -> Arc<TestHooks> {
@@ -1017,6 +1048,7 @@ impl LocalApi {
             .map_err(|_| ApiError::Unavailable)?
             .port();
         let log = service.log.clone();
+        let queue = service.queue.clone();
         let permits = Arc::new(Semaphore::new(config.max_connections));
         let admitter = Admitter {
             listener: &listener,
@@ -1053,10 +1085,10 @@ impl LocalApi {
                 }
                 admission = &mut accepting => {
                     accepting.set(admitter.admit());
-                    let (token, config, commands, log, hooks, catalog) = (token.clone(), config.clone(), commands.clone(), log.clone(), hooks.clone(), catalog.clone());
+                    let (token, config, commands, log, hooks, catalog, queue) = (token.clone(), config.clone(), commands.clone(), log.clone(), hooks.clone(), catalog.clone(), queue.clone());
                     let authenticated = permits.clone();
                     connections.spawn(async move {
-                        let _ = connection(admission, port, token, config, commands, log, (authenticated, hooks, catalog)).await;
+                        let _ = connection(admission, port, token, config, commands, log, (authenticated, hooks, catalog, queue)).await;
                     });
                 }
                 Some(_) = connections.join_next(), if !connections.is_empty() => (),
@@ -1124,6 +1156,9 @@ fn validate_command(value: Value) -> Result<Value, ApiError> {
             | "session.close"
             | "events.subscribe"
             | "harness.list"
+            | "queue.get"
+            | "queue.start"
+            | "queue.stop"
     ) {
         return Err(ApiError::Method);
     }
@@ -1147,7 +1182,12 @@ async fn connection(
     config: Arc<ApiConfig>,
     commands: mpsc::Sender<Request>,
     log: Arc<Mutex<EventLog>>,
-    (authenticated, hooks, catalog): (Arc<Semaphore>, Arc<TestHooks>, Arc<Value>),
+    (authenticated, hooks, catalog, queue): (
+        Arc<Semaphore>,
+        Arc<TestHooks>,
+        Arc<Value>,
+        Arc<dyn QueueControl>,
+    ),
 ) -> Result<(), ApiError> {
     use tokio_tungstenite::tungstenite::handshake::server::{Request as HttpRequest, Response};
     let ws_config = WebSocketConfig::default()
@@ -1283,6 +1323,25 @@ async fn connection(
                         send(&mut ws, reply, &config).await?;
                         continue;
                     }
+                    if command["method"] == "queue.get" {
+                        // Só leitura, como harness.list; a origem é conferida aqui porque não passa pelo serviço.
+                        let queue_id = command["params"]["queue_id"].clone();
+                        let state = if command["params"]["_meta"]["origin"] == "local" {
+                            serde_json::from_value(queue_id.clone())
+                                .map_err(|_| ApiError::Invalid)
+                                .and_then(|id| queue.state(&id))
+                        } else {
+                            Err(ApiError::Remote)
+                        };
+                        let reply = match state {
+                            Ok(state) => {
+                                json!({"jsonrpc": "2.0", "id": id, "result": {"queue_id": queue_id, "state": state}})
+                            }
+                            Err(error) => response(&id, Err(error)),
+                        };
+                        send(&mut ws, reply, &config).await?;
+                        continue;
+                    }
                     let subscribe = command["method"] == "events.subscribe";
                     let stream = command["params"]["stream"]
                         .as_str()
@@ -1413,7 +1472,7 @@ async fn send<S>(ws: &mut S, value: Value, config: &ApiConfig) -> Result<(), Api
 where
     S: futures_util::Sink<Message> + Unpin,
 {
-    let value = checked("urn:ads:contract:local-api.server-message:2", value)?;
+    let value = checked("urn:ads:contract:local-api.server-message:3", value)?;
     timeout(
         Duration::from_millis(config.send_timeout_ms),
         ws.send(Message::Text(value.to_string().into())),

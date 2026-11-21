@@ -13,7 +13,9 @@ export type ContractLocalApiErrorCodeV1 =
   | HarnessNotConfigured
   | Conflict
   | SessionClosePending
-  | SessionSetupFailed;
+  | SessionSetupFailed
+  | QueueNotConfigured
+  | QueueAlreadyEnabled;
 /**
  * O método solicitado é desconhecido.
  */
@@ -54,3 +56,11 @@ export type SessionClosePending = -32013;
  * A preparação falhou após a abertura do terminal e o fechamento foi agendado.
  */
 export type SessionSetupFailed = -32014;
+/**
+ * O núcleo não serve a fila pedida: nenhuma fila ligada ao log de auditoria ou id de fila desconhecido.
+ */
+export type QueueNotConfigured = -32015;
+/**
+ * A fila já está ligada; ligar de novo não registra nada.
+ */
+export type QueueAlreadyEnabled = -32016;

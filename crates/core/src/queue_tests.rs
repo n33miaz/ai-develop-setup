@@ -2134,3 +2134,20 @@ fn creation_v4_is_admitted_with_the_older_versions_and_a_v3_record_restores() {
         RunningAfterRestart::Fail(data) if data.from == Running && data.attempts.get() == 1
     ));
 }
+
+#[test]
+fn the_local_owner_acts_only_through_the_local_interface() {
+    let local = AuthenticatedDevice::local_owner(id("device-01"), id("owner-01"));
+    assert_eq!(local.via(), LocalUi);
+    let queue = new_stopped(id("queue-01"), &local);
+    let (_, event, _) = change_queue_state(&queue, Some(&local), Enabled).unwrap();
+    assert!(matches!(
+        event,
+        QueueStateEvent::Enabled(data) if data.via == EventQueueEnabledV1DataVia::LocalUi
+    ));
+    let stranger = AuthenticatedDevice::local_owner(id("device-02"), id("owner-02"));
+    assert_eq!(
+        change_queue_state(&queue, Some(&stranger), Enabled).err(),
+        Some(QueueRefusal::NotOwner)
+    );
+}

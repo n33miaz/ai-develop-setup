@@ -136,6 +136,8 @@ Os nomes, valores e significados dos erros emitidos pela API local estão no
 | `CONFLICT` | `-32012` |
 | `SESSION_CLOSE_PENDING` | `-32013` |
 | `SESSION_SETUP_FAILED` | `-32014` |
+| `QUEUE_NOT_CONFIGURED` | `-32015` |
+| `QUEUE_ALREADY_ENABLED` | `-32016` |
 
 `api::Launcher::prepare` recebe os parâmetros gerados de `session.open` (ferramenta,
 apelido de pasta, identificador e tamanho) e devolve `OpenParams` do ptyhost.
@@ -160,10 +162,42 @@ para reler a configuração), e não confere o disco: uma ferramenta listada ain
 pode receber `INVALID_PARAMS` em `session.open` se o programa ou a pasta não existir.
 Como só lê, não passa pela cache de idempotência: repetir a chave devolve a
 lista de novo, nunca `replayed`. `api::Launcher::catalog` fornece a lista; o
-padrão é vazio, como em `DisabledLauncher`. A resposta é a única mensagem
-que precisa da `local-api.server-message:2`; quem não envia `harness.list`
-continua recebendo só mensagens da `:1`. Um daemon anterior ao comando o recusa
+padrão é vazio, como em `DisabledLauncher`. Essa resposta exige a
+`local-api.server-message:2`; quem não envia `harness.list` nem `queue.get`
+continua recebendo só mensagens da `:1`. O daemon escreve a `:3`. Um daemon anterior ao comando o recusa
 com `METHOD_NOT_FOUND`, e a interface mostra que o daemon precisa ser atualizado.
+
+## Fila de tarefas
+
+A fila nasce parada e só o dono a liga. `queue.get`, `queue.start` e
+`queue.stop` nomeiam a fila em `params.queue_id` e não aceitam mais nenhum
+campo: o dono e o aparelho vêm do daemon, nunca do pedido. Valem as mesmas
+conferências dos outros comandos: só depois de `auth.hello`, e origem remota
+recebe `REMOTE_ORIGIN_REFUSED`.
+
+- `queue.get` responde `{"queue_id": ..., "state": "stopped" | "enabled"}`
+  ([`command.queue.get.response:1`](../../contracts/README.md#api-local)). Só lê
+  e, como `harness.list`, fica fora da cache de idempotência.
+- `queue.start` liga a fila só depois de gravar `queue.enabled` no log de
+  auditoria ancorado, com o aparelho local como ator, o dono, `via: local_ui`,
+  o `ts` do relógio do daemon e o id do comando em `cause`. A fila já ligada
+  recebe `QUEUE_ALREADY_ENABLED` e nada é gravado. Se a gravação falhar, a fila
+  continua parada e a resposta é `INTERNAL_ERROR`, sem derrubar o serviço.
+- `queue.stop` é sempre aceito. A fila ligada para antes de o evento ser
+  gravado (`queue.stopped` com `reason: owner`), então nenhuma tarefa nova é
+  admitida mesmo se a gravação falhar; nesse caso a parada que faltou é gravada
+  antes da próxima ativação. A fila já parada responde aceito sem evento novo.
+- Fila que o daemon não serve, ou daemon sem fila ligada, recebe
+  `QUEUE_NOT_CONFIGURED`.
+
+`queue::LoggedQueue::open` liga uma fila ao stream `queue/<id>` do log ancorado:
+cria a fila parada (`queue.created`) se o stream está vazio, recusa um stream
+criado por outro dono e, a cada abertura, restaura a fila parada e grava
+`queue.stopped` com `reason: restart` se o log dizia ligada. O aparelho é
+`AuthenticatedDevice::local_owner`, que só produz o canal da interface local.
+`LocalApi::with_queue` entrega a fila à API. O executável ainda não abre o log
+ancorado, porque falta o provedor de chaves do cofre; até lá ele serve
+`queue::DisabledQueue`, que recusa os três comandos com `QUEUE_NOT_CONFIGURED`.
 
 Padrões em [defaults/daemon.toml](../../defaults/daemon.toml), aplicados ao iniciar:
 

@@ -29,3 +29,9 @@ export const SESSION_CLOSE_PENDING = -32013
 
 /** A preparação falhou após a abertura do terminal e o fechamento foi agendado. */
 export const SESSION_SETUP_FAILED = -32014
+
+/** O núcleo não serve a fila pedida: nenhuma fila ligada ao log de auditoria ou id de fila desconhecido. */
+export const QUEUE_NOT_CONFIGURED = -32015
+
+/** A fila já está ligada; ligar de novo não registra nada. */
+export const QUEUE_ALREADY_ENABLED = -32016

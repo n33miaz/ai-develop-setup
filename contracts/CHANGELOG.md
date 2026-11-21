@@ -2,6 +2,16 @@
 
 Formato: uma seção por data. Contrato novo, campo opcional acrescentado, versão nova de uma URN e contrato aposentado entram aqui. As regras de versão estão no [README](README.md).
 
+## 2026-11-21
+
+Controle da fila pela API local.
+
+- Contratos novos (`:1`):
+  - Comandos `queue.get`, `queue.start` e `queue.stop`: estendem `command.request:1` com `params` fechado em `queue_id` e `_meta`. `queue.get` só lê.
+  - Resposta `queue.get.response`: `result` fechado com `queue_id` e `state` (`stopped` ou `enabled`).
+- Versão nova, convivendo com a `:1` e a `:2`: `local-api.server-message:3`, que aceita também a resposta de `queue.get`. O núcleo passa a escrever a `:3`.
+- `local-api.error-code:1` ganha `QUEUE_NOT_CONFIGURED` (`-32015`) e `QUEUE_ALREADY_ENABLED` (`-32016`). Mudança compatível: o código da resposta (`command.response:2`) já é qualquer inteiro, então todo leitor continua lendo a resposta, e o catálogo só acrescenta nomes. O dourado inválido de código desconhecido passa a usar `-32099`.
+
 ## 2026-11-20
 
 - Tipo comum novo `common.queue-task-title:1`: o título da tarefa da fila, com as mesmas regras que os registros `:1` e `:2` repetem por extenso.

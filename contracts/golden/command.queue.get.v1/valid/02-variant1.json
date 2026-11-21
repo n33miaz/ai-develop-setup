@@ -1,0 +1,12 @@
+{
+  "jsonrpc": "2.0",
+  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAF",
+  "method": "queue.get",
+  "params": {
+    "queue_id": "queue.main_2",
+    "_meta": {
+      "idempotency_key": "01ARZ3NDEKTSV4RRFFQ69G5FAG",
+      "origin": "local"
+    }
+  }
+}
