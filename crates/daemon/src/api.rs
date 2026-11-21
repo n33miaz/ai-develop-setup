@@ -1541,11 +1541,11 @@ async fn connection(
                     if command["method"] == "queue.get" {
                         // Só leitura, como harness.list; a origem é conferida aqui porque não passa pelo serviço.
                         let queue_id = command["params"]["queue_id"].clone();
-                        let state = if command["params"]["_meta"]["origin"] == "local" {
-                            match serde_json::from_value(queue_id.clone()) {
+                        let result = if command["params"]["_meta"]["origin"] == "local" {
+                            match serde_json::from_value(queue_id) {
                                 Ok(id) => {
                                     let (queue, session) = (queue.clone(), session.clone());
-                                    tokio::task::spawn_blocking(move || queue.state(&session, &id))
+                                    tokio::task::spawn_blocking(move || queue.get(&session, &id))
                                         .await
                                         .unwrap_or(Err(ApiError::Storage))
                                 }
@@ -1554,10 +1554,8 @@ async fn connection(
                         } else {
                             Err(ApiError::Remote)
                         };
-                        let reply = match state {
-                            Ok(state) => {
-                                json!({"jsonrpc": "2.0", "id": id, "result": {"queue_id": queue_id, "state": state}})
-                            }
+                        let reply = match result {
+                            Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
                             Err(error) => response(&id, Err(error)),
                         };
                         send(&mut ws, reply, &config).await?;
@@ -1716,7 +1714,7 @@ async fn send<S>(ws: &mut S, value: Value, config: &ApiConfig) -> Result<(), Api
 where
     S: futures_util::Sink<Message> + Unpin,
 {
-    let value = checked("urn:ads:contract:local-api.server-message:5", value)?;
+    let value = checked("urn:ads:contract:local-api.server-message:6", value)?;
     timeout(
         Duration::from_millis(config.send_timeout_ms),
         ws.send(Message::Text(value.to_string().into())),

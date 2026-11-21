@@ -1,7 +1,10 @@
 //! Owner control of the task queue through the authenticated local API, with the audit record
 //! read back from the anchored log.
 
-use ads_contracts::{CommonIdV1, RecordTaskQueueV1State};
+use ads_contracts::{
+    CommandQueueGetResponseV2Result, CommandQueueGetResponseV2ResultState, CommonIdV1,
+    RecordTaskQueueV1State,
+};
 use ads_core::queue::{DEFAULT_POLICY, QueuePolicy, new_local_stopped};
 use ads_daemon::api::{ApiConfig, ApiError, DisabledLauncher, LocalApi};
 use ads_daemon::auth::LocalSession;
@@ -291,7 +294,7 @@ async fn exchange(ws: &mut Socket, value: &Value) -> Value {
     };
     let reply: Value = serde_json::from_str(&text).unwrap();
     assert!(
-        valid("urn:ads:contract:local-api.server-message:3", &reply),
+        valid("urn:ads:contract:local-api.server-message:6", &reply),
         "{reply}"
     );
     if let Some(code) = reply["error"].get("code") {
@@ -311,13 +314,85 @@ async fn authenticated(f: &Fixture) -> Socket {
     ws
 }
 
-async fn state(ws: &mut Socket, params: &Value) -> Value {
+async fn queue_result(ws: &mut Socket, params: &Value) -> Value {
     let reply = exchange(ws, &command("queue.get", params.clone())).await;
     assert!(
-        valid("urn:ads:command:queue.get.response:1", &reply),
+        valid("urn:ads:command:queue.get.response:2", &reply),
         "{reply}"
     );
-    reply["result"]["state"].clone()
+    reply["result"].clone()
+}
+
+async fn state(ws: &mut Socket, params: &Value) -> Value {
+    queue_result(ws, params).await["state"].clone()
+}
+
+fn custom_creation(bench: &Bench) -> Value {
+    let policy: QueuePolicy =
+        toml::from_str("attempt_limit = 5\nadmission_limit = 77\nwindow_seconds = 1800").unwrap();
+    let (_, created) = new_local_stopped(id(&bench.queue), &id("owner-01"), &policy);
+    let created = serde_json::to_value(created).unwrap();
+    bench.seed(1, "created:2", created.clone());
+    created["policy"].clone()
+}
+
+#[tokio::test]
+async fn get_reports_the_recorded_creation_policy() {
+    let bench = Bench::new("queue-get-creation");
+    let policy = custom_creation(&bench);
+    let f = fixture(Some(Arc::new(bench.bind_or_pending()))).await;
+    let mut ws = authenticated(&f).await;
+    assert_eq!(
+        queue_result(&mut ws, &bench.params()).await,
+        json!({"queue_id": bench.queue, "state": "stopped", "policy": policy})
+    );
+}
+
+#[tokio::test]
+async fn get_reports_the_latest_policy_change_without_rebinding() {
+    let bench = Bench::new("queue-get-change");
+    let mut policy = custom_creation(&bench);
+    let f = fixture(Some(Arc::new(bench.bind_or_pending()))).await;
+    let mut ws = authenticated(&f).await;
+    let request = command("queue.get", bench.params());
+    assert_eq!(
+        exchange(&mut ws, &request).await["result"]["policy"],
+        policy
+    );
+
+    for (seq, window) in [(2, 900), (3, 450)] {
+        policy["window_seconds"] = json!(window);
+        bench.seed(
+            seq,
+            "policy_changed:1",
+            json!({
+                "queue_id": bench.queue, "owner_id": "owner-01",
+                "via": "local_ui", "policy": policy
+            }),
+        );
+    }
+
+    assert_eq!(
+        exchange(&mut ws, &request).await["result"]["policy"],
+        policy
+    );
+}
+
+#[tokio::test]
+async fn get_reports_null_for_a_legacy_queue_without_a_policy() {
+    let bench = Bench::new("queue-get-legacy");
+    bench.seed(
+        1,
+        "created:1",
+        json!({"queue_id": bench.queue, "owner_id": "owner-01", "via": "local_ui", "state": "stopped"}),
+    );
+    let f = fixture(Some(Arc::new(bench.bind_or_pending()))).await;
+    let mut ws = authenticated(&f).await;
+    assert_eq!(
+        queue_result(&mut ws, &bench.params()).await,
+        json!({"queue_id": bench.queue, "state": "stopped", "policy": null})
+    );
+    assert_eq!(bench.kinds(), ["created:1"]);
 }
 
 #[tokio::test]
@@ -421,6 +496,14 @@ struct ObservedStop {
 }
 
 impl QueueControl for ObservedStop {
+    fn get(
+        &self,
+        session: &LocalSession,
+        id: &CommonIdV1,
+    ) -> Result<CommandQueueGetResponseV2Result, ApiError> {
+        self.queue.get(session, id)
+    }
+
     fn state(
         &self,
         session: &LocalSession,
@@ -488,6 +571,19 @@ async fn a_locked_queue_stop_does_not_stall_other_connections() {
 #[derive(Default)]
 struct Counting(AtomicUsize);
 impl QueueControl for Counting {
+    fn get(
+        &self,
+        _: &LocalSession,
+        id: &CommonIdV1,
+    ) -> Result<CommandQueueGetResponseV2Result, ApiError> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Ok(CommandQueueGetResponseV2Result {
+            queue_id: id.clone(),
+            state: CommandQueueGetResponseV2ResultState::Stopped,
+            policy: None,
+        })
+    }
+
     fn create(&self, _: &LocalSession, _: &CommonIdV1, _: &str) -> Result<(), ApiError> {
         self.0.fetch_add(1, Ordering::SeqCst);
         Ok(())

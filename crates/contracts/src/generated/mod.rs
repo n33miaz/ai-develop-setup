@@ -15,6 +15,7 @@ pub mod command_harness_list_response_v1;
 pub mod command_harness_list_v1;
 pub mod command_queue_create_v1;
 pub mod command_queue_get_response_v1;
+pub mod command_queue_get_response_v2;
 pub mod command_queue_get_v1;
 pub mod command_queue_start_v1;
 pub mod command_queue_stop_v1;
@@ -53,6 +54,7 @@ pub mod contract_local_api_server_message_v2;
 pub mod contract_local_api_server_message_v3;
 pub mod contract_local_api_server_message_v4;
 pub mod contract_local_api_server_message_v5;
+pub mod contract_local_api_server_message_v6;
 pub mod contract_pty_host_frame_v1;
 pub mod contract_pty_host_notification_v1;
 pub mod contract_pty_host_request_v1;
@@ -150,6 +152,7 @@ pub use command_harness_list_response_v1::*;
 pub use command_harness_list_v1::*;
 pub use command_queue_create_v1::*;
 pub use command_queue_get_response_v1::*;
+pub use command_queue_get_response_v2::*;
 pub use command_queue_get_v1::*;
 pub use command_queue_start_v1::*;
 pub use command_queue_stop_v1::*;
@@ -188,6 +191,7 @@ pub use contract_local_api_server_message_v2::*;
 pub use contract_local_api_server_message_v3::*;
 pub use contract_local_api_server_message_v4::*;
 pub use contract_local_api_server_message_v5::*;
+pub use contract_local_api_server_message_v6::*;
 pub use contract_pty_host_frame_v1::*;
 pub use contract_pty_host_notification_v1::*;
 pub use contract_pty_host_request_v1::*;
@@ -311,6 +315,10 @@ pub const SCHEMAS: &[(&str, &str)] = &[
         "command.queue.get.response.v1",
         "urn:ads:command:queue.get.response:1",
     ),
+    (
+        "command.queue.get.response.v2",
+        "urn:ads:command:queue.get.response:2",
+    ),
     ("command.queue.get.v1", "urn:ads:command:queue.get:1"),
     ("command.queue.start.v1", "urn:ads:command:queue.start:1"),
     ("command.queue.stop.v1", "urn:ads:command:queue.stop:1"),
@@ -399,6 +407,10 @@ pub const SCHEMAS: &[(&str, &str)] = &[
     (
         "contract.local-api.server-message.v5",
         "urn:ads:contract:local-api.server-message:5",
+    ),
+    (
+        "contract.local-api.server-message.v6",
+        "urn:ads:contract:local-api.server-message:6",
     ),
     (
         "contract.pty-host.frame.v1",
@@ -725,6 +737,9 @@ pub fn reencode(id: &str, value: Value) -> Option<Result<Value, serde_json::Erro
         "urn:ads:command:queue.get.response:1" => {
             support::reencode::<CommandQueueGetResponseV1>(value)
         }
+        "urn:ads:command:queue.get.response:2" => {
+            support::reencode::<CommandQueueGetResponseV2>(value)
+        }
         "urn:ads:command:queue.get:1" => support::reencode::<CommandQueueGetV1>(value),
         "urn:ads:command:queue.start:1" => support::reencode::<CommandQueueStartV1>(value),
         "urn:ads:command:queue.stop:1" => support::reencode::<CommandQueueStopV1>(value),
@@ -784,6 +799,9 @@ pub fn reencode(id: &str, value: Value) -> Option<Result<Value, serde_json::Erro
         }
         "urn:ads:contract:local-api.server-message:5" => {
             support::reencode::<ContractLocalApiServerMessageV5>(value)
+        }
+        "urn:ads:contract:local-api.server-message:6" => {
+            support::reencode::<ContractLocalApiServerMessageV6>(value)
         }
         "urn:ads:contract:pty-host.frame:1" => support::reencode::<ContractPtyHostFrameV1>(value),
         "urn:ads:contract:pty-host.notification:1" => {

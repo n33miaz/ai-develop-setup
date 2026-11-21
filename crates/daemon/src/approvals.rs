@@ -2319,11 +2319,16 @@ mod tests {
             let unbounded = desk_with(log, vec![gate], usize::MAX);
             let all = unbounded.pending(&session()).unwrap();
             assert_eq!(all.approvals.len(), waiting);
-            let one = serde_json::to_vec(&all.approvals[0]).unwrap().len();
+            // The ids of the entries come from the file system and vary in length, so the
+            // room is that of the two oldest actions as listed, not twice the first one.
+            let two: usize = all.approvals[..2]
+                .iter()
+                .map(|item| serde_json::to_vec(item).unwrap().len() + 1)
+                .sum();
             let Desk { log, gates, .. } = unbounded.inner.into_inner().unwrap();
 
-            // Room for two actions: the third record is never read.
-            let desk = desk_with(log, gates, 128 + 2 * (one + 1) + 16);
+            // Room for exactly two actions: the third record is never read.
+            let desk = desk_with(log, gates, 128 + two);
             let (page, read) = records_read(|| desk.pending(&session()).unwrap());
             assert!(page.more);
             assert_eq!(page.approvals.len(), 2);

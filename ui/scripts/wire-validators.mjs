@@ -26,7 +26,7 @@ export function wireValidators() {
         const schema = JSON.parse(readFileSync(new URL(file, directory), 'utf8'))
         ajv.addSchema(schema)
         if (
-          /^(command\.(auth\.hello|events\.subscribe|harness\.list|session\.)|event\.session\.|contract\.local-api\.server-message)/.test(
+          /^(command\.(auth\.hello|events\.subscribe|harness\.list|queue\.(get|create|start|stop)|approval\.(list|answer)|session\.)|event\.session\.|contract\.local-api\.server-message)/.test(
             file,
           )
         ) {

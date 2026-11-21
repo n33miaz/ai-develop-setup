@@ -3,10 +3,16 @@ import {
   SESSION_SETUP_FAILED,
   SUBSCRIPTION_REPLAY_UNAVAILABLE,
   type CommandRequestV1,
+  type CommandQueueGetResponseV1,
+  type CommandApprovalListResponseV2,
   type CommandResponseV2,
   type EventEnvelopeV1,
   type HarnessCatalog,
 } from './contracts'
+
+export type LocalCommandReply =
+  | CommandResponseV2
+  | ((CommandQueueGetResponseV1 | CommandApprovalListResponseV2) & { error?: never })
 
 export type Unsubscribe = () => void
 
@@ -82,7 +88,7 @@ export interface CoreClient {
    * repete o efeito e a resposta volta com `replayed: true`. Um comando não é um evento: o efeito
    * volta como evento.
    */
-  send(command: CommandRequestV1): Promise<CommandResponseV2>
+  send(command: CommandRequestV1): Promise<LocalCommandReply>
   /** Ferramentas ligadas e apelidos de pasta do núcleo (`harness.list`). A recusa vira erro. */
   listHarnesses(): Promise<HarnessCatalog>
 }

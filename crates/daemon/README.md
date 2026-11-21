@@ -196,9 +196,12 @@ recebe `REMOTE_ORIGIN_REFUSED`.
   disponível parada após a gravação. A cache de idempotência permite repetir o
   pedido confirmado. Um novo pedido para uma fila existente recebe
   `QUEUE_ALREADY_CREATED`.
-- `queue.get` responde `{"queue_id": ..., "state": "stopped" | "enabled"}`
-  ([`command.queue.get.response:1`](../../contracts/README.md#api-local)). Só lê
-  e, como `harness.list`, fica fora da cache de idempotência.
+- `queue.get` devolve `queue_id`, `state` (`stopped` ou `enabled`) e `policy`
+  ([`command.queue.get.response:2`](../../contracts/README.md#api-local)). Lê os
+  limites e janelas do log de auditoria ancorado. Vale o último
+  `queue.policy_changed:1` ou, na ausência desse evento, a política de
+  `queue.created:2`. Uma fila criada por `queue.created:1` sem mudança de
+  política retorna `policy: null`. A consulta fica fora da cache de idempotência.
 - `queue.start` liga a fila só depois de gravar `queue.enabled` no log de
   auditoria ancorado, com o aparelho local como ator, o dono, `via: local_ui`,
   o `ts` do relógio do daemon e o id do comando em `cause`. A fila já ligada

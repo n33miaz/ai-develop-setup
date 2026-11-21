@@ -6,6 +6,7 @@ import {
   type Unsubscribe,
 } from './client'
 import type {
+  CommandRequestV1,
   CommandResponseV2,
   CommonActorV1,
   EventDraft,
@@ -16,6 +17,7 @@ import { newUlid } from './ulid'
 
 /** Cliente falso em memória: dá para testar a UI sem núcleo. Não simula rede nem atraso. */
 export interface FakeCoreClient extends CoreClient {
+  send(command: CommandRequestV1): Promise<CommandResponseV2>
   /** Grava um evento no fluxo (como se o núcleo o tivesse produzido) e entrega aos assinantes. */
   emit(draft: EventDraft): EventEnvelopeV1
   /** Encerra as assinaturas vivas do fluxo com o código dado, sem derrubar a conexão. */

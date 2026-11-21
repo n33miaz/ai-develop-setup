@@ -5,8 +5,8 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use ads_contracts::{
-    CommonIdV1, EventEnvelopeV1, RecordTaskQueueV1, RecordTaskQueueV1State,
-    RecordTaskQueueV1Version,
+    CommandQueueGetResponseV2Result, CommonIdV1, CommonQueuePolicyV1, EventEnvelopeV1,
+    RecordTaskQueueV1, RecordTaskQueueV1State, RecordTaskQueueV1Version,
 };
 use ads_core::queue::{
     DEFAULT_POLICY, QueuePolicy, QueueRefusal, QueueStateEvent, QueueStreamEvent,
@@ -32,6 +32,11 @@ pub trait QueueControl: Send + Sync + 'static {
         session: &LocalSession,
         queue_id: &CommonIdV1,
     ) -> Result<RecordTaskQueueV1State, ApiError>;
+    fn get(
+        &self,
+        session: &LocalSession,
+        queue_id: &CommonIdV1,
+    ) -> Result<CommandQueueGetResponseV2Result, ApiError>;
     /// Records `queue.enabled` and only then admits tasks. `cause` is the command id.
     fn start(
         &self,
@@ -52,6 +57,14 @@ pub trait QueueControl: Send + Sync + 'static {
 /// No queue bound to the audit log: every queue command is refused.
 pub struct DisabledQueue;
 impl QueueControl for DisabledQueue {
+    fn get(
+        &self,
+        _: &LocalSession,
+        _: &CommonIdV1,
+    ) -> Result<CommandQueueGetResponseV2Result, ApiError> {
+        Err(ApiError::QueueNotConfigured)
+    }
+
     fn state(&self, _: &LocalSession, _: &CommonIdV1) -> Result<RecordTaskQueueV1State, ApiError> {
         Err(ApiError::QueueNotConfigured)
     }
@@ -316,6 +329,30 @@ impl LoggedQueue {
 }
 
 impl Inner {
+    fn recorded_policy(&self) -> Result<Option<CommonQueuePolicyV1>, ApiError> {
+        let stored = crate::audit::lock_with_timeout(&self.log, self.busy_timeout)
+            .and_then(|log| log.read_queue(&self.record.id))
+            .map_err(ApiError::from_storage)?;
+        for stored in stored.iter().rev() {
+            let event =
+                QueueStreamEvent::from_envelope(&stored.event).map_err(|_| ApiError::Storage)?;
+            match event {
+                QueueStreamEvent::PolicyChanged(changed) => {
+                    if changed.data.owner_id != self.record.owner_id {
+                        return Err(ApiError::Storage);
+                    }
+                    return Ok(Some(changed.into_fields().data.policy));
+                }
+                QueueStreamEvent::CreatedV2(created) => {
+                    return Ok(Some(created.into_fields().data.policy));
+                }
+                QueueStreamEvent::Created(_) => return Ok(None),
+                _ => {}
+            }
+        }
+        Err(ApiError::Storage)
+    }
+
     /// Appends at the next `seq` of the queue stream; the storage refuses a stale one.
     fn append(
         &mut self,
@@ -474,6 +511,17 @@ impl QueueControl for LocalQueue {
             .state(session, id)
     }
 
+    fn get(
+        &self,
+        session: &LocalSession,
+        id: &CommonIdV1,
+    ) -> Result<CommandQueueGetResponseV2Result, ApiError> {
+        self.lock(id)?
+            .as_ref()
+            .ok_or(ApiError::QueueNotConfigured)?
+            .get(session, id)
+    }
+
     fn start(&self, session: &LocalSession, id: &CommonIdV1, cause: &str) -> Result<(), ApiError> {
         self.lock(id)?
             .as_ref()
@@ -501,6 +549,25 @@ impl QueueControl for LoggedQueue {
         queue_id: &CommonIdV1,
     ) -> Result<RecordTaskQueueV1State, ApiError> {
         Ok(self.lock(queue_id)?.record.state)
+    }
+
+    fn get(
+        &self,
+        _: &LocalSession,
+        queue_id: &CommonIdV1,
+    ) -> Result<CommandQueueGetResponseV2Result, ApiError> {
+        use ads_contracts::CommandQueueGetResponseV2ResultState;
+
+        let inner = self.lock(queue_id)?;
+        let state = match inner.record.state {
+            Stopped => CommandQueueGetResponseV2ResultState::Stopped,
+            Enabled => CommandQueueGetResponseV2ResultState::Enabled,
+        };
+        Ok(CommandQueueGetResponseV2Result {
+            queue_id: queue_id.clone(),
+            state,
+            policy: inner.recorded_policy()?,
+        })
     }
 
     fn start(&self, _: &LocalSession, queue_id: &CommonIdV1, cause: &str) -> Result<(), ApiError> {

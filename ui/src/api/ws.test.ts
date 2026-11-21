@@ -5,6 +5,8 @@ import type { HarnessListError } from './client'
 import { newCommand } from './command'
 import { createFakeCoreClient } from './fake'
 import type { CommandRequestV1 } from './contracts'
+import { HARNESS_NOT_CONFIGURED } from '../../../contracts/generated/ts/contract.local-api.error-code.v4.constants'
+import { queueApprovals } from './queueApprovals'
 import { createWsCoreClient } from './ws'
 
 const schemas = import.meta.glob<AnySchema>('../../../contracts/schemas/*.schema.json', {
@@ -31,7 +33,7 @@ class FakeSocket extends EventTarget {
     this.dispatchEvent(new Event('close'))
   }
   receive(message: unknown) {
-    valid('urn:ads:contract:local-api.server-message:2', message)
+    valid('urn:ads:contract:local-api.server-message:5', message)
     this.receiveRaw(message)
   }
   /** Entrega sem conferir: simula um núcleo que manda o que o contrato não aceita. */
@@ -89,6 +91,57 @@ function event(seq: number, stream = 'session/session-a') {
 }
 
 describe('local WebSocket client', () => {
+  it('sends the queue and approval commands and validates their replies', async () => {
+    const { client, socket } = await connected()
+    const api = queueApprovals(client)
+    const queue = api.get('queue-01')
+    socket.receive({
+      jsonrpc: '2.0',
+      id: socket.sent.at(-1)?.id,
+      result: { queue_id: 'queue-01', state: 'stopped' },
+    })
+    await expect(queue).resolves.toEqual({ queue_id: 'queue-01', state: 'stopped' })
+
+    for (const action of ['create', 'start', 'stop'] as const) {
+      const result = api[action]('queue-01')
+      expect(socket.sent.at(-1)).toMatchObject({
+        method: 'queue.' + action,
+        params: { queue_id: 'queue-01' },
+      })
+      socket.answer(socket.sent.length - 1)
+      await expect(result).resolves.toMatchObject({ result: { accepted: true } })
+    }
+
+    const list = api.list()
+    expect(socket.sent.at(-1)?.method).toBe('approval.list')
+    socket.receive({
+      jsonrpc: '2.0',
+      id: socket.sent.at(-1)?.id,
+      result: { approvals: [], more: true },
+    })
+    await expect(list).resolves.toEqual({ approvals: [], more: true })
+
+    const params = {
+      action_id: 'action-01',
+      approval_id: 'approval-01',
+      plan_hash: 'sha256:' + 'a'.repeat(64),
+      decision: 'deny',
+    } as const
+    const answer = api.answer(params)
+    expect(socket.sent.at(-1)).toMatchObject({ method: 'approval.answer', params })
+    socket.answer(socket.sent.length - 1)
+    await expect(answer).resolves.toMatchObject({ result: { accepted: true } })
+
+    const refused = api.start('queue-01')
+    socket.receive({
+      jsonrpc: '2.0',
+      id: socket.sent.at(-1)?.id,
+      error: { code: HARNESS_NOT_CONFIGURED, message: 'unconfigured' },
+    })
+    await expect(refused).rejects.toMatchObject({ code: HARNESS_NOT_CONFIGURED })
+    expect(client.getState()).toBe('connected')
+  })
+
   it('accepts the oldest retained event when replay starts from zero', async () => {
     const { client, socket } = await connected()
     const seen: number[] = []
