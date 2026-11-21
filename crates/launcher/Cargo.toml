@@ -16,5 +16,16 @@ toml.workspace = true
 [dev-dependencies]
 ads-private-dir = { workspace = true, features = ["test-support"] }
 
-[lints]
-workspace = true
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = ["Win32_System_Console"] }
+
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"

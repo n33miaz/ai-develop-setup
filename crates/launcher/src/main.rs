@@ -1,6 +1,6 @@
 //! Supervises the daemon and terminal host for one installation.
 
-use ads_private_dir as private;
+mod console;
 mod supervisor;
 
 use std::{
@@ -23,6 +23,7 @@ struct Config {
     shell_width: u16,
     shell_height: u16,
     shell_start_minimized: bool,
+    shell_close_timeout_ms: u64,
     ptyhost_program: PathBuf,
     daemon_config: Option<PathBuf>,
     ptyhost_config: Option<PathBuf>,
@@ -233,6 +234,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         }
         shell
     });
+    console::install_console_handler()?;
     supervisor::run(&config, &control, daemon, host, shell)?;
     Ok(ExitCode::SUCCESS)
 }

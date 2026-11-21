@@ -1,6 +1,6 @@
 # Orçamento de `unsafe`
 
-Regra: `unsafe_code = "forbid"` vale para todo o workspace (`[workspace.lints.rust]` no `Cargo.toml` da raiz) e cada crate herda com `[lints] workspace = true`. As exceções em uso são seis, cada uma com uma tabela `[lints]` própria com `unsafe_code = "deny"` e o lint liberado em um só módulo, compilado apenas no Windows: `ads-ptyhost` (`crates/ptyhost/src/win.rs`), `ads-adapter-fs` (`crates/adapters/fs/src/sys/windows.rs`), `ads-testkit` (`crates/testkit/src/win.rs`), `ads-adapter-vault` (`crates/adapters/vault/src/windows.rs`), `ads-private-dir` (`crates/private-dir/src/platform/win.rs`) e `ads-shell` (`crates/shell/src/stdin.rs`). O `ads-testkit` é só de teste: entra apenas como dependência de desenvolvimento e não chega a nenhum binário do produto, nem com `--all-features`. Fora desses módulos, `unsafe` continua reprovando a compilação.
+Regra: `unsafe_code = "forbid"` vale para todo o workspace (`[workspace.lints.rust]` no `Cargo.toml` da raiz) e cada crate herda com `[lints] workspace = true`. As exceções em uso são sete, cada uma com uma tabela `[lints]` própria com `unsafe_code = "deny"` e o lint liberado em um só módulo, compilado apenas no Windows: `ads-ptyhost` (`crates/ptyhost/src/win.rs`), `ads-adapter-fs` (`crates/adapters/fs/src/sys/windows.rs`), `ads-testkit` (`crates/testkit/src/win.rs`), `ads-adapter-vault` (`crates/adapters/vault/src/windows.rs`), `ads-private-dir` (`crates/private-dir/src/platform/win.rs`), `ads-launcher` (`crates/launcher/src/console/win.rs`) e `ads-shell` (`crates/shell/src/stdin.rs`). O `ads-testkit` é só de teste: entra apenas como dependência de desenvolvimento e não chega a nenhum binário do produto, nem com `--all-features`. Fora desses módulos, `unsafe` continua reprovando a compilação.
 
 A contagem só sobe com justificativa aqui.
 
@@ -10,7 +10,8 @@ A contagem só sobe com justificativa aqui.
 | `ads-adapter-fs` | 4 | chamadas da API do Windows para abrir, mover e apagar por identificador aberto, listadas abaixo; no Linux as mesmas operações vêm do `rustix`, sem `unsafe` |
 | `ads-testkit` | 7 | só de teste, fora de qualquer binário do produto; listados abaixo |
 | `ads-adapter-vault` | 6 | operações por nome no cofre do Windows e tratamento da memória devolvida |
-| `ads-private-dir` | 20 | chamadas da API do Windows para criar pastas privadas e arquivos de controle só do usuário, conferir dono e lista de acesso e operar relativo à pasta aberta, listadas abaixo (2 delas só nos testes); no Unix o mesmo vem da biblioteca padrão e do `rustix`, sem `unsafe` |
+| `ads-private-dir` | 20 | chamadas da API do Windows para criar pastas privadas e arquivos de controle só do usuário, conferir dono e lista de acesso e operar relativo à pasta aberta, listadas abaixo (3 delas habilitadas em testes ou com `test-support`); no Unix o mesmo vem da biblioteca padrão e do `rustix`, sem `unsafe` |
+| `ads-launcher` | 3 | tratador de interrupções do console, com 2 blocos de teste |
 | `ads-shell` | 2 | retirar e fechar a entrada padrão herdada antes de iniciar a WebView |
 | `ads-storage` | 0 | SQLite e cifra pelas APIs seguras das dependências; herda `forbid` |
 | demais | 0 | nenhum |
@@ -86,7 +87,16 @@ A biblioteca padrão não cria pasta nem arquivo com lista de acesso própria, n
 | `open_at` | 2 | `NtCreateFile`, `OwnedHandle::from_raw_handle` | abrir ou criar a trava, o estado temporário e os sinais por um nome só, relativos à pasta aberta, sem seguir ponto de reanálise, e criar arquivo já com o descritor privado |
 | `apply` | 1 | `NtSetInformationFile` | mover o estado temporário sobre o estado e apagar um sinal, os dois pelo identificador em que foram conferidos |
 | `security` | 4 | `GetSecurityInfo` (dono e lista de acesso), `GetAclInformation`, `GetAce`, leitura do cabeçalho da entrada | conferir o dono e cada entrada da lista de acesso da pasta, da trava e de cada sinal, no identificador aberto |
-| `access_list_text` (só testes) | 2 | `GetSecurityInfo`, `ConvertSecurityDescriptorToStringSecurityDescriptorW` | ler a lista de acesso em texto, com proteção e herança, para os testes compararem com a esperada |
+| `access_list_text`, `canonical_access_list` e `descriptor_text` (testes ou `test-support`) | 3 | `GetSecurityInfo`, conversões de descritor de segurança | comparar a lista de acesso com a forma de escrita do Windows, incluindo proteção, herança e abreviação de identificadores |
+
+## `ads-launcher` (`crates/launcher/src/console/win.rs`)
+
+O tratador registra Ctrl+C e Ctrl+Break em uma variável atômica para o supervisor encerrar os processos.
+
+| Onde | Blocos | Chamada | Motivo |
+|---|---|---|---|
+| `install_console_handler` | 1 | `SetConsoleCtrlHandler` | registrar o retorno de chamada que marca a parada em uma variável atômica |
+| `generate_console_interrupt` (só testes) | 2 | `SetConsoleCtrlHandler`, `GenerateConsoleCtrlEvent` | habilitar e gerar Ctrl+C dentro de um console isolado para verificar a limpeza |
 
 ## `ads-shell` (`crates/shell/src/stdin.rs`)
 

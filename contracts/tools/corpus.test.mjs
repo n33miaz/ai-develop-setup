@@ -176,3 +176,43 @@ test("o apelido e a origem da tarefa seguem os tipos comuns no registro e em que
   assert.deepEqual(created(4).tool, { $ref: "urn:ads:common:id:1" });
   for (const [field, { id }] of Object.entries(shared)) assert.deepEqual(record3[field], { $ref: id }, field);
 });
+
+test("queue.policy_changed:1 preserva a validação da política publicada", () => {
+  const errors = [];
+  const ajv = createAjv();
+  for (const { schema } of loadSchemas(root, errors)) ajv.addSchema(schema);
+  assert.deepEqual(errors, []);
+  const validate = ajv.getSchema(
+    "urn:ads:event:queue.policy_changed:1#/allOf/1/properties/data/properties/policy",
+  );
+  const limits = {
+    attempt_limit: { type: "integer", minimum: 1, maximum: 10 },
+    admission_limit: { type: "integer", minimum: 1 },
+    window_seconds: { type: "integer", minimum: 1 },
+    window_admissions: { type: "integer", minimum: 1 },
+    manual_window_admissions: { type: "integer", minimum: 1 },
+    bug_rule_window_admissions: { type: "integer", minimum: 1 },
+    clock_skew_seconds: { type: "integer", minimum: 0 },
+    clock_rewind_seconds: { type: "integer", minimum: 0 },
+    host_confirm_seconds: { type: "integer", minimum: 1 },
+  };
+  const published = ajv.compile({
+    type: "object",
+    additionalProperties: false,
+    required: Object.keys(limits),
+    properties: limits,
+  });
+  const base = Object.fromEntries(Object.entries(limits).map(([key, { minimum }]) => [key, minimum]));
+  const cases = [base, {}, null, { ...base, extra: 1 }];
+  for (const key of Object.keys(limits)) {
+    const missing = { ...base };
+    delete missing[key];
+    cases.push(missing);
+    for (const value of [-1, 0, 1, 1.5, 10, 11, "1", null]) {
+      cases.push({ ...base, [key]: value });
+    }
+  }
+  for (const policy of cases) {
+    assert.equal(validate(policy), published(policy), JSON.stringify(policy));
+  }
+});

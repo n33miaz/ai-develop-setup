@@ -10,10 +10,9 @@ use std::{
 
 use serde::Serialize;
 
-use crate::{
-    Config,
-    private::{ControlDir, Identity, Signal},
-};
+use ads_private_dir::{ControlDir, Identity, Signal};
+
+use crate::{Config, console};
 
 #[derive(Default, Serialize)]
 struct ProcessState {
@@ -161,6 +160,115 @@ fn stop_child(child: &mut Child) -> io::Result<ExitStatus> {
     child.wait()
 }
 
+/// Asks the child to close, waits up to `timeout`, then forces it. Only a child this launcher
+/// started and has not reaped gets here, so neither step can reach another process.
+fn close_child(
+    child: &mut Child,
+    timeout: Duration,
+    poll: Duration,
+    request: impl FnOnce(&Child) -> io::Result<()>,
+    report: impl FnOnce(String),
+) -> io::Result<ExitStatus> {
+    if let Some(status) = child.try_wait()? {
+        return Ok(status);
+    }
+    let delivered = !timeout.is_zero()
+        && match request(child) {
+            Ok(()) => true,
+            Err(error) => {
+                report(format!("request shell close: {error}"));
+                false
+            }
+        };
+    if delivered {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(status) = child.try_wait()? {
+                return Ok(status);
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            thread::sleep(poll.min(left));
+        }
+    }
+    stop_child(child)
+}
+
+/// The desktop process opened for the current daemon, with cleanup on scope exit.
+struct Window {
+    child: Option<Child>,
+    #[cfg(windows)]
+    close_pipe: Option<io::PipeWriter>,
+    timeout: Duration,
+    poll: Duration,
+}
+
+impl Window {
+    fn new(config: &Config) -> Self {
+        Self {
+            child: None,
+            #[cfg(windows)]
+            close_pipe: None,
+            timeout: Duration::from_millis(config.shell_close_timeout_ms),
+            poll: Duration::from_millis(config.poll_ms),
+        }
+    }
+
+    fn start(&mut self, command: &mut Command, bootstrap: impl Into<Stdio>) -> io::Result<()> {
+        #[cfg(windows)]
+        {
+            let (reader, writer) = io::pipe()?;
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            command
+                .creation_flags(CREATE_NO_WINDOW)
+                .stderr(reader)
+                .env("ADS_SHELL_CLOSE_PIPE", "1");
+            let child = start_shell(command, bootstrap);
+            command.stderr(Stdio::null());
+            self.child = Some(child?);
+            self.close_pipe = Some(writer);
+        }
+        #[cfg(unix)]
+        {
+            self.child = Some(start_shell(command, bootstrap)?);
+        }
+        Ok(())
+    }
+
+    fn close(&mut self, report: impl FnOnce(String)) -> io::Result<()> {
+        if let Some(child) = &mut self.child {
+            #[cfg(windows)]
+            let request = |_: &Child| {
+                use io::Write;
+                self.close_pipe
+                    .take()
+                    .ok_or_else(|| io::Error::other("missing shell close pipe"))?
+                    .write_all(b"Q")
+            };
+            #[cfg(unix)]
+            let request = console::request_close;
+            close_child(child, self.timeout, self.poll, request, report)?;
+            self.child = None;
+            #[cfg(windows)]
+            {
+                self.close_pipe = None;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Drop for Window {
+    fn drop(&mut self) {
+        if let Err(error) = self.close(|message| eprintln!("ads-launcher: {message}")) {
+            eprintln!("ads-launcher: close shell: {error}");
+        }
+    }
+}
+
 fn detach(host: &mut Command) {
     host.stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -248,6 +356,11 @@ impl Publication {
         }
     }
 
+    fn close_shell(&mut self, window: &mut Window) -> bool {
+        let result = window.close(|message| self.report(message));
+        self.attempt("close shell", result).is_some()
+    }
+
     /// `Some(true)` when the signal was accepted; a foreign signal file is reported and ignored.
     fn signal(&mut self, operation: &str, control: &ControlDir, name: &str) -> Option<bool> {
         match self.attempt(operation, control.signal(name, true))? {
@@ -281,9 +394,10 @@ pub(crate) fn run(
     if shell.is_some() {
         daemon.stdout(Stdio::piped());
     }
-    let mut window = None;
     let mut daemon = Process::new(daemon, true);
     let mut host = Process::new(host, false);
+    // Declared after the daemon so that, on any exit, the window closes before it.
+    let mut window = Window::new(config);
 
     // Publish before starting children so an unusable state path fails early.
     let mut publication = Publication {
@@ -295,16 +409,18 @@ pub(crate) fn run(
     let mut restarting = false;
     loop {
         if !stopping {
-            stopping = publication.signal("consume stop signal", &control, stop) == Some(true);
+            stopping = console::console_stop_requested()
+                || publication.signal("consume stop signal", &control, stop) == Some(true);
         }
         let stopped = if stopping {
             let daemon_stopped = publication.attempt("stop daemon", daemon.stop()).is_some();
+            let window_closed = publication.close_shell(&mut window);
             let signal_cleared = publication
                 .signal("clear restart signal", &control, restart)
                 .is_some();
             publication.attempt("check host exit", host.tick_exit_only());
             publication.dirty = true;
-            daemon_stopped && signal_cleared
+            daemon_stopped && window_closed && signal_cleared
         } else {
             restarting |=
                 publication.signal("consume restart signal", &control, restart) == Some(true);
@@ -319,26 +435,28 @@ pub(crate) fn run(
             let host_changed = publication.attempt("check host", host.tick(config)) == Some(true);
             let daemon_changed = !restarting
                 && publication.attempt("check daemon", daemon.tick(config)) == Some(true);
-            if let Some(window_process) = &mut window
+            if let Some(window_process) = &mut window.child
                 && publication
                     .attempt("check shell", Child::try_wait(window_process))
                     .flatten()
                     .is_some()
             {
-                window = None;
+                window.child = None;
+                #[cfg(windows)]
+                {
+                    window.close_pipe = None;
+                }
+            }
+            if daemon.state.gave_up {
+                // No daemon will follow to replace the window: it would stay disconnected.
+                publication.close_shell(&mut window);
             }
             if let Some(shell) = &mut shell
                 && let Some(daemon_output) =
                     daemon.child.as_mut().and_then(|child| child.stdout.take())
+                && publication.close_shell(&mut window)
             {
-                let can_open = window.as_mut().is_none_or(|previous| {
-                    publication
-                        .attempt("replace previous shell", stop_child(previous))
-                        .is_some()
-                });
-                if can_open {
-                    window = publication.attempt("start shell", start_shell(shell, daemon_output));
-                }
+                publication.attempt("start shell", window.start(shell, daemon_output));
             }
             publication.dirty |= host_changed || daemon_changed;
             false
@@ -384,7 +502,7 @@ impl Process {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::private;
+    use ads_private_dir as private;
     use serde_json::Value;
     use std::fs;
     use std::path::PathBuf;
@@ -414,6 +532,7 @@ pub(crate) mod tests {
         config.restart_max_ms = 40;
         config.crash_window_ms = 600_000;
         config.crash_window_limit = 3;
+        config.shell_close_timeout_ms = 200;
         config
     }
 
@@ -1001,6 +1120,8 @@ pub(crate) mod tests {
                 })
                 .unwrap();
             let directory = Path::new(&directory);
+            let lock = window_lock(&directory.join(format!("window-lock-{daemon}")));
+            lock.lock().unwrap();
             fs::write(directory.join(format!("window-{daemon}")), []).unwrap();
             wait_for_release(&directory.join("release-window"));
         }
@@ -1051,12 +1172,262 @@ pub(crate) mod tests {
         let (first, host) = connected(0);
         fs::write(dir.0.join("restart"), []).unwrap();
         let (second, same_host) = connected(1);
+        let previous_closed = window_lock(&dir.0.join(format!("window-lock-{first}")))
+            .try_lock()
+            .is_ok();
         fs::write(dir.0.join("stop"), []).unwrap();
         fs::write(dir.0.join("release-window"), []).unwrap();
         fs::write(host_release, []).unwrap();
         worker.join().unwrap().unwrap();
         assert_ne!(first, second);
         assert_eq!(host, same_host);
+        assert!(
+            previous_closed,
+            "the replacement started before the previous shell exited"
+        );
+    }
+
+    fn desktop_daemon(dir: &Path) -> Command {
+        let mut daemon = Command::new(std::env::current_exe().unwrap());
+        daemon
+            .args([
+                "desktop_daemon_fixture",
+                "--quiet",
+                "--nocapture",
+                "--format",
+                "terse",
+            ])
+            .env("ADS_TEST_DESKTOP_RELEASE", dir.join("release-daemon"))
+            .stderr(Stdio::null());
+        daemon
+    }
+
+    /// A window that reads only its first line, so the daemon's end alone never closes it,
+    /// and holds a lock on `window.lock` while it runs.
+    #[test]
+    fn held_window_fixture() {
+        if let Some(directory) = std::env::var_os("ADS_TEST_HELD_WINDOW") {
+            let directory = Path::new(&directory);
+            let mut line = String::new();
+            io::stdin().read_line(&mut line).unwrap();
+            let lock = window_lock(&directory.join("window.lock"));
+            lock.lock().unwrap();
+            #[cfg(windows)]
+            {
+                use io::Read;
+                use std::os::windows::io::AsHandle;
+                let mut pipe = File::from(io::stderr().as_handle().try_clone_to_owned().unwrap());
+                let mut command = [0];
+                if pipe.read_exact(&mut command).is_ok() {
+                    assert_eq!(command, *b"Q");
+                    fs::write(directory.join("close-request"), []).unwrap();
+                    if !directory.join("ignore-close").exists() {
+                        return;
+                    }
+                }
+            }
+            wait_for_release(&directory.join("release-window"));
+        }
+    }
+
+    fn held_window(dir: &Path) -> Command {
+        let mut shell = Command::new(std::env::current_exe().unwrap());
+        shell
+            .args(["--exact", "supervisor::tests::held_window_fixture"])
+            .env("ADS_TEST_HELD_WINDOW", dir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        shell
+    }
+
+    fn window_lock(path: &Path) -> File {
+        fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(path)
+            .unwrap()
+    }
+
+    fn window_running(dir: &Path) -> bool {
+        match window_lock(&dir.join("window.lock")).try_lock() {
+            Ok(()) => false,
+            Err(TryLockError::WouldBlock) => true,
+            Err(TryLockError::Error(error)) => panic!("check window lock: {error}"),
+        }
+    }
+
+    fn wait_for_window(dir: &Path, running: bool) -> bool {
+        let start = Instant::now();
+        while window_running(dir) != running {
+            if start.elapsed() > Duration::from_secs(2) {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        true
+    }
+
+    #[test]
+    fn closes_the_window_on_stop() {
+        let dir = TestDir::new();
+        let host_release = dir.0.join("release-host");
+        let (control, daemon, shell) = (dir.0.clone(), desktop_daemon(&dir.0), held_window(&dir.0));
+        let host = fixture(Some(&host_release));
+        let worker = thread::spawn(move || run(&config(), &control, daemon, host, Some(shell)));
+        until(|| window_running(&dir.0).then_some(()));
+        fs::write(dir.0.join("stop"), []).unwrap();
+        worker.join().unwrap().unwrap();
+        let ended = wait_for_window(&dir.0, false);
+        fs::write(dir.0.join("release-window"), []).unwrap();
+        fs::write(host_release, []).unwrap();
+        assert!(ended, "the window outlived the stop signal");
+        #[cfg(windows)]
+        assert!(dir.0.join("close-request").is_file());
+    }
+
+    #[test]
+    fn closes_the_window_when_giving_up_on_the_daemon() {
+        let dir = TestDir::new();
+        let host_release = dir.0.join("release-host");
+        let (control, shell) = (dir.0.clone(), held_window(&dir.0));
+        let daemon = desktop_daemon(&dir.0);
+        let host = fixture(Some(&host_release));
+        let worker = thread::spawn(move || {
+            let mut config = config();
+            config.crash_window_limit = 1;
+            run(&config, &control, daemon, host, Some(shell))
+        });
+        if !wait_for_window(&dir.0, true) {
+            fs::write(dir.0.join("stop"), []).unwrap();
+            fs::write(host_release, []).unwrap();
+            worker.join().unwrap().unwrap();
+            panic!("the window never became ready");
+        }
+        fs::write(dir.0.join("release-daemon"), []).unwrap();
+        until(|| {
+            state_value(&dir.0.join("state.json"))
+                .filter(|state| state["daemon"]["gave_up"] == true)
+        });
+        let ended = wait_for_window(&dir.0, false);
+        fs::write(dir.0.join("stop"), []).unwrap();
+        worker.join().unwrap().unwrap();
+        fs::write(dir.0.join("release-window"), []).unwrap();
+        fs::write(host_release, []).unwrap();
+        assert!(ended, "the window outlived the daemon it was opened for");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn console_interrupt_closes_a_running_window() {
+        const CHILD: &str = "ADS_TEST_OWN_CONSOLE";
+        const NAME: &str = "supervisor::tests::console_interrupt_closes_a_running_window";
+        if std::env::var_os(CHILD).is_none() {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NEW_CONSOLE: u32 = 0x10;
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME])
+                .env(CHILD, "1")
+                .creation_flags(CREATE_NEW_CONSOLE)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+            return;
+        }
+
+        console::install_console_handler().unwrap();
+        let dir = TestDir::new();
+        let control = dir.0.clone();
+        let host_release = dir.0.join("release-host");
+        let host = fixture(Some(&host_release));
+        let daemon = desktop_daemon(&dir.0);
+        let shell = held_window(&dir.0);
+        let worker = thread::spawn(move || run(&config(), &control, daemon, host, Some(shell)));
+        until(|| window_running(&dir.0).then_some(()));
+        console::generate_console_interrupt().unwrap();
+        let now = Instant::now();
+        while !worker.is_finished() && now.elapsed() < Duration::from_secs(5) {
+            thread::sleep(Duration::from_millis(5));
+        }
+        let stopped = worker.is_finished();
+        if !stopped {
+            fs::write(dir.0.join("stop"), []).unwrap();
+        }
+        worker.join().unwrap().unwrap();
+        fs::write(host_release, []).unwrap();
+        assert!(stopped, "Ctrl+C did not stop the supervisor");
+        assert!(dir.0.join("close-request").is_file());
+        assert!(!window_running(&dir.0));
+    }
+
+    #[cfg(windows)]
+    fn start_held_window(dir: &Path, timeout_ms: u64) -> Window {
+        use io::Write;
+        let mut config = config();
+        config.shell_close_timeout_ms = timeout_ms;
+        let (reader, mut writer) = io::pipe().unwrap();
+        writer.write_all(b"bootstrap\n").unwrap();
+        let mut window = Window::new(&config);
+        window.start(&mut held_window(dir), reader).unwrap();
+        until(|| window_running(dir).then_some(()));
+        window
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn window_drop_only_requests_its_own_child() {
+        let owned = TestDir::new();
+        let independent = TestDir::new();
+        let window = start_held_window(&owned.0, 2000);
+        let mut other = start_held_window(&independent.0, 2000);
+        drop(window);
+        assert!(owned.0.join("close-request").is_file());
+        assert!(!window_running(&owned.0));
+        assert!(other.child.as_mut().unwrap().try_wait().unwrap().is_none());
+        assert!(!independent.0.join("close-request").exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn forces_unresponsive_window_only_after_the_deadline() {
+        let dir = TestDir::new();
+        fs::write(dir.0.join("ignore-close"), []).unwrap();
+        let mut window = start_held_window(&dir.0, 1000);
+        let start = Instant::now();
+        window.close(|error| panic!("{error}")).unwrap();
+        assert!(start.elapsed() >= Duration::from_secs(1));
+        assert!(dir.0.join("close-request").is_file());
+        assert!(!window_running(&dir.0));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn zero_deadline_skips_the_close_request() {
+        let dir = TestDir::new();
+        let mut window = start_held_window(&dir.0, 0);
+        window.close(|error| panic!("{error}")).unwrap();
+        assert!(!dir.0.join("close-request").exists());
+        assert!(!window_running(&dir.0));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn failed_request_is_reported_even_when_forced_close_succeeds() {
+        let dir = TestDir::new();
+        let mut window = start_held_window(&dir.0, 2000);
+        let (reader, writer) = io::pipe().unwrap();
+        drop(reader);
+        window.close_pipe = Some(writer);
+        let mut publication = Publication::default();
+        assert!(publication.close_shell(&mut window));
+        assert!(
+            publication
+                .last_error
+                .unwrap()
+                .starts_with("request shell close: ")
+        );
+        assert!(!window_running(&dir.0));
     }
 
     #[test]

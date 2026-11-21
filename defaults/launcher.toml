@@ -10,6 +10,9 @@ shell_autostart = true
 shell_width = 960
 shell_height = 640
 shell_start_minimized = false
+# Prazo, em milissegundos, entre o pedido de fechamento da janela e o término forçado,
+# no sinal stop, na desistência do daemon e na troca de janela. 0 força o término na hora.
+shell_close_timeout_ms = 3000
 # daemon_config e ptyhost_config são opcionais. Sem eles, cada filho usa seus padrões.
 # Pasta exclusiva da instalação. Criada só para a conta atual; existente, é recusada se outra conta tiver acesso.
 control_dir = "launcher-control"

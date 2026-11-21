@@ -49,7 +49,7 @@ pub fn plan(operation: OperationRequest, work_root: &str, targets: &[&str]) -> A
 
 /// The verdict for a Windows plan under the shipped defaults.
 pub fn win(operation: OperationRequest, targets: &[&str]) -> Verdict {
-    classify(&plan(operation, WIN_ROOT, targets), &policy(WIN_HOME, ""))
+    classify(&plan(operation, WIN_ROOT, targets), &policy(WIN_HOME, "")).unwrap()
 }
 
 /// The verdict for a POSIX plan under the shipped defaults.
@@ -58,6 +58,7 @@ pub fn posix(operation: OperationRequest, targets: &[&str]) -> Verdict {
         &plan(operation, POSIX_ROOT, targets),
         &policy(POSIX_HOME, ""),
     )
+    .unwrap()
 }
 
 pub fn id(text: &str) -> Id {

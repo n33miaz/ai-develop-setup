@@ -23,7 +23,8 @@ fn unmeasured_delete() -> Verdict {
     let verdict = classify(
         &ActionPlan::normalize(&asked).unwrap(),
         &policy(POSIX_HOME, ""),
-    );
+    )
+    .unwrap();
     assert_eq!(verdict.decision(), Decision::RequiresApproval);
     verdict
 }
@@ -60,7 +61,7 @@ fn reclassifying_the_quarantine_rewrite_never_lowers_the_verdict() {
     assert!(verdict.is_quarantined());
 
     // The rewritten plan, judged again, still needs the approval, and cannot run without it.
-    let again = classify(verdict.plan(), &policy);
+    let again = classify(verdict.plan(), &policy).unwrap();
     assert_eq!(again.decision(), Decision::RequiresApproval);
     assert!(again.has(Rule::EstimateUnknown));
     assert_eq!(again.plan().hash(), verdict.plan().hash());
@@ -75,8 +76,8 @@ fn reclassifying_the_quarantine_rewrite_never_lowers_the_verdict() {
         items: 501,
         bytes: 1,
     });
-    let verdict = classify(&ActionPlan::normalize(&asked).unwrap(), &policy);
-    let again = classify(verdict.plan(), &policy);
+    let verdict = classify(&ActionPlan::normalize(&asked).unwrap(), &policy).unwrap();
+    let again = classify(verdict.plan(), &policy).unwrap();
     assert_eq!(verdict.decision(), Decision::RequiresApproval);
     assert_eq!(again.decision(), Decision::RequiresApproval);
     assert!(again.has(Rule::ItemLimitExceeded));
@@ -87,7 +88,7 @@ fn reclassifying_the_quarantine_rewrite_never_lowers_the_verdict() {
     };
     let mut asked = request(by_hand, "/work/proj", &["/work/proj/build"]);
     asked.estimate = None;
-    let verdict = classify(&ActionPlan::normalize(&asked).unwrap(), &policy);
+    let verdict = classify(&ActionPlan::normalize(&asked).unwrap(), &policy).unwrap();
     assert_eq!(verdict.decision(), Decision::RequiresApproval);
 }
 
@@ -194,7 +195,7 @@ fn allowed_root_inside_another_root_is_not_a_target() {
     for target in ["/work/shared/data", "/work/shared", "/work/SHARED/*"] {
         for operation in [Op::DeleteRecursive, Op::Overwrite, Op::CleanUntracked] {
             let asked = request(operation, "/work", &[target]);
-            let verdict = classify(&ActionPlan::normalize(&asked).unwrap(), &policy);
+            let verdict = classify(&ActionPlan::normalize(&asked).unwrap(), &policy).unwrap();
             assert_eq!(verdict.decision(), Decision::Denied, "{target}");
             assert!(verdict.has(Rule::AllowedRootItself), "{target}");
             assert!(!verdict.is_quarantined());
@@ -203,7 +204,7 @@ fn allowed_root_inside_another_root_is_not_a_target() {
     // What is inside the allowed root, or beside it, is judged as before.
     for target in ["/work/shared/data/cache", "/work/shared/other"] {
         let asked = request(Op::DeleteRecursive, "/work", &[target]);
-        let verdict = classify(&ActionPlan::normalize(&asked).unwrap(), &policy);
+        let verdict = classify(&ActionPlan::normalize(&asked).unwrap(), &policy).unwrap();
         assert_eq!(verdict.decision(), Decision::Allowed, "{target}");
     }
 }
@@ -218,7 +219,7 @@ fn limit_of_zero_always_asks_for_approval() {
     for operation in [Op::DeleteRecursive, Op::CleanUntracked] {
         let mut asked = request(operation, "/work/proj", &["/work/proj/build"]);
         asked.estimate = Some(Estimate { items: 0, bytes: 0 });
-        let verdict = classify(&ActionPlan::normalize(&asked).unwrap(), &policy);
+        let verdict = classify(&ActionPlan::normalize(&asked).unwrap(), &policy).unwrap();
         assert_eq!(verdict.decision(), Decision::RequiresApproval);
         assert!(verdict.has(Rule::ItemLimitExceeded));
         assert!(verdict.has(Rule::ByteLimitExceeded));
@@ -227,7 +228,7 @@ fn limit_of_zero_always_asks_for_approval() {
     let policy = common::policy(POSIX_HOME, "approval_byte_limit = 0");
     let mut asked = request(Op::DeleteRecursive, "/work/proj", &["/work/proj/build"]);
     asked.estimate = Some(Estimate { items: 0, bytes: 0 });
-    let verdict = classify(&ActionPlan::normalize(&asked).unwrap(), &policy);
+    let verdict = classify(&ActionPlan::normalize(&asked).unwrap(), &policy).unwrap();
     assert_eq!(verdict.decision(), Decision::RequiresApproval);
     assert!(!verdict.has(Rule::ItemLimitExceeded));
     assert!(verdict.has(Rule::ByteLimitExceeded));
@@ -246,7 +247,7 @@ fn unicode_look_alike_of_a_root_is_outside_it() {
     );
     let judge = |operation: Op, target: &str| {
         let asked = request(operation, root, &[target]);
-        classify(&ActionPlan::normalize(&asked).unwrap(), &policy)
+        classify(&ActionPlan::normalize(&asked).unwrap(), &policy).unwrap()
     };
 
     // The target in the sibling: no permit.
@@ -269,7 +270,7 @@ fn unicode_look_alike_of_a_root_is_outside_it() {
         "C:\\work\\\u{C5}",
         &["C:\\work\\\u{212B}\\x"],
     );
-    let verdict = classify(&ActionPlan::normalize(&asked).unwrap(), &policy);
+    let verdict = classify(&ActionPlan::normalize(&asked).unwrap(), &policy).unwrap();
     assert_eq!(verdict.decision(), Decision::Denied);
     let into_sibling = Op::Move {
         destination: "C:\\work\\\u{212A}\\taken".to_owned(),
@@ -303,11 +304,11 @@ fn unicode_look_alike_of_a_root_is_outside_it() {
     assert!(judge(Op::Overwrite, "C:\\work\\\u{212A}").has(Rule::WorkRootItself));
     let home = common::policy("C:\\Users\\K", "");
     let asked = request(Op::Overwrite, "C:\\work", &["C:\\Users\\\u{212A}"]);
-    let verdict = classify(&ActionPlan::normalize(&asked).unwrap(), &home);
+    let verdict = classify(&ActionPlan::normalize(&asked).unwrap(), &home).unwrap();
     assert!(verdict.has(Rule::Protected(ads_core::gate::Protection::UserHome)));
     let system = common::policy(WIN_HOME, "windows_system_dirs = ['Kernel']");
     let asked = request(Op::Overwrite, "C:\\work", &["C:\\\u{212A}ernel\\x"]);
-    let verdict = classify(&ActionPlan::normalize(&asked).unwrap(), &system);
+    let verdict = classify(&ActionPlan::normalize(&asked).unwrap(), &system).unwrap();
     assert!(verdict.has(Rule::Protected(ads_core::gate::Protection::SystemDir)));
 }
 
@@ -360,8 +361,8 @@ fn verdict_already_holds_what_judging_its_plan_again_finds() {
     let judged_twice = |estimate: Option<Estimate>| {
         let mut asked = request(Op::Delete, "/work/proj", &["/work/proj/build"]);
         asked.estimate = estimate;
-        let verdict = classify(&ActionPlan::normalize(&asked).unwrap(), &policy);
-        let again = classify(verdict.plan(), &policy);
+        let verdict = classify(&ActionPlan::normalize(&asked).unwrap(), &policy).unwrap();
+        let again = classify(verdict.plan(), &policy).unwrap();
         assert!(verdict.is_quarantined());
         assert_eq!(again.decision(), verdict.decision());
         for finding in again.findings() {
@@ -417,7 +418,7 @@ fn generated_quarantine_destination_goes_through_the_destination_rules() {
         let entry = format!("/work/proj/{quarantine_dir}/{folder}/build");
 
         // Without that root the delete is rewritten and allowed.
-        let plain = classify(&asked, &common::policy(POSIX_HOME, &overrides));
+        let plain = classify(&asked, &common::policy(POSIX_HOME, &overrides)).unwrap();
         assert_eq!(plain.decision(), Decision::Allowed);
         assert!(plain.is_quarantined());
         assert_eq!(
@@ -427,7 +428,7 @@ fn generated_quarantine_destination_goes_through_the_destination_rules() {
 
         let overrides = format!("{overrides}allowed_roots = ['{entry}']");
         let policy = common::policy(POSIX_HOME, &overrides);
-        let verdict = classify(&asked, &policy);
+        let verdict = classify(&asked, &policy).unwrap();
         assert_eq!(verdict.decision(), Decision::Denied, "{quarantine_dir}");
         let reserved = verdict.findings().iter().any(|finding| {
             finding.rule == Rule::DestinationEntryReserved && finding.subject == entry
@@ -445,7 +446,7 @@ fn generated_quarantine_destination_goes_through_the_destination_rules() {
         assert_eq!(record.to_json()["destination"], serde_json::Value::Null);
         assert!(action.authorize(verdict.plan(), meta(T1, 2)).is_err());
         // Judged again, the same verdict.
-        let again = classify(verdict.plan(), &policy);
+        let again = classify(verdict.plan(), &policy).unwrap();
         assert_eq!(again.decision(), Decision::Denied);
         assert_eq!(again.findings(), verdict.findings());
     }
@@ -588,7 +589,7 @@ fn quarantine_configured_in_a_protected_folder_is_refused_at_load() {
             .with_work_roots(vec![AbsPath::parse(root).unwrap()]);
         let target = format!("{root}{separator}build");
         let asked = request(Op::DeleteRecursive, root, &[&target]);
-        let verdict = classify(&ActionPlan::normalize(&asked).unwrap(), &policy);
+        let verdict = classify(&ActionPlan::normalize(&asked).unwrap(), &policy).unwrap();
         assert_eq!(verdict.decision(), Decision::Allowed, "{overrides}");
         assert!(verdict.is_quarantined(), "{overrides}");
         let destination = verdict.plan().destination().unwrap().to_string();
@@ -599,7 +600,7 @@ fn quarantine_configured_in_a_protected_folder_is_refused_at_load() {
         // The quarantine of the work root is protected as a target, wherever it sits.
         let itself = format!("{root}{separator}{dir}");
         let asked = request(Op::DeleteRecursive, root, &[&itself]);
-        let verdict = classify(&ActionPlan::normalize(&asked).unwrap(), &policy);
+        let verdict = classify(&ActionPlan::normalize(&asked).unwrap(), &policy).unwrap();
         assert!(verdict.has(Rule::QuarantineItself), "{overrides}");
 
         // The same with quarantine off: it loads, and the delete is the delete.
@@ -608,7 +609,7 @@ fn quarantine_configured_in_a_protected_folder_is_refused_at_load() {
             .unwrap_or_else(|err| panic!("{off}: {err}"))
             .with_work_roots(vec![AbsPath::parse(root).unwrap()]);
         let asked = request(Op::DeleteRecursive, root, &[&target]);
-        let verdict = classify(&ActionPlan::normalize(&asked).unwrap(), &policy);
+        let verdict = classify(&ActionPlan::normalize(&asked).unwrap(), &policy).unwrap();
         assert_eq!(verdict.decision(), Decision::Allowed, "{off}");
         assert!(!verdict.is_quarantined(), "{off}");
     }
@@ -630,7 +631,7 @@ fn work_root_that_holds_a_system_folder_denies_the_plan_by_itself() {
         let policy = policy(POSIX_HOME, overrides);
         for operation in [Op::Delete, Op::DeleteRecursive] {
             let asked = request(operation, "/work/proj", &["/work/proj/build"]);
-            let verdict = classify(&ActionPlan::normalize(&asked).unwrap(), &policy);
+            let verdict = classify(&ActionPlan::normalize(&asked).unwrap(), &policy).unwrap();
             assert_eq!(verdict.decision(), Decision::Denied, "{overrides}");
             assert!(
                 verdict.has(Rule::WorkRootProtected(Protection::SystemDir)),
@@ -653,7 +654,7 @@ fn allowed_root_nested_in_another_allowed_root_is_not_a_target() {
     );
     let judge = |operation: Op, target: &str| {
         let asked = request(operation, "/work/proj", &[target]);
-        classify(&ActionPlan::normalize(&asked).unwrap(), &policy)
+        classify(&ActionPlan::normalize(&asked).unwrap(), &policy).unwrap()
     };
     for target in [
         "/data/shared/inner",
@@ -755,7 +756,7 @@ fn unicode_spellings_of_a_root_never_grant() {
                 common::policy(home, "").with_work_roots(vec![AbsPath::parse(&root).unwrap()]);
             let judge = |operation: Op, target: &str| {
                 let asked = request(operation, &root, &[target]);
-                classify(&ActionPlan::normalize(&asked).unwrap(), &policy)
+                classify(&ActionPlan::normalize(&asked).unwrap(), &policy).unwrap()
             };
             let inside = format!("{root}{separator}build");
             let sibling = format!("{other}{separator}build");
@@ -780,7 +781,7 @@ fn unicode_spellings_of_a_root_never_grant() {
     // The same for an allowed root.
     let policy = common::policy(POSIX_HOME, "allowed_roots = ['/data/caf\u{e9}']");
     let asked = request(Op::Overwrite, "/work/proj", &["/data/cafe\u{301}/x"]);
-    let verdict = classify(&ActionPlan::normalize(&asked).unwrap(), &policy);
+    let verdict = classify(&ActionPlan::normalize(&asked).unwrap(), &policy).unwrap();
     assert_eq!(verdict.decision(), Decision::Denied);
 
     // Full-width letters, separators and dots are plain characters of a name.
@@ -793,7 +794,7 @@ fn unicode_spellings_of_a_root_never_grant() {
         "C:\\work\\\u{ff0e}\u{ff0e}\\proj\\x",
     ] {
         let asked = request(Op::Overwrite, root, &[outside]);
-        let verdict = classify(&ActionPlan::normalize(&asked).unwrap(), &policy);
+        let verdict = classify(&ActionPlan::normalize(&asked).unwrap(), &policy).unwrap();
         assert_eq!(verdict.decision(), Decision::Denied, "{outside}");
         assert!(verdict.has(Rule::OutsideAllowedRoots), "{outside}");
     }
@@ -861,7 +862,7 @@ fn unicode_spellings_of_a_root_never_grant() {
     ] {
         let target = format!("{root}\\{plain}");
         let asked = request(Op::Overwrite, root, &[&target]);
-        let verdict = classify(&ActionPlan::normalize(&asked).unwrap(), &policy);
+        let verdict = classify(&ActionPlan::normalize(&asked).unwrap(), &policy).unwrap();
         assert_eq!(verdict.decision(), Decision::Allowed, "{plain}");
     }
 }

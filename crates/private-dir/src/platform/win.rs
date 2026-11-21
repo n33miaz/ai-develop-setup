@@ -1,8 +1,9 @@
 //! Windows calls for the control folder: identity and access lists, and every entry opened
 //! relative to the folder held open (`NtCreateFile` with a root handle), as itself and never
 //! through a reparse point, then renamed or removed by its own handle
-//! (`NtSetInformationFile`). Each block is a single call or the read of data the previous call
-//! filled, with a `SAFETY` comment; see docs/unsafe.md.
+//! (`NtSetInformationFile`); also the console interruption handler.
+//! Each block is a single call or the read of data the previous call filled, with a `SAFETY`
+//! comment; see docs/unsafe.md.
 
 // The rename structure below is laid out by hand for 64-bit Windows.
 #[cfg(not(target_pointer_width = "64"))]

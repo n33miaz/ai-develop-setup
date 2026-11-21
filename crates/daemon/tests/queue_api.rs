@@ -297,7 +297,7 @@ async fn start_records_the_owner_and_stop_reports_whether_it_stopped() {
     assert_eq!(reply["result"], json!({"accepted": true, "replayed": true}));
     assert_eq!(
         bench.kinds(),
-        ["created:1"],
+        ["created:2"],
         "a stopped queue gets no event"
     );
 
@@ -312,7 +312,7 @@ async fn start_records_the_owner_and_stop_reports_whether_it_stopped() {
     let again = exchange(&mut ws, &command("queue.start", params.clone())).await;
     assert_eq!(again["error"]["code"], -32016);
 
-    assert_eq!(bench.kinds(), ["created:1", "enabled:1"]);
+    assert_eq!(bench.kinds(), ["created:2", "enabled:1"]);
     let enabled = &bench.audit()[1];
     assert_eq!(
         enabled["actor"],
@@ -362,7 +362,7 @@ async fn an_old_stop_sent_again_after_a_restart_stops_the_queue() {
     assert_eq!(
         bench.kinds(),
         [
-            "created:1",
+            "created:2",
             "enabled:1",
             "stopped:1",
             "enabled:1",
@@ -435,7 +435,7 @@ async fn an_unknown_or_unbound_queue_is_refused() {
     let other = json!({"queue_id": "queue-elsewhere"});
     let reply = exchange(&mut ws, &command("queue.start", other)).await;
     assert_eq!(reply["error"]["code"], -32015);
-    assert_eq!(bench.kinds(), ["created:1"]);
+    assert_eq!(bench.kinds(), ["created:2"]);
 
     let f = fixture(None).await;
     let mut ws = authenticated(&f).await;
@@ -455,11 +455,11 @@ async fn a_failed_start_write_leaves_the_queue_stopped() {
     let reply = exchange(&mut ws, &command("queue.start", params.clone())).await;
     assert_eq!(reply["error"]["code"], -32603);
     assert_eq!(state(&mut ws, &params).await, "stopped");
-    assert_eq!(bench.kinds(), ["created:1"]);
+    assert_eq!(bench.kinds(), ["created:2"]);
     bench.fail_writes(false);
     let reply = exchange(&mut ws, &command("queue.start", params.clone())).await;
     assert_eq!(reply["result"]["accepted"], true);
-    assert_eq!(bench.kinds(), ["created:1", "enabled:1"]);
+    assert_eq!(bench.kinds(), ["created:2", "enabled:1"]);
 }
 
 #[tokio::test]
@@ -478,7 +478,7 @@ async fn a_failed_stop_write_still_stops_and_is_recorded_before_the_next_start()
         "stopped",
         "the service keeps serving"
     );
-    assert_eq!(bench.kinds(), ["created:1", "enabled:1"]);
+    assert_eq!(bench.kinds(), ["created:2", "enabled:1"]);
 
     bench.fail_writes(false);
     let restart = command("queue.start", params.clone());
@@ -489,7 +489,7 @@ async fn a_failed_stop_write_still_stops_and_is_recorded_before_the_next_start()
     let events = bench.audit();
     assert_eq!(
         bench.kinds(),
-        ["created:1", "enabled:1", "stopped:1", "enabled:1"]
+        ["created:2", "enabled:1", "stopped:1", "enabled:1"]
     );
     assert_eq!(events[2]["cause"], stop["id"]);
     assert_eq!(events[2]["data"]["reason"], "owner");
@@ -514,7 +514,7 @@ async fn a_stop_left_unwritten_at_exit_is_recorded_as_a_restart() {
     let mut ws = authenticated(&f).await;
     assert_eq!(state(&mut ws, &params).await, "stopped");
     let events = bench.audit();
-    assert_eq!(bench.kinds(), ["created:1", "enabled:1", "stopped:1"]);
+    assert_eq!(bench.kinds(), ["created:2", "enabled:1", "stopped:1"]);
     assert_eq!(events[2]["actor"]["kind"], "daemon");
     assert_eq!(events[2]["data"]["reason"], "restart");
     assert_eq!(events[2]["cause"], Value::Null);
@@ -530,7 +530,7 @@ async fn reopening_restores_the_queue_stopped_and_refuses_another_owner() {
     drop(f);
 
     let queue = bench.reopen().await;
-    assert_eq!(bench.kinds(), ["created:1", "enabled:1", "stopped:1"]);
+    assert_eq!(bench.kinds(), ["created:2", "enabled:1", "stopped:1"]);
     assert_eq!(bench.audit()[2]["data"]["reason"], "restart");
     drop(queue);
 
@@ -541,6 +541,43 @@ async fn reopening_restores_the_queue_stopped_and_refuses_another_owner() {
     assert_eq!(bench.kinds().len(), 3);
 }
 
+#[tokio::test]
+async fn opening_a_legacy_stream_restores_it_stopped_and_checks_the_owner() {
+    let bench = Bench::new("queue-legacy");
+    let mut log = open_log(&bench.folder.db(), &bench.anchor);
+    let owner = json!({"queue_id": bench.queue, "owner_id": "owner-01", "via": "local_ui"});
+    let mut created = owner.clone();
+    created["state"] = "stopped".into();
+    for (seq, kind, data) in [(1, "created:1", created), (2, "enabled:1", owner)] {
+        let event = serde_json::from_value(json!({
+            "id": new_id().unwrap(),
+            "type": format!("urn:ads:event:queue.{kind}"),
+            "ts": "2030-01-02T03:04:05Z",
+            "stream": format!("queue/{}", bench.queue),
+            "seq": seq,
+            "actor": {"kind": "device", "id": "device-01"},
+            "cause": null,
+            "data_class": "internal",
+            "data": data,
+        }))
+        .unwrap();
+        log.append(&event).unwrap();
+    }
+    drop(log);
+
+    assert!(matches!(
+        bench.open_as("owner-02"),
+        Err(QueueOpenError::ForeignOwner)
+    ));
+    assert_eq!(bench.kinds(), ["created:1", "enabled:1"]);
+
+    let f = fixture(Some(bench.open())).await;
+    let mut ws = authenticated(&f).await;
+    assert_eq!(state(&mut ws, &bench.params()).await, "stopped");
+    assert_eq!(bench.kinds(), ["created:1", "enabled:1", "stopped:1"]);
+    assert_eq!(bench.audit()[2]["data"]["reason"], "restart");
+}
+
 #[test]
 fn a_process_holds_one_handle_per_queue() {
     let bench = Bench::new("queue-single-handle");
@@ -549,7 +586,7 @@ fn a_process_holds_one_handle_per_queue() {
         bench.open_as("owner-01"),
         Err(QueueOpenError::AlreadyOpen)
     ));
-    assert_eq!(bench.kinds(), ["created:1"]);
+    assert_eq!(bench.kinds(), ["created:2"]);
     drop(first);
     drop(bench.open());
 }

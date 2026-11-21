@@ -1,6 +1,6 @@
 //! Unix: every entry is opened, renamed and removed relative to the folder held open
 //! (`openat`, `renameat`, `unlinkat`), never following a link. No `unsafe`: the calls come
-//! from `rustix`.
+//! from `rustix`, as does the `SIGTERM` that asks a started child to close.
 
 use std::fs::File;
 use std::io;
@@ -72,3 +72,5 @@ pub(super) fn remove(dir: &OwnedFd, name: &str) -> io::Result<()> {
 pub(super) fn rename(dir: &OwnedFd, from: &str, to: &str) -> io::Result<()> {
     Ok(renameat(dir, from, dir, to)?)
 }
+
+/// Sends `SIGTERM` to a child the caller still holds unreaped, so its pid cannot be reused.

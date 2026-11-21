@@ -37,17 +37,10 @@ fn folder_link(link: &Path, target: &Path) -> bool {
 #[test]
 fn the_sandbox_is_under_the_temporary_folder_of_the_target_directory() {
     let sandbox = Sandbox::new("sandbox");
-    println!("sandbox: {}", sandbox.root.display());
-    let names: Vec<String> = sandbox
-        .root
-        .components()
-        .map(|component| component.as_os_str().to_string_lossy().into_owned())
-        .collect();
-    let tmp = names.iter().rposition(|name| name == "tmp").unwrap();
-    assert_eq!(names[tmp - 1], "target");
-    assert_eq!(names[tmp + 1], "ads-fs");
-    assert!(sandbox.fence.starts_with(env!("CARGO_TARGET_TMPDIR")));
-    assert!(sandbox.outside.starts_with(env!("CARGO_TARGET_TMPDIR")));
+    let tmp = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    assert_eq!(sandbox.root.parent().unwrap(), tmp.join("ads-fs"));
+    assert!(sandbox.fence.starts_with(tmp));
+    assert!(sandbox.outside.starts_with(tmp));
     assert!(sandbox.sentinel_is_intact());
 }
 
@@ -104,7 +97,7 @@ fn the_fence_and_the_work_root_are_never_targets() {
     })
     .unwrap();
     assert_eq!(
-        classify(&plan, &sandbox.policy("")).decision(),
+        classify(&plan, &sandbox.policy("")).unwrap().decision(),
         Decision::Denied
     );
 }

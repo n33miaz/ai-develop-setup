@@ -48,6 +48,8 @@ pub enum Reason {
     QuarantineBypassed,
     /// What is on disk contradicts what the plan declared, in a way that changes the verdict.
     FactsContradictPlan,
+    /// Repository facts on disk make the plan exceed the classification budget.
+    FactsClassificationBudget,
     /// The tree of a target holds a repository of its own.
     NestedRepository,
     /// A count of items or bytes does not fit in 64 bits.
@@ -86,7 +88,7 @@ pub enum Reason {
 }
 
 impl Reason {
-    pub const ALL: [Reason; 36] = [
+    pub const ALL: [Reason; 37] = [
         Self::StartedMismatch,
         Self::JournalRefused,
         Self::PermitReused,
@@ -106,6 +108,7 @@ impl Reason {
         Self::ApprovalMissing,
         Self::QuarantineBypassed,
         Self::FactsContradictPlan,
+        Self::FactsClassificationBudget,
         Self::NestedRepository,
         Self::Overflow,
         Self::ActionIdUnusable,
@@ -146,6 +149,7 @@ impl Reason {
             Self::ApprovalMissing => "E_FS_APPROVAL_MISSING",
             Self::QuarantineBypassed => "E_FS_QUARANTINE_BYPASSED",
             Self::FactsContradictPlan => "E_FS_FACTS_CONTRADICT_PLAN",
+            Self::FactsClassificationBudget => "E_FS_FACTS_CLASSIFICATION_BUDGET",
             Self::NestedRepository => "E_FS_NESTED_REPOSITORY",
             Self::Overflow => "E_FS_OVERFLOW",
             Self::ActionIdUnusable => "E_FS_ACTION_ID_UNUSABLE",

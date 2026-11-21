@@ -2,9 +2,9 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use super::{
-    AbsPath, Action, ActionPlan, ActionPlanRecord, ActionSnapshot, Command, Event, EventMeta,
-    ExecutionPermit, GatePolicy, Id, OperationRequest, PlanOperation, PlanRequest, ReplayError,
-    TargetRequest, TransitionError, Verdict, classify,
+    AbsPath, Action, ActionPlan, ActionPlanRecord, ActionSnapshot, ClassificationBudgetExceeded,
+    Command, Event, EventMeta, ExecutionPermit, GatePolicy, Id, OperationRequest, PlanOperation,
+    PlanRequest, ReplayError, TargetRequest, TransitionError, Verdict, classify,
 };
 
 /// A complete, authenticated action history in commit order.
@@ -19,6 +19,7 @@ pub enum JournalError {
     Conflict,
     Integrity,
     PolicyChanged,
+    ClassificationBudgetExceeded(ClassificationBudgetExceeded),
     Transition,
     /// The incoming timestamp is too early. Retry with a current timestamp.
     OutOfOrder,
@@ -33,7 +34,14 @@ impl fmt::Display for JournalError {
     }
 }
 
-impl std::error::Error for JournalError {}
+impl std::error::Error for JournalError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::ClassificationBudgetExceeded(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 pub trait GateJournal {
     /// Loads and authenticates the complete action history against the durable log.
@@ -114,9 +122,10 @@ impl<'a> JournalGate<'a> {
         meta: EventMeta,
     ) -> Result<ActionSnapshot, JournalError> {
         check_work_root(self.work_root, plan)?;
-        let (action, first, record) =
-            Action::plan(action_id.clone(), &classify(plan, self.policy), meta)
-                .map_err(|_| JournalError::Transition)?;
+        let verdict =
+            classify(plan, self.policy).map_err(JournalError::ClassificationBudgetExceeded)?;
+        let (action, first, record) = Action::plan(action_id.clone(), &verdict, meta)
+            .map_err(|_| JournalError::Transition)?;
         validate_envelopes(std::slice::from_ref(&first))?;
         self.journal.create(&record, &first)?;
         Ok(action.snapshot())
@@ -259,7 +268,7 @@ fn load_action(
     })
     .map_err(|_| JournalError::Integrity)?;
     check_work_root(work_root, &plan)?;
-    let verdict = classify(&plan, policy);
+    let verdict = classify(&plan, policy).map_err(JournalError::ClassificationBudgetExceeded)?;
     let (mut action, expected, checked_record) =
         Action::plan(action_id.clone(), &verdict, first.meta())
             .map_err(|_| JournalError::Integrity)?;

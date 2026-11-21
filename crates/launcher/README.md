@@ -37,9 +37,22 @@ O lançador inicia o host destacado e o daemon. No Windows, coloque também
 do daemon diretamente à entrada padrão da casca por um pipe anônimo. O Rust
 da casca autentica a conexão e encaminha mensagens à janela por IPC. Se a casca
 sair pela bandeja ou falhar, o daemon e o host continuam sob supervisão. Use o
-sinal `restart` para abrir outra janela com a nova credencial. Para usar o navegador, configure
-`shell_autostart = false` e reinicie a instalação. Nesse modo a URL autenticada
-volta a aparecer na saída padrão do daemon.
+sinal `restart` para abrir outra janela com a nova credencial.
+
+O lançador fecha a casca que abriu no sinal `stop`, em Ctrl+C ou Ctrl+Break no
+console do Windows, quando desiste do daemon depois de `crash_window_limit`
+falhas, ao substituí-la e ao sair do escopo do supervisor. No Windows, um pipe
+anônimo por instância entrega o byte `Q` à casca, que encerra sua própria aplicação.
+A variável `ADS_SHELL_CLOSE_PIPE` indica à casca que o identificador de erro padrão
+é a ponta de leitura desse pipe. No Unix, o pedido usa `SIGTERM`. Se a entrega
+falhar, o lançador registra o erro e segue para o término forçado. Durante o laço
+do supervisor, o erro também aparece em `last_error`. Se a casca ainda estiver
+viva após `shell_close_timeout_ms`, o lançador força o término pelo handle do
+filho no Windows. Se o sistema encerrar o lançador sem executar a limpeza do
+supervisor, a janela pode continuar aberta.
+
+Para usar o navegador, configure `shell_autostart = false` e reinicie a instalação.
+Nesse modo a URL autenticada volta a aparecer na saída padrão do daemon.
 
 | Chave | Padrão | Uso |
 |---|---|---|
@@ -47,6 +60,7 @@ volta a aparecer na saída padrão do daemon.
 | `shell_autostart` | `true` no Windows | Abre a janela ao iniciar o daemon. Em outros sistemas, vale o modo navegador. |
 | `shell_width`, `shell_height` | 960, 640 | Tamanho inicial em pixels lógicos, de 1 a 65535. |
 | `shell_start_minimized` | `false` | Minimiza a janela na abertura. |
+| `shell_close_timeout_ms` | 3000 | Prazo entre o pedido de fechamento da janela e o término forçado. `0` força o término na hora. |
 
 Altere as chaves no TOML passado por `--config` e reinicie o lançador.
 As opções `daemon_config`
@@ -59,8 +73,8 @@ iniciada pelo daemon, inclua seu nome nas duas listas, `child_env_allow` e
 `[env] allow`. As atribuições de `[env.set]` são definidas pelo daemon.
 
 Crie o arquivo vazio `restart` na pasta de controle para reiniciar o daemon e
-zerar seu contador de falhas na janela móvel. Crie `stop` para encerrar o daemon e
-o lançador. Um arquivo de sinal cujo dono não é a conta atual, ou que no
+zerar seu contador de falhas na janela móvel. Crie `stop` para encerrar o daemon,
+a janela da casca e o lançador. Um arquivo de sinal cujo dono não é a conta atual, ou que no
 Windows dá acesso a outra conta, fica no lugar, é ignorado e aparece em `last_error`.
 O sinal apagado é o mesmo arquivo conferido. Um sinal de parada da conta atual pendente
 na partida continua válido e fica registrado no estado em `stop_pending_at_startup`. Se os dois arquivos

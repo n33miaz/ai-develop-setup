@@ -66,6 +66,11 @@ posix_user_parents = ["/home", "/Users"]
 approval_item_limit = 500
 approval_byte_limit = 104857600
 
+# Orçamento de classificação compartilhado pelo plano pedido e pelo movimento para quarentena.
+# Aceita de 0 a 10.000.000. Zero recusa todo movimento, inclusive o gerado ao apagar com quarentena.
+# O padrão comporta 10 mil nomes literais de 100 bytes em destinos comuns.
+classification_match_steps = 2000000
+
 # Recuo máximo entre eventos consecutivos da ação, em segundos.
 # Zero preserva a ordem estrita. Aumente só para acomodar ajustes do relógio.
 # Esta tolerância é independente da configuração da fila.

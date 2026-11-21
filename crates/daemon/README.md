@@ -203,11 +203,13 @@ recebe `REMOTE_ORIGIN_REFUSED`.
   `QUEUE_NOT_CONFIGURED`.
 
 `queue::LoggedQueue::open` liga uma fila ao stream `queue/<id>` do log ancorado:
-cria a fila parada (`queue.created`) se o stream está vazio, recusa um stream
+cria a fila parada com a política inicial (`queue.created:2`) se o stream está vazio, recusa um stream
 criado por outro dono e, a cada abertura, restaura a fila parada e grava
 `queue.stopped` com `reason: restart` se o log dizia ligada. Um processo mantém
 no máximo um handle por fila (a segunda abertura recebe `AlreadyOpen`); a
-composição compartilha esse handle com todos os consumidores. Dono e aparelho
+composição compartilha esse handle com todos os consumidores. `open` usa a política
+embutida em `defaults/queue.toml` para filas novas. `open_with_policy` aceita uma
+política fornecida pela composição. O carregamento de um arquivo do usuário está pendente. Dono e aparelho
 (`QueueOwner`) são dados da configuração do núcleo; agir na fila exige ainda a
 prova de sessão `auth::LocalSession`, que só o laço de conexão emite, dentro
 do crate, ao conferir o token do `auth.hello`, e a transição usa
