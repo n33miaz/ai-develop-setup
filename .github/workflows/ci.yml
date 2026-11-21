@@ -181,7 +181,7 @@ jobs:
           PUSH_BEFORE_SHA: ${{ github.event.before }}
           PUSH_AFTER_SHA: ${{ github.sha }}
           # Casca: ela mesma, os contratos e as entradas da compilação.
-          SHELL_PATHS: '^(crates/(shell|launcher|daemon|ptyhost)/|ui/|tools/smoke_desktop\.py$|defaults/(launcher|daemon|ptyhost|harnesses)\.toml$|crates/contracts/|crates/e2e/|contracts/|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
+          SHELL_PATHS: '^(crates/(shell|launcher|daemon|ptyhost)/|crates/(core|storage|testkit)/|crates/adapters/(claude|codex|vault)/|ui/|tools/smoke_desktop\.py$|defaults/(launcher|daemon|ptyhost|harnesses)\.toml$|crates/contracts/|crates/e2e/|contracts/|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
           # Interface: ela mesma e o que ela lê dos contratos (tipos gerados e os Schemas do teste de contrato).
           UI_PATHS: '^(ui/|contracts/generated/|contracts/schemas/)'
           # Contratos: os Schemas e as ferramentas, os tipos Rust gerados deles e o que muda a forma como o rustfmt os escreve.
