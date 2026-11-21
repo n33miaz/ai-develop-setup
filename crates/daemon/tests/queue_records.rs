@@ -138,7 +138,7 @@ fn change(task: &str, from: &str, to: &str, via: Option<&str>) -> serde_json::Va
     data
 }
 
-/// Created, policy, enabled, one task of each creation version, the first one done.
+/// Created, policy, enabled, one task of each creation version, the third one done.
 fn queue_events() -> Vec<EventEnvelopeV1> {
     let owner =
         serde_json::json!({ "queue_id": "queue-01", "owner_id": "owner-01", "via": "local_ui" });
@@ -155,27 +155,29 @@ fn queue_events() -> Vec<EventEnvelopeV1> {
         envelope(1, "created:1", DEVICE, created),
         envelope(2, "policy_changed:1", DEVICE, policy),
         envelope(3, "enabled:1", DEVICE, owner),
-        envelope(4, "task_created:3", DEVICE, creation("task-01", 3, None)),
+        envelope(4, "task_created:1", DEVICE, creation("task-v1", 1, None)),
+        envelope(5, "task_created:2", DEVICE, creation("task-v2", 2, None)),
+        envelope(6, "task_created:3", DEVICE, creation("task-01", 3, None)),
         envelope(
-            5,
+            7,
             "task_created:4",
             DEVICE,
             creation("task-02", 4, Some(("Conferir documentação", "tool-a"))),
         ),
         envelope(
-            6,
+            8,
             "task_state_changed:2",
             DAEMON,
             change("task-01", "queued", "running", None),
         ),
         envelope(
-            7,
+            9,
             "task_state_changed:2",
             DAEMON,
             change("task-01", "running", "review", None),
         ),
         envelope(
-            8,
+            10,
             "task_state_changed:2",
             DEVICE,
             change("task-01", "review", "done", Some("local_ui")),
@@ -204,16 +206,31 @@ fn queue_records_are_rebuilt_from_the_log_after_reopening() {
     assert_eq!(stored.len(), events.len());
 
     let queue = replay_queue(stored.iter().map(QueueStreamEvent::as_log), owner_at, None).unwrap();
-    let [done, queued] = &queue.tasks[..] else {
-        panic!("two tasks: {:?}", queue.tasks);
+    let [first, second, done, queued] = &queue.tasks[..] else {
+        panic!("four tasks: {:?}", queue.tasks);
     };
+    assert_eq!((&first.id, &second.id), (&id("task-v1"), &id("task-v2")));
     assert_eq!(done.id, id("task-01"));
     assert_eq!(done.state, CommonQueueTaskStateV1::Done);
     assert_eq!(done.attempts.get(), 1);
-    assert_eq!(done.created_at.as_str(), "2030-01-02T03:04:04Z");
-    assert_eq!(done.updated_at.as_str(), "2030-01-02T03:04:08Z");
-    // The third version did not record title nor tool: the record shows them as absent.
-    assert!(done.title.is_none() && done.tool.is_none());
+    assert_eq!(done.created_at.as_str(), "2030-01-02T03:04:06Z");
+    assert_eq!(done.updated_at.as_str(), "2030-01-02T03:04:10Z");
+    // Versions 1 to 3 did not record title nor tool: the record writes both as an explicit null.
+    for older in [first, second, done] {
+        assert_eq!(
+            older.state,
+            if older == done {
+                CommonQueueTaskStateV1::Done
+            } else {
+                CommonQueueTaskStateV1::Queued
+            }
+        );
+        assert!(older.title.is_none() && older.tool.is_none());
+        let json = serde_json::to_value(older).unwrap();
+        for key in ["title", "tool"] {
+            assert_eq!(json.get(key), Some(&serde_json::Value::Null), "{key}");
+        }
+    }
 
     assert_eq!(queued.id, id("task-02"));
     assert_eq!(queued.state, CommonQueueTaskStateV1::Queued);
