@@ -39,13 +39,13 @@ export const QUEUE_ALREADY_ENABLED = -32016
 /** O núcleo não serve aprovações: nenhum portão ligado ao log de auditoria. */
 export const APPROVAL_NOT_CONFIGURED = -32017
 
-/** Nenhuma ação conhecida do portão com esse id. */
+/** Nenhuma ação conhecida do portão com esse id, ou a ação não tem essa aprovação. */
 export const APPROVAL_NOT_FOUND = -32018
 
 /** A ação não aguarda mais resposta: já foi aprovada, negada, expirou ou terminou. */
 export const APPROVAL_ALREADY_ANSWERED = -32019
 
-/** A aprovação ou o hash do plano não são os da ação, ou a validade da aprovação acabou. */
+/** O hash do plano não é o da ação em espera, ou a validade da aprovação acabou (o portão registra a expiração). A resposta fica registrada. */
 export const APPROVAL_STALE = -32020
 
 /** A política ou a tolerância do relógio mudou desde o plano: o portão registrou a negação. */

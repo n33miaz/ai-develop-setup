@@ -342,7 +342,7 @@ impl<'de> Deserialize<'de> for ContractLocalApiErrorCodeV3ApprovalNotConfigured 
     }
 }
 
-/// Nenhuma ação conhecida do portão com esse id.
+/// Nenhuma ação conhecida do portão com esse id, ou a ação não tem essa aprovação.
 ///
 /// `$defs.approval_not_found` in `urn:ads:contract:local-api.error-code:3`.
 ///
@@ -390,7 +390,7 @@ impl<'de> Deserialize<'de> for ContractLocalApiErrorCodeV3ApprovalAlreadyAnswere
     }
 }
 
-/// A aprovação ou o hash do plano não são os da ação, ou a validade da aprovação acabou.
+/// O hash do plano não é o da ação em espera, ou a validade da aprovação acabou (o portão registra a expiração). A resposta fica registrada.
 ///
 /// `$defs.approval_stale` in `urn:ads:contract:local-api.error-code:3`.
 ///

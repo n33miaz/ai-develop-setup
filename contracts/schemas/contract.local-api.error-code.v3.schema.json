@@ -131,7 +131,7 @@
     "approval_not_found": {
       "type": "integer",
       "const": -32018,
-      "description": "Nenhuma ação conhecida do portão com esse id."
+      "description": "Nenhuma ação conhecida do portão com esse id, ou a ação não tem essa aprovação."
     },
     "approval_already_answered": {
       "type": "integer",
@@ -141,7 +141,7 @@
     "approval_stale": {
       "type": "integer",
       "const": -32020,
-      "description": "A aprovação ou o hash do plano não são os da ação, ou a validade da aprovação acabou."
+      "description": "O hash do plano não é o da ação em espera, ou a validade da aprovação acabou (o portão registra a expiração). A resposta fica registrada."
     },
     "approval_policy_changed": {
       "type": "integer",

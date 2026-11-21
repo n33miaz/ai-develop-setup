@@ -23,6 +23,9 @@ use crate::gate::SessionGate;
 /// The type of the answer record and the family of its `answer/<approval_id>` stream.
 const ANSWER: &str = "urn:ads:event:answer.recorded:1";
 
+/// The most approvals one `approval.list` answers: the `maxItems` of its response contract.
+const MAX_LISTED: u32 = 1000;
+
 /// What the local API asks of the gate. Each call takes the proof that the connection passed
 /// the token check; the owner and the device come from the implementation, never the request.
 pub trait ApprovalControl: Send + Sync + 'static {
@@ -133,7 +136,7 @@ impl ApprovalControl for ApprovalDesk {
         let histories = desk
             .log
             .log()
-            .pending_approvals(u32::MAX)
+            .pending_approvals(MAX_LISTED)
             .map_err(|_| ApiError::Storage)?;
         let mut items = Vec::new();
         for history in &histories {
@@ -181,22 +184,21 @@ impl ApprovalControl for ApprovalDesk {
             .map_err(gate_error)?;
         let ts = now_ts()?;
         let now = Timestamp::new(ts.as_str()).map_err(|_| ApiError::Storage)?;
-        match &snapshot.state {
+        let (lapsed, current_hash) = match &snapshot.state {
             State::AwaitingApproval {
                 approval_id: waiting,
                 expires_at,
                 ..
             } => {
-                if waiting != &approval_id || snapshot.plan_hash != plan_hash {
-                    return Err(ApiError::ApprovalStale);
+                // Another approval id names no approval of this action: nothing to record it under.
+                if waiting != &approval_id {
+                    return Err(ApiError::ApprovalNotFound);
                 }
-                if answer.decision == Decision::Approve && !now.is_before(expires_at) {
-                    return Err(ApiError::ApprovalStale);
-                }
+                (!now.is_before(expires_at), snapshot.plan_hash.clone())
             }
             State::Planned | State::Denied => return Err(ApiError::ApprovalNotFound),
             _ => return Err(ApiError::ApprovalAlreadyAnswered),
-        }
+        };
 
         // The answer is durable before the gate acts: a refused write leaves the gate untouched.
         let recorded = desk.record(answer, &ts, cause)?;
@@ -218,22 +220,36 @@ impl ApprovalControl for ApprovalDesk {
             cause: Some(Ulid::new(recorded).map_err(|_| ApiError::Storage)?),
             data_class: DataClass::Internal,
         };
-        let command = match answer.decision {
-            Decision::Approve => Command::Grant {
+        let (command, refused) = if lapsed {
+            // Too late for any answer: the gate records the expiry, caused by this answer.
+            let expire = Command::Expire {
                 action_id: action_id.clone(),
                 approval_id,
-                plan_hash,
-                via: Via::LocalUi,
-            },
-            Decision::Deny => Command::Deny {
-                action_id: action_id.clone(),
-                approval_id,
-                plan_hash,
-                reason: None,
-            },
+                plan_hash: current_hash,
+            };
+            (expire, Some(ApiError::ApprovalStale))
+        } else if current_hash != plan_hash {
+            // The owner answered another plan than the one waiting: recorded, never applied.
+            return Err(ApiError::ApprovalStale);
+        } else {
+            let command = match answer.decision {
+                Decision::Approve => Command::Grant {
+                    action_id: action_id.clone(),
+                    approval_id,
+                    plan_hash,
+                    via: Via::LocalUi,
+                },
+                Decision::Deny => Command::Deny {
+                    action_id: action_id.clone(),
+                    approval_id,
+                    plan_hash,
+                    reason: None,
+                },
+            };
+            (command, None)
         };
         match desk.gates[index].apply(&mut desk.log, &action_id, command, meta) {
-            Ok(_) => Ok(()),
+            Ok(_) => refused.map_or(Ok(()), Err),
             Err(JournalError::Transition) => {
                 // Refused by the machine: tell a decision taken meanwhile from a stale answer.
                 let state = desk.gates[index]
@@ -331,6 +347,24 @@ mod tests {
         /// Plans a delete of 10 items, over the approval limit of `OVER_LIMIT`, and asks for
         /// approval. Returns the action, its approval and its plan hash.
         fn waiting(&mut self, gate: &SessionGate, name: &str) -> (Id, Id, String) {
+            self.waiting_since(gate, name, 0)
+        }
+
+        /// Like [`Self::waiting`], planned and asked `hours` ago with a validity of one hour.
+        fn waiting_since(
+            &mut self,
+            gate: &SessionGate,
+            name: &str,
+            hours: i64,
+        ) -> (Id, Id, String) {
+            let at = |offset: i64| {
+                (OffsetDateTime::now_utc() + Duration::hours(offset))
+                    .replace_nanosecond(0)
+                    .unwrap()
+                    .format(&Rfc3339)
+                    .unwrap()
+            };
+            let asked_at = at(-hours);
             let log = self.log.as_mut().unwrap();
             let action_id = Id::new(name).unwrap();
             let approval_id = Id::new(format!("appr-{name}")).unwrap();
@@ -348,14 +382,10 @@ mod tests {
                 }),
             };
             let planned = gate
-                .plan(log, action_id.clone(), request, daemon_meta(1))
+                .plan(log, action_id.clone(), request, daemon_meta(1, &asked_at))
                 .unwrap();
             assert_eq!(planned.state, State::Planned);
-            let expires = (OffsetDateTime::now_utc() + Duration::hours(1))
-                .replace_nanosecond(0)
-                .unwrap()
-                .format(&Rfc3339)
-                .unwrap();
+            let expires = at(1 - hours);
             let asked = gate
                 .apply(
                     log,
@@ -365,7 +395,7 @@ mod tests {
                         summary: ShortText::new("Remove the build log").unwrap(),
                         expires_at: Timestamp::new(expires).unwrap(),
                     },
-                    daemon_meta(1),
+                    daemon_meta(1, &asked_at),
                 )
                 .unwrap();
             (action_id, approval_id, asked.plan_hash.as_str().to_owned())
@@ -395,10 +425,10 @@ mod tests {
         }
     }
 
-    fn daemon_meta(seq: u64) -> EventMeta {
+    fn daemon_meta(seq: u64, ts: &str) -> EventMeta {
         EventMeta {
             id: Ulid::new(new_id().unwrap()).unwrap(),
-            ts: Timestamp::new(now_ts().unwrap()).unwrap(),
+            ts: Timestamp::new(ts).unwrap(),
             seq: NonZeroU64::new(seq).unwrap(),
             actor: Actor {
                 kind: ActorKind::Daemon,
@@ -529,32 +559,21 @@ mod tests {
     }
 
     #[test]
-    fn unknown_or_stale_answers_are_refused_before_anything_is_written() {
+    fn unknown_ids_are_refused_before_anything_is_written() {
         let mut bench = Bench::new();
         let gate = bench.gate(OVER_LIMIT);
-        let (action, approval, hash) = bench.waiting(&gate, "act-stale");
+        let (action, approval, hash) = bench.waiting(&gate, "act-unknown");
         let desk = bench.desk(vec![gate]);
         let session = session();
-        let other = Id::new("act-unknown").unwrap();
-        let other_hash = format!("sha256:{}", "0".repeat(64));
+        let other = Id::new("act-other").unwrap();
         let other_approval = Id::new("appr-other").unwrap();
-        for (answer, refusal) in [
-            (
-                params(&other, &approval, &hash, "approve"),
-                ApiError::ApprovalNotFound,
-            ),
-            (
-                params(&action, &approval, &other_hash, "approve"),
-                ApiError::ApprovalStale,
-            ),
-            (
-                params(&action, &other_approval, &hash, "deny"),
-                ApiError::ApprovalStale,
-            ),
+        for answer in [
+            params(&other, &approval, &hash, "approve"),
+            params(&action, &other_approval, &hash, "deny"),
         ] {
             assert_eq!(
                 desk.answer(&session, &answer, &new_id().unwrap()),
-                Err(refusal)
+                Err(ApiError::ApprovalNotFound)
             );
         }
         for approval in [&approval, &other_approval] {
@@ -565,6 +584,62 @@ mod tests {
             1
         );
         assert_eq!(desk.pending(&session).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn an_answer_to_another_plan_is_recorded_and_refused() {
+        let mut bench = Bench::new();
+        let gate = bench.gate(OVER_LIMIT);
+        let (action, approval, _) = bench.waiting(&gate, "act-other-plan");
+        let desk = bench.desk(vec![gate]);
+        let session = session();
+        let seen = format!("sha256:{}", "0".repeat(64));
+        let approve = params(&action, &approval, &seen, "approve");
+        assert_eq!(
+            desk.answer(&session, &approve, &new_id().unwrap()),
+            Err(ApiError::ApprovalStale)
+        );
+        let answers = stream(&desk, &format!("answer/{}", approval.as_str()));
+        let [(_, record)] = &answers[..] else {
+            panic!("expected the answer record: {answers:?}");
+        };
+        assert_eq!(record["data"]["plan_hash"], seen.as_str());
+        assert_eq!(record["data"]["owner_id"], "owner-01");
+        assert_eq!(
+            stream(&desk, &format!("approval/{}", approval.as_str())).len(),
+            1
+        );
+        assert_eq!(desk.pending(&session).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn an_answer_after_the_validity_is_recorded_and_expires_the_approval() {
+        let mut bench = Bench::new();
+        let gate = bench.gate(OVER_LIMIT);
+        let (action, approval, hash) = bench.waiting_since(&gate, "act-late", 2);
+        let desk = bench.desk(vec![gate]);
+        let session = session();
+        assert_eq!(desk.pending(&session).unwrap().len(), 1);
+        let approve = params(&action, &approval, &hash, "approve");
+        assert_eq!(
+            desk.answer(&session, &approve, &new_id().unwrap()),
+            Err(ApiError::ApprovalStale)
+        );
+        let answers = stream(&desk, &format!("answer/{}", approval.as_str()));
+        let [(answered_at, record)] = &answers[..] else {
+            panic!("expected the answer record: {answers:?}");
+        };
+        let decisions = stream(&desk, &format!("approval/{}", approval.as_str()));
+        let (expired_at, expired) = decisions.last().unwrap();
+        assert_eq!(expired["type"], "urn:ads:event:approval.expired:2");
+        assert_eq!(expired["cause"], record["id"]);
+        assert!(answered_at < expired_at);
+        assert!(desk.pending(&session).unwrap().is_empty());
+        let deny = params(&action, &approval, &hash, "deny");
+        assert_eq!(
+            desk.answer(&session, &deny, &new_id().unwrap()),
+            Err(ApiError::ApprovalAlreadyAnswered)
+        );
     }
 
     #[test]

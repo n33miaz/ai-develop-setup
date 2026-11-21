@@ -75,7 +75,7 @@ export type QueueAlreadyEnabled = -32016;
  */
 export type ApprovalNotConfigured = -32017;
 /**
- * Nenhuma ação conhecida do portão com esse id.
+ * Nenhuma ação conhecida do portão com esse id, ou a ação não tem essa aprovação.
  */
 export type ApprovalNotFound = -32018;
 /**
@@ -83,7 +83,7 @@ export type ApprovalNotFound = -32018;
  */
 export type ApprovalAlreadyAnswered = -32019;
 /**
- * A aprovação ou o hash do plano não são os da ação, ou a validade da aprovação acabou.
+ * O hash do plano não é o da ação em espera, ou a validade da aprovação acabou (o portão registra a expiração). A resposta fica registrada.
  */
 export type ApprovalStale = -32020;
 /**

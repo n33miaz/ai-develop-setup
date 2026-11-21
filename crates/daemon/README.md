@@ -246,19 +246,23 @@ recebe `REMOTE_ORIGIN_REFUSED`. O dono e o aparelho vêm do daemon
   `requested_at`, `expires_at` e o registro do plano (`record.action-plan:2`)
   como o portão o julgou: alvos, destino, quarentena, estimativa e regras. Só
   ações de uma pasta de sessão servida aqui; no máximo `read_page_limit` da
-  configuração do armazenamento por pedido. Só lê e fica fora da cache de
+  configuração do armazenamento por pedido, e nunca mais de 1000 (o limite do
+  contrato da resposta). Só lê e fica fora da cache de
   idempotência.
 - `approval.answer` leva `action_id`, `approval_id`, `plan_hash` (o que o dono
   viu) e `decision` (`approve` ou `deny`). Antes de gravar qualquer coisa, o
-  daemon confere que a ação existe (`APPROVAL_NOT_FOUND`), ainda aguarda
-  resposta (`APPROVAL_ALREADY_ANSWERED`) e tem essa aprovação, esse hash e, para
-  aprovar, validade em curso (`APPROVAL_STALE`); nessas recusas nada é gravado.
-  Depois grava `answer.recorded:1` no stream `answer/<approval_id>`: o aparelho
+  daemon confere que a ação existe e tem essa aprovação (`APPROVAL_NOT_FOUND`) e
+  ainda aguarda resposta (`APPROVAL_ALREADY_ANSWERED`); nessas recusas nada é
+  gravado. Depois grava `answer.recorded:1` no stream `answer/<approval_id>`: o aparelho
   como ator, o dono, o `ts` do relógio do daemon, a decisão, o hash e o id do
   comando em `cause`. Se essa gravação falhar, a resposta é `INTERNAL_ERROR` e o
   portão não age. Só então o portão registra `approval.granted:2` ou
   `approval.denied:2`, com o mesmo ator e `cause` apontando para o registro da
   resposta.
+- Resposta velha fica registrada e é recusada com `APPROVAL_STALE`: com outro
+  hash que não o do plano em espera, o portão não age; com a validade vencida,
+  aprovando ou negando, o portão registra `approval.expired:2` e a ação sai da
+  lista.
 - Aprovar reconfere a política atual e a ordem no tempo. Política ou tolerância
   do relógio mudada desde o plano vira negação registrada pelo portão
   (`E_POLICY_CHANGED` ou `E_CLOCK_POLICY_CHANGED`) e a resposta
