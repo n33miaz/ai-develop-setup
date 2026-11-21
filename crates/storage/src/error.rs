@@ -35,6 +35,9 @@ pub enum StorageError {
     AnchorMissing,
     NonCanonicalDatabase,
     AuditDirectoryNotPrivate,
+    /// The session gives the files it creates an owner other than the user (an elevated
+    /// Windows session gives them the Administrators group).
+    ElevatedSession,
     AuditDatabaseOnNetwork,
     AuditDatabaseInWorkdir,
     DuplicateDatabaseIdentity,
@@ -58,7 +61,10 @@ impl fmt::Display for StorageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::AuditDirectoryNotPrivate => f.write_str(
-                "storage: check ownership and permissions on the audit folder and database files; on Windows, open Properties > Security > Advanced, set your account as owner, disable inheritance, and keep access only for your account and SYSTEM",
+                "storage: check ownership and permissions on the audit folder and database files; a run as administrator (elevated) leaves its files owned by the Administrators group; on Windows, open Properties > Security > Advanced, set your account as owner, disable inheritance, and keep access only for your account and SYSTEM",
+            ),
+            Self::ElevatedSession => f.write_str(
+                "storage: this program is running as administrator (elevated), so the files it creates would belong to the Administrators group and be refused afterwards; close it and start it again from a normal, non-elevated session",
             ),
             Self::AuditDatabaseOnNetwork => f.write_str(
                 "storage: set audit_database_path to a local drive",
@@ -140,6 +146,13 @@ impl From<std::io::Error> for StorageError {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn elevated_session_names_the_cause_and_the_action() {
+        let text = super::StorageError::ElevatedSession.to_string();
+        assert!(text.contains("Administrators group"), "{text}");
+        assert!(text.contains("non-elevated session"), "{text}");
+    }
+
     use super::*;
     #[test]
     fn sqlite_error_categories_are_distinct() {

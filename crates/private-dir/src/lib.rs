@@ -51,7 +51,16 @@ impl Identity {
     pub fn owns(&self, owner: &str) -> bool {
         !self.user.is_empty() && (owner == self.user || owner == self.default_owner)
     }
+
+    /// Whether what this session creates without an explicit owner belongs to the user
+    /// itself. Not in an elevated Windows session whose default owner is Administrators.
+    pub fn creates_as_user(&self) -> bool {
+        !self.user.is_empty() && self.default_owner == self.user
+    }
 }
+
+/// Why a session that does not create as the user is refused, and what to do.
+pub const ELEVATED_SESSION: &str = "this program is running as administrator (elevated), so the files it creates would belong to the Administrators group and be refused afterwards; close it and start it again from a normal, non-elevated session";
 
 /// One entry of a Windows access list, reduced to what the decision needs.
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -540,6 +549,13 @@ mod tests {
         let elevated = local(USER, "S-1-5-32-544");
         assert!(windows_private(&elevated, &security("S-1-5-32-544", &entries)).is_ok());
         assert!(windows_private(&local("", ""), &security("", &entries)).is_err());
+    }
+
+    #[test]
+    fn only_a_session_whose_default_owner_is_the_user_creates_as_the_user() {
+        assert!(local(USER, USER).creates_as_user());
+        assert!(!local(USER, "S-1-5-32-544").creates_as_user());
+        assert!(!local("", "").creates_as_user());
     }
 
     #[test]

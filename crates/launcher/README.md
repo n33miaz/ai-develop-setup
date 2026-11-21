@@ -17,6 +17,9 @@ não for a conta atual ou se outra conta tiver qualquer acesso a ela. No Windows
 sistema local e o grupo Administradores, que já podem assumir qualquer arquivo da
 máquina, são tolerados além do usuário. Para corrigir, apague a pasta ou a trava para
 o lançador recriá-la, ou restrinja-a à sua conta.
+Numa sessão que dá aos arquivos novos outro dono que não a conta atual (no Windows, a
+sessão elevada, cujo dono padrão é o grupo Administradores), o lançador sai com erro antes
+de criar a pasta e de iniciar qualquer processo: abra-o de novo numa sessão comum.
 A pasta é aberta uma vez e conferida nesse identificador aberto; trava, estado e
 sinais são abertos, movidos e apagados relativos a ele, nunca pelo caminho de novo,
 e sem seguir link nem ponto de reanálise. Assim, trocar a pasta ou um ancestral por

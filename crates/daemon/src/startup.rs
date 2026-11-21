@@ -20,6 +20,10 @@ impl InstanceLock {
     /// Opens or creates the lock file at the absolute `path` and takes it, or fails when
     /// another daemon holds it.
     pub fn acquire(path: &Path) -> io::Result<Self> {
+        // The lock is created without an explicit owner, so an elevated session would give it
+        // the Administrators group as owner.
+        crate::audit::check_session()
+            .map_err(|error| io::Error::new(io::ErrorKind::PermissionDenied, error.to_string()))?;
         let folder = path
             .parent()
             .filter(|_| path.is_absolute())
@@ -186,6 +190,34 @@ mod tests {
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
         drop(lock);
+    }
+
+    #[test]
+    fn the_instance_lock_is_not_created_in_a_session_that_creates_as_administrators() {
+        let folder = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target")
+            .join(format!("daemon-elevated-lock-test-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("daemon.lock");
+        let _ = std::fs::remove_file(&path);
+        let user = ads_private_dir::Identity::current().unwrap().user;
+        crate::audit::SESSION.with(|session| {
+            *session.borrow_mut() = Some(ads_private_dir::Identity {
+                user,
+                default_owner: "S-1-5-32-544".into(),
+            });
+        });
+        let refused = InstanceLock::acquire(&path);
+        crate::audit::SESSION.with(|session| session.borrow_mut().take());
+        let error = refused.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(
+            error
+                .to_string()
+                .contains(ads_private_dir::ELEVATED_SESSION)
+        );
+        assert!(!path.exists());
+        let _ = std::fs::remove_dir(&folder);
     }
 
     #[test]

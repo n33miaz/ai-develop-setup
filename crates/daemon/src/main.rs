@@ -17,6 +17,9 @@ fn print_launch_url(url: &mut String, out: &mut impl std::io::Write) -> std::io:
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
     let result: Result<(), Box<dyn std::error::Error>> = async {
+        // The daemon runs as a common user: an elevated session would leave its files owned
+        // by the Administrators group.
+        ads_daemon::audit::check_session()?;
         let mut args = std::env::args_os().skip(1).peekable();
         let _instance_lock = if args.next_if(|arg| arg == "--instance-lock").is_some() {
             let path = args.next().ok_or("missing daemon instance lock path")?;

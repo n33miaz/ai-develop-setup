@@ -9,7 +9,7 @@ use std::{
 
 use ads_adapter_vault::OsVault;
 use ads_core::vault::{Secret, SecretName, Vault};
-use ads_private_dir::{ControlDir, is_network_path};
+use ads_private_dir::{ControlDir, Identity, is_network_path};
 use ads_storage::{
     EventLog, StorageConfig, StorageError,
     anchor::{
@@ -209,6 +209,30 @@ fn audit_access_error(error: std::io::Error) -> StorageError {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Stands in for the identity of the session, which a test cannot elevate.
+    pub(crate) static SESSION: std::cell::RefCell<Option<Identity>> = const { std::cell::RefCell::new(None) };
+}
+
+fn session_identity() -> std::io::Result<Identity> {
+    #[cfg(test)]
+    if let Some(local) = SESSION.with(|session| session.borrow().clone()) {
+        return Ok(local);
+    }
+    Identity::current()
+}
+
+/// Refuses a session whose new files would not belong to the user: the database and the
+/// files SQLite adds next to it get the session's default owner, which the next open refuses.
+pub fn check_session() -> Result<(), StorageError> {
+    if session_identity()?.creates_as_user() {
+        Ok(())
+    } else {
+        Err(StorageError::ElevatedSession)
+    }
+}
+
 fn lock_binding(directory: &Path) -> Result<File, StorageError> {
     // SQLite serializes a single file. The vault pin spans all configured paths.
     let directory = ControlDir::open_user_owned(directory, true).map_err(audit_access_error)?;
@@ -263,6 +287,7 @@ fn canonical_anchor<V: Vault>(
     vault: V,
     workdirs: &[PathBuf],
 ) -> Result<(PathBuf, VaultAnchor<V>), StorageError> {
+    check_session()?;
     let configured = canonical_path(config)?;
     if !path.is_absolute() || path.file_name() != configured.file_name() {
         return Err(StorageError::NonCanonicalDatabase);
@@ -635,6 +660,7 @@ mod tests {
         Fixture::new(
             "audit-anchor",
             &[
+                "absent",
                 "ads",
                 "custom",
                 "first",
@@ -1784,6 +1810,28 @@ mod tests {
                 StorageError::AuditDatabaseOnNetwork
             );
         }
+    }
+
+    #[test]
+    fn session_that_gives_new_files_another_owner_is_refused_before_creating_them() {
+        let root = fixture();
+        let path = root.join("absent").join("audit.db");
+        let user = Identity::current().unwrap().user;
+        SESSION.with(|session| {
+            *session.borrow_mut() = Some(Identity {
+                user: user.clone(),
+                default_owner: "S-1-5-32-544".into(),
+            });
+        });
+        let refused = open_configured(&path, &configured_for(&path), &MemoryVault::default());
+        SESSION.with(|session| session.borrow_mut().take());
+        assert_eq!(refused.unwrap_err(), StorageError::ElevatedSession);
+        assert!(!path.parent().unwrap().exists());
+        assert_eq!(
+            StorageError::ElevatedSession.to_string(),
+            format!("storage: {}", ads_private_dir::ELEVATED_SESSION)
+        );
+        drop(open_configured(&path, &configured_for(&path), &MemoryVault::default()).unwrap());
     }
 
     #[test]
