@@ -67,9 +67,9 @@ struct Inner {
     log: EventLog,
     record: RecordTaskQueueV1,
     device: AuthenticatedDevice,
-    /// Last state written to the stream; differs from `record.state` only after a stop whose
-    /// event could not be written.
-    logged: RecordTaskQueueV1State,
+    /// Id of the stop command whose event could not be written; the event is written later
+    /// with this cause, before any other change.
+    pending_stop: Option<String>,
 }
 
 impl LoggedQueue {
@@ -85,7 +85,7 @@ impl LoggedQueue {
             record: new_stopped(queue_id, &device),
             log,
             device,
-            logged: Stopped,
+            pending_stop: None,
         };
         if stored.is_empty() {
             let data = json!({
@@ -177,16 +177,16 @@ impl Inner {
     }
 
     /// Writes the owner stop that an earlier failure left out of the stream.
-    fn settle_stop(&mut self, cause: &str) -> Result<(), ApiError> {
-        if self.logged == Stopped {
+    fn settle_stop(&mut self) -> Result<(), ApiError> {
+        let Some(cause) = self.pending_stop.clone() else {
             return Ok(());
-        }
+        };
         let mut enabled = self.record.clone();
         enabled.state = Enabled;
         let (_, event, _) = change_queue_state(&enabled, Some(&self.device), Stopped)
             .map_err(|_| ApiError::QueueNotConfigured)?;
-        self.append_change(event, cause)?;
-        self.logged = Stopped;
+        self.append_change(event, &cause)?;
+        self.pending_stop = None;
         Ok(())
     }
 }
@@ -198,7 +198,7 @@ impl QueueControl for LoggedQueue {
 
     fn start(&self, queue_id: &CommonIdV1, cause: &str) -> Result<(), ApiError> {
         let mut inner = self.lock(queue_id)?;
-        inner.settle_stop(cause)?;
+        inner.settle_stop()?;
         let (updated, event, _) = change_queue_state(&inner.record, Some(&inner.device), Enabled)
             .map_err(|refusal| match refusal {
             QueueRefusal::Unchanged => ApiError::QueueAlreadyEnabled,
@@ -206,21 +206,19 @@ impl QueueControl for LoggedQueue {
         })?;
         inner.append_change(event, cause)?;
         inner.record = updated;
-        inner.logged = Enabled;
         Ok(())
     }
 
     fn stop(&self, queue_id: &CommonIdV1, cause: &str) -> Result<(), ApiError> {
         let mut inner = self.lock(queue_id)?;
         if inner.record.state == Stopped {
-            return inner.settle_stop(cause);
+            return inner.settle_stop();
         }
-        let (updated, event, _) = change_queue_state(&inner.record, Some(&inner.device), Stopped)
+        let (updated, _, _) = change_queue_state(&inner.record, Some(&inner.device), Stopped)
             .map_err(|_| ApiError::QueueNotConfigured)?;
         // Stopped before the write: a failed append never leaves the queue admitting tasks.
         inner.record = updated;
-        inner.append_change(event, cause)?;
-        inner.logged = Stopped;
-        Ok(())
+        inner.pending_stop = Some(cause.to_owned());
+        inner.settle_stop()
     }
 }

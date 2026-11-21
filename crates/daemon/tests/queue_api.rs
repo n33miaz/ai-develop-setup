@@ -17,6 +17,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::net::TcpStream;
@@ -69,8 +70,9 @@ impl KeyProvider for Keys {
     }
 }
 
+/// The vault slot; `fail` makes every store refuse, so the append rolls back.
 #[derive(Clone, Default)]
-struct Anchor(Arc<Mutex<Option<Commitment>>>);
+struct Anchor(Arc<Mutex<Option<Commitment>>>, Arc<AtomicBool>);
 impl AnchorStore for Anchor {
     fn can_create(&self) -> Result<bool, StorageError> {
         Ok(self.0.lock().unwrap().is_none())
@@ -79,6 +81,9 @@ impl AnchorStore for Anchor {
         Ok(*self.0.lock().unwrap())
     }
     fn store(&self, _: DatabaseId, commitment: &Commitment) -> Result<(), StorageError> {
+        if self.1.load(Ordering::SeqCst) {
+            return Err(StorageError::AnchorUnavailable);
+        }
         *self.0.lock().unwrap() = Some(*commitment);
         Ok(())
     }
@@ -388,4 +393,42 @@ fn reopening_restores_the_queue_stopped_and_records_the_restart() {
     );
     assert!(matches!(stranger, Err(QueueOpenError::ForeignOwner)));
     assert_eq!(audit(&folder.db(), &anchor).len(), 3);
+}
+
+#[tokio::test]
+async fn a_failed_stop_write_still_stops_and_is_recorded_before_the_next_start() {
+    let folder = Folder::new("queue-api-failed-stop");
+    let anchor = Anchor::default();
+    let queue: Arc<dyn QueueControl> = Arc::new(open_queue(&folder.db(), &anchor).unwrap());
+    let f = fixture(Some(queue)).await;
+    let mut ws = authenticated(&f).await;
+    let start = command("queue.start", queue_params());
+    assert_eq!(exchange(&mut ws, &start).await["result"]["accepted"], true);
+
+    anchor.1.store(true, Ordering::SeqCst);
+    let stop = command("queue.stop", queue_params());
+    assert_eq!(exchange(&mut ws, &stop).await["error"]["code"], -32603);
+    assert_eq!(state(&mut ws).await, "stopped", "the service keeps serving");
+    assert_eq!(audit(&folder.db(), &anchor).len(), 2);
+
+    anchor.1.store(false, Ordering::SeqCst);
+    let restart = command("queue.start", queue_params());
+    assert_eq!(
+        exchange(&mut ws, &restart).await["result"]["accepted"],
+        true
+    );
+    let events = audit(&folder.db(), &anchor);
+    let kinds: Vec<_> = events.iter().map(|e| e["type"].as_str().unwrap()).collect();
+    assert_eq!(
+        kinds,
+        [
+            "urn:ads:event:queue.created:1",
+            "urn:ads:event:queue.enabled:1",
+            "urn:ads:event:queue.stopped:1",
+            "urn:ads:event:queue.enabled:1"
+        ]
+    );
+    assert_eq!(events[2]["cause"], stop["id"]);
+    assert_eq!(events[2]["data"]["reason"], "owner");
+    assert_eq!(events[3]["cause"], restart["id"]);
 }

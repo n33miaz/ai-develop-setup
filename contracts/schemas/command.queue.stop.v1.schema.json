@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:ads:command:queue.stop:1",
   "title": "Parar a fila",
-  "description": "O dono para a fila. Parar é sempre aceito: a fila já parada responde aceito sem evento novo; a fila ligada para na hora, antes da próxima admissão, e o núcleo anexa queue.stopped com reason owner. A resposta é command.response:2.",
+  "description": "O dono para a fila. Parar é sempre aceito: a fila já parada responde aceito sem evento novo; a fila ligada para na hora, antes da próxima admissão, e o núcleo anexa queue.stopped com reason owner. A resposta é command.response:2; se a gravação falhar, a fila fica parada mesmo assim, a resposta é INTERNAL_ERROR e o evento é gravado antes da próxima mudança, com o id deste comando em cause.",
   "allOf": [
     {
       "$ref": "urn:ads:command:request:1"

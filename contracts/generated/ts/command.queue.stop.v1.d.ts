@@ -1,7 +1,7 @@
 /* Gerado por tools/gen-ts.mjs a partir de schemas/command.queue.stop.v1.schema.json. Não edite à mão. */
 
 /**
- * Parar a fila. O dono para a fila. Parar é sempre aceito: a fila já parada responde aceito sem evento novo; a fila ligada para na hora, antes da próxima admissão, e o núcleo anexa queue.stopped com reason owner. A resposta é command.response:2.
+ * Parar a fila. O dono para a fila. Parar é sempre aceito: a fila já parada responde aceito sem evento novo; a fila ligada para na hora, antes da próxima admissão, e o núcleo anexa queue.stopped com reason owner. A resposta é command.response:2; se a gravação falhar, a fila fica parada mesmo assim, a resposta é INTERNAL_ERROR e o evento é gravado antes da próxima mudança, com o id deste comando em cause.
  */
 export type CommandQueueStopV1 = CommandRequestV1 & {
   method: "queue.stop";

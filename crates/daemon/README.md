@@ -185,8 +185,10 @@ recebe `REMOTE_ORIGIN_REFUSED`.
   continua parada e a resposta é `INTERNAL_ERROR`, sem derrubar o serviço.
 - `queue.stop` é sempre aceito. A fila ligada para antes de o evento ser
   gravado (`queue.stopped` com `reason: owner`), então nenhuma tarefa nova é
-  admitida mesmo se a gravação falhar; nesse caso a parada que faltou é gravada
-  antes da próxima ativação. A fila já parada responde aceito sem evento novo.
+  admitida mesmo se a gravação falhar. Nesse caso a resposta é
+  `INTERNAL_ERROR`, embora a fila tenha parado, e a parada que faltou é gravada
+  antes da próxima mudança, com o id do comando de parada em `cause` e o `ts`
+  do momento da gravação. A fila já parada responde aceito sem evento novo.
 - Fila que o daemon não serve, ou daemon sem fila ligada, recebe
   `QUEUE_NOT_CONFIGURED`.
 

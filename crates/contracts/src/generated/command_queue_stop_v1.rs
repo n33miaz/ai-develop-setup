@@ -12,7 +12,7 @@ use super::common_ulid_v1::CommonUlidV1;
 use crate::support;
 use crate::support::{ContractError, Literal, Pattern, Rule};
 
-/// Parar a fila. O dono para a fila. Parar é sempre aceito: a fila já parada responde aceito sem evento novo; a fila ligada para na hora, antes da próxima admissão, e o núcleo anexa queue.stopped com reason owner. A resposta é command.response:2.
+/// Parar a fila. O dono para a fila. Parar é sempre aceito: a fila já parada responde aceito sem evento novo; a fila ligada para na hora, antes da próxima admissão, e o núcleo anexa queue.stopped com reason owner. A resposta é command.response:2; se a gravação falhar, a fila fica parada mesmo assim, a resposta é INTERNAL_ERROR e o evento é gravado antes da próxima mudança, com o id deste comando em cause.
 ///
 /// `urn:ads:command:queue.stop:1`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
