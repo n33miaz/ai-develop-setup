@@ -560,3 +560,42 @@ fn descriptor_text(descriptor: PSECURITY_DESCRIPTOR) -> io::Result<String> {
     }?;
     take_text(text)
 }
+
+/// Posts `WM_ENDSESSION` to every top-level window of `pid`, as the Restart Manager does to
+/// ask an application to close; a window that hides on `WM_CLOSE` still ends on it. Returns
+/// how many windows were asked. The caller holds the process handle, so `pid` is not reused.
+pub(super) fn request_close(pid: u32) -> io::Result<usize> {
+    use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        ENDSESSION_CLOSEAPP, EnumWindows, GetWindowThreadProcessId, PostMessageW, WM_ENDSESSION,
+    };
+    use windows::core::BOOL;
+
+    unsafe extern "system" fn collect(window: HWND, found: LPARAM) -> BOOL {
+        // SAFETY: `found` is the address of the tuple below, alive for the whole enumeration.
+        let (pid, windows) = unsafe { &mut *(found.0 as *mut (u32, Vec<HWND>)) };
+        let mut owner = 0;
+        // SAFETY: `window` comes from the enumeration; `owner` is a valid output location.
+        unsafe { GetWindowThreadProcessId(window, Some(&raw mut owner)) };
+        if owner == *pid {
+            windows.push(window);
+        }
+        BOOL::from(true)
+    }
+
+    let mut found = (pid, Vec::new());
+    // SAFETY: the callback only reads `found` through the pointer during this call.
+    unsafe { EnumWindows(Some(collect), LPARAM(&raw mut found as isize)) }.map_err(os_error)?;
+    for window in &found.1 {
+        // SAFETY: posting copies plain values; a window closed meanwhile only fails the post.
+        let _ = unsafe {
+            PostMessageW(
+                Some(*window),
+                WM_ENDSESSION,
+                WPARAM(1),
+                LPARAM(ENDSESSION_CLOSEAPP as isize),
+            )
+        };
+    }
+    Ok(found.1.len())
+}

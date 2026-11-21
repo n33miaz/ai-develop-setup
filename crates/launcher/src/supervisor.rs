@@ -12,7 +12,7 @@ use serde::Serialize;
 
 use crate::{
     Config,
-    private::{ControlDir, Identity, Signal},
+    private::{self, ControlDir, Identity, Signal},
 };
 
 #[derive(Default, Serialize)]
@@ -161,6 +161,60 @@ fn stop_child(child: &mut Child) -> io::Result<ExitStatus> {
     child.wait()
 }
 
+/// Asks the child to close, waits up to `timeout`, then forces it. Only a child this launcher
+/// started and has not reaped gets here, so neither step can reach another process.
+fn close_child(child: &mut Child, timeout: Duration, poll: Duration) -> io::Result<ExitStatus> {
+    if let Some(status) = child.try_wait()? {
+        return Ok(status);
+    }
+    if !timeout.is_zero() && private::request_close(child).is_ok() {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(status) = child.try_wait()? {
+                return Ok(status);
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            thread::sleep(poll.min(left));
+        }
+    }
+    stop_child(child)
+}
+
+/// The desktop window opened for the current daemon. Dropping it closes it too, so no exit of
+/// the supervisor leaves the window behind.
+struct Window {
+    child: Option<Child>,
+    timeout: Duration,
+    poll: Duration,
+}
+
+impl Window {
+    fn new(config: &Config) -> Self {
+        Self {
+            child: None,
+            timeout: Duration::from_millis(config.shell_close_timeout_ms),
+            poll: Duration::from_millis(config.poll_ms),
+        }
+    }
+
+    fn close(&mut self) -> io::Result<()> {
+        if let Some(child) = &mut self.child {
+            close_child(child, self.timeout, self.poll)?;
+            self.child = None;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for Window {
+    fn drop(&mut self) {
+        let _ = self.close();
+    }
+}
+
 fn detach(host: &mut Command) {
     host.stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -281,9 +335,10 @@ pub(crate) fn run(
     if shell.is_some() {
         daemon.stdout(Stdio::piped());
     }
-    let mut window = None;
     let mut daemon = Process::new(daemon, true);
     let mut host = Process::new(host, false);
+    // Declared after the daemon so that, on any exit, the window closes before it.
+    let mut window = Window::new(config);
 
     // Publish before starting children so an unusable state path fails early.
     let mut publication = Publication {
@@ -299,12 +354,13 @@ pub(crate) fn run(
         }
         let stopped = if stopping {
             let daemon_stopped = publication.attempt("stop daemon", daemon.stop()).is_some();
+            let window_closed = publication.attempt("close shell", window.close()).is_some();
             let signal_cleared = publication
                 .signal("clear restart signal", &control, restart)
                 .is_some();
             publication.attempt("check host exit", host.tick_exit_only());
             publication.dirty = true;
-            daemon_stopped && signal_cleared
+            daemon_stopped && window_closed && signal_cleared
         } else {
             restarting |=
                 publication.signal("consume restart signal", &control, restart) == Some(true);
@@ -319,26 +375,27 @@ pub(crate) fn run(
             let host_changed = publication.attempt("check host", host.tick(config)) == Some(true);
             let daemon_changed = !restarting
                 && publication.attempt("check daemon", daemon.tick(config)) == Some(true);
-            if let Some(window_process) = &mut window
+            if let Some(window_process) = &mut window.child
                 && publication
                     .attempt("check shell", Child::try_wait(window_process))
                     .flatten()
                     .is_some()
             {
-                window = None;
+                window.child = None;
+            }
+            if daemon.state.gave_up {
+                // No daemon will follow to replace the window: it would stay disconnected.
+                publication.attempt("close shell", window.close());
             }
             if let Some(shell) = &mut shell
                 && let Some(daemon_output) =
                     daemon.child.as_mut().and_then(|child| child.stdout.take())
+                && publication
+                    .attempt("replace previous shell", window.close())
+                    .is_some()
             {
-                let can_open = window.as_mut().is_none_or(|previous| {
-                    publication
-                        .attempt("replace previous shell", stop_child(previous))
-                        .is_some()
-                });
-                if can_open {
-                    window = publication.attempt("start shell", start_shell(shell, daemon_output));
-                }
+                window.child =
+                    publication.attempt("start shell", start_shell(shell, daemon_output));
             }
             publication.dirty |= host_changed || daemon_changed;
             false
@@ -414,6 +471,7 @@ pub(crate) mod tests {
         config.restart_max_ms = 40;
         config.crash_window_ms = 600_000;
         config.crash_window_limit = 3;
+        config.shell_close_timeout_ms = 200;
         config
     }
 
@@ -1057,6 +1115,107 @@ pub(crate) mod tests {
         worker.join().unwrap().unwrap();
         assert_ne!(first, second);
         assert_eq!(host, same_host);
+    }
+
+    fn desktop_daemon(dir: &Path) -> Command {
+        let mut daemon = Command::new(std::env::current_exe().unwrap());
+        daemon
+            .args([
+                "desktop_daemon_fixture",
+                "--quiet",
+                "--nocapture",
+                "--format",
+                "terse",
+            ])
+            .env("ADS_TEST_DESKTOP_RELEASE", dir.join("release-daemon"))
+            .stderr(Stdio::null());
+        daemon
+    }
+
+    /// A window that reads only its first line, so the daemon's end alone never closes it,
+    /// and holds a lock on `window.lock` while it runs.
+    #[test]
+    fn held_window_fixture() {
+        if let Some(directory) = std::env::var_os("ADS_TEST_HELD_WINDOW") {
+            let directory = Path::new(&directory);
+            let mut line = String::new();
+            io::stdin().read_line(&mut line).unwrap();
+            let lock = window_lock(directory);
+            lock.lock().unwrap();
+            wait_for_release(&directory.join("release-window"));
+        }
+    }
+
+    fn held_window(dir: &Path) -> Command {
+        let mut shell = Command::new(std::env::current_exe().unwrap());
+        shell
+            .args(["--exact", "supervisor::tests::held_window_fixture"])
+            .env("ADS_TEST_HELD_WINDOW", dir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        shell
+    }
+
+    fn window_lock(dir: &Path) -> File {
+        fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(dir.join("window.lock"))
+            .unwrap()
+    }
+
+    fn window_running(dir: &Path) -> bool {
+        matches!(window_lock(dir).try_lock(), Err(TryLockError::WouldBlock))
+    }
+
+    /// Gives the system a moment to release the lock of a process that has just ended.
+    fn window_ended(dir: &Path) -> bool {
+        let start = Instant::now();
+        while window_running(dir) {
+            if start.elapsed() > Duration::from_secs(2) {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        true
+    }
+
+    #[test]
+    fn closes_the_window_on_stop() {
+        let dir = TestDir::new();
+        let host_release = dir.0.join("release-host");
+        let (control, daemon, shell) = (dir.0.clone(), desktop_daemon(&dir.0), held_window(&dir.0));
+        let host = fixture(Some(&host_release));
+        let worker = thread::spawn(move || run(&config(), &control, daemon, host, Some(shell)));
+        until(|| window_running(&dir.0).then_some(()));
+        fs::write(dir.0.join("stop"), []).unwrap();
+        worker.join().unwrap().unwrap();
+        let ended = window_ended(&dir.0);
+        fs::write(dir.0.join("release-window"), []).unwrap();
+        fs::write(host_release, []).unwrap();
+        assert!(ended, "the window outlived the stop signal");
+    }
+
+    #[test]
+    fn closes_the_window_when_giving_up_on_the_daemon() {
+        let dir = TestDir::new();
+        let host_release = dir.0.join("release-host");
+        let (control, shell) = (dir.0.clone(), held_window(&dir.0));
+        // Exits at once, after printing the line the window reads first.
+        let daemon = fixture(None);
+        let host = fixture(Some(&host_release));
+        let worker = thread::spawn(move || run(&config(), &control, daemon, host, Some(shell)));
+        until(|| {
+            state_value(&dir.0.join("state.json"))
+                .filter(|state| state["daemon"]["gave_up"] == true)
+        });
+        let ended = window_ended(&dir.0);
+        fs::write(dir.0.join("stop"), []).unwrap();
+        worker.join().unwrap().unwrap();
+        fs::write(dir.0.join("release-window"), []).unwrap();
+        fs::write(host_release, []).unwrap();
+        assert!(ended, "the window outlived the daemon it was opened for");
     }
 
     #[test]

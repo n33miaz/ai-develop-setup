@@ -10,7 +10,7 @@ A contagem só sobe com justificativa aqui.
 | `ads-adapter-fs` | 4 | chamadas da API do Windows para abrir, mover e apagar por identificador aberto, listadas abaixo; no Linux as mesmas operações vêm do `rustix`, sem `unsafe` |
 | `ads-testkit` | 7 | só de teste, fora de qualquer binário do produto; listados abaixo |
 | `ads-adapter-vault` | 6 | operações por nome no cofre do Windows e tratamento da memória devolvida |
-| `ads-launcher` | 19 | chamadas da API do Windows para criar a pasta de controle e seus arquivos só do usuário, conferir dono e lista de acesso e operar relativo à pasta aberta, listadas abaixo (2 delas só nos testes); no Unix o mesmo vem da biblioteca padrão e do `rustix`, sem `unsafe` |
+| `ads-launcher` | 23 | chamadas da API do Windows para criar a pasta de controle e seus arquivos só do usuário, conferir dono e lista de acesso, operar relativo à pasta aberta e pedir à janela que feche, listadas abaixo (2 delas só nos testes); no Unix o mesmo vem da biblioteca padrão e do `rustix`, sem `unsafe` |
 | `ads-shell` | 2 | retirar e fechar a entrada padrão herdada antes de iniciar a WebView |
 | `ads-storage` | 0 | SQLite e cifra pelas APIs seguras das dependências; herda `forbid` |
 | demais | 0 | nenhum |
@@ -86,6 +86,7 @@ A biblioteca padrão não cria pasta nem arquivo com lista de acesso própria, n
 | `apply` | 1 | `NtSetInformationFile` | mover o estado temporário sobre o estado e apagar um sinal, os dois pelo identificador em que foram conferidos |
 | `security` | 4 | `GetSecurityInfo` (dono e lista de acesso), `GetAclInformation`, `GetAce`, leitura do cabeçalho da entrada | conferir o dono e cada entrada da lista de acesso da pasta, da trava e de cada sinal, no identificador aberto |
 | `access_list_text` (só testes) | 2 | `GetSecurityInfo`, `ConvertSecurityDescriptorToStringSecurityDescriptorW` | ler a lista de acesso em texto, com proteção e herança, para os testes compararem com a esperada |
+| `request_close` | 4 | `EnumWindows`, leitura da lista passada ao retorno de chamada, `GetWindowThreadProcessId`, `PostMessageW` | pedir o fechamento (`WM_ENDSESSION`) às janelas da casca que o próprio lançador iniciou e ainda não recolheu, antes do término forçado |
 
 ## `ads-shell` (`crates/shell/src/stdin.rs`)
 

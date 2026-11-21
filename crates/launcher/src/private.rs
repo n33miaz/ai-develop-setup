@@ -6,7 +6,8 @@
 //! changes which folder was opened, and that folder is the one checked and used. On Windows
 //! the handle also keeps the folder, and every folder above it, from being renamed while the
 //! launcher runs. Each file is checked on its own handle too, and a signal is removed through
-//! the handle it was checked on.
+//! the handle it was checked on. The same system layer also asks a child the launcher
+//! started to close, the only process call that needs it.
 
 #[cfg(unix)]
 mod unix;
@@ -48,6 +49,19 @@ impl Identity {
 
     pub(crate) fn owns(&self, owner: &str) -> bool {
         !self.user.is_empty() && (owner == self.user || owner == self.default_owner)
+    }
+}
+
+/// Asks `child`, still unreaped, to close without forcing it: `WM_ENDSESSION` to its windows
+/// on Windows, `SIGTERM` on Unix. The caller forces the exit if the deadline passes.
+pub(crate) fn request_close(child: &std::process::Child) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        win::request_close(child.id()).map(drop)
+    }
+    #[cfg(unix)]
+    {
+        unix::request_close(child)
     }
 }
 
