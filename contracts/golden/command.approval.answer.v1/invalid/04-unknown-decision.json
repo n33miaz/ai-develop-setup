@@ -1,0 +1,15 @@
+{
+  "jsonrpc": "2.0",
+  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAD",
+  "method": "approval.answer",
+  "params": {
+    "action_id": "act-03",
+    "approval_id": "appr-03",
+    "plan_hash": "sha256:5486cc58827bffeb2204a994db3d77fe6c8f2c863eb73de6e2a60802784293cb",
+    "decision": "maybe",
+    "_meta": {
+      "idempotency_key": "01ARZ3NDEKTSV4RRFFQ69G5FAE",
+      "origin": "local"
+    }
+  }
+}

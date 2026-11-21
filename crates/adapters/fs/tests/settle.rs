@@ -6,10 +6,10 @@
 
 mod common;
 
-use std::cell::RefCell;
+use common::shared::RefCell;
 use std::fs;
 use std::io;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use ads_adapter_fs::{
     Executor, FenceError, Laid, MANIFEST_NAME, Midway, Mutation, Reason, Scaffold, Stage, Status,
@@ -49,7 +49,7 @@ fn an_entry_claimed_to_be_removed_cannot_be_taken_out_of_the_fence() {
             delete_of(&sandbox, "act-1", &[target]),
         );
         // (it was there when the probe looked, the answer of the system to the move)
-        let tried = Rc::new(RefCell::new(None));
+        let tried = Arc::new(RefCell::new(None));
         let away = sandbox.outside.join(format!("taken-{taken}"));
         let mut executor = hooked(sandbox.executor(QUARANTINE_OFF), {
             let (tried, away) = (tried.clone(), away.clone());
@@ -114,7 +114,7 @@ fn a_file_open_to_be_deleted_by_someone_else_is_not_claimed() {
         &sandbox.policy(QUARANTINE_OFF),
         delete_of(&sandbox, "act-1", &["work/one.txt"]),
     );
-    let busy: Rc<RefCell<Option<fs::File>>> = Rc::new(RefCell::new(None));
+    let busy: Arc<RefCell<Option<fs::File>>> = Arc::new(RefCell::new(None));
     let mut executor = hooked(sandbox.executor(QUARANTINE_OFF), {
         let (busy, path) = (busy.clone(), path.clone());
         move |moment, mutation| {
@@ -260,7 +260,7 @@ fn a_holding_folder_cannot_be_taken_out_of_the_fence_while_it_is_removed() {
         &sandbox.policy(QUARANTINE_OFF),
         delete_of(&sandbox, "act-1", &["work/tree"]),
     );
-    let attempts = Rc::new(RefCell::new(Vec::new()));
+    let attempts = Arc::new(RefCell::new(Vec::new()));
     let mut executor = hooked(sandbox.executor(QUARANTINE_OFF), {
         let (attempts, outside) = (attempts.clone(), sandbox.outside.clone());
         move |moment, mutation| {
@@ -305,7 +305,7 @@ fn a_holding_folder_swapped_right_after_it_was_made_is_not_removed() {
         delete_of(&sandbox, "act-1", &["work/tree"]),
     );
     let first = sandbox.outside.join("made-first");
-    let swapped = Rc::new(RefCell::new(false));
+    let swapped = Arc::new(RefCell::new(false));
     let mut executor = hooked(sandbox.executor(QUARANTINE_OFF), {
         let (swapped, first) = (swapped.clone(), first.clone());
         move |moment, mutation| {
@@ -356,7 +356,7 @@ fn a_folder_that_stops_after_it_was_made_is_told_as_made_and_confirmed() {
         delete_of(&sandbox, "act-1", &["work/build"]),
     );
     let (batch, _) = batch_of(&sandbox, &flow, "act-1");
-    let after = Rc::new(RefCell::new(Vec::new()));
+    let after = Arc::new(RefCell::new(Vec::new()));
     let mut executor = hooked(sandbox.executor(""), {
         let after = after.clone();
         let mut stopped: Option<std::path::PathBuf> = None;
@@ -410,7 +410,7 @@ fn a_manifest_that_fails_after_it_was_created_has_its_folder_confirmed() {
             delete_of(&sandbox, "act-1", &["work/build"]),
         );
         let (batch, _) = batch_of(&sandbox, &flow, "act-1");
-        let after = Rc::new(RefCell::new(Vec::new()));
+        let after = Arc::new(RefCell::new(Vec::new()));
         let mut executor = hooked(sandbox.executor(""), {
             let after = after.clone();
             let mut stopped = false;
@@ -454,7 +454,7 @@ fn a_folder_moved_while_the_fence_is_walked_does_not_give_the_fence_another_name
     let aside = sandbox.root.join("base-first");
     fs::create_dir_all(base.join("fence").join("work")).unwrap();
     fs::write(base.join("fence").join("work").join("file.txt"), "first").unwrap();
-    let moved = Rc::new(RefCell::new(None));
+    let moved = Arc::new(RefCell::new(None));
     let built = Executor::new_walked(&base.join("fence"), sandbox.policy(""), || {}, {
         let (base, aside, moved) = (base.clone(), aside.clone(), moved.clone());
         move |name| {

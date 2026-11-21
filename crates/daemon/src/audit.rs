@@ -444,6 +444,16 @@ fn reanchor_with<V: Vault + Send>(
     EventLog::reanchor(&path, config, keys, &anchor, confirmed)
 }
 
+/// A product log in `root` (an existing, resolved folder) with an in-memory vault, for the
+/// tests of the modules that compose the gate.
+#[cfg(test)]
+pub(crate) fn test_product_log(root: &Path, storage: &str, vault: &TestVault) -> ProductLog {
+    tests::product_log(root, storage, vault)
+}
+
+#[cfg(test)]
+pub(crate) use tests::TestVault;
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -1352,6 +1362,86 @@ mod tests {
             open_with(&original, &migrated, true).unwrap_err(),
             StorageError::AnchorMismatch
         );
+    }
+
+    /// An in-memory vault whose stores can be made to fail, now or after a number of them:
+    /// a refused store refuses the append that publishes the anchor.
+    #[derive(Clone, Default)]
+    pub(crate) struct TestVault {
+        vault: MemoryVault,
+        /// Stores still accepted; `usize::MAX` (the default after `accept_all`) never fails.
+        accepted: Arc<std::sync::atomic::AtomicUsize>,
+        armed: Arc<std::sync::atomic::AtomicBool>,
+        /// Stores still to refuse before the others are accepted again.
+        refused: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl TestVault {
+        /// Accepts `stores` more stores, then refuses every other one.
+        pub(crate) fn fail_after(&self, stores: usize) {
+            use std::sync::atomic::Ordering;
+            self.accepted.store(stores, Ordering::SeqCst);
+            self.armed.store(true, Ordering::SeqCst);
+        }
+
+        /// Refuses the next `stores` stores and accepts the ones after them.
+        pub(crate) fn refuse_next(&self, stores: usize) {
+            self.refused
+                .store(stores, std::sync::atomic::Ordering::SeqCst);
+        }
+
+        pub(crate) fn accept_all(&self) {
+            self.armed.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    impl Vault for TestVault {
+        fn store(&self, name: SecretName, secret: &Secret) -> Result<(), VaultError> {
+            use std::sync::atomic::Ordering;
+            if self
+                .refused
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                .is_ok()
+            {
+                return Err(VaultError::Unavailable);
+            }
+            if self.armed.load(Ordering::SeqCst)
+                && self
+                    .accepted
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                    .is_err()
+            {
+                return Err(VaultError::Unavailable);
+            }
+            self.vault.store(name, secret)
+        }
+
+        fn read(&self, name: SecretName) -> Result<Option<Secret>, VaultError> {
+            self.vault.read(name)
+        }
+
+        fn remove(&self, name: SecretName) -> Result<(), VaultError> {
+            self.vault.remove(name)
+        }
+    }
+
+    pub(super) fn product_log(root: &Path, storage: &str, vault: &TestVault) -> ProductLog {
+        let database = root.join("audit").join("audit.db");
+        let config = StorageConfig::from_toml_str(&format!(
+            "audit_database_path = {}\n{storage}",
+            serde_json::to_string(&database).unwrap()
+        ))
+        .unwrap();
+        open_product_in(
+            &root.join("vault"),
+            &database,
+            &config,
+            Box::new(Keys),
+            vault.clone(),
+            None,
+            &[],
+        )
+        .unwrap()
     }
 
     fn configured_for(path: &Path) -> StorageConfig {

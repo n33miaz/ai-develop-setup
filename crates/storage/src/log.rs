@@ -1132,6 +1132,49 @@ fn journal_error(error: StorageError) -> JournalError {
 }
 
 impl EventLog {
+    /// The histories of the actions whose approval was requested and has no decision yet
+    /// (granted, denied or expired) and that `keep` accepts, oldest request first, at most
+    /// `limit` (capped by `read_page_limit`). The limit counts kept histories only, so requests
+    /// the caller does not serve never fill the page; the work is one read per undecided
+    /// request until the page is full. Like `read_queue`, it runs under the write lock after the
+    /// anchor and the whole chain were checked once. A validity that is over without an
+    /// `approval.expired` still counts as waiting: the caller judges the clock.
+    pub fn pending_approvals(
+        &self,
+        limit: u32,
+        keep: &mut dyn FnMut(&GateHistory) -> bool,
+    ) -> Result<Vec<GateHistory>, StorageError> {
+        let limit = usize::try_from(limit.min(self.config.read_page_limit)).unwrap_or(usize::MAX);
+        self.read_anchored(|log, tx| {
+            let mut statement = tx.prepare(
+                "SELECT action_id FROM event AS asked
+                 WHERE asked.type = ?1 AND asked.action_id IS NOT NULL
+                   AND NOT EXISTS (SELECT 1 FROM event AS decided
+                                   WHERE decided.approval_id = asked.approval_id
+                                     AND decided.type IN (?2, ?3, ?4))
+                 ORDER BY asked.position",
+            )?;
+            let mut rows = statement.query(params![
+                "urn:ads:event:approval.requested:2",
+                "urn:ads:event:approval.granted:2",
+                "urn:ads:event:approval.denied:2",
+                "urn:ads:event:approval.expired:2",
+            ])?;
+            let mut kept = Vec::new();
+            while kept.len() < limit {
+                let Some(row) = rows.next()? else {
+                    break;
+                };
+                let id = Id::new(row.get::<_, String>(0)?).map_err(|_| StorageError::Corrupt)?;
+                let history = read_gate(tx, &*log.keys, &id)?.ok_or(StorageError::Corrupt)?;
+                if keep(&history) {
+                    kept.push(history);
+                }
+            }
+            Ok(kept)
+        })
+    }
+
     fn load_gate(&mut self, action_id: &Id) -> Result<Option<GateHistory>, StorageError> {
         let anchor = self
             .anchor

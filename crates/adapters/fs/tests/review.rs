@@ -5,12 +5,12 @@
 
 mod common;
 
-use std::cell::Cell;
+use common::shared::Cell;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::sync::Arc;
 
 use ads_adapter_fs::{
     Completed, Executor, Failure, ITEMS_DIR, Laid, MANIFEST_NAME, Manifest, Midway, Mutation,
@@ -110,7 +110,7 @@ impl<F: FnMut(Moment, &Mutation) -> io::Result<()>> Probe for Hook<F> {
 
 fn hook(
     executor: Executor,
-    probe: impl FnMut(Moment, &Mutation) -> io::Result<()> + 'static,
+    probe: impl FnMut(Moment, &Mutation) -> io::Result<()> + Send + 'static,
 ) -> Executor {
     executor.with_probe(Box::new(Hook(probe)))
 }
@@ -155,8 +155,8 @@ fn swap_after_the_last_check(name: &str, overrides: &'static str, swapped_folder
             sandbox.path(&format!("{swapped_folder}-real")),
         )
     };
-    let swapped = Rc::new(Cell::new(false));
-    let tried = Rc::new(Cell::new(false));
+    let swapped = Arc::new(Cell::new(false));
+    let tried = Arc::new(Cell::new(false));
     let executor = hook(sandbox.executor(overrides), {
         let (swapped, tried) = (swapped.clone(), tried.clone());
         let (folder, aside, outside) = (folder.clone(), aside.clone(), sandbox.outside.clone());
@@ -295,7 +295,7 @@ fn a_destination_created_at_the_last_instant_is_not_replaced() {
 
         // Another process takes the place after the last check found it vacant.
         let place = sandbox.path("work/notes.txt");
-        let created = Rc::new(Cell::new(false));
+        let created = Arc::new(Cell::new(false));
         let mut executor = hook(sandbox.executor(""), {
             let (place, created) = (place.clone(), created.clone());
             move |moment, mutation| {
@@ -373,7 +373,7 @@ fn another_file_under_the_approved_name_is_not_touched() {
             &sandbox.policy(overrides),
             delete(&sandbox, "act-1", &["work/a/report.txt"]),
         );
-        let done = Rc::new(Cell::new(false));
+        let done = Arc::new(Cell::new(false));
         let mut executor = hook(sandbox.executor(overrides), {
             let done = done.clone();
             let name = sandbox.path("work/a/report.txt");
@@ -421,7 +421,7 @@ fn entries_added_after_the_survey_are_not_deleted_nor_moved() {
             &sandbox.policy(overrides),
             delete(&sandbox, "act-1", &["work/tree"]),
         );
-        let done = Rc::new(Cell::new(false));
+        let done = Arc::new(Cell::new(false));
         let mut executor = hook(sandbox.executor(overrides), {
             let done = done.clone();
             let folder = sandbox.path("work/tree");
@@ -465,7 +465,7 @@ fn an_entry_added_while_a_tree_is_being_deleted_survives() {
         &sandbox.policy(QUARANTINE_OFF),
         delete(&sandbox, "act-1", &["work/tree"]),
     );
-    let done = Rc::new(Cell::new(false));
+    let done = Arc::new(Cell::new(false));
     let mut executor = hook(sandbox.executor(QUARANTINE_OFF), {
         let done = done.clone();
         move |moment, mutation| {
@@ -1017,7 +1017,7 @@ fn a_move_that_the_system_does_not_confirm_is_not_reported_as_done() {
         delete(&sandbox, "act-1", &["work/build"]),
     );
     let (batch, _) = batch_of(&sandbox, &flow, "act-1");
-    let moved = Rc::new(Cell::new(false));
+    let moved = Arc::new(Cell::new(false));
     let mut executor = hook(sandbox.executor(""), {
         let moved = moved.clone();
         move |moment, mutation| match mutation {
