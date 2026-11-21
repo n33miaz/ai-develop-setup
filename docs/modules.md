@@ -5,7 +5,7 @@ Uma frase por módulo (P1): se a frase precisa de "e também", o módulo está g
 A coluna "Estado" diz o que existe hoje na `develop`. "Esqueleto" é um crate que compila sem comportamento do produto.
 
 No daemon, `api` compõe os comandos autenticados da interface com o host;
-`auth` protege o upgrade e a credencial por execução; `events` conserva streams
+`auth` protege o upgrade e a credencial por execução e emite a prova de sessão de cada conexão; `events` conserva streams
 limitados em memória; `pty_client` transporta o contrato público do host;
 `queue` liga o controle da fila pelo dono ao stream da fila no log ancorado;
 `startup` carrega a configuração; `tool_launcher` compõe os adaptadores de abertura;

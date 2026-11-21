@@ -34,9 +34,9 @@ impl Token {
         self.0.as_bytes().ct_eq(candidate.as_bytes()).into()
     }
 
-    /// The session proof of a connection whose `auth.hello` carried this token; nothing else
-    /// issues one.
-    pub fn open_session(&self, candidate: &str) -> Option<LocalSession> {
+    /// The session proof of a connection whose `auth.hello` carried this token. Crate-private:
+    /// only the connection loop, after reading `auth.hello`, issues one.
+    pub(crate) fn open_session(&self, candidate: &str) -> Option<LocalSession> {
         self.matches(candidate)
             .then_some(LocalSession { _sealed: () })
     }
@@ -54,11 +54,17 @@ impl Token {
     }
 }
 
-/// Proof that a connection presented the run token in `auth.hello`. Only [`Token::open_session`]
-/// issues it, so the owner-only controls of the local API take it instead of trusting ids:
+/// Proof that a connection presented the run token in `auth.hello`. Only the connection loop
+/// of this crate issues it, so the owner-only controls of the local API take it instead of
+/// trusting ids:
 ///
 /// ```compile_fail
 /// let _ = ads_daemon::auth::LocalSession { _sealed: () };
+/// ```
+///
+/// ```compile_fail
+/// let token = ads_daemon::auth::Token::generate().unwrap();
+/// let _ = token.open_session("any");
 /// ```
 #[derive(Debug)]
 pub struct LocalSession {
