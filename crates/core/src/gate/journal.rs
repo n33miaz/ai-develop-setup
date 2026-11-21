@@ -20,6 +20,7 @@ pub enum JournalError {
     Conflict,
     Integrity,
     PolicyChanged,
+    PlanNormalizationFailed,
     ClassificationBudgetExceeded(ClassificationBudgetExceeded),
     Transition,
     /// The incoming timestamp is too early. Retry with a current timestamp.
@@ -140,6 +141,7 @@ impl<'a> JournalGate<'a> {
             Ok(_) => None,
             Err(
                 error @ (JournalError::PolicyChanged
+                | JournalError::PlanNormalizationFailed
                 | JournalError::ClassificationBudgetExceeded(_)),
             ) => Some(error),
             Err(error) => return Err(error),
@@ -163,6 +165,9 @@ impl<'a> JournalGate<'a> {
             let (command, meta) = input.take().ok_or(JournalError::Transition)?;
             let action = load_action(policy, work_root, action_id, history)?;
             let (updated, event) = action.try_apply(command, meta).map_err(transition_error)?;
+            if matches!(&event, Event::ApprovalRequested(_)) {
+                current_verdict(policy, &history.plan)?;
+            }
             if let Event::ApprovalGranted(granted) = &event {
                 match current_verdict(policy, &history.plan) {
                     Err(JournalError::PolicyChanged) => {
@@ -370,7 +375,7 @@ fn current_verdict(
             bytes: estimate.bytes,
         }),
     })
-    .map_err(|_| JournalError::PolicyChanged)?;
+    .map_err(|_| JournalError::PlanNormalizationFailed)?;
     let verdict = classify(&plan, policy).map_err(JournalError::ClassificationBudgetExceeded)?;
     if !verdict
         .record(record.action_id.clone())

@@ -259,7 +259,8 @@ impl ExecutionPermit {
 /// What the log says about one action. Read only: it shows the state and hands out no permit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActionSnapshot {
-    /// A policy comparison made by the journal when inspecting this action.
+    /// Populated only by [`super::JournalGate::inspect`]. In other snapshots, `None`
+    /// means the comparison was omitted.
     pub policy_warning: Option<super::JournalError>,
     pub action_id: Id,
     pub plan_hash: PlanHash,

@@ -51,14 +51,17 @@ impl GateJournal for MemoryJournal {
 }
 
 fn planned_journal() -> MemoryJournal {
+    plan_journal(&policy(POSIX_HOME, ""))
+}
+
+fn plan_journal(policy: &ads_core::gate::GatePolicy) -> MemoryJournal {
     let mut journal = MemoryJournal::default();
     let plan = plan(
         OperationRequest::Delete,
         POSIX_ROOT,
         &["/home/user-a/work/proj/build"],
     );
-    let policy = policy(POSIX_HOME, "");
-    JournalGate::new(&policy, &mut journal)
+    JournalGate::new(policy, &mut journal)
         .plan(id("action-1"), &plan, meta(NOW, 1))
         .unwrap();
     journal
@@ -230,34 +233,92 @@ fn started_actions_finish_under_a_changed_policy() {
     }
 }
 
+fn request_approval() -> Command {
+    Command::RequestApproval {
+        approval_id: id("approval-1"),
+        summary: ShortText::new("Remove build output").unwrap(),
+        expires_at: at("2030-01-02T03:05:05Z"),
+    }
+}
+
 fn pending_journal(original: &ads_core::gate::GatePolicy) -> (MemoryJournal, Command) {
     let action_id = id("action-1");
-    let approval_id = id("approval-1");
-    let plan = plan(
-        OperationRequest::Delete,
-        POSIX_ROOT,
-        &["/home/user-a/work/proj/build"],
-    );
-    let mut journal = MemoryJournal::default();
+    let mut journal = plan_journal(original);
     let mut gate = JournalGate::new(original, &mut journal);
-    let snapshot = gate.plan(action_id.clone(), &plan, meta(NOW, 1)).unwrap();
-    gate.apply(
-        &action_id,
-        Command::RequestApproval {
-            approval_id: approval_id.clone(),
-            summary: ShortText::new("Remove build output").unwrap(),
-            expires_at: at("2030-01-02T03:05:05Z"),
-        },
-        event_meta(1, 'C'),
-    )
-    .unwrap();
+    let snapshot = gate
+        .apply(&action_id, request_approval(), event_meta(1, 'C'))
+        .unwrap();
     let grant = Command::Grant {
         action_id,
-        approval_id,
+        approval_id: id("approval-1"),
         plan_hash: snapshot.plan_hash,
         via: Via::LocalUi,
     };
     (journal, grant)
+}
+
+#[test]
+fn changed_policy_refuses_to_request_approval() {
+    let original = policy(POSIX_HOME, "approval_item_limit = 1");
+    let changed = policy(
+        POSIX_HOME,
+        "approval_item_limit = 1\nquarantine_enabled = false",
+    );
+    let action_id = id("action-1");
+    let mut journal = plan_journal(&original);
+
+    let mut gate = JournalGate::new(&changed, &mut journal);
+    assert_eq!(
+        gate.apply(&action_id, request_approval(), event_meta(1, 'C')),
+        Err(JournalError::PolicyChanged)
+    );
+    assert_eq!(gate.inspect(&action_id).unwrap().state, State::Planned);
+    assert_eq!(journal.history.as_ref().unwrap().events.len(), 1);
+    assert!(
+        JournalGate::new(&original, &mut journal)
+            .apply(&action_id, request_approval(), event_meta(1, 'C'))
+            .is_ok()
+    );
+}
+
+#[test]
+fn recorded_target_that_cannot_be_normalized_has_its_own_warning() {
+    use ads_core::gate::{PathText, PatternText, PlanHash};
+    use sha2::{Digest, Sha256};
+
+    let original = policy(POSIX_HOME, "");
+    let action_id = id("action-1");
+    let mut journal = planned_journal();
+    let history = journal.history.as_mut().unwrap();
+    let mut record = history.plan.fields().clone();
+    let target = &mut record.targets[0];
+    let old_text = target.path.as_str();
+    let path = format!("{POSIX_ROOT}/{}", "a".repeat(4095 - POSIX_ROOT.len()));
+    target.pattern = Some(PatternText::new("*").unwrap());
+    let new_text = format!("{path}/*");
+    let canonical = history.plan.canonical().replace(
+        &format!("target:0:{}:{old_text}", old_text.len()),
+        &format!("target:0:{}:{new_text}", new_text.len()),
+    );
+    target.path = PathText::new(path).unwrap();
+    record.plan_hash = PlanHash::new(format!("sha256:{:x}", Sha256::digest(canonical))).unwrap();
+    let mut first = history.events[0].to_json();
+    first["data"]["plan_hash"] = record.plan_hash.as_str().into();
+    history.events[0] = Event::from_json(first).unwrap();
+    history.plan = ActionPlanRecord::try_from(record).unwrap();
+
+    let mut gate = JournalGate::new(&original, &mut journal);
+    let snapshot = gate.inspect(&action_id).unwrap();
+    assert_eq!(snapshot.state, State::Planned);
+    assert_eq!(
+        snapshot.policy_warning,
+        Some(JournalError::PlanNormalizationFailed)
+    );
+    assert_eq!(
+        gate.authorize(&action_id, event_meta(2, 'C')),
+        Err(JournalError::PlanNormalizationFailed)
+    );
+    assert_eq!(journal.history.as_ref().unwrap().events.len(), 1);
 }
 
 #[test]
@@ -281,6 +342,38 @@ fn changed_policy_refuses_and_denies_a_pending_approval() {
     );
     let last = journal.history.as_ref().unwrap().events.last().unwrap();
     assert_eq!(last.to_json()["data"]["reason"], "E_POLICY_CHANGED");
+}
+
+#[test]
+fn changed_policy_refuses_to_start_a_planned_action() {
+    let original = policy(POSIX_HOME, "");
+    let action_id = id("action-1");
+    for changed in [
+        policy(POSIX_HOME, "approval_item_limit = 1"),
+        original.clone().with_product_paths(vec![
+            ads_core::gate::AbsPath::parse("/home/user-a/work/proj/build").unwrap(),
+        ]),
+    ] {
+        let mut journal = planned_journal();
+        let mut gate = JournalGate::new(&changed, &mut journal);
+        assert_eq!(
+            gate.authorize(&action_id, event_meta(2, 'C')),
+            Err(JournalError::PolicyChanged)
+        );
+        assert_eq!(gate.inspect(&action_id).unwrap().state, State::Failed);
+        let events = &journal.history.as_ref().unwrap().events;
+        let [Event::ActionPlanned(_), Event::ActionFailed(failure)] = events.as_slice() else {
+            panic!("expected only planning and failure events");
+        };
+        assert_eq!(
+            failure.data().error_code,
+            ErrorCode::new("E_POLICY_CHANGED").unwrap()
+        );
+        assert_eq!(
+            JournalGate::new(&original, &mut journal).authorize(&action_id, event_meta(3, 'D')),
+            Err(JournalError::Transition)
+        );
+    }
 }
 
 #[test]
