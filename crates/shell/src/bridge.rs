@@ -1,3 +1,7 @@
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::Duration;
 
 use ads_contracts::desktop_proof;
@@ -50,11 +54,36 @@ struct Connection {
     id: String,
     requests: mpsc::Sender<String>,
     task: tauri::async_runtime::JoinHandle<()>,
+    end: Ending,
 }
 
 impl Drop for Connection {
     fn drop(&mut self) {
         self.task.abort();
+        self.end.close();
+    }
+}
+
+/// Sends `Frame::Closed` once, whether the relay ends by itself or the connection is
+/// replaced, so the window never keeps a socket that will receive nothing more.
+#[derive(Clone)]
+struct Ending {
+    frames: Channel<Frame>,
+    sent: Arc<AtomicBool>,
+}
+
+impl Ending {
+    fn new(frames: Channel<Frame>) -> Self {
+        Self {
+            frames,
+            sent: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn close(&self) {
+        if !self.sent.swap(true, Ordering::AcqRel) {
+            let _ = self.frames.send(Frame::Closed);
+        }
     }
 }
 
@@ -200,11 +229,18 @@ pub(super) async fn desktop_connect(
     let socket = connect_socket(&bridge.bootstrap, &mut connection).await?;
     let smoke = bridge.smoke.then(|| window.app_handle().clone());
     let (requests, incoming) = mpsc::channel(1);
+    let end = Ending::new(frames.clone());
+    let task_end = end.clone();
     let task = tauri::async_runtime::spawn(async move {
         let _ = relay(socket, incoming, &frames, smoke).await;
-        let _ = frames.send(Frame::Closed);
+        task_end.close();
     });
-    *connection = ConnectionState::Connected(Connection { id, requests, task });
+    *connection = ConnectionState::Connected(Connection {
+        id,
+        requests,
+        task,
+        end,
+    });
     Ok(())
 }
 
@@ -395,13 +431,53 @@ mod tests {
         listener_without_valid_proof_receives_no_frames(true).await;
     }
 
+    fn counted_channel() -> (Channel<Frame>, Arc<std::sync::Mutex<Vec<String>>>) {
+        let received = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = received.clone();
+        let channel = Channel::new(move |body| {
+            if let tauri::ipc::InvokeResponseBody::Json(json) = body {
+                sink.lock().unwrap().push(json);
+            }
+            Ok(())
+        });
+        (channel, received)
+    }
+
+    fn pending_connection(id: &str, frames: Channel<Frame>) -> Connection {
+        let (requests, _) = mpsc::channel(1);
+        Connection {
+            id: id.into(),
+            requests,
+            task: tauri::async_runtime::spawn(std::future::pending()),
+            end: Ending::new(frames),
+        }
+    }
+
+    #[tokio::test]
+    async fn replaced_connection_tells_its_window_once() {
+        let (frames, received) = counted_channel();
+        let mut state = ConnectionState::Connected(pending_connection("old", frames.clone()));
+        assert!(matches!(state, ConnectionState::Connected(_)));
+        assert!(received.lock().unwrap().is_empty());
+        state = ConnectionState::Idle;
+        assert!(matches!(state, ConnectionState::Idle));
+        assert_eq!(*received.lock().unwrap(), [r#"{"kind":"closed"}"#]);
+
+        let connection = pending_connection("ended", frames);
+        connection.end.close();
+        drop(connection);
+        assert_eq!(received.lock().unwrap().len(), 2);
+    }
+
     #[tokio::test]
     async fn desktop_send_rejects_the_previous_connection_id() {
         let (requests, mut incoming) = mpsc::channel(1);
+        let (frames, _) = counted_channel();
         let state = ConnectionState::Connected(Connection {
             id: "current".into(),
             requests,
             task: tauri::async_runtime::spawn(std::future::pending()),
+            end: Ending::new(frames),
         });
         assert!(matches!(state.sender_for("previous"), Err(UNAVAILABLE)));
         state

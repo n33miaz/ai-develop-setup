@@ -150,7 +150,7 @@ Estado da mitigação, em cada risco:
 - **Impacto.** Usar essa origem como identidade da janela permitiria upgrades WebSocket de outras páginas.
 - **Dono.** Casca e daemon.
 - **Teto.** O listener desktop recusa qualquer `Origin`. Um cliente nativo ainda alcança o loopback e precisa do token da execução para comandar sessões.
-- **Mitigação existente.** O Rust autentica pelo WebSocket, mantém o token fora do JavaScript e encaminha mensagens por IPC somente à janela principal. Um teste confere a recusa de `http://tauri.localhost`.
+- **Mitigação existente.** O Rust autentica pelo WebSocket, mantém o token fora do JavaScript e encaminha mensagens por IPC somente à janela principal. Como essa conferência olha a URL do documento principal e não a origem de quem chama, a política de conteúdo da janela proíbe frames e objetos incorporados, e um teste da configuração exige essa regra. Um teste confere a recusa de `http://tauri.localhost`.
 - **Plano B.** Invalidar a credencial reiniciando o daemon. Se a restrição por janela falhar, suspender o modo desktop até corrigir a fronteira IPC.
 
 ### Outra conta ocupa a porta do daemon após a saída
