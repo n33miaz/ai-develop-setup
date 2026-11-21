@@ -4,6 +4,8 @@ Formato: uma seção por data. Contrato novo, campo opcional acrescentado, vers�
 
 ## 2026-11-20
 
+- `session.refusal_detected:1` registra, só com metadados, a recusa de um pedido ou a interrupção por filtro de segurança, com ferramenta, provedor, modelo e tipo. O modelo é um identificador curto do catálogo, nunca texto livre.
+- `session.handoff:3` acrescenta `alternative_id`, a alternativa do catálogo que o aparelho aceitou numa oferta após recusa de modelo. A `:2` continua valendo para os demais gatilhos.
 - `record.session-handoff:1` registra a passagem autorizada e `session.handoff:1` registra proposta, aceite ou recusa.
 - `session.handoff:2` exige um aparelho como autor de aceite e recusa. `record.session-handoff:2` referencia o evento de aceite em `consent.event_id`.
 - `queue.policy_changed:1` registra a política completa aprovada por um aparelho do dono para as admissões posteriores da fila.

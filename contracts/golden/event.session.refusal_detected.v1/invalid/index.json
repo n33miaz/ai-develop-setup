@@ -1,0 +1,42 @@
+{
+  "kind.json": {
+    "rule": "O tipo é recusa ou filtro de segurança.",
+    "keyword": "enum",
+    "instancePath": "/data/kind"
+  },
+  "class.json": {
+    "rule": "O evento tem classificação privada.",
+    "keyword": "const",
+    "instancePath": "/data_class"
+  },
+  "stream.json": {
+    "rule": "O evento pertence à família session.",
+    "keyword": "pattern",
+    "instancePath": "/stream"
+  },
+  "content.json": {
+    "rule": "O evento não leva texto do pedido nem da resposta.",
+    "keyword": "additionalProperties",
+    "instancePath": "/data"
+  },
+  "model.json": {
+    "rule": "O modelo é um identificador curto do catálogo, sem espaço, maiúscula nem texto livre.",
+    "keyword": "pattern",
+    "instancePath": "/data/model"
+  },
+  "model-free-text.json": {
+    "rule": "O modelo é um identificador curto do catálogo, sem espaço, maiúscula nem texto livre.",
+    "keyword": "pattern",
+    "instancePath": "/data/model"
+  },
+  "model-credential.json": {
+    "rule": "O modelo é um identificador curto do catálogo, sem espaço, maiúscula nem texto livre.",
+    "keyword": "pattern",
+    "instancePath": "/data/model"
+  },
+  "model-length.json": {
+    "rule": "O modelo é um identificador curto do catálogo, sem espaço, maiúscula nem texto livre.",
+    "keyword": "pattern",
+    "instancePath": "/data/model"
+  }
+}

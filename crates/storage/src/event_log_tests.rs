@@ -18,7 +18,7 @@ const SENTINEL: &str = "private-sentinel-5f2e9c1d";
 const CLEAR_MARKER: &str = "clear-actor-marker-81b3";
 
 #[derive(Clone, Default)]
-struct MemoryAnchor(std::sync::Arc<std::sync::Mutex<MemoryAnchorState>>);
+pub(crate) struct MemoryAnchor(std::sync::Arc<std::sync::Mutex<MemoryAnchorState>>);
 
 #[derive(Default)]
 struct MemoryAnchorState {
@@ -485,12 +485,12 @@ fn sibling(path: &Path, suffix: &str) -> PathBuf {
 }
 
 /// Current key plus older keys still available for reading.
-struct Keys {
+pub(crate) struct Keys {
     current: (&'static str, u8),
     older: Vec<(&'static str, u8)>,
 }
 
-fn keys(id: &'static str, byte: u8) -> Box<Keys> {
+pub(crate) fn keys(id: &'static str, byte: u8) -> Box<Keys> {
     Box::new(Keys {
         current: (id, byte),
         older: vec![],
@@ -668,7 +668,7 @@ fn tamper_with(path: &Path, change: impl FnOnce(&Connection)) {
 }
 
 /// `tamper_with` for one statement that must change exactly one row.
-fn tamper(path: &Path, sql: &str, blob: Option<Vec<u8>>) {
+pub(crate) fn tamper(path: &Path, sql: &str, blob: Option<Vec<u8>>) {
     tamper_with(path, |c| {
         match blob {
             Some(bytes) => assert_eq!(c.execute(sql, [bytes]).unwrap(), 1),
@@ -677,7 +677,7 @@ fn tamper(path: &Path, sql: &str, blob: Option<Vec<u8>>) {
     });
 }
 
-fn data_ct(path: &Path, position: i64) -> Vec<u8> {
+pub(crate) fn data_ct(path: &Path, position: i64) -> Vec<u8> {
     Connection::open(path)
         .unwrap()
         .query_row(
@@ -2657,5 +2657,44 @@ mod gate_journal {
             "{results:?}"
         );
         assert_eq!(anchored(&path, &anchor).unwrap().verify_chain(), Ok(4));
+    }
+
+    #[test]
+    fn queue_and_gate_events_share_one_anchored_log() {
+        let path = fixture();
+        let anchor = MemoryAnchor::default();
+        let mut log = anchored(&path, &anchor).unwrap();
+        let queue = |seq: u64, n: u64, kind: &str, data: serde_json::Value| EventEnvelopeV1 {
+            r#type: EventEnvelopeV1Type::new(format!("urn:ads:event:queue.{kind}")).unwrap(),
+            ..event("queue/q1", seq, n, data)
+        };
+        let created = queue(
+            1,
+            20,
+            "created:1",
+            serde_json::json!({
+                "queue_id": "q1", "owner_id": "owner-01", "via": "local_ui", "state": "stopped"
+            }),
+        );
+        log.append(&created).unwrap();
+        let (action_id, _) = approved(&mut log);
+        let enabled = queue(
+            2,
+            21,
+            "enabled:1",
+            serde_json::json!({ "queue_id": "q1", "owner_id": "owner-01", "via": "local_ui" }),
+        );
+        log.append(&enabled).unwrap();
+        JournalGate::new(&policy(), &mut log)
+            .authorize(&action_id, meta(2, 4))
+            .unwrap();
+        let read: Vec<_> = log
+            .read_queue(&CommonIdV1::new("q1").unwrap())
+            .unwrap()
+            .into_iter()
+            .map(|stored| stored.event)
+            .collect();
+        assert_eq!(read, vec![created, enabled]);
+        assert_eq!(anchored(&path, &anchor).unwrap().verify_chain(), Ok(6));
     }
 }

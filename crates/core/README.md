@@ -14,7 +14,9 @@ O [roteador](src/routing.rs) interpreta [routing.toml](../../defaults/routing.to
 
 `handoff` avalia os gatilhos da [ADR 0027](../../docs/adr/0027-session-handoff.md), calcula o próximo nome com o instante UTC recebido e valida a cadeia completa, da primeira passagem em diante. Valida vínculos consecutivos, continuidade da sessão de origem, linhagem, sequência sem saltos e unicidade dos identificadores de passagem e de sessão.
 
-As opções em [`defaults/handoff.toml`](../../defaults/handoff.toml) podem ser trocadas ao carregar outra política. Quem chama fornece a medição, quando disponível, e verifica o consentimento para a passagem específica. Em `propose`, o aceite autoriza a continuidade. Para troca de conta, quem chama aplica primeiro a política da ADR 0022. A decisão do núcleo não abre sessões.
+As opções em [`defaults/handoff.toml`](../../defaults/handoff.toml) podem ser trocadas ao carregar outra política. Quem chama fornece a medição, quando disponível, e verifica o consentimento para a passagem específica. Nos dois modos ativos, o aceite autoriza a continuidade; a recusa de modelo nunca segue sem ele. Para troca de conta, quem chama aplica primeiro a política da ADR 0022. A decisão do núcleo não abre sessões.
+
+[`refusal`](src/refusal.rs) monta a oferta de outro modelo após recusa ou filtro de segurança, a partir dos eventos `session.refusal_detected:1` do mesmo trabalho. Usa a ordem e as regras do roteador e a cota observada, nunca repete ferramenta e modelo que já recusaram e não oferece nada com orçamento parado, passagem em `off` ou [`defaults/refusal.toml`](../../defaults/refusal.toml) desligado. A rota só é aceita com um evento `accepted` de `session.handoff:3` para a mesma passagem e sessão, emitido por um aparelho que o registro de aparelhos atribui ao dono da linhagem no instante do aceite (como no replay da fila), e que nomeia em `alternative_id` uma das alternativas oferecidas; outra rota que não a aceita é recusada. `detected` monta o evento de recusa só para ferramenta, provedor e modelo do catálogo. O núcleo não detecta a recusa nem abre a sessão.
 
 ## Fila contínua
 
@@ -30,6 +32,8 @@ Na partida, `restore_running_task` decide o destino da tarefa cujo último estad
 - `Cancel`: a contagem é inconsistente (zero ou acima do teto). A tarefa passa para `cancelled` com a contagem gravada, e o chamador encerra o processo se o host o manteve ou o listar depois.
 
 Hoje o daemon não adota sessões antigas ao reiniciar, então `Kept` ainda não acontece na prática.
+
+O armazenamento devolve o stream como envelopes (`EventLog::read_queue`). `QueueStreamEvent::from_envelope` lê cada um no contrato do seu tipo, entre as dez versões que o replay aceita, e recusa tipo desconhecido (`UnknownType`) ou envelope fora do contrato (`Invalid`); `as_log` entrega a forma emprestada que o replay lê.
 
 O replay (`replay_task`) recebe o stream inteiro da fila, a partir de `queue.created` com `seq` 1 e sem buraco, uma consulta ao cadastro de aparelhos no instante de cada evento, e a política inicial, quando disponível. Ele devolve o estado, o saldo, a última âncora e a política vigente, ou o motivo da recusa (`ReplayRefusal`). Além da ordem e do saldo, ele confere:
 - todo evento é da fila e do stream `queue/<id>`;

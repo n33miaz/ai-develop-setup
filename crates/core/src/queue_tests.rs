@@ -324,36 +324,7 @@ fn ts(text: &str) -> CommonTimestampV1 {
 const DAEMON: (&str, &str) = ("daemon", "core-01");
 const OWNER_DEVICE: (&str, &str) = ("device", "device-01");
 
-/// Typed event of the queue stream, owned by the test.
-enum Owned {
-    Created(EventQueueCreatedV1),
-    Enabled(EventQueueEnabledV1),
-    Stopped(EventQueueStoppedV1),
-    ClockReanchored(EventQueueClockReanchoredV1),
-    PolicyChanged(EventQueuePolicyChangedV1),
-    TaskCreated(EventQueueTaskCreatedV1),
-    TaskCreatedV2(EventQueueTaskCreatedV2),
-    TaskCreatedV3(EventQueueTaskCreatedV3),
-    Changed(EventQueueTaskStateChangedV1),
-    ChangedV2(EventQueueTaskStateChangedV2),
-}
-
-impl Owned {
-    fn as_log(&self) -> QueueLogEvent<'_> {
-        match self {
-            Self::Created(event) => QueueLogEvent::Created(event),
-            Self::Enabled(event) => QueueLogEvent::Enabled(event),
-            Self::Stopped(event) => QueueLogEvent::Stopped(event),
-            Self::ClockReanchored(event) => QueueLogEvent::ClockReanchored(event),
-            Self::PolicyChanged(event) => QueueLogEvent::PolicyChanged(event),
-            Self::TaskCreated(event) => QueueLogEvent::TaskCreated(event),
-            Self::TaskCreatedV2(event) => QueueLogEvent::TaskCreatedV2(event),
-            Self::TaskCreatedV3(event) => QueueLogEvent::TaskCreatedV3(event),
-            Self::Changed(event) => QueueLogEvent::TaskStateChanged(event),
-            Self::ChangedV2(event) => QueueLogEvent::TaskStateChangedV2(event),
-        }
-    }
-}
+type Owned = QueueStreamEvent;
 
 /// The stream of queue-01 owned by owner-01, as JSON until `numbered` gives each event its
 /// `seq` (from 1) and an instant `seq` seconds after 03:04:00.
@@ -496,38 +467,8 @@ fn typed(values: Vec<serde_json::Value>) -> Vec<Owned> {
     values
         .into_iter()
         .map(|value| {
-            let kind = value["type"].as_str().unwrap().to_owned();
-            let parse = || value.clone();
-            match kind.as_str() {
-                "urn:ads:event:queue.created:1" => {
-                    Owned::Created(serde_json::from_value(parse()).unwrap())
-                }
-                "urn:ads:event:queue.enabled:1" => {
-                    Owned::Enabled(serde_json::from_value(parse()).unwrap())
-                }
-                "urn:ads:event:queue.stopped:1" => {
-                    Owned::Stopped(serde_json::from_value(parse()).unwrap())
-                }
-                "urn:ads:event:queue.clock_reanchored:1" => {
-                    Owned::ClockReanchored(serde_json::from_value(parse()).unwrap())
-                }
-                "urn:ads:event:queue.policy_changed:1" => {
-                    Owned::PolicyChanged(serde_json::from_value(parse()).unwrap())
-                }
-                "urn:ads:event:queue.task_created:1" => {
-                    Owned::TaskCreated(serde_json::from_value(parse()).unwrap())
-                }
-                "urn:ads:event:queue.task_created:2" => {
-                    Owned::TaskCreatedV2(serde_json::from_value(parse()).unwrap())
-                }
-                "urn:ads:event:queue.task_created:3" => {
-                    Owned::TaskCreatedV3(serde_json::from_value(parse()).unwrap())
-                }
-                "urn:ads:event:queue.task_state_changed:2" => {
-                    Owned::ChangedV2(serde_json::from_value(parse()).unwrap())
-                }
-                _ => Owned::Changed(serde_json::from_value(parse()).unwrap()),
-            }
+            let envelope: EventEnvelopeV1 = serde_json::from_value(value).unwrap();
+            QueueStreamEvent::from_envelope(&envelope).unwrap()
         })
         .collect()
 }
@@ -1864,4 +1805,79 @@ fn task_change_channel_rules_are_versioned() {
 
     legacy[4] = cancelled;
     assert_eq!(replay_values(legacy), Ok((Cancelled, 1)));
+}
+
+#[test]
+fn every_queue_event_version_decodes_from_its_envelope() {
+    let goldens = [
+        include_str!("../../../contracts/golden/event.queue.created.v1/valid/01-base.json"),
+        include_str!("../../../contracts/golden/event.queue.enabled.v1/valid/01-base.json"),
+        include_str!("../../../contracts/golden/event.queue.stopped.v1/valid/04-restart.json"),
+        include_str!(
+            "../../../contracts/golden/event.queue.clock_reanchored.v1/valid/01-base.json"
+        ),
+        include_str!(
+            "../../../contracts/golden/event.queue.policy_changed.v1/valid/02-lowered-limits.json"
+        ),
+        include_str!("../../../contracts/golden/event.queue.task_created.v1/valid/01-base.json"),
+        include_str!("../../../contracts/golden/event.queue.task_created.v2/valid/01-base.json"),
+        include_str!("../../../contracts/golden/event.queue.task_created.v3/valid/01-base.json"),
+        include_str!(
+            "../../../contracts/golden/event.queue.task_state_changed.v1/valid/01-base.json"
+        ),
+        include_str!(
+            "../../../contracts/golden/event.queue.task_state_changed.v2/valid/01-start.json"
+        ),
+    ];
+    for golden in goldens {
+        let envelope: EventEnvelopeV1 = serde_json::from_str(golden).unwrap();
+        let decoded = QueueStreamEvent::from_envelope(&envelope).unwrap();
+        assert_eq!(decoded.as_log().stream(), envelope.stream.as_str());
+        assert_eq!(decoded.as_log().seq(), envelope.seq.get());
+    }
+
+    let mut envelope: EventEnvelopeV1 = serde_json::from_str(goldens[0]).unwrap();
+    envelope.r#type =
+        ads_contracts::EventEnvelopeV1Type::new("urn:ads:event:queue.created:9").unwrap();
+    assert_eq!(
+        QueueStreamEvent::from_envelope(&envelope),
+        Err(QueueEventRefusal::UnknownType)
+    );
+    let mut envelope: EventEnvelopeV1 = serde_json::from_str(goldens[0]).unwrap();
+    envelope.data.remove("owner_id");
+    assert_eq!(
+        QueueStreamEvent::from_envelope(&envelope),
+        Err(QueueEventRefusal::Invalid)
+    );
+    let mut envelope: EventEnvelopeV1 = serde_json::from_str(goldens[0]).unwrap();
+    envelope.actor.kind = CommonActorV1Kind::Agent;
+    assert_eq!(
+        QueueStreamEvent::from_envelope(&envelope),
+        Err(QueueEventRefusal::Invalid)
+    );
+}
+
+/// The stream as the storage hands it back after a reopen: envelopes, replayed after decoding,
+/// with the owner lowering the policy below what the history already holds.
+#[test]
+fn a_stored_queue_replays_after_the_policy_is_lowered() {
+    let lowered = one_manual();
+    let values = Stream::new()
+        .policy_changed(&policy())
+        .enabled(OWNER_DEVICE)
+        .admit("task-01", 2)
+        .admit("task-02", 2)
+        .change(DAEMON, "queued", "running", 1)
+        .policy_changed(&lowered)
+        .numbered();
+    let events: Vec<QueueStreamEvent> = values
+        .into_iter()
+        .map(|value| {
+            let envelope: EventEnvelopeV1 = serde_json::from_value(value).unwrap();
+            QueueStreamEvent::from_envelope(&envelope).unwrap()
+        })
+        .collect();
+    let restored = replay_with_policy(&events, None).unwrap();
+    assert_eq!((restored.state, restored.attempts), (Running, 1));
+    assert_eq!(restored.policy, lowered);
 }

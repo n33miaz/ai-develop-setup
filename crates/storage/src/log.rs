@@ -111,6 +111,7 @@ fn gate_ids(
     if (gate(type_family) || gate(stream_family)) && type_family != stream_family {
         return Err(StorageError::InvalidEvent);
     }
+    crate::queue::check_binding(type_family, stream_family, entity, data)?;
     let id = |name: &str| match data.get(name) {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(text)) if CommonIdV1::new(text.as_str()).is_ok() => {
@@ -684,8 +685,12 @@ impl EventLog {
     /// rotated); give this provider the key and reopen.
     /// `Constraint`: the database refused the row (repeated `id`, or a trigger);
     /// do not retry unchanged. `InvalidEvent`: `type` or stream family over its
-    /// bound, or a gate event whose `action_id`/`approval_id` disagree with its
-    /// stream. `TooLarge`: `data` over `max_event_bytes`. `WrongKey`: the provider
+    /// bound, a gate event whose `action_id`/`approval_id` disagree with its
+    /// stream, or a queue event outside `queue/<data.queue_id>` (and back).
+    /// `QueueFull`: the queue stream already holds `queue_max_events` events
+    /// (one `queue.stopped:1` still enters); raise `queue_max_events` and reopen,
+    /// or create another queue. `Full`: the disk is full; free space and retry.
+    /// `TooLarge`: `data` over `max_event_bytes`. `WrongKey`: the provider
     /// disagrees with itself or with the registered key, or tries to reuse a retired id.
     /// `ChainBroken { position: 1 }`: the log has no genesis for the first row.
     pub fn append(&mut self, event: &EventEnvelopeV1) -> Result<Position, StorageError> {
@@ -742,7 +747,7 @@ impl EventLog {
         if gate.is_some() && self.anchor.is_none() {
             return Err(StorageError::AnchorUnavailable);
         }
-        let position = insert_in(&tx, event, sealing, gate.as_ref())?;
+        let position = insert_in(&tx, event, sealing, gate.as_ref(), &self.config)?;
         if let Some((anchor, database)) = database {
             // Publish under the SQLite writer lock. A failed SQLite commit leaves a
             // mismatch that requires owner recovery instead of accepting an older head.
@@ -914,6 +919,7 @@ fn insert_in(
     event: &EventEnvelopeV1,
     sealing: Sealing,
     gate: Option<&GateAppend<'_>>,
+    config: &StorageConfig,
 ) -> Result<i64, StorageError> {
     let Sealing {
         action_id,
@@ -945,6 +951,9 @@ fn insert_in(
     }
     if seq != head_in(tx, stream)? + 1 {
         return Err(StorageError::Conflict);
+    }
+    if !crate::queue::within_cap(tx, kind, stream, seq, config)? {
+        return Err(StorageError::QueueFull);
     }
     let last: Option<(i64, Vec<u8>, String)> = tx
         .query_row(
@@ -1142,7 +1151,7 @@ impl EventLog {
         };
         let sealed =
             sealing(&*self.keys, &self.config, &envelope, Some(&gate)).map_err(journal_error)?;
-        insert_in(&tx, &envelope, sealed, Some(&gate)).map_err(journal_error)?;
+        insert_in(&tx, &envelope, sealed, Some(&gate), &self.config).map_err(journal_error)?;
         let head = commitment(&tx).map_err(journal_error)?;
         anchor.store(database, &head).map_err(journal_error)?;
         tx.commit().map_err(|error| journal_error(error.into()))
@@ -1637,6 +1646,28 @@ mod tests {
         // cannot compute the link.
         assert_ne!(first.chain, second.chain);
         assert!(!chain_ok(&second));
+    }
+
+    #[test]
+    fn a_queue_row_naming_another_queue_is_refused_on_read() {
+        let queue_row = || Row {
+            kind: "urn:ads:event:queue.created:1".into(),
+            stream: "queue/q1".into(),
+            action_id: None,
+            approval_id: None,
+            ..row()
+        };
+        let mut good = queue_row();
+        seal(&mut good, &TwoKeys(1), br#"{"queue_id":"q1"}"#);
+        good.envelope(&open(&good).unwrap()).unwrap();
+        // Sealed by a key holder: the cipher and the chain pass, the binding does not.
+        for data in [&br#"{"queue_id":"q2"}"#[..], br#"{}"#, br#"{"queue_id":1}"#] {
+            let mut liar = queue_row();
+            seal(&mut liar, &TwoKeys(1), data);
+            assert!(chain_ok(&liar));
+            let plain = open(&liar).unwrap();
+            assert_eq!(liar.envelope(&plain).unwrap_err(), StorageError::Tampered);
+        }
     }
 
     #[test]
