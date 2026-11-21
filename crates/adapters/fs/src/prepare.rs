@@ -3,7 +3,7 @@
 
 use ads_core::gate::{
     AbsPath, ActionPlan, Decision, Estimate, ExecutionPermit, GatePolicy, Operation,
-    OperationRequest, PlanRequest, Rule, TargetRequest, classify,
+    OperationRequest, PlanRequest, Rule, TargetRequest, classify, may_name,
 };
 
 use crate::fence::{Fence, Kind};
@@ -13,7 +13,7 @@ use crate::manifest::{
 };
 use crate::reason::{Reason, Stop};
 use crate::report::{Effect, Laid, Report, Scaffold, Staged, Status, Step};
-use crate::survey::{Facts, Seen, survey, total};
+use crate::survey::{Facts, Seen, list, open_listed, survey, total};
 use crate::sys;
 
 /// One mutation of the plan, on names below the fence.
@@ -131,7 +131,6 @@ struct Target {
     rel: Vec<String>,
     seen: Seen,
     facts: Facts,
-    declared_repo_root: bool,
 }
 
 fn join(base: &[String], more: &[String]) -> Vec<String> {
@@ -220,35 +219,19 @@ pub(crate) fn prepare(
     // Every name down to the work root has to be a folder; a link is refused.
     fence.open_dir(&work)?;
 
-    let mut targets = Vec::new();
-    for target in plan.targets() {
-        let scope = target.path().scope();
-        if target.path().pattern().is_some() {
-            return Err(Stop::new(
-                Reason::Unsupported,
-                format!("{} is a wildcard target", target.path()),
-            ));
-        }
-        let rel = fence.relative(scope)?;
-        if !scope.is_strictly_within(work_root)
-            || rel.len() <= work.len()
-            || !starts_with(&rel, &work)
-        {
-            return Err(Stop::new(
-                Reason::OutsideWorkRoot,
-                format!("{scope} is not strictly inside the work root"),
-            ));
-        }
-        let (_, entry) = fence.existing(&rel)?;
-        let (seen, facts) = survey(fence, &entry, &rel, limits.max_depth)?;
-        targets.push(Target {
-            text: scope.to_string(),
-            rel,
-            seen,
-            facts,
-            declared_repo_root: target.is_repo_root(),
-        });
+    let targets = inspect_targets(fence, limits, plan, &work)?;
+    check_facts(fence, policy, permit, declared.decision(), &targets)?;
+    if let Some(wildcard) = plan
+        .targets()
+        .iter()
+        .find(|target| target.path().pattern().is_some())
+    {
+        return Err(Stop::new(
+            Reason::Unsupported,
+            format!("{} is a wildcard target", wildcard.path()),
+        ));
     }
+
     for (at, one) in targets.iter().enumerate() {
         for other in &targets[at + 1..] {
             if starts_with(&one.rel, &other.rel) || starts_with(&other.rel, &one.rel) {
@@ -259,8 +242,6 @@ pub(crate) fn prepare(
             }
         }
     }
-
-    check_facts(policy, permit, declared.decision(), &targets)?;
 
     let quarantine = policy.quarantine_root(work_root);
     let job = build_job(fence, policy, limits, permit, work, &targets, &quarantine)?;
@@ -363,17 +344,102 @@ fn build_job(
     }
 }
 
-/// Judges the plan again with what is on disk in place of what was declared. A stricter
-/// answer, or more than what an approval was given for, refuses the execution.
-fn check_facts(
-    policy: &GatePolicy,
-    permit: &ExecutionPermit,
-    declared: Decision,
-    targets: &[Target],
-) -> Result<(), Stop> {
-    let plan = permit.plan();
-    let (items, bytes) = total(targets.iter().map(|target| &target.facts))?;
-    let real = Estimate { items, bytes };
+fn inspect_targets(
+    fence: &Fence,
+    limits: &Limits,
+    plan: &ActionPlan,
+    work: &[String],
+) -> Result<Vec<Target>, Stop> {
+    let mut targets = Vec::new();
+    for target in plan.targets() {
+        let scope = target.path().scope();
+        let rel = fence.relative(scope)?;
+        if !scope.is_strictly_within(plan.work_root())
+            || rel.len() <= work.len()
+            || !starts_with(&rel, work)
+        {
+            return Err(Stop::new(
+                Reason::OutsideWorkRoot,
+                format!("{scope} is not strictly inside the work root"),
+            ));
+        }
+        let mut inspect = |rel: Vec<String>, entry: crate::fence::Entry| {
+            let (seen, facts) = survey(fence, &entry, &rel, limits.max_depth)?;
+            targets.push(Target {
+                text: fence.text_of(&rel),
+                rel,
+                seen,
+                facts,
+            });
+            Ok::<_, Stop>(())
+        };
+        if let Some(pattern) = target.path().pattern() {
+            let dir = fence.open_dir(&rel)?;
+            for name in list(fence, &dir, &rel)? {
+                if may_name(pattern, &name) {
+                    let path = child(&rel, &name);
+                    let entry = open_listed(fence, &dir, &path, &name)?;
+                    inspect(path, entry)?;
+                }
+            }
+        } else {
+            let (_, entry) = fence.existing(&rel)?;
+            inspect(rel, entry)?;
+        }
+    }
+    Ok(targets)
+}
+
+fn repository_targets(
+    fence: &Fence,
+    rel: &mut Vec<String>,
+    seen: &Seen,
+    targets: &mut Vec<TargetRequest>,
+) {
+    let metadata = |name: &str| name.eq_ignore_ascii_case(".git");
+    let repo_root = seen.children.keys().any(|name| metadata(name));
+    let is_metadata = rel.last().is_some_and(|name| metadata(name));
+    if repo_root || is_metadata {
+        targets.push(TargetRequest {
+            path: fence.text_of(rel),
+            repo_root,
+        });
+    }
+    // The repository marker itself is protected as a whole.
+    if !is_metadata {
+        for (name, entry) in &seen.children {
+            rel.push(name.clone());
+            repository_targets(fence, rel, entry, targets);
+            rel.pop();
+        }
+    }
+}
+
+fn with_repository_targets(
+    fence: &Fence,
+    plan: &ActionPlan,
+    inspected: &[Target],
+    estimate: Option<Estimate>,
+) -> Result<ActionPlan, Stop> {
+    let mut targets = plan
+        .targets()
+        .iter()
+        .map(|target| TargetRequest {
+            path: target.path().to_string(),
+            repo_root: target.is_repo_root(),
+        })
+        .collect::<Vec<_>>();
+    for target in inspected {
+        if target.facts.repo_root
+            || target.facts.nested_repo
+            || target
+                .rel
+                .last()
+                .is_some_and(|name| name.eq_ignore_ascii_case(".git"))
+        {
+            repository_targets(fence, &mut target.rel.clone(), &target.seen, &mut targets);
+        }
+    }
     let request = PlanRequest {
         operation: match plan.operation() {
             Operation::Delete => OperationRequest::Delete,
@@ -384,18 +450,42 @@ fn check_facts(
                 destination: destination.to_string(),
             },
         },
-        targets: targets
-            .iter()
-            .map(|target| TargetRequest {
-                path: target.text.clone(),
-                repo_root: target.declared_repo_root || target.facts.repo_root,
-            })
-            .collect(),
+        targets,
         work_root: plan.work_root().to_string(),
-        estimate: Some(real),
+        estimate,
     };
-    let real_plan = ActionPlan::normalize(&request)
-        .map_err(|error| Stop::caused_by(Reason::FactsContradictPlan, error))?;
+    ActionPlan::normalize(&request)
+        .map_err(|error| Stop::caused_by(Reason::FactsContradictPlan, error))
+}
+
+/// Supplies facts for the plan that will be saved to the journal. Execution checks again.
+pub(crate) fn observe_plan(
+    fence: &Fence,
+    policy: &GatePolicy,
+    limits: &Limits,
+    plan: &ActionPlan,
+) -> Result<ActionPlan, Stop> {
+    if classify(plan, policy).decision() == Decision::Denied {
+        return Ok(plan.clone());
+    }
+    let work = fence.relative(plan.work_root())?;
+    fence.open_dir(&work)?;
+    let targets = inspect_targets(fence, limits, plan, &work)?;
+    with_repository_targets(fence, plan, &targets, plan.estimate())
+}
+
+/// Judges the plan again with the facts on disk.
+fn check_facts(
+    fence: &Fence,
+    policy: &GatePolicy,
+    permit: &ExecutionPermit,
+    declared: Decision,
+    targets: &[Target],
+) -> Result<(), Stop> {
+    let plan = permit.plan();
+    let (items, bytes) = total(targets.iter().map(|target| &target.facts))?;
+    let real = Estimate { items, bytes };
+    let real_plan = with_repository_targets(fence, plan, targets, Some(real))?;
     let judged = classify(&real_plan, policy);
     if judged.decision() > declared {
         let codes: Vec<String> = judged

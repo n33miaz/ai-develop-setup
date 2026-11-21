@@ -3,13 +3,13 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use ads_core::gate::{AbsPath, Event, ExecutionPermit, GatePolicy, StartedExecution};
+use ads_core::gate::{AbsPath, ActionPlan, Event, ExecutionPermit, GatePolicy, StartedExecution};
 
 use crate::disk::{Disk, Probe};
 use crate::fence::{Fence, FenceError};
 use crate::journal::Journal;
 use crate::limits::Limits;
-use crate::prepare::prepare;
+use crate::prepare::{observe_plan, prepare};
 use crate::reason::{Reason, Stop};
 use crate::report::{Completed, Failure, Report};
 use crate::survey::{Facts, survey};
@@ -93,6 +93,11 @@ impl Executor {
         }
         let (_, entry) = self.fence.existing(&rel)?;
         Ok(survey(&self.fence, &entry, &rel, self.limits.max_depth)?.1)
+    }
+
+    /// Inspects the requested targets before the daemon records its plan.
+    pub fn observe_plan(&self, plan: &ActionPlan) -> Result<ActionPlan, Stop> {
+        observe_plan(&self.fence, &self.policy, &self.limits, plan)
     }
 
     /// Goes through every check of an execution and says what would be done, changing
