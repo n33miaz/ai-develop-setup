@@ -28,6 +28,8 @@ pub use manifest::{ITEMS_DIR, ItemKind, MANIFEST_NAME, MANIFEST_VERSION, Manifes
 pub use reason::{Reason, Stop};
 pub use report::{Completed, Effect, Failure, Laid, Report, Scaffold, Stage, Staged, Status, Step};
 pub use survey::Facts;
+#[cfg(windows)]
+pub use sys::NtStatusError;
 
 #[cfg(test)]
 mod tests {
