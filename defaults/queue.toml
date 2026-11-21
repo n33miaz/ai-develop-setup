@@ -1,8 +1,10 @@
+# Padrão embutido para a política inicial de filas novas.
+
 # Tentativas por tarefa, incluindo a primeira. O contrato aceita de 1 a 10.
 attempt_limit = 2
 
 # Total de origens admitidas por fila, inclusive as tarefas encerradas. Ao atingi-lo, a fila só
-# volta a admitir se este valor subir.
+# volta a admitir se o dono gravar uma política com um limite maior.
 admission_limit = 1000
 
 # Janela móvel, em segundos, dos três limites abaixo. Eles se liberam sozinhos com o tempo.

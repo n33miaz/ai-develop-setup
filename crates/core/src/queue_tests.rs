@@ -30,7 +30,7 @@ fn queue_changes_require_the_authenticated_owner_and_enable_is_local() {
     let owner = device("device-01", "owner-01", LocalUi);
     let remote = device("phone-01", "owner-01", RemoteDevice);
     let other = device("device-01", "owner-02", Tray);
-    let queue = new_stopped(id("queue-01"), &owner);
+    let queue = stopped_record(id("queue-01"), &owner);
     assert_eq!(queue.state, Stopped);
     assert_eq!(queue.owner_id, id("owner-01"));
     for (device, state, refusal) in [
@@ -82,7 +82,7 @@ fn queue_changes_require_the_authenticated_owner_and_enable_is_local() {
 #[test]
 fn an_owner_stop_is_never_recorded_for_a_stopped_queue() {
     let owner = device("device-01", "owner-01", LocalUi);
-    let stopped = new_stopped(id("queue-01"), &owner);
+    let stopped = stopped_record(id("queue-01"), &owner);
     for device in [&owner, &device("phone-01", "owner-01", RemoteDevice)] {
         assert_eq!(
             change_queue_state(&stopped, Some(device), Stopped).err(),
@@ -93,10 +93,10 @@ fn an_owner_stop_is_never_recorded_for_a_stopped_queue() {
 
 #[test]
 fn the_core_channel_maps_to_each_event_via() {
-    assert_eq!(LocalUi.created_via(), EventQueueCreatedV1DataVia::LocalUi);
+    assert_eq!(LocalUi.created_via(), EventQueueCreatedV2DataVia::LocalUi);
     assert_eq!(
         RemoteDevice.created_via(),
-        EventQueueCreatedV1DataVia::RemoteDevice
+        EventQueueCreatedV2DataVia::RemoteDevice
     );
     assert_eq!(Tray.enabled_via(), Some(EventQueueEnabledV1DataVia::Tray));
     assert_eq!(RemoteDevice.enabled_via(), None);
@@ -110,7 +110,7 @@ fn the_core_channel_maps_to_each_event_via() {
 #[test]
 fn restart_and_automatic_stops_record_the_daemon_reason() {
     let owner = device("device-01", "owner-01", LocalUi);
-    let stopped = new_stopped(id("queue-01"), &owner);
+    let stopped = stopped_record(id("queue-01"), &owner);
     let enabled = change_queue_state(&stopped, Some(&owner), Enabled)
         .unwrap()
         .0;
@@ -151,7 +151,7 @@ fn restart_and_automatic_stops_record_the_daemon_reason() {
 fn task_transitions_cover_every_state_at_each_attempt_boundary() {
     let owner = device("device-01", "owner-01", LocalUi);
     let mut task = task();
-    let stopped = new_stopped(task.queue_id.clone(), &owner);
+    let stopped = stopped_record(task.queue_id.clone(), &owner);
     let queue = change_queue_state(&stopped, Some(&owner), Enabled)
         .unwrap()
         .0;
@@ -216,7 +216,7 @@ fn starting_requires_the_enabled_queue_and_acceptance_requires_its_owner() {
     let phone = device("phone-01", "owner-01", RemoteDevice);
     let other = device("device-01", "owner-02", LocalUi);
     let mut task = task();
-    let stopped = new_stopped(task.queue_id.clone(), &owner);
+    let stopped = stopped_record(task.queue_id.clone(), &owner);
     let mut enabled = change_queue_state(&stopped, Some(&owner), Enabled)
         .unwrap()
         .0;
@@ -324,10 +324,15 @@ fn ts(text: &str) -> CommonTimestampV1 {
 const DAEMON: (&str, &str) = ("daemon", "core-01");
 const OWNER_DEVICE: (&str, &str) = ("device", "device-01");
 
+fn stopped_record(id: CommonIdV1, owner: &AuthenticatedDevice) -> RecordTaskQueueV1 {
+    new_stopped(id, owner, &policy()).0
+}
+
 type Owned = QueueStreamEvent;
 
 /// The stream of queue-01 owned by owner-01, as JSON until `numbered` gives each event its
 /// `seq` (from 1) and an instant `seq` seconds after 03:04:00.
+#[derive(Clone)]
 struct Stream(Vec<serde_json::Value>);
 
 impl Stream {
@@ -366,7 +371,7 @@ impl Stream {
         let seq = self.0.len() as u64;
         let owner = device("device-01", "owner-01", LocalUi);
         let data = change_queue_policy(
-            &new_stopped(id("queue-01"), &owner),
+            &stopped_record(id("queue-01"), &owner),
             Some(&owner),
             policy,
             seq,
@@ -492,19 +497,29 @@ fn replay_with_policy(
     events: &[Owned],
     policy: Option<&QueuePolicy>,
 ) -> Result<ReplayedTask, ReplayRefusal> {
-    replay_task(
-        &id("task-01"),
-        events.iter().map(Owned::as_log),
-        registry,
-        policy,
-    )
+    let mut recorded = events.iter().map(Owned::as_log).peekable();
+    if let (Some(policy), Some(QueueLogEvent::Created(created))) =
+        (policy, recorded.peek().copied())
+    {
+        let mut envelope = serde_json::to_value(created).unwrap();
+        envelope["type"] = "urn:ads:event:queue.created:2".into();
+        envelope["data"]["policy"] = serde_json::to_value(policy.event_data()).unwrap();
+        let first = typed(vec![envelope]).pop().unwrap();
+        recorded.next();
+        return replay_task(
+            &id("task-01"),
+            std::iter::once(first.as_log()).chain(recorded),
+            registry,
+        );
+    }
+    replay_task(&id("task-01"), recorded, registry)
 }
 
 #[test]
 fn policy_changes_require_the_authenticated_owner_and_current_sequence() {
     let owner = device("device-01", "owner-01", RemoteDevice);
     let other = device("device-02", "owner-02", Tray);
-    let queue = new_stopped(id("queue-01"), &owner);
+    let queue = stopped_record(id("queue-01"), &owner);
     let configured = policy();
     for (actor, seq, refusal) in [
         (None, 5, QueueRefusal::Unauthenticated),
@@ -545,7 +560,7 @@ fn replay_requires_an_owner_policy_event_to_raise_the_ceiling() {
         replay_events(&typed(authorized.clone()), &initial)
             .unwrap()
             .policy,
-        raised
+        Some(raised)
     );
 
     let mut unauthorized = authorized;
@@ -557,15 +572,47 @@ fn replay_requires_an_owner_policy_event_to_raise_the_ceiling() {
 }
 
 #[test]
-fn replay_uses_the_creation_timestamp_and_requires_a_policy() {
-    let mut events = Stream::new().admit("task-01", 2).numbered();
-    events[1]["ts"] = "2031-01-02T03:04:02Z".into();
-    let events = typed(events);
+fn legacy_replay_preserves_task_limits_until_a_policy_is_recorded() {
+    let stream = Stream::new().admit("task-01", 3);
+    let legacy = replay_with_policy(&typed(stream.clone().numbered()), None).unwrap();
     assert_eq!(
-        replay_with_policy(&events, None),
-        Err(ReplayRefusal::MissingInitialPolicy)
+        (legacy.state, legacy.attempts, legacy.policy),
+        (Queued, 0, None)
     );
-    assert_eq!(replay_events(&events, &policy()).unwrap().state, Queued);
+
+    let configured = policy();
+    let events = stream.policy_changed(&configured).numbered();
+    let restored = replay_with_policy(&typed(events), None).unwrap();
+    assert_eq!(restored.policy, Some(configured));
+}
+
+#[test]
+fn legacy_replay_rejects_a_repeated_origin_in_the_same_workspace() {
+    let mut events = Stream::new()
+        .admit("task-01", 2)
+        .admit("task-02", 2)
+        .numbered();
+    events[2]["data"]["origin"] = events[1]["data"]["origin"].clone();
+    assert_eq!(
+        replay_with_policy(&typed(events.clone()), None),
+        Err(ReplayRefusal::Admission(AdmissionRefusal::OriginRepeated))
+    );
+
+    events[2]["data"]["workspace_alias"] = "site".into();
+    assert!(replay_with_policy(&typed(events), None).is_ok());
+}
+
+#[test]
+fn legacy_stream_rejects_an_unreadable_admission_timestamp_at_decode() {
+    let mut events = Stream::new().admit("task-01", 2).numbered();
+    let admission = events.pop().unwrap();
+    assert!(
+        replay_with_policy(&typed(vec![events.pop().unwrap(), admission.clone()]), None).is_ok()
+    );
+
+    let mut unreadable = admission;
+    unreadable["ts"] = "2030-02-30T03:04:05Z".into();
+    assert!(serde_json::from_value::<EventEnvelopeV1>(unreadable).is_err());
 }
 
 #[test]
@@ -681,7 +728,7 @@ fn replay_recovers_a_running_task_after_limits_are_lowered() {
     let events = typed(Stream(stream.0.clone()).numbered());
     let restored = replay_with_policy(&events, None).unwrap();
     assert_eq!((restored.state, restored.attempts), (Running, 1));
-    assert_eq!(restored.policy, lowered);
+    assert_eq!(restored.policy, Some(lowered));
 
     let events = typed(stream.admit("task-03", 2).numbered());
     assert_eq!(
@@ -1126,7 +1173,7 @@ fn a_running_task_waits_for_the_host_and_is_abandoned_after_the_deadline() {
     let (state, attempts) = replay_values(values.clone()).unwrap();
     assert_eq!((state, attempts), (Cancelled, 1));
     task.state = state;
-    let mut queue = new_stopped(id("queue-01"), &device("device-01", "owner-01", LocalUi));
+    let mut queue = stopped_record(id("queue-01"), &device("device-01", "owner-01", LocalUi));
     queue.state = Enabled;
     assert_eq!(next_attempt_count(&queue, &task, Queued, None), None);
     assert_eq!(next_attempt_count(&queue, &task, Running, None), None);
@@ -1149,7 +1196,7 @@ fn restart_uses_a_persisted_v1_snapshot_and_its_log() {
         "../../../contracts/golden/record.queue-task.v1/valid/01-base.json"
     ))
     .unwrap();
-    let mut queue = new_stopped(id("queue-01"), &device("device-01", "owner-01", LocalUi));
+    let mut queue = stopped_record(id("queue-01"), &device("device-01", "owner-01", LocalUi));
     queue.state = Enabled;
     assert_eq!(
         next_attempt_count(&queue, &saved, Running, None)
@@ -1473,7 +1520,7 @@ fn one_manual() -> QueuePolicy {
 /// owner-01 re-anchors queue-01 from device-01 at `at`, through `seq`, the last of the stream.
 fn owner_anchor(at: &str, seq: u64) -> ClockAnchor {
     let owner = device("device-01", "owner-01", Tray);
-    let queue = new_stopped(id("queue-01"), &owner);
+    let queue = stopped_record(id("queue-01"), &owner);
     reanchor_admission_clock(&queue, Some(&owner), &ts(at), seq, seq).unwrap()
 }
 
@@ -1491,7 +1538,7 @@ fn admit_anchored(
 fn the_owner_reanchors_the_queue_after_the_core_clock_ran_ahead() {
     use AdmissionRefusal::{BehindLastAdmission, ForeignAnchor, OriginRepeated, WindowFull};
     let owner = device("device-01", "owner-01", Tray);
-    let queue = new_stopped(id("queue-01"), &owner);
+    let queue = stopped_record(id("queue-01"), &owner);
     let policy = windowed();
     // Admitted while the core clock read 2031, then the clock is corrected.
     let ahead = manual_at("task-01", "2031-06-01T00:00:00Z", 2);
@@ -1811,6 +1858,7 @@ fn task_change_channel_rules_are_versioned() {
 fn every_queue_event_version_decodes_from_its_envelope() {
     let goldens = [
         include_str!("../../../contracts/golden/event.queue.created.v1/valid/01-base.json"),
+        include_str!("../../../contracts/golden/event.queue.created.v2/valid/01-base.json"),
         include_str!("../../../contracts/golden/event.queue.enabled.v1/valid/01-base.json"),
         include_str!("../../../contracts/golden/event.queue.stopped.v1/valid/04-restart.json"),
         include_str!(
@@ -1880,7 +1928,7 @@ fn a_stored_queue_replays_after_the_policy_is_lowered() {
         .collect();
     let restored = replay_with_policy(&events, None).unwrap();
     assert_eq!((restored.state, restored.attempts), (Running, 1));
-    assert_eq!(restored.policy, lowered);
+    assert_eq!(restored.policy, Some(lowered));
 }
 
 /// Turns the creation at `index` into `queue.task_created:4` with a title and a tool.
@@ -1908,7 +1956,7 @@ fn replay_queue_rebuilds_every_task_record_in_one_pass() {
     as_v4(&mut values, 5, "Conferir documentação", "tool-a");
     let events = typed(values.clone());
 
-    let queue = replay_queue(events.iter().map(Owned::as_log), registry, None).unwrap();
+    let queue = replay_queue(events.iter().map(Owned::as_log), registry).unwrap();
     let tasks = &queue.tasks;
     assert_eq!(
         tasks
@@ -1971,8 +2019,7 @@ fn replay_queue_rebuilds_every_task_record_in_one_pass() {
 
     // The one pass agrees with the replay of each task on its own.
     for task in tasks {
-        let alone =
-            replay_task(&task.id, events.iter().map(Owned::as_log), registry, None).unwrap();
+        let alone = replay_task(&task.id, events.iter().map(Owned::as_log), registry).unwrap();
         assert_eq!(
             (alone.state, alone.attempts),
             (task.state, task.attempts.get())
@@ -1996,7 +2043,7 @@ fn replay_queue_applies_the_task_checks_to_every_task() {
         Ok(Queued)
     );
     assert_eq!(
-        replay_queue(events.iter().map(Owned::as_log), registry, Some(&policy())),
+        replay_queue(events.iter().map(Owned::as_log), registry),
         Err(ReplayRefusal::QueueStopped)
     );
 
@@ -2012,11 +2059,7 @@ fn replay_queue_applies_the_task_checks_to_every_task() {
         Ok(Queued)
     );
     assert_eq!(
-        replay_queue(
-            never_created.iter().map(Owned::as_log),
-            registry,
-            Some(&policy())
-        ),
+        replay_queue(never_created.iter().map(Owned::as_log), registry),
         Err(ReplayRefusal::TaskCreation)
     );
 
@@ -2027,11 +2070,7 @@ fn replay_queue_applies_the_task_checks_to_every_task() {
     twice[2]["data"]["task_id"] = "task-01".into();
     twice[2]["data"]["origin"]["request_id"] = "request-other".into();
     assert_eq!(
-        replay_queue(
-            typed(twice).iter().map(Owned::as_log),
-            registry,
-            Some(&policy())
-        ),
+        replay_queue(typed(twice).iter().map(Owned::as_log), registry),
         Err(ReplayRefusal::TaskCreation)
     );
 
@@ -2046,24 +2085,18 @@ fn replay_queue_applies_the_task_checks_to_every_task() {
     let twice = typed(twice);
     for task in ["task-01", "task-02", "task-03"] {
         assert_eq!(
-            replay_task(
-                &id(task),
-                twice.iter().map(Owned::as_log),
-                registry,
-                Some(&policy())
-            )
-            .map(|t| t.state),
+            replay_task(&id(task), twice.iter().map(Owned::as_log), registry).map(|t| t.state),
             Err(ReplayRefusal::TaskCreation),
             "{task}"
         );
     }
     assert_eq!(
-        replay_queue(twice.iter().map(Owned::as_log), registry, Some(&policy())),
+        replay_queue(twice.iter().map(Owned::as_log), registry),
         Err(ReplayRefusal::TaskCreation)
     );
 
     let empty = typed(Stream::new().numbered());
-    let queue = replay_queue(empty.iter().map(Owned::as_log), registry, Some(&policy())).unwrap();
+    let queue = replay_queue(empty.iter().map(Owned::as_log), registry).unwrap();
     assert!(queue.tasks.is_empty());
 }
 
@@ -2096,8 +2129,7 @@ fn a_clock_rewind_never_dates_the_record_update_before_its_creation() {
         values[2]["ts"] = created.into();
         values[3]["ts"] = changed.into();
         let events = typed(values);
-        let queue =
-            replay_queue(events.iter().map(Owned::as_log), registry, Some(&policy())).unwrap();
+        let queue = replay_queue(events.iter().map(Owned::as_log), registry).unwrap();
         let task = &queue.tasks[0];
         assert_eq!(task.state, Running);
         assert_eq!(task.created_at.as_str(), created);
@@ -2113,7 +2145,7 @@ fn creation_v4_is_admitted_with_the_older_versions_and_a_v3_record_restores() {
         .numbered();
     as_v4(&mut values, 2, "Corrigir issue 42", "tool-b");
     let events = typed(values.clone());
-    let mut record = replay_queue(events.iter().map(Owned::as_log), registry, Some(&policy()))
+    let mut record = replay_queue(events.iter().map(Owned::as_log), registry)
         .unwrap()
         .tasks
         .remove(0);
@@ -2138,7 +2170,7 @@ fn creation_v4_is_admitted_with_the_older_versions_and_a_v3_record_restores() {
 #[test]
 fn the_local_owner_transition_matches_the_device_transition_on_the_local_channel() {
     let owner = device("device-01", "owner-01", LocalUi);
-    let queue = new_stopped(id("queue-01"), &owner);
+    let queue = stopped_record(id("queue-01"), &owner);
     for next in [Enabled, Stopped] {
         let mut from = queue.clone();
         from.state = if next == Enabled { Stopped } else { Enabled };

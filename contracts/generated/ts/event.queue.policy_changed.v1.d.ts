@@ -10,17 +10,7 @@ export type EventQueuePolicyChangedV1 = EventEnvelopeV1 & {
     queue_id: CommonIdV1;
     owner_id: CommonIdV1;
     via: "local_ui" | "tray" | "remote_device";
-    policy: {
-      attempt_limit: number;
-      admission_limit: number;
-      window_seconds: number;
-      window_admissions: number;
-      manual_window_admissions: number;
-      bug_rule_window_admissions: number;
-      clock_skew_seconds: number;
-      clock_rewind_seconds: number;
-      host_confirm_seconds: number;
-    };
+    policy: CommonQueuePolicyV1;
   };
   actor: {
     kind?: "device";
@@ -64,4 +54,18 @@ export interface EventEnvelopeV1 {
 export interface CommonActorV1 {
   kind: "device" | "agent" | "daemon";
   id: CommonIdV1;
+}
+/**
+ * Limites da fila. Limites de admissão e prazo de confirmação da sessão pelo host.
+ */
+export interface CommonQueuePolicyV1 {
+  attempt_limit: number;
+  admission_limit: number;
+  window_seconds: number;
+  window_admissions: number;
+  manual_window_admissions: number;
+  bug_rule_window_admissions: number;
+  clock_skew_seconds: number;
+  clock_rewind_seconds: number;
+  host_confirm_seconds: number;
 }

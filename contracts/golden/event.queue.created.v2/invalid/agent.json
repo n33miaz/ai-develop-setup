@@ -1,0 +1,30 @@
+{
+  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+  "type": "urn:ads:event:queue.created:2",
+  "ts": "2030-01-02T03:04:05Z",
+  "stream": "queue/queue-01",
+  "seq": 1,
+  "actor": {
+    "kind": "agent",
+    "id": "owner-01"
+  },
+  "cause": null,
+  "data_class": "internal",
+  "data": {
+    "queue_id": "queue-01",
+    "owner_id": "owner-01",
+    "via": "local_ui",
+    "state": "stopped",
+    "policy": {
+      "attempt_limit": 2,
+      "admission_limit": 1000,
+      "window_seconds": 3600,
+      "window_admissions": 10,
+      "manual_window_admissions": 10,
+      "bug_rule_window_admissions": 3,
+      "clock_skew_seconds": 5,
+      "clock_rewind_seconds": 300,
+      "host_confirm_seconds": 60
+    }
+  }
+}

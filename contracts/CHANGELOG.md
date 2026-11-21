@@ -4,6 +4,9 @@ Formato: uma seção por data. Contrato novo, campo opcional acrescentado, vers�
 
 ## 2026-11-21
 
+- `queue.created:2` exige a política inicial completa. A `:1` continua legível.
+- `common.queue-policy:1` define os limites usados na criação da fila e em `queue.policy_changed:1`, que mantém o formato aceito.
+
 Controle da fila pela API local.
 
 - Contratos novos (`:1`):
