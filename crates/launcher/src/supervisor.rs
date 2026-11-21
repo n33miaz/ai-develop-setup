@@ -880,6 +880,31 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_later_error_replaces_the_discard_message_but_not_its_record() {
+        let mut publication = Publication {
+            stop_pending_at_startup: true,
+            ..Publication::default()
+        };
+        publication.report("discard stale stop signal: removed stop".to_owned());
+        publication.dirty = false;
+        let failed: io::Result<()> = Err(io::Error::other("busy"));
+        assert!(
+            publication
+                .attempt("consume restart signal", failed)
+                .is_none()
+        );
+        assert_eq!(
+            publication.last_error.as_deref(),
+            Some("consume restart signal: busy")
+        );
+        assert!(publication.dirty);
+        assert!(
+            publication.stop_pending_at_startup,
+            "the discard stays recorded after the next error"
+        );
+    }
+
+    #[test]
     fn records_spawn_error_and_honors_retry_limit() {
         let mut config = config();
         config.crash_window_limit = 1;
