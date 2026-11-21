@@ -2829,4 +2829,103 @@ mod gate_journal {
             [asked[2].clone()]
         );
     }
+
+    fn pending_ids(log: &EventLog) -> Vec<Id> {
+        log.pending_approvals(10, &mut |_| true)
+            .unwrap()
+            .into_iter()
+            .map(|history| history.plan.fields().action_id.clone())
+            .collect()
+    }
+
+    fn ask(log: &mut EventLog, name: &str, serial: u64) -> Id {
+        let action_id = Id::new(name).unwrap();
+        create(log, &action_id, serial);
+        JournalGate::new(&policy(), log)
+            .apply(
+                &action_id,
+                request(&Id::new(format!("approval-{name}")).unwrap()),
+                meta(1, serial + 1),
+            )
+            .unwrap();
+        action_id
+    }
+
+    #[test]
+    fn a_request_outside_the_gate_format_does_not_break_the_list() {
+        let path = fixture();
+        let anchor = MemoryAnchor::default();
+        let mut log = anchored(&path, &anchor).unwrap();
+        // An ordinary row may carry an action id while the gate has none under it.
+        log.append(&gate_event(
+            "urn:ads:event:approval.requested:2",
+            "approval/orphan-approval",
+            1,
+            1,
+            serde_json::json!({ "action_id": "orphan", "approval_id": "orphan-approval" }),
+        ))
+        .unwrap();
+        let waiting = ask(&mut log, "waiting", 10);
+        assert_eq!(pending_ids(&log), [waiting]);
+    }
+
+    #[test]
+    fn an_unreadable_gate_history_is_reported_once_and_the_walk_goes_on() {
+        let path = fixture();
+        let anchor = MemoryAnchor::default();
+        let mut log = anchored(&path, &anchor).unwrap();
+        let broken = ask(&mut log, "broken", 10);
+        // More requests than a history holds: the gate never writes them, a newer core might.
+        let requested = log.load(&broken).unwrap().events[1].to_json();
+        for extra in 0..4u64 {
+            let approval = format!("approval-extra-{extra}");
+            let mut json = requested.clone();
+            json["id"] = serde_json::json!(format!("01J{:023}", 50 + extra));
+            json["stream"] = serde_json::json!(format!("approval/{approval}"));
+            json["data"]["approval_id"] = serde_json::json!(approval);
+            let event = Event::from_json(json).unwrap();
+            GateJournal::append(&mut log, &broken, 2 + extra as usize, &event).unwrap();
+        }
+        let waiting = ask(&mut log, "waiting", 20);
+
+        let mut seen = Vec::new();
+        log.visit_pending_approvals(10, &mut |entry, _| {
+            seen.push(match entry {
+                crate::Pending::History(history) => {
+                    format!("ok {}", history.plan.fields().action_id.as_str())
+                }
+                crate::Pending::Unreadable(id) => format!("unreadable {id}"),
+            });
+            crate::Visit::Take
+        })
+        .unwrap();
+        assert_eq!(seen, ["unreadable broken", "ok waiting"]);
+        assert_eq!(pending_ids(&log), [waiting]);
+    }
+
+    #[test]
+    fn the_visitor_stops_the_walk_before_the_next_history_is_read() {
+        let path = fixture();
+        let anchor = MemoryAnchor::default();
+        let mut log = anchored(&path, &anchor).unwrap();
+        let first = ask(&mut log, "first", 10);
+        ask(&mut log, "second", 20);
+        let mut visits = 0;
+        log.visit_pending_approvals(10, &mut |entry, reads| {
+            visits += 1;
+            let crate::Pending::History(history) = entry else {
+                panic!("readable history expected");
+            };
+            assert_eq!(history.plan.fields().action_id, first);
+            // The same transaction serves the streams around it, sizes before rows.
+            let stream: EventEnvelopeV1Stream =
+                serde_json::from_value(serde_json::json!("approval/approval-first")).unwrap();
+            let sizes = reads.stream_sizes(&stream, 1, 10).unwrap();
+            assert_eq!(sizes.len(), 1);
+            assert_eq!(reads.read_stream(&stream, 1, 10).unwrap().len(), 1);
+            crate::Visit::Stop
+        })
+        .unwrap();
+        assert_eq!(visits, 1);
+    }
 }
