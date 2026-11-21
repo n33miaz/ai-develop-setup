@@ -181,13 +181,13 @@ jobs:
           PUSH_BEFORE_SHA: ${{ github.event.before }}
           PUSH_AFTER_SHA: ${{ github.sha }}
           # Casca: ela mesma, os contratos e as entradas da compilação.
-          SHELL_PATHS: '^(crates/(shell|launcher|daemon|ptyhost)/|crates/(core|storage|testkit)/|crates/adapters/(claude|codex|vault|fs)/|ui/|tools/smoke_desktop\.py$|defaults/(launcher|daemon|ptyhost|harnesses|action-gate|fs-executor)\.toml$|crates/contracts/|crates/e2e/|contracts/|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
+          SHELL_PATHS: '^(crates/(shell|launcher|daemon|ptyhost)/|crates/(core|storage|testkit|private-dir)/|crates/adapters/(claude|codex|vault|fs)/|ui/|tools/smoke_desktop\.py$|defaults/(launcher|daemon|ptyhost|harnesses|action-gate|fs-executor)\.toml$|crates/contracts/|crates/e2e/|contracts/|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
           # Interface: ela mesma e o que ela lê dos contratos (tipos gerados e os Schemas do teste de contrato).
           UI_PATHS: '^(ui/|contracts/generated/|contracts/schemas/)'
           # Contratos: os Schemas e as ferramentas, os tipos Rust gerados deles e o que muda a forma como o rustfmt os escreve.
           CONTRACTS_PATHS: '^(contracts/|crates/contracts/|rust-toolchain\.toml$|rustfmt\.toml$)'
           # PTY: host, daemon, adaptadores ligados a ele, núcleo, contratos, parâmetros, workflow e entradas da compilação.
-          PTY_PATHS: '^(crates/ptyhost/|crates/daemon/|crates/testkit/|crates/contracts/|crates/adapters/(claude|codex|vault|fs)/|crates/storage/|crates/core/|contracts/|defaults/(ptyhost|daemon|harnesses|action-gate|fs-executor)\.toml$|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
+          PTY_PATHS: '^(crates/ptyhost/|crates/daemon/|crates/testkit/|crates/contracts/|crates/adapters/(claude|codex|vault|fs)/|crates/storage/|crates/core/|crates/private-dir/|contracts/|defaults/(ptyhost|daemon|harnesses|action-gate|fs-executor)\.toml$|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
           # Executor de arquivos: o crate, o portão que ele julga de novo, os parâmetros dos dois, este workflow e
           # tudo que muda o resultado da compilação.
           FS_PATHS: '^(crates/adapters/fs/|crates/core/|crates/contracts/|contracts/|defaults/action-gate\.toml$|defaults/fs-executor\.toml$|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
@@ -195,7 +195,7 @@ jobs:
           # Cofre: o crate, as dependências dele no workspace, este workflow e as entradas da compilação.
           VAULT_PATHS: '^(crates/adapters/vault/|crates/core/|crates/contracts/|contracts/|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
           # Lançador: o crate, as dependências dele no workspace, os parâmetros dele, este workflow e as entradas da compilação.
-          LAUNCHER_PATHS: '^(crates/launcher/|crates/core/|crates/contracts/|contracts/|defaults/launcher\.toml$|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
+          LAUNCHER_PATHS: '^(crates/launcher/|crates/core/|crates/private-dir/|crates/contracts/|contracts/|defaults/launcher\.toml$|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
         run: |
           set -euo pipefail
           # Na dúvida (disparo manual, push sem base conhecida, diff impossível), roda.

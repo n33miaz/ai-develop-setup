@@ -61,7 +61,7 @@ impl QueueControl for DisabledQueue {
 }
 
 /// The owner of the queue and the device id the local interface acts as, from the core's own
-/// configuration. Plain data: acting on the queue still takes a [`LocalSession`].
+/// configuration. Plain data: creating and acting on the queue still take a [`LocalSession`].
 #[derive(Debug, Clone)]
 pub struct QueueOwner {
     pub owner_id: CommonIdV1,
@@ -80,6 +80,8 @@ pub enum QueueOpenError {
     Contract,
     /// This process already holds the queue; share that handle instead.
     AlreadyOpen,
+    /// The stream is empty and the caller gave no session proof to create the queue.
+    NotCreated,
 }
 impl From<StorageError> for QueueOpenError {
     fn from(error: StorageError) -> Self {
@@ -117,24 +119,90 @@ impl Drop for LoggedQueue {
 }
 
 impl LoggedQueue {
-    /// Binds the queue, creating it stopped with the bundled policy when its stream is empty.
-    /// Every open restores the
-    /// queue stopped and records the restart when the log last said enabled.
+    /// Binds a queue whose stream already exists, restoring it stopped and recording the restart
+    /// when the log last said enabled. An empty stream is refused with `NotCreated` and nothing is
+    /// written: creating the queue is an owner act and takes a [`LocalSession`].
+    pub fn bind(
+        log: EventLog,
+        queue_id: CommonIdV1,
+        owner: QueueOwner,
+    ) -> Result<Self, QueueOpenError> {
+        Self::acquire(log, queue_id, owner, None)
+    }
+
+    /// Like [`Self::open_with_policy`], with the bundled policy for a new queue.
+    ///
+    /// Creating a queue as the owner's device takes the session proof, so this does not compile:
+    ///
+    /// ```compile_fail
+    /// use ads_contracts::CommonIdV1;
+    /// use ads_daemon::queue::{LoggedQueue, QueueOwner};
+    /// fn create(log: ads_storage::EventLog, id: CommonIdV1, owner: QueueOwner) {
+    ///     let _ = LoggedQueue::open(log, id, owner);
+    /// }
+    /// ```
+    ///
+    /// The same call with the proof compiles:
+    ///
+    /// ```
+    /// use ads_contracts::CommonIdV1;
+    /// use ads_daemon::{auth::LocalSession, queue::{LoggedQueue, QueueOwner}};
+    /// fn create(s: &LocalSession, log: ads_storage::EventLog, id: CommonIdV1, owner: QueueOwner) {
+    ///     let _ = LoggedQueue::open(s, log, id, owner);
+    /// }
+    /// ```
     pub fn open(
+        session: &LocalSession,
         log: EventLog,
         queue_id: CommonIdV1,
         owner: QueueOwner,
     ) -> Result<Self, QueueOpenError> {
         let policy = toml::from_str(DEFAULT_POLICY).expect("bundled queue policy is valid");
-        Self::open_with_policy(log, queue_id, owner, &policy)
+        Self::open_with_policy(session, log, queue_id, owner, &policy)
     }
 
-    /// Uses the supplied policy when creating a queue.
+    /// Binds the queue, creating it stopped with `initial_policy` when its stream is empty. The
+    /// creation is recorded as an act of the owner's device, so it takes the same session proof
+    /// as starting and stopping the queue.
+    ///
+    /// ```compile_fail
+    /// use ads_contracts::CommonIdV1;
+    /// use ads_core::queue::QueuePolicy;
+    /// use ads_daemon::queue::{LoggedQueue, QueueOwner};
+    /// fn create(log: ads_storage::EventLog, id: CommonIdV1, owner: QueueOwner, p: &QueuePolicy) {
+    ///     let _ = LoggedQueue::open_with_policy(log, id, owner, p);
+    /// }
+    /// ```
+    ///
+    /// ```
+    /// use ads_contracts::CommonIdV1;
+    /// use ads_core::queue::QueuePolicy;
+    /// use ads_daemon::{auth::LocalSession, queue::{LoggedQueue, QueueOwner}};
+    /// fn create(
+    ///     s: &LocalSession,
+    ///     log: ads_storage::EventLog,
+    ///     id: CommonIdV1,
+    ///     owner: QueueOwner,
+    ///     p: &QueuePolicy,
+    /// ) {
+    ///     let _ = LoggedQueue::open_with_policy(s, log, id, owner, p);
+    /// }
+    /// ```
     pub fn open_with_policy(
+        _: &LocalSession,
         log: EventLog,
         queue_id: CommonIdV1,
         owner: QueueOwner,
         initial_policy: &QueuePolicy,
+    ) -> Result<Self, QueueOpenError> {
+        Self::acquire(log, queue_id, owner, Some(initial_policy))
+    }
+
+    fn acquire(
+        log: EventLog,
+        queue_id: CommonIdV1,
+        owner: QueueOwner,
+        create: Option<&QueuePolicy>,
     ) -> Result<Self, QueueOpenError> {
         if !held().insert(queue_id.as_str().to_owned()) {
             return Err(QueueOpenError::AlreadyOpen);
@@ -154,15 +222,16 @@ impl LoggedQueue {
             owner,
             pending_stop: None,
         };
-        let inner = Self::restore(inner, initial_policy).map_err(release)?;
+        let inner = Self::restore(inner, create).map_err(release)?;
         Ok(Self {
             inner: Mutex::new(inner),
         })
     }
 
-    fn restore(mut inner: Inner, initial_policy: &QueuePolicy) -> Result<Inner, QueueOpenError> {
+    fn restore(mut inner: Inner, create: Option<&QueuePolicy>) -> Result<Inner, QueueOpenError> {
         let stored = inner.log.read_queue(&inner.record.id)?;
         if stored.is_empty() {
+            let initial_policy = create.ok_or(QueueOpenError::NotCreated)?;
             let (record, created) = new_local_stopped(
                 inner.record.id.clone(),
                 &inner.owner.owner_id,
@@ -322,5 +391,244 @@ impl QueueControl for LoggedQueue {
         inner.pending_stop = Some(cause.to_owned());
         inner.settle_stop()?;
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::Token;
+    use ads_storage::StorageConfig;
+    use ads_storage::anchor::{AnchorStore, Commitment, DatabaseId};
+    use ads_storage::cipher::{CipherError, KeyId, KeyProvider, SecretKey};
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+
+    struct Keys;
+    impl KeyProvider for Keys {
+        fn current(&self) -> Result<(KeyId, SecretKey), CipherError> {
+            Ok((KeyId::new("key-a")?, SecretKey::new(&[1; 32])))
+        }
+        fn by_id(&self, _: &KeyId) -> Result<SecretKey, CipherError> {
+            Ok(SecretKey::new(&[1; 32]))
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct Anchor(Arc<Mutex<Option<Commitment>>>);
+    impl AnchorStore for Anchor {
+        fn can_create(&self) -> Result<bool, StorageError> {
+            Ok(self.0.lock().unwrap().is_none())
+        }
+        fn read(&self, _: DatabaseId) -> Result<Option<Commitment>, StorageError> {
+            Ok(*self.0.lock().unwrap())
+        }
+        fn store(&self, _: DatabaseId, commitment: &Commitment) -> Result<(), StorageError> {
+            *self.0.lock().unwrap() = Some(*commitment);
+            Ok(())
+        }
+    }
+
+    /// A database inside the repository's `.test-tmp`, removed file by file on drop.
+    struct Folder(PathBuf);
+    impl Folder {
+        fn new(name: &str) -> Self {
+            let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.test-tmp");
+            std::fs::create_dir_all(&root).unwrap();
+            let root = root.canonicalize().unwrap();
+            assert!(root.ends_with(".test-tmp"));
+            let dir = root.join(format!("{name}-{}", std::process::id()));
+            std::fs::create_dir(&dir).unwrap();
+            Self(dir)
+        }
+        fn log(&self, anchor: &Anchor) -> EventLog {
+            EventLog::open(
+                &self.0.join("audit.db"),
+                &StorageConfig::defaults(),
+                Box::new(Keys),
+                Box::new(anchor.clone()),
+            )
+            .unwrap()
+        }
+    }
+    impl Drop for Folder {
+        fn drop(&mut self) {
+            for name in [
+                "audit.db",
+                "audit.db-wal",
+                "audit.db-shm",
+                "audit.db-journal",
+            ] {
+                let _ = std::fs::remove_file(self.0.join(name));
+            }
+            let _ = std::fs::remove_dir(&self.0);
+        }
+    }
+
+    fn id(text: &str) -> CommonIdV1 {
+        CommonIdV1::new(text).unwrap()
+    }
+
+    fn owner() -> QueueOwner {
+        QueueOwner {
+            owner_id: id("owner-01"),
+            device_id: id("device-01"),
+        }
+    }
+
+    fn session(token: &Token) -> LocalSession {
+        assert!(token.open_session("forged").is_none());
+        token.open_session(&token_text(token)).unwrap()
+    }
+
+    fn policy(text: &str) -> QueuePolicy {
+        toml::from_str(text).unwrap()
+    }
+
+    /// Every key differs from `defaults/queue.toml`.
+    const CHOSEN: &str = "attempt_limit = 5\nadmission_limit = 77\nwindow_seconds = 1800\n\
+        window_admissions = 4\nmanual_window_admissions = 6\nbug_rule_window_admissions = 2\n\
+        clock_skew_seconds = 7\nclock_rewind_seconds = 120\nhost_confirm_seconds = 30\n";
+
+    fn stored(folder: &Folder, anchor: &Anchor, queue: &CommonIdV1) -> Vec<Value> {
+        folder
+            .log(anchor)
+            .read_queue(queue)
+            .unwrap()
+            .into_iter()
+            .map(|stored| serde_json::to_value(stored.event).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn only_a_session_creates_the_queue_and_records_its_policy() {
+        let folder = Folder::new("queue-unit-create");
+        let anchor = Anchor::default();
+        let queue = id("queue-unit-create");
+        assert!(matches!(
+            LoggedQueue::bind(folder.log(&anchor), queue.clone(), owner()),
+            Err(QueueOpenError::NotCreated)
+        ));
+        assert!(stored(&folder, &anchor, &queue).is_empty());
+
+        let token = Token::generate().unwrap();
+        let session = session(&token);
+        let open = |policy: &QueuePolicy| {
+            LoggedQueue::open_with_policy(
+                &session,
+                folder.log(&anchor),
+                queue.clone(),
+                owner(),
+                policy,
+            )
+            .unwrap()
+        };
+        drop(open(&policy(CHOSEN)));
+        let events = stored(&folder, &anchor, &queue);
+        let [event] = &events[..] else {
+            panic!("expected only the creation");
+        };
+        assert_eq!(event["type"], "urn:ads:event:queue.created:2");
+        assert_eq!(event["actor"], json!({"kind": "device", "id": "device-01"}));
+        assert_eq!(
+            event["data"]["policy"],
+            json!({
+                "attempt_limit": 5, "admission_limit": 77, "window_seconds": 1800,
+                "window_admissions": 4, "manual_window_admissions": 6,
+                "bug_rule_window_admissions": 2, "clock_skew_seconds": 7,
+                "clock_rewind_seconds": 120, "host_confirm_seconds": 30
+            })
+        );
+
+        // An existing stream keeps its creation, whatever policy the reopening offers.
+        drop(LoggedQueue::bind(folder.log(&anchor), queue.clone(), owner()).unwrap());
+        drop(open(&policy("attempt_limit = 9\nadmission_limit = 5\n")));
+        drop(LoggedQueue::open(&session, folder.log(&anchor), queue.clone(), owner()).unwrap());
+        assert_eq!(stored(&folder, &anchor, &queue), events);
+    }
+
+    #[test]
+    fn open_creates_a_new_queue_with_the_bundled_policy() {
+        let folder = Folder::new("queue-unit-bundled");
+        let anchor = Anchor::default();
+        let queue = id("queue-unit-bundled");
+        let token = Token::generate().unwrap();
+        let opened = LoggedQueue::open(
+            &session(&token),
+            folder.log(&anchor),
+            queue.clone(),
+            owner(),
+        );
+        drop(opened.unwrap());
+        let bundled: toml::Table = toml::from_str(DEFAULT_POLICY).unwrap();
+        let events = stored(&folder, &anchor, &queue);
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0]["data"]["policy"],
+            serde_json::to_value(bundled).unwrap()
+        );
+    }
+
+    #[test]
+    fn a_lowered_policy_on_reopening_keeps_the_admitted_task_and_the_stored_policy() {
+        let folder = Folder::new("queue-unit-lowered");
+        let anchor = Anchor::default();
+        let queue = id("queue-unit-lowered");
+        let token = Token::generate().unwrap();
+        let session = session(&token);
+        let initial = policy("attempt_limit = 3\nadmission_limit = 1000\n");
+        let lowered = policy("attempt_limit = 1\nadmission_limit = 1\n");
+        let open = |policy: &QueuePolicy| {
+            LoggedQueue::open_with_policy(
+                &session,
+                folder.log(&anchor),
+                queue.clone(),
+                owner(),
+                policy,
+            )
+            .unwrap()
+        };
+        drop(open(&initial));
+        let task = serde_json::from_value(json!({
+            "id": new_id().unwrap(), "type": "urn:ads:event:queue.task_created:1",
+            "ts": now_ts().unwrap(), "stream": queue_stream(&queue).as_str(), "seq": 2,
+            "actor": {"kind": "device", "id": "device-01"}, "cause": null,
+            "data_class": "internal",
+            "data": {
+                "queue_id": queue.as_str(), "task_id": "task-01", "attempt_limit": 3,
+                "origin": {"kind": "manual", "request_id": "request-01"},
+                "workspace_alias": "docs", "state": "queued", "attempts": 0
+            }
+        }))
+        .unwrap();
+        folder.log(&anchor).append(&task).unwrap();
+        let before = stored(&folder, &anchor, &queue);
+
+        drop(open(&lowered));
+        assert_eq!(stored(&folder, &anchor, &queue), before);
+        let events: Vec<_> = folder
+            .log(&anchor)
+            .read_queue(&queue)
+            .unwrap()
+            .iter()
+            .map(|stored| QueueStreamEvent::from_envelope(&stored.event).unwrap())
+            .collect();
+        let owner_at = |device: &CommonIdV1, _: &ads_contracts::CommonTimestampV1| {
+            (device.as_str() == "device-01").then(|| id("owner-01"))
+        };
+        let replayed =
+            ads_core::queue::replay_queue(events.iter().map(QueueStreamEvent::as_log), owner_at)
+                .unwrap();
+        assert_eq!(replayed.policy, Some(initial));
+        let [task] = &replayed.tasks[..] else {
+            panic!("expected one task");
+        };
+        assert_eq!(task.attempt_limit.get(), 3);
+    }
+
+    /// The run token as the UI receives it, read back from the launch URL.
+    fn token_text(token: &Token) -> String {
+        let url = token.launch_url("http://127.0.0.1:5173", 1);
+        url.rsplit("token=").next().unwrap().to_owned()
     }
 }

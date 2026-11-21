@@ -1,12 +1,13 @@
 //! Composition of the persistent audit log with the product vault.
 
 use std::{
-    fs::{self, File, OpenOptions, TryLockError},
+    fs::{self, File, TryLockError},
     path::{Path, PathBuf},
 };
 
 use ads_adapter_vault::OsVault;
 use ads_core::vault::{Secret, SecretName, Vault};
+use ads_private_dir::{ControlDir, is_network_path};
 use ads_storage::{
     EventLog, StorageConfig, StorageError,
     anchor::{
@@ -23,6 +24,7 @@ struct VaultAnchor<V> {
     vault: V,
     location: [u8; 32],
     canonical: bool,
+    _directory: Option<ControlDir>,
 }
 
 fn normalized_path(path: &Path) -> Result<PathBuf, StorageError> {
@@ -44,6 +46,7 @@ impl<V: Vault> VaultAnchor<V> {
             vault,
             location: Sha256::digest(location.as_bytes()).into(),
             canonical,
+            _directory: None,
         })
     }
 
@@ -195,15 +198,22 @@ fn vault_directory() -> Result<PathBuf, StorageError> {
     Ok(root.join("ads"))
 }
 
+fn audit_access_error(error: std::io::Error) -> StorageError {
+    match error.kind() {
+        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::NotADirectory => {
+            StorageError::AuditDirectoryNotPrivate
+        }
+        _ => error.into(),
+    }
+}
+
 fn lock_binding(directory: &Path) -> Result<File, StorageError> {
     // SQLite serializes a single file. The vault pin spans all configured paths.
-    fs::create_dir_all(directory)?;
-    let lock = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(directory.join("audit-binding.lock"))?;
+    let directory = ControlDir::open_user_owned(directory, true).map_err(audit_access_error)?;
+    let lock = directory
+        .lock_file("audit-binding.lock")
+        .map_err(audit_access_error)?;
+
     lock.try_lock().map_err(|error| match error {
         TryLockError::WouldBlock => StorageError::Busy,
         TryLockError::Error(error) => error.into(),
@@ -211,22 +221,37 @@ fn lock_binding(directory: &Path) -> Result<File, StorageError> {
     Ok(lock)
 }
 
-fn require_canonical_path(
-    path: &Path,
-    canonical: &Path,
-    create_dir: bool,
-) -> Result<PathBuf, StorageError> {
-    if !path.is_absolute() || path.file_name() != canonical.file_name() {
-        return Err(StorageError::NonCanonicalDatabase);
+fn check_audit_location(path: &Path, workdirs: &[PathBuf]) -> Result<(), StorageError> {
+    if is_network_path(path) {
+        return Err(StorageError::AuditDatabaseOnNetwork);
     }
-    if create_dir && path == canonical {
-        fs::create_dir_all(canonical.parent().ok_or(StorageError::CantOpen)?)?;
+    let directory = path.parent().ok_or(StorageError::CantOpen)?;
+    // Resolve the deepest existing ancestor before creating anything.
+    for ancestor in directory.ancestors() {
+        match fs::canonicalize(ancestor) {
+            Ok(resolved) => {
+                if is_network_path(&resolved) {
+                    return Err(StorageError::AuditDatabaseOnNetwork);
+                }
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
     }
-    let canonical = normalized_path(canonical)?;
-    if normalized_path(path)? != canonical {
-        return Err(StorageError::NonCanonicalDatabase);
+    if !workdirs.is_empty() {
+        let paths = crate::gate::spellings(directory).map_err(|_| StorageError::CantOpen)?;
+        for workdir in workdirs {
+            let roots = crate::gate::spellings(workdir).map_err(|_| StorageError::Configuration)?;
+            if paths
+                .iter()
+                .any(|path| roots.iter().any(|root| path.matches_denied_root(root)))
+            {
+                return Err(StorageError::AuditDatabaseInWorkdir);
+            }
+        }
     }
-    Ok(canonical)
+    Ok(())
 }
 
 fn canonical_anchor<V: Vault>(
@@ -234,9 +259,58 @@ fn canonical_anchor<V: Vault>(
     config: &StorageConfig,
     create_dir: bool,
     vault: V,
+    workdirs: &[PathBuf],
 ) -> Result<(PathBuf, VaultAnchor<V>), StorageError> {
-    let canonical = require_canonical_path(path, &canonical_path(config)?, create_dir)?;
-    let anchor = VaultAnchor::new(vault, &canonical, true)?;
+    let configured = canonical_path(config)?;
+    if !path.is_absolute() || path.file_name() != configured.file_name() {
+        return Err(StorageError::NonCanonicalDatabase);
+    }
+    check_audit_location(&configured, workdirs)?;
+    if path != configured {
+        check_audit_location(path, workdirs)?;
+    }
+    let directory = configured.parent().ok_or(StorageError::CantOpen)?;
+    if create_dir
+        && path == configured
+        && let Some(parent) = directory.parent()
+    {
+        fs::create_dir_all(parent)?;
+    }
+    let resolved = match directory.canonicalize() {
+        Ok(resolved) => resolved,
+        Err(error)
+            if create_dir && path == configured && error.kind() == std::io::ErrorKind::NotFound =>
+        {
+            let name = directory.file_name().ok_or(StorageError::CantOpen)?;
+            directory
+                .parent()
+                .ok_or(StorageError::CantOpen)?
+                .canonicalize()?
+                .join(name)
+        }
+        Err(error) => return Err(error.into()),
+    };
+    check_audit_location(&resolved.join("audit.db"), workdirs)?;
+    let held = ControlDir::open_user_owned(&resolved, create_dir && path == configured)
+        .map_err(audit_access_error)?;
+    #[cfg(windows)]
+    {
+        let name = configured
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or(StorageError::CantOpen)?;
+        for suffix in ["", "-wal", "-shm", "-journal"] {
+            held.check_user_owned_file_if_present(&format!("{name}{suffix}"))
+                .map_err(audit_access_error)?;
+        }
+    }
+
+    let canonical = normalized_path(&configured)?;
+    if canonical.parent() != Some(resolved.as_path()) || normalized_path(path)? != canonical {
+        return Err(StorageError::NonCanonicalDatabase);
+    }
+    let mut anchor = VaultAnchor::new(vault, &canonical, true)?;
+    anchor._directory = Some(held);
     Ok((canonical, anchor))
 }
 
@@ -244,9 +318,10 @@ pub fn open(
     path: &Path,
     config: &StorageConfig,
     keys: Box<dyn KeyProvider + Send>,
+    workdirs: &[PathBuf],
 ) -> Result<EventLog, StorageError> {
+    let (path, anchor) = canonical_anchor(path, config, true, OsVault, workdirs)?;
     let _binding = lock_binding(&vault_directory()?)?;
-    let (path, anchor) = canonical_anchor(path, config, true, OsVault)?;
     EventLog::open(&path, config, keys, Box::new(anchor))
 }
 
@@ -288,8 +363,17 @@ pub fn open_product(
     config: &StorageConfig,
     keys: Box<dyn KeyProvider + Send>,
     instance: Option<&InstanceLock>,
+    workdirs: &[PathBuf],
 ) -> Result<ProductLog, ProductLogError> {
-    open_product_in(&vault_directory()?, path, config, keys, OsVault, instance)
+    open_product_in(
+        &vault_directory()?,
+        path,
+        config,
+        keys,
+        OsVault,
+        instance,
+        workdirs,
+    )
 }
 
 fn open_product_in<V: Vault + Send + 'static>(
@@ -299,9 +383,10 @@ fn open_product_in<V: Vault + Send + 'static>(
     keys: Box<dyn KeyProvider + Send>,
     vault: V,
     instance: Option<&InstanceLock>,
+    workdirs: &[PathBuf],
 ) -> Result<ProductLog, ProductLogError> {
+    let (canonical, anchor) = canonical_anchor(path, config, true, vault, workdirs)?;
     let _binding = lock_binding(vault_dir)?;
-    let (canonical, anchor) = canonical_anchor(path, config, true, vault)?;
     let log = EventLog::open(&canonical, config, keys, Box::new(anchor))?;
     // The configured spelling, so that every link on its way is protected too.
     let state = ProductState::resolve(
@@ -318,8 +403,9 @@ pub fn plan_reanchor(
     path: &Path,
     config: &StorageConfig,
     keys: Box<dyn KeyProvider + Send>,
+    workdirs: &[PathBuf],
 ) -> Result<ReanchorPlan, StorageError> {
-    let (path, anchor) = canonical_anchor(path, config, false, OsVault)?;
+    let (path, anchor) = canonical_anchor(path, config, false, OsVault, workdirs)?;
     EventLog::plan_reanchor(&path, config, keys, &anchor)
 }
 
@@ -329,9 +415,10 @@ pub fn reanchor(
     config: &StorageConfig,
     keys: Box<dyn KeyProvider + Send>,
     confirmed: ReanchorPlan,
+    workdirs: &[PathBuf],
 ) -> Result<(), StorageError> {
+    let (path, anchor) = canonical_anchor(path, config, false, OsVault, workdirs)?;
     let _binding = lock_binding(&vault_directory()?)?;
-    let (path, anchor) = canonical_anchor(path, config, false, OsVault)?;
     EventLog::reanchor(&path, config, keys, &anchor, confirmed)
 }
 
@@ -402,7 +489,8 @@ mod tests {
             .unwrap()
             .join("tmp")
             .join(format!("audit-anchor-{}-{stamp}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
+        fs::create_dir_all(dir.parent().unwrap()).unwrap();
+        ads_private_dir::create_dir(&dir, &ads_private_dir::Identity::current().unwrap()).unwrap();
         dir.canonicalize().unwrap()
     }
 
@@ -507,7 +595,7 @@ mod tests {
             )
             .unwrap();
         let real_root = fs::canonicalize(&root).unwrap();
-        let database = real_root.join("events.db");
+        let database = real_root.join("audit").join("events.db");
         let mut log = open_product_in(
             &real_root.join("vault"),
             &database,
@@ -515,6 +603,7 @@ mod tests {
             Box::new(FixtureKey),
             MemoryVault::default(),
             None,
+            &[],
         )
         .unwrap();
         let product = &log;
@@ -717,7 +806,7 @@ mod tests {
         // The configured path reaches the database through two links: `linked-data` (outside
         // the work root) to `bridge` (inside it) to `data`.
         let data = work_dir.join("data");
-        fs::create_dir(&data).unwrap();
+        ads_private_dir::create_dir(&data, &ads_private_dir::Identity::current().unwrap()).unwrap();
         link_folder(&work_dir.join("bridge"), &data);
         link_folder(&root.join("linked-data"), &work_dir.join("bridge"));
         let configured = root.join("linked-data").join("audit.db");
@@ -740,6 +829,7 @@ mod tests {
                 Box::new(Keys),
                 vault.clone(),
                 instance,
+                &[],
             )
         };
         let mut log = open(Some(&instance)).unwrap();
@@ -889,6 +979,7 @@ mod tests {
             Box::new(Keys),
             MemoryVault::default(),
             Some(&instance),
+            &[],
         )
         .unwrap();
         planned += 1;
@@ -1069,8 +1160,177 @@ mod tests {
         config: &StorageConfig,
         vault: &MemoryVault,
     ) -> Result<EventLog, StorageError> {
-        let (path, anchor) = canonical_anchor(path, config, true, vault.clone())?;
+        let (path, anchor) = canonical_anchor(path, config, true, vault.clone(), &[])?;
         EventLog::open(&path, config, Box::new(Keys), Box::new(anchor))
+    }
+
+    fn grant_access_to_others(path: &Path) {
+        #[cfg(windows)]
+        assert!(
+            std::process::Command::new("icacls")
+                .arg(path)
+                .args(["/grant", "*S-1-1-0:(OI)(CI)RX"])
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    #[test]
+    fn audit_folder_new_has_private_permissions() {
+        let root = fixture();
+        grant_access_to_others(&root);
+        let directory = root.join("private");
+        let path = directory.join("audit.db");
+        let log = open_configured(&path, &configured_for(&path), &MemoryVault::default()).unwrap();
+        assert!(path.exists());
+        assert!(ControlDir::open_user_owned(&directory, false).is_ok());
+        #[cfg(windows)]
+        {
+            use ads_private_dir::{Identity, access_list_text, canonical_access_list};
+            let user = Identity::current().unwrap().user;
+            let expected = canonical_access_list(&format!("D:P(A;OICI;FA;;;{user})")).unwrap();
+            assert_eq!(access_list_text(&directory).unwrap(), expected);
+        }
+        drop(log);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn audit_folder_unc_is_refused_before_filesystem_access() {
+        for path in [
+            Path::new(r"\\localhost\ads-audit-regression-missing\audit.db"),
+            Path::new(r"\\?\UNC\localhost\ads-audit-regression-missing\audit.db"),
+        ] {
+            assert_eq!(
+                open_configured(path, &configured_for(path), &MemoryVault::default()).unwrap_err(),
+                StorageError::AuditDatabaseOnNetwork
+            );
+        }
+    }
+
+    #[test]
+    fn audit_folder_existing_open_to_others_is_refused() {
+        let root = fixture();
+        grant_access_to_others(&root);
+        let path = root.join("audit.db");
+        assert_eq!(
+            open_configured(&path, &configured_for(&path), &MemoryVault::default()).unwrap_err(),
+            StorageError::AuditDirectoryNotPrivate
+        );
+        assert!(!path.exists());
+    }
+
+    #[cfg(windows)]
+    fn grant_windows_access(path: &Path, ace: &str) {
+        let output = std::process::Command::new("icacls")
+            .arg(path)
+            .args(["/grant", ace])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn audit_folder_open_to_administrators_is_refused() {
+        let root = fixture();
+        grant_windows_access(&root, "*S-1-5-32-544:(OI)(CI)F");
+        let path = root.join("audit.db");
+        assert_eq!(
+            open_configured(&path, &configured_for(&path), &MemoryVault::default()).unwrap_err(),
+            StorageError::AuditDirectoryNotPrivate
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn audit_files_open_to_other_accounts_are_refused() {
+        for suffix in ["", "-wal", "-shm", "-journal"] {
+            let root = fixture();
+            let path = root.join("custom.db");
+            let exposed = root.join(format!("custom.db{suffix}"));
+            fs::write(&exposed, []).unwrap();
+            grant_windows_access(&exposed, "*S-1-1-0:R");
+            assert_eq!(
+                open_configured(&path, &configured_for(&path), &MemoryVault::default())
+                    .unwrap_err(),
+                StorageError::AuditDirectoryNotPrivate,
+                "{suffix}"
+            );
+            assert_eq!(fs::metadata(&exposed).unwrap().len(), 0, "{suffix}");
+        }
+    }
+
+    #[test]
+    fn custom_audit_path_leaves_the_default_folder_private() {
+        let root = fixture();
+        grant_access_to_others(&root);
+        let vault_dir = root.join("ads");
+        let custom = root.join("custom").join("audit.db");
+        drop(
+            open_product_in(
+                &vault_dir,
+                &custom,
+                &configured_for(&custom),
+                Box::new(Keys),
+                MemoryVault::default(),
+                None,
+                &[],
+            )
+            .unwrap(),
+        );
+
+        let default = vault_dir.join("audit.db");
+        drop(
+            open_configured(&default, &configured_for(&default), &MemoryVault::default()).unwrap(),
+        );
+    }
+
+    #[test]
+    fn audit_folder_resolving_inside_workdir_is_refused() {
+        let root = fixture();
+        let work = root.join("work");
+        let destination = work.join("private");
+        fs::create_dir_all(&destination).unwrap();
+        let link = root.join("link");
+        link_folder(&link, &destination);
+        let path = link.join("audit.db");
+        let result = canonical_anchor(
+            &path,
+            &configured_for(&path),
+            true,
+            MemoryVault::default(),
+            &[work],
+        );
+        unlink_folder(&link);
+        assert!(matches!(result, Err(StorageError::AuditDatabaseInWorkdir)));
+        assert!(!destination.join("audit.db").exists());
+    }
+
+    #[test]
+    fn audit_folder_inside_workdir_is_refused_before_creation() {
+        let root = fixture();
+        let work = root.join("work");
+        fs::create_dir(&work).unwrap();
+        let path = work.join("private").join("audit.db");
+        assert!(matches!(
+            canonical_anchor(
+                &path,
+                &configured_for(&path),
+                true,
+                MemoryVault::default(),
+                &[work]
+            ),
+            Err(StorageError::AuditDatabaseInWorkdir)
+        ));
+        assert!(!path.parent().unwrap().exists());
     }
 
     #[test]
@@ -1087,7 +1347,7 @@ mod tests {
             .unwrap()
             .append(&event(1))
             .unwrap();
-        let (path, anchor) = canonical_anchor(&moved, &config, false, vault.clone()).unwrap();
+        let (path, anchor) = canonical_anchor(&moved, &config, false, vault.clone(), &[]).unwrap();
         let plan = || EventLog::plan_reanchor(&path, &config, Box::new(Keys), &anchor);
         assert_eq!(plan(), Err(StorageError::AnchorMismatch));
         fs::copy(&old, &moved).unwrap();
@@ -1127,7 +1387,8 @@ mod tests {
         assert!(open_configured(&path, &config, &vault).is_err());
         assert!(!path.exists());
         drop(ads_storage::AuditStore::open(&path, &config).unwrap());
-        let (canonical, anchor) = canonical_anchor(&path, &config, false, vault.clone()).unwrap();
+        let (canonical, anchor) =
+            canonical_anchor(&path, &config, false, vault.clone(), &[]).unwrap();
         let plan = EventLog::plan_reanchor(&canonical, &config, Box::new(Keys), &anchor).unwrap();
         let summary = plan.summary();
         assert_ne!(summary.previous_id, Some(summary.proposed_id));
@@ -1156,7 +1417,7 @@ mod tests {
         let vault = MemoryVault::default();
         let log = open_with(&path, &vault, false).unwrap();
         drop(log);
-        let (_, anchor) = canonical_anchor(&path, &config, false, vault.clone()).unwrap();
+        let (_, anchor) = canonical_anchor(&path, &config, false, vault.clone(), &[]).unwrap();
         let plan = EventLog::plan_reanchor(&path, &config, Box::new(Keys), &anchor).unwrap();
         let id = plan.summary().proposed_id;
         anchor

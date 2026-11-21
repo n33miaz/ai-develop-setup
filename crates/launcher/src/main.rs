@@ -1,6 +1,6 @@
 //! Supervises the daemon and terminal host for one installation.
 
-mod private;
+mod console;
 mod supervisor;
 
 use std::{
@@ -234,20 +234,19 @@ fn run(started: std::time::SystemTime) -> Result<ExitCode, Box<dyn std::error::E
         }
         shell
     });
-    private::install_console_handler()?;
+    console::install_console_handler()?;
     supervisor::run(&config, &control, daemon, host, shell, started)?;
     Ok(ExitCode::SUCCESS)
 }
 
 fn main() -> ExitCode {
-    #[cfg(windows)]
-    let result = private::process_started().map_err(Into::into).and_then(run);
-    #[cfg(unix)]
-    let result = run(std::time::SystemTime::now());
-    result.unwrap_or_else(|error| {
-        eprintln!("ads-launcher: {error}");
-        ExitCode::FAILURE
-    })
+    console::process_started()
+        .map_err(Into::into)
+        .and_then(run)
+        .unwrap_or_else(|error| {
+            eprintln!("ads-launcher: {error}");
+            ExitCode::FAILURE
+        })
 }
 
 #[cfg(test)]

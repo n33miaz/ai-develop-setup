@@ -20,6 +20,7 @@ A [arquitetura local](docs/architecture.md) descreve os processos, canais e fron
 - `ptyhost/`: processo estável das sessões de terminal e do replay. O núcleo reinicia sem derrubá-lo.
 - `daemon/`: composição que liga núcleo, adaptadores, HTTP e WebSocket. `shell/`: casca Tauri. `ui/`: React 19, Vite e TypeScript.
 - `storage/`: estado local e cifra por coluna. `e2e/`: sessão cifrada do transporte remoto.
+- `private-dir/`: criação e conferência de pastas e arquivos privados do usuário, usadas pelo lançador e pelo daemon.
 - `launcher/`: supervisão e atualização. `testkit/`: auxiliares exclusivos dos testes.
 - `defaults/`: parâmetros e regras em TOML. `tools/`: scripts do repositório. `docs/`: ADRs, mapa de módulos, riscos, arquivos de instruções por ferramenta, guardas.
 - `docs/modules.md` mapeia cada módulo em uma frase, com o estado; sem entrada, sem merge (`python tools/check_deps.py check` reprova). Os nomes das pastas são propostas até um ADR em `docs/adr/` fixá-los.

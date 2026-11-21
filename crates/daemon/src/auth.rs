@@ -37,7 +37,8 @@ impl Token {
     }
 
     /// The session proof of a connection whose `auth.hello` carried this token. Crate-private:
-    /// only the connection loop, after reading `auth.hello`, issues one.
+    /// any module of this crate may call it; in production only the connection loop does, after
+    /// reading `auth.hello`.
     pub(crate) fn open_session(&self, candidate: &str) -> Option<LocalSession> {
         self.matches(candidate)
             .then_some(LocalSession { _sealed: () })
@@ -60,9 +61,9 @@ impl Token {
     }
 }
 
-/// Proof that a connection presented the run token in `auth.hello`. Only the connection loop
-/// of this crate issues it, so the owner-only controls of the local API take it instead of
-/// trusting ids:
+/// Proof that a connection presented the run token in `auth.hello`. Only this crate can issue
+/// it, and in production only its connection loop does, so the owner-only controls of the local
+/// API take it instead of trusting ids:
 ///
 /// ```compile_fail
 /// let _ = ads_daemon::auth::LocalSession { _sealed: () };

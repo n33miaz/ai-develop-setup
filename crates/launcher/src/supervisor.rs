@@ -10,10 +10,13 @@ use std::{
 
 use serde::Serialize;
 
-use crate::{
-    Config,
-    private::{self, ControlDir, Identity, Signal},
-};
+use ads_private_dir::{ControlDir, Identity, Signal};
+
+use crate::{Config, console};
+
+/// File times can come from a coarser clock than the start time, or be rounded to the second,
+/// so only a stop request older than this margin is taken as left over from an earlier run.
+const STALE_SIGNAL_MARGIN: Duration = Duration::from_secs(2);
 
 #[derive(Default, Serialize)]
 struct ProcessState {
@@ -250,7 +253,7 @@ impl Window {
                     .write_all(b"Q")
             };
             #[cfg(unix)]
-            let request = private::request_close;
+            let request = console::request_close;
             close_child(child, self.timeout, self.poll, request, report)?;
             self.child = None;
             #[cfg(windows)]
@@ -406,7 +409,7 @@ pub(crate) fn run(
         host,
         shell,
         started,
-        private::console_stop_requested,
+        console::console_stop_requested,
     )
 }
 
@@ -434,12 +437,16 @@ fn run_with_interrupt(
     // Declared after the daemon so that, on any exit, the window closes before it.
     let mut window = Window::new(config);
 
+    // Only a request clearly older than this run is left over from an earlier one.
+    let stale_before = started
+        .checked_sub(STALE_SIGNAL_MARGIN)
+        .unwrap_or(SystemTime::UNIX_EPOCH);
     let mut publication = Publication::default();
     publication.stop_pending_at_startup = publication.record_signal(
         "discard stale stop signal",
         &control,
         stop,
-        control.dated_stop(stop, started, true),
+        control.dated_signal(stop, stale_before, true),
     ) == Some(true);
     // Publish before starting children so an unusable state path fails early.
     if let Err(error) = write_state(&control, state, &daemon, &host, false, &publication) {
@@ -451,7 +458,7 @@ fn run_with_interrupt(
     loop {
         if !stopping {
             let console_stop = interrupted();
-            let file_stop = control.dated_stop(stop, started, false);
+            let file_stop = control.dated_signal(stop, stale_before, false);
             let stale = matches!(file_stop, Ok(Signal::Stale));
             let consumed =
                 publication.record_signal("consume stop signal", &control, stop, file_stop);
@@ -548,7 +555,7 @@ impl Process {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::private;
+    use ads_private_dir as private;
     use serde_json::Value;
     use std::fs;
     use std::path::PathBuf;
@@ -793,7 +800,7 @@ pub(crate) mod tests {
         let state = dir.0.join(&settings.state_file);
         fs::write(&stop, []).unwrap();
         let modified = fs::metadata(&stop).unwrap().modified().unwrap();
-        let started = modified + private::STALE_SIGNAL_MARGIN + Duration::from_secs(1);
+        let started = modified + STALE_SIGNAL_MARGIN + Duration::from_secs(1);
         let host_release = dir.0.join("release-host");
         let daemon_release = dir.0.join("release-daemon");
         let daemon = fixture(Some(&daemon_release));
@@ -883,7 +890,7 @@ pub(crate) mod tests {
         let stop = dir.0.join(&settings.stop_file);
         let state = dir.0.join(&settings.state_file);
         // Any file written now is dated before this start.
-        let started = SystemTime::now() + private::STALE_SIGNAL_MARGIN + Duration::from_secs(60);
+        let started = SystemTime::now() + STALE_SIGNAL_MARGIN + Duration::from_secs(60);
         let host_release = dir.0.join("release-host");
         let daemon = fixture(Some(&dir.0.join("release-daemon")));
         let host = fixture(Some(&host_release));
@@ -1636,7 +1643,7 @@ pub(crate) mod tests {
             return;
         }
 
-        private::install_console_handler().unwrap();
+        console::install_console_handler().unwrap();
         let dir = TestDir::new();
         let control = dir.0.clone();
         let host_release = dir.0.join("release-host");
@@ -1645,7 +1652,7 @@ pub(crate) mod tests {
         let shell = held_window(&dir.0);
         let worker = thread::spawn(move || run(&config(), &control, daemon, host, Some(shell)));
         until(|| window_running(&dir.0).then_some(()));
-        private::generate_console_interrupt().unwrap();
+        console::generate_console_interrupt().unwrap();
         let now = Instant::now();
         while !worker.is_finished() && now.elapsed() < Duration::from_secs(5) {
             thread::sleep(Duration::from_millis(5));

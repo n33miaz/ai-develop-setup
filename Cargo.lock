@@ -98,6 +98,7 @@ dependencies = [
  "ads-adapter-vault",
  "ads-contracts",
  "ads-core",
+ "ads-private-dir",
  "ads-ptyhost",
  "ads-storage",
  "ads-testkit",
@@ -125,10 +126,19 @@ name = "ads-launcher"
 version = "0.0.0"
 dependencies = [
  "ads-core",
+ "ads-private-dir",
  "rustix",
  "serde",
  "serde_json",
  "toml 1.2.1+spec-1.1.0",
+ "windows",
+]
+
+[[package]]
+name = "ads-private-dir"
+version = "0.0.0"
+dependencies = [
+ "rustix",
  "windows",
 ]
 

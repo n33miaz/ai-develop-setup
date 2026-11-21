@@ -8,6 +8,7 @@ members = [
   "crates/daemon",
   "crates/testkit",
   "crates/launcher",
+  "crates/private-dir",
   "crates/e2e",
   "crates/shell",
   "crates/adapters/claude",
@@ -28,6 +29,7 @@ default-members = [
   "crates/daemon",
   "crates/testkit",
   "crates/launcher",
+  "crates/private-dir",
   "crates/e2e",
   "crates/adapters/claude",
   "crates/adapters/codex",
@@ -48,6 +50,7 @@ publish = false
 # Uma versao de cada biblioteca externa e o caminho de cada crate interno ficam aqui.
 # Quem pode depender de quem esta em defaults/dependency-matrix.toml e e cobrado por tools/check_deps.py.
 [workspace.dependencies]
+ads-private-dir = { path = "crates/private-dir" }
 base64 = "0.23.1"
 log = { version = "0.4.35", features = ["max_level_off"] }
 futures-util = { version = "0.3.34", default-features = false, features = ["sink", "std"] }

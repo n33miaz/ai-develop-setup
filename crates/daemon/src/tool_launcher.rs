@@ -30,6 +30,14 @@ fn describe(tool: &str, shared: bool, error: impl std::fmt::Display) -> String {
 }
 
 impl<C, X> ToolLauncher<C, X> {
+    /// Work roots to pass to the audit log when opening or recovering it.
+    pub fn workdirs(&self) -> Vec<std::path::PathBuf> {
+        self.claude
+            .workdirs()
+            .map(|dir| dir.as_str().into())
+            .collect()
+    }
+
     pub fn from_process_env(
         overrides: &str,
         host: HostRules,

@@ -136,9 +136,11 @@ impl AbsPath {
         self.depth() > base.depth() && self.is_within(base)
     }
 
-    /// Like [`Self::is_within`], with the widest comparison of names, in both styles. For deny
-    /// rules only: some file systems ignore case, and a deny rule must not be dodged by
-    /// changing it. Never use it to grant.
+    /// Matches a deny rule for this root and its descendants, ignoring case in both styles.
+    pub fn matches_denied_root(&self, root: &AbsPath) -> bool {
+        self.is_loosely_within(root)
+    }
+
     pub(crate) fn is_loosely_within(&self, base: &AbsPath) -> bool {
         self.within(base, same_name_loosely)
     }

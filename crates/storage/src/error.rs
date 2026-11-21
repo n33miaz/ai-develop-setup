@@ -33,6 +33,9 @@ pub enum StorageError {
     AnchorUnavailable,
     AnchorMissing,
     NonCanonicalDatabase,
+    AuditDirectoryNotPrivate,
+    AuditDatabaseOnNetwork,
+    AuditDatabaseInWorkdir,
     DuplicateDatabaseIdentity,
     AnchorMismatch,
     /// The chain could not be authenticated after an external commit.
@@ -53,6 +56,15 @@ pub enum StorageError {
 impl fmt::Display for StorageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::AuditDirectoryNotPrivate => f.write_str(
+                "storage: check ownership and permissions on the audit folder and database files; on Windows, open Properties > Security > Advanced, set your account as owner, disable inheritance, and keep access only for your account and SYSTEM",
+            ),
+            Self::AuditDatabaseOnNetwork => f.write_str(
+                "storage: set audit_database_path to a local drive",
+            ),
+            Self::AuditDatabaseInWorkdir => f.write_str(
+                "storage: set audit_database_path outside the configured work folders",
+            ),
             Self::Full => write!(
                 f,
                 "storage: Full: the disk is full, or the database passes inspection_max_bytes                  at open; free space and retry, or raise inspection_max_bytes"

@@ -10,6 +10,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+ads-private-dir.workspace = true
 ads-adapter-claude = { path = "../adapters/claude" }
 ads-adapter-codex = { path = "../adapters/codex" }
 ads-adapter-vault = { path = "../adapters/vault" }
@@ -33,5 +34,6 @@ ads-ptyhost = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 
 [dev-dependencies]
+ads-private-dir = { workspace = true, features = ["test-support"] }
 ads-testkit = { workspace = true }
 tokio = { workspace = true, features = ["test-util", "time"] }

@@ -1,13 +1,13 @@
 //! Windows calls for the control folder: identity and access lists, and every entry opened
 //! relative to the folder held open (`NtCreateFile` with a root handle), as itself and never
 //! through a reparse point, then renamed or removed by its own handle
-//! (`NtSetInformationFile`); also the console interruption handler.
+//! (`NtSetInformationFile`).
 //! Each block is a single call or the read of data the previous call filled, with a `SAFETY`
 //! comment; see docs/unsafe.md.
 
 // The rename structure below is laid out by hand for 64-bit Windows.
 #[cfg(not(target_pointer_width = "64"))]
-compile_error!("ads-launcher supports Windows on 64-bit targets only");
+compile_error!("ads-private-dir supports Windows on 64-bit targets only");
 
 use std::ffi::c_void;
 use std::fs::{File, OpenOptions};
@@ -16,8 +16,7 @@ use std::mem::{offset_of, size_of};
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-use std::path::Path;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::path::{Component, Path, Prefix};
 
 use windows::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows::Wdk::Storage::FileSystem::{
@@ -28,10 +27,10 @@ use windows::Wdk::Storage::FileSystem::{
     NtCreateFile, NtSetInformationFile,
 };
 use windows::Win32::Foundation::{
-    ERROR_SUCCESS, FILETIME, HANDLE, HLOCAL, LocalFree, NTSTATUS, OBJECT_ATTRIBUTE_FLAGS,
-    STATUS_ACCESS_DENIED, STATUS_INVALID_INFO_CLASS, STATUS_INVALID_PARAMETER,
-    STATUS_NOT_SUPPORTED, STATUS_OBJECT_NAME_COLLISION, STATUS_OBJECT_NAME_NOT_FOUND,
-    STATUS_OBJECT_PATH_NOT_FOUND, UNICODE_STRING,
+    ERROR_SUCCESS, HANDLE, HLOCAL, LocalFree, NTSTATUS, OBJ_CASE_INSENSITIVE, STATUS_ACCESS_DENIED,
+    STATUS_INVALID_INFO_CLASS, STATUS_INVALID_PARAMETER, STATUS_NOT_SUPPORTED,
+    STATUS_OBJECT_NAME_COLLISION, STATUS_OBJECT_NAME_NOT_FOUND, STATUS_OBJECT_PATH_NOT_FOUND,
+    UNICODE_STRING,
 };
 use windows::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo,
@@ -50,8 +49,27 @@ use windows::Win32::Storage::FileSystem::{
     GetFileInformationByHandleEx, READ_CONTROL, SYNCHRONIZE,
 };
 use windows::Win32::System::IO::IO_STATUS_BLOCK;
-use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes, OpenProcessToken};
+use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+use windows::Win32::System::WindowsProgramming::DRIVE_REMOTE;
 use windows::core::{PCWSTR, PWSTR};
+
+pub(super) fn is_network_path(path: &Path) -> bool {
+    match path.components().next() {
+        Some(Component::Prefix(prefix)) => match prefix.kind() {
+            Prefix::UNC(..) | Prefix::VerbatimUNC(..) => true,
+            Prefix::Disk(drive) | Prefix::VerbatimDisk(drive) => {
+                let root = [u16::from(drive), u16::from(b':'), 92, 0];
+                // SAFETY: root is a NUL-terminated drive root valid for the duration of the call.
+                unsafe {
+                    windows::Win32::Storage::FileSystem::GetDriveTypeW(PCWSTR(root.as_ptr()))
+                        == DRIVE_REMOTE
+                }
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+}
 
 use super::{Entry, Identity, Kind, Security};
 
@@ -277,7 +295,7 @@ fn open_at(
         Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
         RootDirectory: raw(root),
         ObjectName: &raw const text,
-        Attributes: OBJECT_ATTRIBUTE_FLAGS(0),
+        Attributes: OBJ_CASE_INSENSITIVE,
         SecurityDescriptor: descriptor
             .map_or(std::ptr::null(), |memory| memory.0.cast_const().cast()),
         SecurityQualityOfService: std::ptr::null(),
@@ -377,6 +395,12 @@ pub(super) fn create_new(root: &File, name: &str, local: &Identity) -> io::Resul
         FILE,
         Some(&descriptor),
     )
+}
+
+/// Opens an existing entry for inspection without affecting SQLite's own sharing.
+pub(super) fn open_for_inspection(root: &File, name: &str) -> io::Result<File> {
+    let access = FILE_ACCESS_RIGHTS(FILE_READ_ATTRIBUTES.0 | READ_CONTROL.0);
+    open_at(root, name, access, SHARED, FILE_OPEN, ITSELF, None)
 }
 
 /// Opens the entry `name` of the folder itself, to read its owner and access list and then
@@ -499,7 +523,7 @@ pub(super) fn security(file: &File) -> io::Result<Security> {
 
 /// The access list of `path` in text form (`D:P(A;OICI;FA;;;S-...)`), protection and
 /// inheritance flags included.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn access_list_text(path: &Path) -> io::Result<String> {
     let file = OpenOptions::new()
         .access_mode(READ_CONTROL.0)
@@ -528,7 +552,7 @@ pub(super) fn access_list_text(path: &Path) -> io::Result<String> {
 
 /// `text` as Windows writes it back, so a list built with a raw SID compares equal to one read
 /// from disk when Windows abbreviates that SID (`LA` for the built-in administrator).
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn canonical_access_list(text: &str) -> io::Result<String> {
     let wide: Vec<u16> = text.encode_utf16().chain([0]).collect();
     let mut descriptor = PSECURITY_DESCRIPTOR::default();
@@ -546,7 +570,7 @@ pub(super) fn canonical_access_list(text: &str) -> io::Result<String> {
     descriptor_text(descriptor)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn descriptor_text(descriptor: PSECURITY_DESCRIPTOR) -> io::Result<String> {
     use windows::Win32::Security::Authorization::ConvertSecurityDescriptorToStringSecurityDescriptorW;
     let mut text = PWSTR::null();
@@ -561,62 +585,4 @@ fn descriptor_text(descriptor: PSECURITY_DESCRIPTOR) -> io::Result<String> {
         )
     }?;
     take_text(text)
-}
-
-static STOP_REQUESTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-unsafe extern "system" fn console_control(event: u32) -> windows::core::BOOL {
-    use windows::Win32::System::Console::{CTRL_BREAK_EVENT, CTRL_C_EVENT};
-    let stopping = matches!(event, CTRL_C_EVENT | CTRL_BREAK_EVENT);
-    if stopping {
-        STOP_REQUESTED.store(true, std::sync::atomic::Ordering::Relaxed);
-    }
-    windows::core::BOOL::from(stopping)
-}
-
-pub(super) fn install_console_handler() -> io::Result<()> {
-    use windows::Win32::System::Console::SetConsoleCtrlHandler;
-    // SAFETY: the callback has static lifetime and touches only an atomic flag.
-    unsafe { SetConsoleCtrlHandler(Some(console_control), true) }.map_err(os_error)
-}
-
-pub(super) fn console_stop_requested() -> bool {
-    STOP_REQUESTED.load(std::sync::atomic::Ordering::Relaxed)
-}
-
-#[cfg(test)]
-pub(crate) fn generate_console_interrupt() -> io::Result<()> {
-    use windows::Win32::System::Console::{
-        CTRL_C_EVENT, GenerateConsoleCtrlEvent, SetConsoleCtrlHandler,
-    };
-    // SAFETY: this resets the inherited ignore flag only in the isolated test process.
-    unsafe { SetConsoleCtrlHandler(None, false) }.map_err(os_error)?;
-    // SAFETY: the test starts this process in a new console with no unrelated clients.
-    unsafe { GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0) }.map_err(os_error)
-}
-
-pub(crate) fn process_started() -> io::Result<SystemTime> {
-    let mut created = FILETIME::default();
-    let mut exited = FILETIME::default();
-    let mut kernel = FILETIME::default();
-    let mut user = FILETIME::default();
-    // SAFETY: the current process pseudo-handle is valid and each output is writable.
-    unsafe {
-        GetProcessTimes(
-            GetCurrentProcess(),
-            &mut created,
-            &mut exited,
-            &mut kernel,
-            &mut user,
-        )
-    }?;
-    let ticks = (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime);
-    let unix_ticks = ticks
-        .checked_sub(116_444_736_000_000_000)
-        .ok_or_else(|| io::Error::other("invalid launcher creation time"))?;
-    Ok(UNIX_EPOCH
-        + Duration::new(
-            unix_ticks / 10_000_000,
-            (unix_ticks % 10_000_000) as u32 * 100,
-        ))
 }
