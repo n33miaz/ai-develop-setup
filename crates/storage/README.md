@@ -33,7 +33,8 @@ A reautenticação roda dentro do lock de escrita. Enquanto ela dura, outro escr
 | `Busy` | o SQLite não conseguiu obter um lock em `busy_timeout_ms` | conferir o banco contra a âncora antes de tentar gravar de novo |
 | `AnchorUnavailable` | falha de acesso ao cofre | restabelecer o acesso antes de tentar gravar de novo |
 | `AnchorMissing` | entrada da âncora ausente | parar a escrita e seguir a recuperação |
-| `AuditDirectoryNotPrivate` | pasta ou arquivo com dono ou permissões incompatíveis | no Windows, abra Propriedades > Segurança > Avançado, defina sua conta como proprietária, desative a herança e mantenha acesso apenas para ela e SYSTEM |
+| `AuditDirectoryNotPrivate` | pasta ou arquivo com dono ou permissões incompatíveis; uma execução como administrador (elevada) deixa os arquivos que criou com o grupo Administradores como dono | no Windows, abra Propriedades > Segurança > Avançado, defina sua conta como proprietária, desative a herança e mantenha acesso apenas para ela e SYSTEM |
+| `ElevatedSession` | o daemon roda numa sessão que dá aos arquivos novos outro dono que não o usuário (no Windows, a sessão elevada, cujo dono padrão é o grupo Administradores); recusado antes de criar qualquer arquivo | feche e abra de novo numa sessão comum, sem "Executar como administrador" |
 | `AuditDatabaseOnNetwork` | compartilhamento UNC ou unidade de rede | use uma pasta em disco local |
 | `AuditDatabaseInWorkdir` | pasta dentro de uma raiz de trabalho | configure uma pasta fora de todas as raízes de `[workdirs]` |
 | `NonCanonicalDatabase` | caminho diferente do configurado ou arquivo resolvido para outro destino | confira `audit_database_path` e use o caminho configurado |
