@@ -104,7 +104,7 @@ O JSON `state.json` é substituído atomicamente. Ele traz o PID do lançador e,
 para cada filho, o PID acompanhado ou `null`, o número de novas tentativas,
 os reinícios solicitados, as falhas na janela móvel, o indicador de desistência,
 a última saída e o último erro ao iniciar. No modo desktop, `shell` traz o PID
-da janela ou `null`, quantas vezes ela foi aberta, a última saída e o último
+da janela ou `null`, quantas tentativas de abri-la houve, a última saída e o último
 erro ao abri-la; no modo navegador, `shell` é `null`. Saídas e falhas ao iniciar contam
 para `crash_window_limit` dentro de `crash_window_ms`. Use essas chaves
 no lugar de `rapid_exit_limit` e `rapid_exit_ms` em configurações antigas. A espera cresce até

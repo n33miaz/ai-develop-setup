@@ -1285,6 +1285,27 @@ pub(crate) mod tests {
         assert!(!dir.0.join(&settings.state_file).exists());
     }
 
+    /// A lock the daemon created by path, still held by a daemon that outlived its launcher,
+    /// does not keep a new launcher from starting.
+    #[test]
+    fn accepts_a_daemon_lock_held_by_a_running_daemon() {
+        let dir = TestDir::new();
+        let settings = config();
+        let held = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(dir.0.join(crate::DAEMON_LOCK_FILE))
+            .unwrap();
+        held.try_lock().unwrap();
+        fs::write(dir.0.join(&settings.stop_file), []).unwrap();
+        let daemon = Command::new(dir.0.join("missing-daemon"));
+        let host = Command::new(dir.0.join("missing-host"));
+        run(&settings, &dir.0, daemon, host, None).unwrap();
+        drop(held);
+    }
+
     /// A link or junction in place of the folder is refused, never followed to its target.
     #[test]
     fn refuses_a_link_in_place_of_the_control_folder() {
