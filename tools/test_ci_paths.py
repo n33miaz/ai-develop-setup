@@ -1,6 +1,7 @@
 """Keep Windows path filters in sync with workspace dependencies."""
 
 import re
+import shlex
 import unittest
 
 from check_deps import ROOT, load_metadata, relative_dir
@@ -9,8 +10,8 @@ from check_deps import ROOT, load_metadata, relative_dir
 WINDOWS_MODULE = re.compile(r"(?:^|/)(?:win|windows)(?:\.rs$|/)")
 UNSAFE_CODE = re.compile(r"\bunsafe\s*(?:\{|fn\b|impl\b|extern\b)")
 RUN_KEY = re.compile(r"^( *)(- )?run:(?: +(.*))?$")
-CARGO = re.compile(r"(?:^|\s)cargo (?:\+\S+ )?(\w+)\b")
-PACKAGE = re.compile(r"(?:^|\s)-p ([\w-]+)")
+ASSIGNMENT = re.compile(r"^[A-Za-z_]\w*=")
+OPERATORS = {";", "&", "&&", "|", "||"}
 
 
 def windows_unsafe_crates(packages, metadata):
@@ -60,17 +61,47 @@ def run_commands(job):
             continue
         command = (pending + line).strip()
         pending = ""
-        commands.extend(part.strip() for part in re.split(r"&&|\|\||;", command) if part.strip())
+        commands.extend(simple_commands(command))
     return commands
 
 
+def simple_commands(line):
+    """The words of each command `line` runs, split at shell operators outside quotes."""
+    lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    try:
+        words = list(lexer)
+    except ValueError:
+        # Unbalanced quotes: nothing here counts as run.
+        return []
+    commands = [[]]
+    for word in words:
+        if word in OPERATORS:
+            commands.append([])
+        else:
+            commands[-1].append(word)
+    return [command for command in commands if command]
+
+
 def cargo_commands(job):
-    """`(subcommand, packages)` of each Cargo command `job` executes."""
+    """`(subcommand, packages)` of each Cargo command `job` executes: `cargo` has to be the
+    program, after any `NAME=value` assignments, never an argument of another one."""
     found = []
-    for command in run_commands(job):
-        cargo = CARGO.search(command)
-        if cargo:
-            found.append((cargo[1], set(PACKAGE.findall(command))))
+    for words in run_commands(job):
+        while words and ASSIGNMENT.match(words[0]):
+            words = words[1:]
+        if not words or words[0] != "cargo":
+            continue
+        args = words[1:]
+        if args and args[0].startswith("+"):
+            args = args[1:]
+        if not args or not re.fullmatch(r"\w+", args[0]):
+            continue
+        if "--" in args:
+            args = args[: args.index("--")]
+        packages = {args[i + 1] for i in range(1, len(args) - 1) if args[i] == "-p"}
+        found.append((args[0], packages))
     return found
 
 
@@ -134,6 +165,22 @@ class WindowsPathFiltersTest(unittest.TestCase):
         self.assertEqual(
             cargo_commands(job),
             [("test", {"ads-private-dir"}), ("clippy", {"ads-launcher"})],
+        )
+        printed = "\n".join(
+            [
+                "    steps:",
+                "      - run: echo cargo test -p ads-private-dir",
+                "      - run: |",
+                "          echo cargo clippy -p ads-private-dir",
+                '          echo "done; cargo test -p ads-private-dir"',
+                "          printf '%s' 'x && cargo clippy -p ads-private-dir'",
+                "          CARGO_TERM_COLOR=always cargo test -p ads-launcher | tee out.txt",
+                "          cargo test -p ads-launcher -- -p ads-private-dir",
+            ]
+        )
+        self.assertEqual(
+            cargo_commands(printed),
+            [("test", {"ads-launcher"}), ("test", {"ads-launcher"})],
         )
 
     def test_filters_cover_transitive_workspace_dependencies(self):
