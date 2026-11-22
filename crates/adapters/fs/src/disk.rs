@@ -95,7 +95,7 @@ enum Reached {
 }
 
 pub(crate) struct Disk<'a> {
-    pub fence: &'a Fence,
+    pub fence: &'a Fence<'a>,
     /// The work root: every mutation is strictly below it.
     pub floor: &'a [String],
     /// The holding folder of this execution, when it has one: mutations go there too, and

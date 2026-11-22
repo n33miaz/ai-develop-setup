@@ -268,7 +268,8 @@ impl SessionGate {
         let policy = policy
             .with_work_roots(roots)
             .with_product_paths(product.paths().iter().cloned());
-        let executor = Executor::new(fence, policy.clone()).map_err(|error| error.to_string())?;
+        let executor =
+            Executor::new_movable(fence, policy.clone()).map_err(|error| error.to_string())?;
         Ok(Self {
             root,
             policy,

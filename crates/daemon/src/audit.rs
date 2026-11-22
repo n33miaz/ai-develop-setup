@@ -991,6 +991,89 @@ mod tests {
         assert!(approvals.pending(&local).unwrap().approvals.is_empty());
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn active_gate_refuses_a_work_folder_after_its_parent_moves() {
+        use crate::gate::PlanActionError;
+        use crate::tool_launcher::Workdir;
+        use ads_adapter_fs::Reason;
+        use ads_core::gate::{Id, OperationRequest, PlanRequest, TargetRequest};
+
+        let mut fixture = LocalFixture::new();
+        fixture.root.directories.extend(
+            ["parent/work", "parent", "moved/work", "moved"].map(|name| fixture.root.join(name)),
+        );
+        let parent = fixture.root.join("parent");
+        let path = parent.join("work");
+        fs::create_dir_all(&path).unwrap();
+        fs::write(path.join("output.txt"), b"original").unwrap();
+        let work_root = path.to_str().unwrap().strip_prefix(r"\\?\").unwrap();
+        let (log, ids) = fixture.open().unwrap();
+        let (_queue, approvals) = crate::product::controls(
+            log,
+            ids,
+            &[Workdir {
+                path: path.clone(),
+                missing: false,
+            }],
+            1024 * 1024,
+        )
+        .unwrap();
+        let plan = |id| {
+            approvals
+                .with_gates(|log, gates| {
+                    assert_eq!(gates.len(), 1);
+                    gates[0].plan(
+                        log,
+                        Id::new(id).unwrap(),
+                        PlanRequest {
+                            operation: OperationRequest::Delete,
+                            work_root: work_root.to_owned(),
+                            targets: vec![TargetRequest {
+                                path: format!(r"{work_root}\output.txt"),
+                                repo_root: false,
+                            }],
+                            estimate: None,
+                        },
+                        ads_core::gate::EventMeta {
+                            id: ads_core::gate::Ulid::new(crate::events::new_id().unwrap())
+                                .unwrap(),
+                            ts: ads_core::gate::Timestamp::new(crate::events::now_ts().unwrap())
+                                .unwrap(),
+                            seq: std::num::NonZeroU64::MIN,
+                            actor: ads_core::gate::Actor {
+                                kind: ads_core::gate::ActorKind::Daemon,
+                                id: Id::new("core").unwrap(),
+                            },
+                            cause: None,
+                            data_class: ads_core::gate::DataClass::Internal,
+                        },
+                    )
+                })
+                .unwrap()
+        };
+        plan("before-move").unwrap();
+
+        let moved = fixture.root.join("moved");
+        fs::rename(&parent, &moved).expect("the idle gate must allow the parent to move");
+        let assert_refused = |id, reason| {
+            let Err(PlanActionError::Inspect(stop)) = plan(id) else {
+                panic!("the gate must refuse the old work folder");
+            };
+            assert_eq!(stop.reason, reason);
+            assert!(!stop.to_string().contains(work_root));
+        };
+        assert_refused("missing-root", Reason::Missing);
+
+        fs::create_dir_all(&path).unwrap();
+        fs::write(path.join("output.txt"), b"replacement").unwrap();
+        assert_refused("changed-root", Reason::Changed);
+        assert_eq!(
+            fs::read(moved.join("work/output.txt")).unwrap(),
+            b"original"
+        );
+    }
+
     #[tokio::test]
     async fn missing_workdir_keeps_queue_and_other_approvals_available() {
         use crate::api::{ApiConfig, ApiError, LocalApi};

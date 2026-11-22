@@ -9,7 +9,7 @@ use ads_core::gate::{
 
 use crate::disk::{Disk, Probe};
 use crate::effects::Effects;
-use crate::fence::{Fence, FenceError};
+use crate::fence::{FenceBinding, FenceError};
 use crate::journal::Journal;
 use crate::limits::Limits;
 use crate::prepare::{Grant, observe_plan, prepare};
@@ -19,7 +19,7 @@ use crate::survey::{Facts, survey};
 
 /// Runs the plan of a permit inside a fence, under a policy the caller trusts.
 pub struct Executor {
-    pub(crate) fence: Fence,
+    fence: FenceBinding,
     pub(crate) policy: GatePolicy,
     pub(crate) limits: Limits,
     probe: Option<Box<dyn Probe + Send>>,
@@ -34,6 +34,16 @@ impl Executor {
     /// happens.
     pub fn new(fence: &Path, policy: GatePolicy) -> Result<Self, FenceError> {
         Self::new_watched(fence, policy, || {})
+    }
+
+    /// Binds the fence's identity while allowing the owner to move it between operations.
+    /// On Windows each operation reopens and holds the original directory, and refuses
+    /// volumes that cannot distinguish a replacement directory.
+    pub fn new_movable(fence: &Path, policy: GatePolicy) -> Result<Self, FenceError> {
+        Ok(Self::with_fence(
+            FenceBinding::build(fence, true, || {}, &mut |_| {})?,
+            policy,
+        ))
     }
 
     /// Like [`Self::new`], calling `resolved` after the path of the fence was resolved and
@@ -56,13 +66,20 @@ impl Executor {
         resolved: impl FnOnce(),
         mut walked: impl FnMut(&str),
     ) -> Result<Self, FenceError> {
-        Ok(Self {
-            fence: Fence::build(fence, resolved, &mut walked)?,
+        Ok(Self::with_fence(
+            FenceBinding::build(fence, false, resolved, &mut walked)?,
+            policy,
+        ))
+    }
+
+    fn with_fence(fence: FenceBinding, policy: GatePolicy) -> Self {
+        Self {
+            fence,
             policy,
             limits: Limits::defaults(),
             probe: None,
             spent: HashSet::new(),
-        })
+        }
     }
 
     /// Treats the volume of the fence as one this executor cannot classify: definitive
@@ -92,8 +109,9 @@ impl Executor {
 
     /// What is on disk at `target`, to fill a plan with facts instead of guesses. Read only.
     pub fn measure(&self, work_root: &AbsPath, target: &AbsPath) -> Result<Facts, Stop> {
-        let work = self.fence.relative(work_root)?;
-        let rel = self.fence.relative(target)?;
+        let fence = self.fence.open()?;
+        let work = fence.relative(work_root)?;
+        let rel = fence.relative(target)?;
         if !target.is_strictly_within(work_root)
             || rel.len() <= work.len()
             || !rel.starts_with(&work)
@@ -103,20 +121,20 @@ impl Executor {
                 format!("{target} is not strictly inside the work root"),
             ));
         }
-        let (_, entry) = self.fence.existing(&rel)?;
-        Ok(survey(&self.fence, &entry, &rel, self.limits.max_depth)?.1)
+        let (_, entry) = fence.existing(&rel)?;
+        Ok(survey(&fence, &entry, &rel, self.limits.max_depth)?.1)
     }
 
     /// Inspects the requested targets before the daemon records its plan.
     pub fn observe_plan(&self, plan: &ActionPlan) -> Result<ActionPlan, Stop> {
-        observe_plan(&self.fence, &self.policy, &self.limits, plan)
+        observe_plan(&self.fence.open()?, &self.policy, &self.limits, plan)
     }
 
     /// Goes through every check of an execution and says what would be done, changing
     /// nothing.
     pub fn rehearse(&self, permit: &ExecutionPermit) -> Result<Report, Box<Failure>> {
         let job = prepare(
-            &self.fence,
+            &self.fence.open().map_err(Failure::before_anything)?,
             &self.policy,
             &self.limits,
             &Grant::of(permit),
@@ -133,7 +151,13 @@ impl Executor {
     pub fn rehearse_effects(&self, action_id: &Id, plan: &ActionPlan) -> Result<Effects, Stop> {
         let grant = Grant::assumed(action_id, plan);
         let budget = Some(self.limits.max_plan_entries);
-        let job = prepare(&self.fence, &self.policy, &self.limits, &grant, budget)?;
+        let job = prepare(
+            &self.fence.open()?,
+            &self.policy,
+            &self.limits,
+            &grant,
+            budget,
+        )?;
         Effects::of(&job, &grant).within(&self.limits)
     }
 
@@ -225,7 +249,8 @@ impl Executor {
         self.spent.insert(action_id);
 
         let grant = Grant::of(&permit);
-        let mut job = prepare(&self.fence, &self.policy, &self.limits, &grant, None)
+        let fence = self.fence.open().map_err(Failure::before_anything)?;
+        let mut job = prepare(&fence, &self.policy, &self.limits, &grant, None)
             .map_err(Failure::before_anything)?;
         if let Some(approved) = approved {
             let found = Effects::of(&job, &grant);
@@ -252,7 +277,7 @@ impl Executor {
         let floor = job.floor.clone();
         let private = job.private.clone();
         let mut disk = Disk {
-            fence: &self.fence,
+            fence: &fence,
             floor: &floor,
             private: private.as_deref(),
             work: job.work,

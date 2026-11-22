@@ -49,6 +49,8 @@ Um caminho é resolvido de novo pelo sistema a cada chamada. Conferir um caminho
 
 **Um identificador fixa o objeto, não o lugar.** Uma pasta aberta continua podendo ser renomeada ou movida por outro processo, e as operações relativas a ela vão junto. No Windows o executor a segura: abre a pasta sem conceder a outros o direito de apagar, e enquanto esse identificador existe o sistema recusa renomear ou mover a pasta e as pastas acima dela. No Linux não existe como segurar. Essa diferença decide onde o executor apaga de verdade (ver [Apagar de verdade](#apagar-de-verdade)).
 
+No Windows, o portão do daemon guarda a identidade da raiz de trabalho e só mantém o identificador aberto durante a inspeção, o ensaio ou a execução. A cada abertura, o caminho antigo precisa levar à mesma pasta em um volume com identidade estável. Uma raiz movida ou substituída é recusada com `E_FS_MISSING` ou `E_FS_CHANGED`, respectivamente. Um volume que não permite conferir a identidade da raiz reaberta é recusado com `E_FS_IDENTITY_UNSTABLE`.
+
 ## O que é conferido antes da primeira alteração
 
 1. O plano, julgado de novo pela política confiável, não pode sair negado, nem como um apagar que a política manda para a quarentena, nem exigindo uma aprovação que a licença não traz.
@@ -93,7 +95,7 @@ O que continua sem detecção mesmo onde a identidade é estável:
 - **NTFS:** em tese, um registro da MFT que dê a volta nos 65 536 valores da sequência. Só troca o objeto aprovado por um objeto recém-criado, o que equivale a conteúdo reescrito no mesmo objeto, que já fica fora.
 - **Nos dois:** conteúdo reescrito no mesmo objeto com o mesmo tamanho, e datas (item 11).
 
-Nos volumes marcados "recusados", a troca pode passar despercebida. O executor permite a quarentena e recusa, ainda no ensaio, a restauração e a exclusão definitiva, inclusive a purga. Os itens podem ser [copiados manualmente](#restauração).
+Nos volumes marcados "recusados", a troca pode passar despercebida. Com uma cerca mantida aberta, o executor permite a quarentena e recusa, ainda no ensaio, a restauração e a exclusão definitiva, inclusive a purga. Os itens podem ser [copiados manualmente](#restauração).
 
 ## Alterações
 

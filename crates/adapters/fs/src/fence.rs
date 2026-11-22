@@ -1,6 +1,6 @@
 //! The fence: the one folder everything the executor touches has to be physically inside.
 //!
-//! The fence is opened once and stays open. A path of a plan is text: here it becomes a list
+//! The fence is bound to a directory at construction. A path of a plan becomes a list
 //! of names below the fence, and each name is opened relative to the folder opened before it,
 //! never following a link. What comes back is the open entry and its identity, not a path:
 //! whoever mutates does it through what is open (see `sys`).
@@ -163,7 +163,7 @@ impl std::fmt::Display for FenceError {
 /// The fence as text: how a path of a plan is told to be inside it, and written back.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Frame {
-    /// As the operating system resolved it. Opened once; afterwards only shown to people.
+    /// As the operating system resolved it. I/O uses the individual names in `parts`.
     root: PathBuf,
     parts: Parts,
 }
@@ -259,7 +259,7 @@ impl Frame {
             walked(name);
         }
         self.walk_again(&ids)?;
-        // The holds go with `held`: afterwards the fence is an open folder like any other.
+        // The final handle keeps the fence and its ancestors in place on Windows.
         drop(held);
         Ok(node)
     }
@@ -326,15 +326,15 @@ pub(crate) struct Held {
 
 /// The base folder, open. Paths are named by their names below it (`rel`).
 #[derive(Debug)]
-pub struct Fence {
+pub(crate) struct FenceBinding {
     frame: Frame,
-    root: Node,
+    root: Option<Node>,
     home: Meta,
     /// What the volume of the fence said about itself, or why the query failed.
     volume: Result<VolumeFacts, Stop>,
 }
 
-impl Fence {
+impl FenceBinding {
     /// Resolves `base` and opens the fence. The resolution only says which names to walk:
     /// the fence is then opened from the root of its volume, name by name, without
     /// following a link. If the path changed in between, the walk refuses or opens exactly
@@ -342,6 +342,7 @@ impl Fence {
     /// with each name the walk opened, for tests.
     pub(crate) fn build(
         base: &Path,
+        movable: bool,
         resolved: impl FnOnce(),
         walked: &mut dyn FnMut(&str),
     ) -> Result<Self, FenceError> {
@@ -355,9 +356,41 @@ impl Fence {
         let volume = root.volume().map_err(unclassified_volume);
         Ok(Self {
             frame,
-            root,
+            root: if movable && sys::HOLDS {
+                None
+            } else {
+                Some(root)
+            },
             home,
             volume,
+        })
+    }
+
+    pub(crate) fn open(&self) -> Result<Fence<'_>, Stop> {
+        let root = if let Some(root) = &self.root {
+            root.again()
+                .map_err(|_| Stop::new(Reason::Io, "cannot reopen the work folder"))?
+        } else {
+            let root = self.frame.open(&mut |_| {}).map_err(work_folder_error)?;
+            let current = root
+                .meta()
+                .map_err(|_| Stop::new(Reason::Io, "cannot identify the work folder"))?;
+            if current.id != self.home.id || current.kind != Some(Kind::Dir) {
+                return Err(Stop::new(Reason::Changed, "the work folder was replaced"));
+            }
+            if !self.volume.as_ref().is_ok_and(VolumeFacts::stable) {
+                return Err(Stop::new(
+                    Reason::IdentityUnstable,
+                    "the volume cannot verify the identity of a reopened work folder",
+                ));
+            }
+            root
+        };
+        Ok(Fence {
+            frame: &self.frame,
+            root,
+            home: self.home,
+            volume: self.volume.as_ref(),
         })
     }
 
@@ -370,11 +403,48 @@ impl Fence {
         )));
     }
 
+    pub(crate) fn text(&self) -> String {
+        self.frame.text_of(&[])
+    }
+}
+
+fn work_folder_error(error: FenceError) -> Stop {
+    match error {
+        FenceError::Unresolved { cause, .. }
+            if matches!(
+                cause.downcast_ref::<sys::Error>(),
+                Some(sys::Error::Missing(_))
+            ) || cause
+                .downcast_ref::<io::Error>()
+                .is_some_and(|error| error.kind() == io::ErrorKind::NotFound) =>
+        {
+            Stop::new(Reason::Missing, "the work folder no longer exists")
+        }
+        FenceError::NotADirectory => Stop::new(
+            Reason::NotADirectory,
+            "the work folder path is no longer a directory",
+        ),
+        FenceError::NotPlain(_) => Stop::new(
+            Reason::NotPhysical,
+            "the work folder path is no longer physical",
+        ),
+        _ => Stop::new(Reason::Io, "cannot open the work folder"),
+    }
+}
+
+pub(crate) struct Fence<'a> {
+    frame: &'a Frame,
+    root: Node,
+    home: Meta,
+    volume: Result<&'a VolumeFacts, &'a Stop>,
+}
+
+impl Fence<'_> {
     /// Refuses `what` unless an object deleted and recreated under the same name gets another
     /// identity on the volume of the fence: what depends on telling the two apart is not done
     /// where they cannot be told apart.
     pub(crate) fn stable_identity(&self, what: &str) -> Result<(), Stop> {
-        require_stable_identity(self.volume.as_ref(), what)
+        require_stable_identity(self.volume, what)
     }
 
     /// The fence as a plan writes it (`C:\work`, `/work`).
