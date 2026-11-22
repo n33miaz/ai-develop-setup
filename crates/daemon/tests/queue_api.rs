@@ -726,54 +726,19 @@ async fn the_configured_queue_id_is_told_before_and_after_creation() {
     assert_eq!(bench.kinds(), ["created:2"]);
 }
 
-struct ObservedDiscovery {
-    queue: Arc<LoggedQueue>,
-    entered: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
-}
-impl QueueControl for ObservedDiscovery {
-    fn configured(&self, session: &LocalSession) -> Result<CommonIdV1, ApiError> {
-        if let Some(entered) = self.entered.lock().unwrap().take() {
-            entered.send(()).unwrap();
-        }
-        self.queue.configured(session)
-    }
-    fn get(
-        &self,
-        session: &LocalSession,
-        id: &CommonIdV1,
-    ) -> Result<CommandQueueGetResponseV2Result, ApiError> {
-        self.queue.get(session, id)
-    }
-    fn state(
-        &self,
-        session: &LocalSession,
-        id: &CommonIdV1,
-    ) -> Result<RecordTaskQueueV1State, ApiError> {
-        self.queue.state(session, id)
-    }
-    fn start(&self, session: &LocalSession, id: &CommonIdV1, cause: &str) -> Result<(), ApiError> {
-        self.queue.start(session, id, cause)
-    }
-    fn stop(&self, session: &LocalSession, id: &CommonIdV1, cause: &str) -> Result<bool, ApiError> {
-        self.queue.stop(session, id, cause)
-    }
-}
-
 #[tokio::test(flavor = "current_thread")]
-async fn a_waiting_queue_discovery_does_not_stall_other_requests() {
+async fn queue_discovery_answers_while_a_start_holds_the_write() {
     let bench = Bench::new("queue-configured-wait");
-    let (entered, discovering) = tokio::sync::oneshot::channel();
-    let f = fixture(Some(Arc::new(ObservedDiscovery {
-        queue: bench.open(),
-        entered: Mutex::new(Some(entered)),
-    })))
-    .await;
+    let f = fixture(Some(Arc::new(bench.bind_or_pending()))).await;
     let mut writer = authenticated(&f).await;
     let mut ws = authenticated(&f).await;
-    let mut other = authenticated(&f).await;
+    let create = command("queue.create", bench.params());
+    assert_eq!(
+        exchange(&mut writer, &create).await["result"]["accepted"],
+        true
+    );
 
-    // Start holds the queue mutex through the anchor write. The anchor's timeout also
-    // releases it if discovery blocks the runtime thread that drives this test.
+    // Start holds the queue mutex through the anchor write, which waits for the release below.
     let (entered, writing) = tokio::sync::oneshot::channel();
     let (release, held) = std::sync::mpsc::channel();
     *bench.anchor.hold_write.lock().unwrap() = Some(HeldWrite {
@@ -784,6 +749,63 @@ async fn a_waiting_queue_discovery_does_not_stall_other_requests() {
     let start = tokio::spawn(async move { exchange(&mut writer, &start).await });
     bounded(writing).await.unwrap();
 
+    let reply = bounded(exchange(&mut ws, &command("queue.configured", json!({})))).await;
+    assert_eq!(reply["result"], json!({"queue_id": bench.queue}), "{reply}");
+    assert!(!start.is_finished(), "the start must still hold the write");
+    release.send(()).unwrap();
+    let reply = bounded(start).await.unwrap();
+    assert_eq!(reply["result"]["accepted"], true, "{reply}");
+}
+
+/// Discovery that blocks its thread until released, to prove the API runs it off the runtime.
+struct BlockingDiscovery {
+    entered: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    release: Mutex<std::sync::mpsc::Receiver<()>>,
+}
+impl QueueControl for BlockingDiscovery {
+    fn configured(&self, _: &LocalSession) -> Result<CommonIdV1, ApiError> {
+        if let Some(entered) = self.entered.lock().unwrap().take() {
+            entered.send(()).unwrap();
+        }
+        // The timeout frees the runtime thread if discovery ever runs on it, so the test fails.
+        let released = self
+            .release
+            .lock()
+            .unwrap()
+            .recv_timeout(Duration::from_secs(15));
+        released.map_err(|_| ApiError::Storage)?;
+        Ok(id("queue-blocked"))
+    }
+    fn get(
+        &self,
+        _: &LocalSession,
+        _: &CommonIdV1,
+    ) -> Result<CommandQueueGetResponseV2Result, ApiError> {
+        Err(ApiError::QueueNotFound)
+    }
+    fn state(&self, _: &LocalSession, _: &CommonIdV1) -> Result<RecordTaskQueueV1State, ApiError> {
+        Err(ApiError::QueueNotFound)
+    }
+    fn start(&self, _: &LocalSession, _: &CommonIdV1, _: &str) -> Result<(), ApiError> {
+        Err(ApiError::QueueNotFound)
+    }
+    fn stop(&self, _: &LocalSession, _: &CommonIdV1, _: &str) -> Result<bool, ApiError> {
+        Err(ApiError::QueueNotFound)
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_blocking_queue_discovery_does_not_stall_other_requests() {
+    let (entered, discovering) = tokio::sync::oneshot::channel();
+    let (release, held) = std::sync::mpsc::channel();
+    let f = fixture(Some(Arc::new(BlockingDiscovery {
+        entered: Mutex::new(Some(entered)),
+        release: Mutex::new(held),
+    })))
+    .await;
+    let mut ws = authenticated(&f).await;
+    let mut other = authenticated(&f).await;
+
     let ask = command("queue.configured", json!({}));
     let ask = tokio::spawn(async move { exchange(&mut ws, &ask).await });
     bounded(discovering).await.unwrap();
@@ -793,15 +815,11 @@ async fn a_waiting_queue_discovery_does_not_stall_other_requests() {
     );
     let reply = exchange(&mut other, &subscribe).await;
     assert_eq!(reply["result"]["accepted"], true, "{reply}");
-    assert!(!ask.is_finished(), "discovery must wait for the queue lock");
-    release
-        .send(())
-        .expect("the independent request must finish before the lock holder times out");
+    assert!(!ask.is_finished(), "discovery must still be blocked");
+    release.send(()).unwrap();
 
     let reply = bounded(ask).await.unwrap();
-    assert_eq!(reply["result"], json!({"queue_id": bench.queue}));
-    let reply = bounded(start).await.unwrap();
-    assert_eq!(reply["result"]["accepted"], true, "{reply}");
+    assert_eq!(reply["result"], json!({"queue_id": "queue-blocked"}));
 }
 
 #[tokio::test]
