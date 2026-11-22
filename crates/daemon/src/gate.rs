@@ -375,6 +375,12 @@ impl SessionGate {
         Ok(snapshot)
     }
 
+    pub(crate) fn policy_changed(&self, history: &GateHistory) -> bool {
+        history
+            .policy_warning(&self.policy)
+            .is_ok_and(|warning| warning.is_some())
+    }
+
     pub fn inspect(
         &self,
         log: &mut ProductLog,

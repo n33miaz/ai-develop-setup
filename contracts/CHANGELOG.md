@@ -4,6 +4,7 @@ Formato: uma seção por data. Contrato novo, campo opcional acrescentado, vers�
 
 ## 2026-11-21
 
+- `approval.list.response:4` e `local-api.server-message:9` informam `policy_changed` quando a política vigente impede aprovar um pedido pendente. O dono ainda pode negar o pedido.
 - `harness.list.response:2` e `local-api.server-message:8` informam os apelidos das pastas ausentes na partida, quando houver. Sem pastas ausentes, a resposta mantém a forma da versão anterior.
 
 Contagem dos pedidos de aprovação com histórico ilegível.

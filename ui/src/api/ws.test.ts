@@ -33,7 +33,7 @@ class FakeSocket extends EventTarget {
     this.dispatchEvent(new Event('close'))
   }
   receive(message: unknown) {
-    valid('urn:ads:contract:local-api.server-message:8', message)
+    valid('urn:ads:contract:local-api.server-message:9', message)
     this.receiveRaw(message)
   }
   /** Entrega sem conferir: simula um núcleo que manda o que o contrato não aceita. */
