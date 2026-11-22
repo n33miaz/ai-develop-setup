@@ -38,6 +38,19 @@ function open(name: string) {
   return within(details)
 }
 
+function toggleQueue(details: HTMLDetailsElement, open: boolean) {
+  return new Promise<void>((resolve) => {
+    details.addEventListener(
+      'toggle',
+      () => {
+        resolve()
+      },
+      { once: true },
+    )
+    details.open = open
+  })
+}
+
 it('creates, starts and stops a queue using the reported state', async () => {
   const api = mockApi()
   api.get
@@ -70,30 +83,60 @@ it('fills in the queue id the daemon reports', async () => {
   expect(panel.getByLabelText('ID da fila')).toHaveValue('local:queue.main')
 })
 
-it('asks for the configured queue again after a failed request, and only then', async () => {
+it('asks again once when the panel reopened while a failed discovery was pending', async () => {
   const api = mockApi()
-  api.configured.mockReset().mockRejectedValueOnce(new Error('offline'))
+  let fail: (reason: Error) => void = () => undefined
+  api.configured
+    .mockReset()
+    .mockReturnValueOnce(
+      new Promise<string>((_, reject) => {
+        fail = reject
+      }),
+    )
+    .mockRejectedValueOnce(new Error('offline'))
+    .mockResolvedValueOnce('local:queue.main')
+  render(<QueuePanel api={api} />)
+  const details = screen.getByText('Fila de tarefas').closest('details')
+  if (!details) throw new Error('missing panel')
+  await toggleQueue(details, true)
+  await toggleQueue(details, false)
+  await toggleQueue(details, true)
+  expect(api.configured).toHaveBeenCalledTimes(1)
+  fail(new Error('offline'))
+  await vi.waitFor(() => {
+    expect(api.configured).toHaveBeenCalledTimes(2)
+  })
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  expect(api.configured).toHaveBeenCalledTimes(2)
+  await toggleQueue(details, false)
+  await toggleQueue(details, true)
+  expect(
+    await within(details).findByText('Fila configurada no daemon: local:queue.main'),
+  ).toBeVisible()
+  expect(api.configured).toHaveBeenCalledTimes(3)
+})
+
+it.each([
+  ['a connection failure', new Error('offline')],
+  ['unavailable queue controls', new CommandRefusal(QUEUE_NOT_CONFIGURED)],
+])('asks for the configured queue again after %s', async (_, error) => {
+  const api = mockApi()
+  api.configured.mockReset().mockRejectedValueOnce(error)
   api.configured.mockResolvedValue('local:queue.main')
   render(<QueuePanel api={api} />)
   const details = screen.getByText('Fila de tarefas').closest('details')
   if (!details) throw new Error('missing panel')
   const panel = within(details)
-  const toggle = async (open: boolean) => {
-    details.open = open
-    await new Promise((resolve) => {
-      details.addEventListener('toggle', resolve, { once: true })
-    })
-  }
-  await toggle(true)
-  await vi.waitFor(() => {
-    expect(api.configured).toHaveBeenCalledTimes(1)
-  })
-  await toggle(false)
-  await toggle(true)
+  await toggleQueue(details, true)
+  expect(api.configured).toHaveBeenCalledTimes(1)
+  await toggleQueue(details, false)
+  expect(api.configured).toHaveBeenCalledTimes(1)
+  await toggleQueue(details, true)
   expect(await panel.findByText('Fila configurada no daemon: local:queue.main')).toBeVisible()
   expect(panel.getByLabelText('ID da fila')).toHaveValue('local:queue.main')
-  await toggle(false)
-  await toggle(true)
+  expect(panel.queryByRole('alert')).toBeNull()
+  await toggleQueue(details, false)
+  await toggleQueue(details, true)
   expect(api.configured).toHaveBeenCalledTimes(2)
 })
 

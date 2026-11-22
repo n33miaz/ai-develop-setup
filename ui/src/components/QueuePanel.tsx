@@ -49,22 +49,30 @@ export function QueuePanel({ api }: { api: Api }) {
   const [configured, setConfigured] = useState<string>()
   const lock = useRef(false)
 
-  const asked = useRef(false)
+  const discovery = useRef<'idle' | 'pending' | 'reopened' | 'done'>('idle')
 
-  // Asked when the panel opens until one answer arrives: the core says which queue it serves.
+  // A reopen during discovery permits one retry if the pending request fails.
   function askConfigured() {
-    if (asked.current) return
-    asked.current = true
+    if (discovery.current === 'done' || discovery.current === 'reopened') return
+    if (discovery.current === 'pending') {
+      discovery.current = 'reopened'
+      return
+    }
+    discovery.current = 'pending'
     api.configured().then(
       (queueId) => {
+        discovery.current = 'done'
         setConfigured(queueId)
         setId((current) => current || queueId)
+        setMessage((current) => (current === 'queue.unconfigured' ? undefined : current))
       },
       (error: unknown) => {
-        asked.current = false
         if (error instanceof CommandRefusal && error.code === QUEUE_NOT_CONFIGURED) {
           setMessage('queue.unconfigured')
         }
+        const reopened = discovery.current === 'reopened'
+        discovery.current = 'idle'
+        if (reopened) askConfigured()
       },
     )
   }
