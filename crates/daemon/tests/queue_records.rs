@@ -13,6 +13,7 @@ use ads_storage::{
 use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 /// A database folder inside the repository's `.test-tmp`, removed file by file on drop.
@@ -269,13 +270,16 @@ fn a_rebound_queue_replays_the_policy_of_its_creation() {
         toml::from_str("attempt_limit = 3\nadmission_limit = 1000\n").unwrap();
     let anchor = Anchor::default();
     let bind_queue = || {
+        let log = open(&fixture.db(), &anchor);
+        let busy_timeout = Duration::from_millis(log.busy_timeout_ms().into());
         LoggedQueue::bind(
-            Arc::new(Mutex::new(open(&fixture.db(), &anchor))),
+            Arc::new(Mutex::new(log)),
             id("queue-01"),
             QueueOwner {
                 owner_id: id("owner-01"),
                 device_id: id("device-01"),
             },
+            busy_timeout,
         )
         .unwrap()
     };
