@@ -99,11 +99,26 @@ desativado nessa janela. O bundle é o mesmo da interface web.
 
 ## Fila de tarefas e aprovações
 
-Com a conexão autenticada, abra **Fila de tarefas** e informe o
-`queue_id` de `local-identities.toml`, conforme o [guia do daemon](../crates/daemon/README.md).
-Consulte o estado para criar a fila, ligá-la ou pará-la. A consulta mostra o
+Com a conexão autenticada, abra **Fila de tarefas**. O painel pede ao daemon o
+ID da fila configurada (`queue.configured`), exibe o ID recebido e preenche o
+campo **ID da fila** se ele estiver vazio. Clique em **Consultar** para ver o
+estado e acessar as ações de criar, ligar ou parar a fila. A consulta mostra o
 estado e os limites da última política registrada no histórico da fila, ou avisa
 que a fila ainda não tem limites registrados.
+
+Se a descoberta falhar, digite o `queue_id` de `local-identities.toml` em **ID da
+fila** e clique em **Consultar**, ou feche e reabra o painel para tentar a
+descoberta novamente. Se a consulta de descoberta ainda estiver em andamento
+ao reabrir o painel, a nova tentativa só ocorre se a consulta falhar. Se o
+daemon não oferecer a descoberta, o aviso orienta a atualizá-lo ou digitar o ID.
+Se os controles da fila não tiverem iniciado, confira o diagnóstico do daemon
+e reinicie-o. Consulte o [guia do daemon](../crates/daemon/README.md).
+
+O aviso de descoberta é independente dos avisos de **Consultar**, **Criar
+fila**, **Ligar fila** e **Parar fila**. Por exemplo, se a descoberta falhar
+depois de uma consulta com um ID incorreto, os dois avisos continuam visíveis.
+Quando o ID configurado é conhecido, o aviso de ID incorreto indica qual é
+esse ID. Uma descoberta bem-sucedida limpa o aviso de descoberta.
 
 Abra **Aprovações** para consultar as ações pendentes. Confira a lista registrada
 de alvos, efeitos e caminhos na quarentena. Para aprovar, confira essa lista e
