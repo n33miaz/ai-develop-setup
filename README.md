@@ -39,13 +39,19 @@ Siga o [README do daemon](crates/daemon/README.md) para abrir uma ferramenta em 
 
 ## Rodar os testes
 
-Comandos das suítes do [CI](.github/workflows/ci.yml):
+Rode os comandos locais na pasta indicada.
 
-| Pasta | Comandos |
-|---|---|
-| Raiz | `cargo test --locked` e `python tools/check_deps.py check` |
-| `contracts/` | `npm ci --ignore-scripts` e `npm test` |
-| `ui/` | `npm ci --ignore-scripts` e `npm test` |
+| Pasta | Comandos | Alcance |
+|---|---|---|
+| Raiz | `cargo test --locked` e `python tools/check_deps.py check` | Testes Rust dos membros padrão do workspace na plataforma local (a casca Tauri fica fora desse conjunto) e verificação das regras do repositório, incluindo o grafo de dependências e o mapa de módulos. |
+| `contracts/` | `npm ci --ignore-scripts` e `npm test` | Instalação das dependências fixadas e execução dos testes das ferramentas de contratos. |
+| `ui/` | `npm ci --ignore-scripts` e `npm test` | Instalação das dependências fixadas e execução dos testes da interface. |
+
+No Windows, o CI complementa essa cobertura com os jobs `shell-check` (casca Tauri e teste de conexão da janela),
+`pty-windows` (sessões ConPTY e integração com o daemon), `fs-windows` (executor de arquivos, incluindo junções),
+`storage-windows` (armazenamento), `vault-windows` (adaptador de cofre) e `launcher-windows` (lançador e pastas privadas).
+O job `changes` seleciona esses jobs pelos caminhos alterados. Em disparos manuais ou quando o diff não está disponível, todos são selecionados.
+Consulte os filtros em `changes` e os comandos nos respectivos jobs do [workflow do CI](.github/workflows/ci.yml).
 
 ## Mapa de documentos
 
