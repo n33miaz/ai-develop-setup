@@ -30,7 +30,7 @@ Nenhuma das três lê `AGENTS.local.md`: o Claude Code diz isso explicitamente; 
 - **Projeto:** percorre da raiz do projeto até a pasta atual e "inclui no máximo um arquivo por pasta", procurando nesta ordem: `AGENTS.override.md`, `AGENTS.md`, e os nomes de `project_doc_fallback_filenames`. Outros nomes são ignorados.
 - **Junção:** concatena da raiz para baixo; o que está mais perto da pasta atual vem depois e prevalece.
 - **Limite:** `project_doc_max_bytes`, padrão de 32 KiB somados; passando disso, os arquivos seguintes não entram.
-- **Consequência aqui.** Um `AGENTS.override.md` na raiz **substitui** este `AGENTS.md` para o Codex: as regras deste arquivo deixam de ser lidas. Como não há import documentado, um override precisa copiar as regras, e a cópia envelhece. Prefira um `AGENTS.md` numa subpasta ou o arquivo global. `AGENTS.override.md` hoje não está no `.gitignore`.
+- **Consequência aqui.** Um `AGENTS.override.md` na raiz **substitui** este `AGENTS.md` para o Codex: as regras deste arquivo deixam de ser lidas. Como não há import documentado, um override precisa copiar as regras, e a cópia envelhece. Prefira um `AGENTS.md` numa subpasta ou o arquivo global. O `.gitignore` inclui o `AGENTS.override.md`.
 - **Não verificado:** a versão mínima do Codex para esse comportamento; qualquer forma de import.
 
 ## Antigravity
