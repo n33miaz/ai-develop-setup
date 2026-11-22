@@ -176,8 +176,8 @@ confere de novo se o programa e a pasta existem no momento de abrir a sessão.
 Como só lê, não passa pela cache de idempotência: repetir a chave devolve a
 lista de novo, nunca `replayed`. `api::Launcher::catalog` fornece a lista; o
 padrão é vazio, como em `DisabledLauncher`. O daemon escreve a
-`local-api.server-message:8`, que inclui a resposta sobre pastas ausentes e a
-listagem `approval.list.response:3`. A resposta de `harness.list` é enviada
+`local-api.server-message:9`, que inclui a resposta sobre pastas ausentes e a
+listagem `approval.list.response:4`. A resposta de `harness.list` é enviada
 quando o cliente a solicita. Um daemon anterior ao comando o recusa
 com `METHOD_NOT_FOUND`, e a interface mostra que o daemon precisa ser atualizado.
 
@@ -282,7 +282,7 @@ recebe `REMOTE_ORIGIN_REFUSED`. O dono e o aparelho vêm do daemon
 `approvals::ApprovalControl` exige a prova `auth::LocalSession`.
 
 - `approval.list` (só `_meta`) responde `{"approvals": [...], "more": ..., "unreadable": ...}`
-  ([`command.approval.list.response:3`](../../contracts/README.md#api-local)):
+  ([`command.approval.list.response:4`](../../contracts/README.md#api-local)):
   da mais antiga à mais nova, cada ação cuja aprovação foi pedida e ainda não
   foi concedida, negada nem expirada, com `approval_id`, `risk`, `summary`,
   `requested_at`, `expires_at`, `not_approvable`, o registro do plano
@@ -338,8 +338,11 @@ recebe `REMOTE_ORIGIN_REFUSED`. O dono e o aparelho vêm do daemon
   vem também o porquê: `effects_refused` (o ensaio foi recusado),
   `effects_unreadable` (o registro gravado não passa na leitura, com aviso no
   log do processo; a listagem das outras ações segue) ou `effects_not_listed`.
-  Aprovar uma dessas grava a resposta e volta `APPROVAL_NOT_APPROVABLE`, com a
-  ação ainda aguardando; negar continua permitido e nunca lê os efeitos.
+  Esses impedimentos de plano e de efeitos fazem a API gravar a resposta e
+  devolver `APPROVAL_NOT_APPROVABLE`, com a ação ainda aguardando. A listagem
+  também inclui `policy_changed` se o julgamento do portão sob a política vigente
+  impedir a aprovação. O portão reconfere a política ao responder.
+  Negar continua permitido e nunca lê os efeitos.
 - Para executar uma ação aprovada, `SessionGate::execute` exige a resposta
   local gravada que causou a concessão. Confere o ator, o canal e o
   `effects_hash`, refaz o ensaio e exige os mesmos efeitos. A licença local

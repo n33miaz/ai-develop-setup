@@ -45,7 +45,7 @@ const UNREADABLE_REASON: &str = "E_HISTORY_UNREADABLE";
 /// the token check; the owner and the device come from the implementation, never the request.
 pub trait ApprovalControl: Send + Sync + 'static {
     /// The actions waiting for the owner, oldest first, as the `result` of
-    /// `command.approval.list.response:3`.
+    /// `command.approval.list.response:4`.
     fn pending(&self, session: &LocalSession) -> Result<Pending, ApiError>;
     /// Records the answer, then lets the gate act on it. `cause` is the command id. Returns
     /// whether the outcome is the one of an earlier answer with the same idempotency key.
@@ -487,11 +487,6 @@ impl ApprovalControl for ApprovalDesk {
     fn pending(&self, _: &LocalSession) -> Result<Pending, ApiError> {
         let desk = self.lock()?;
         let max_list_bytes = desk.max_list_bytes;
-        let roots: Vec<AbsPath> = desk
-            .gates
-            .iter()
-            .map(|gate| gate.work_root().clone())
-            .collect();
         let mut page = Pending {
             approvals: Vec::new(),
             more: false,
@@ -517,9 +512,9 @@ impl ApprovalControl for ApprovalDesk {
                 };
                 // Only what a gate here can answer; the rest belongs to another session folder
                 // and never takes a place in the page.
-                if !root_of(&history).is_some_and(|root| roots.contains(&root)) {
+                let Some(gate_index) = desk.gate_for(&history) else {
                     return Visit::Skip;
-                }
+                };
                 let Some(Event::ApprovalRequested(requested)) = history.events.last() else {
                     return Visit::Skip;
                 };
@@ -539,6 +534,10 @@ impl ApprovalControl for ApprovalDesk {
                 }
                 let shown = Shown::read(reads, &history.plan, size, max_list_bytes);
                 let effects = shown.effects();
+                let mut reasons = shown.reasons(history.plan.fields());
+                if desk.gates[gate_index].policy_changed(&history) {
+                    reasons.push("policy_changed");
+                }
                 let data = requested.data();
                 let item = json!({
                     "action_id": data.action_id.as_str(),
@@ -548,7 +547,7 @@ impl ApprovalControl for ApprovalDesk {
                     "summary": data.summary.as_str(),
                     "requested_at": requested.ts().as_str(),
                     "expires_at": data.expires_at.as_str(),
-                    "not_approvable": shown.reasons(history.plan.fields()),
+                    "not_approvable": reasons,
                     "plan": history.plan.to_json(),
                     "effects_hash": effects.map(|(_, hash)| hash),
                     "effects": effects.map(|(effects, _)| effects),
@@ -1155,7 +1154,7 @@ mod tests {
             "jsonrpc": "2.0", "id": new_id().unwrap(),
             "result": {"approvals": pending, "more": false, "unreadable": 0}
         });
-        checked("urn:ads:command:approval.list.response:3", reply).unwrap();
+        checked("urn:ads:command:approval.list.response:4", reply).unwrap();
         let [item] = &pending[..] else {
             panic!("expected one pending approval: {pending:?}");
         };
@@ -1306,6 +1305,67 @@ mod tests {
             desk.answer(&session, &deny, &new_id().unwrap()),
             Err(ApiError::ApprovalAlreadyAnswered)
         );
+    }
+
+    #[tokio::test]
+    async fn listing_pending_approvals_reports_policy_changes_and_still_allows_denial() {
+        use crate::api::tests::{authenticate, fake_service};
+        use futures_util::{SinkExt, StreamExt};
+        use std::sync::Arc;
+        use tokio_tungstenite::tungstenite::Message;
+
+        let mut bench = Bench::new();
+        let original = bench.gate(OVER_LIMIT);
+        let (changed, approval, hash) = bench.waiting(&original, "act-policy-changed");
+        let other = bench.other_work();
+        let unchanged_gate = bench.gate_in(&other, OVER_LIMIT);
+        let (unchanged, _, _) = bench.waiting(&unchanged_gate, "act-policy-unchanged");
+        let replacement = bench.gate("approval_item_limit = 500");
+        let desk = Arc::new(bench.desk(vec![replacement, unchanged_gate]));
+        let (api, _, _, peer) = fake_service().await;
+        let api = api.with_approvals(desk.clone());
+        let port = api.port().unwrap();
+        let url = api.launch_url().unwrap();
+        let (_, token) = url.split_once("&token=").unwrap();
+        let server = tokio::spawn(api.run());
+
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            let mut ws = authenticate(port, token).await;
+            let id = new_id().unwrap();
+            let command = json!({
+                "jsonrpc": "2.0", "id": id, "method": "approval.list",
+                "params": {"_meta": {"origin": "local", "idempotency_key": id}}
+            });
+            ws.send(Message::Text(command.to_string().into()))
+                .await
+                .unwrap();
+            let reply: Value =
+                serde_json::from_str(ws.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+            assert_eq!(reply["id"], id);
+            reply
+        })
+        .await
+        .expect("approval.list timed out");
+        server.abort();
+        peer.abort();
+
+        let result = &reply["result"];
+        assert_eq!(result["more"], false);
+        assert_eq!(result["unreadable"], 0);
+        let [changed_item, unchanged_item] = result["approvals"].as_array().unwrap().as_slice()
+        else {
+            panic!("expected both pending approvals: {reply}");
+        };
+        assert_eq!(changed_item["action_id"], changed.as_str());
+        assert_eq!(changed_item["not_approvable"], json!(["policy_changed"]));
+        assert_eq!(unchanged_item["action_id"], unchanged.as_str());
+        assert_eq!(unchanged_item["not_approvable"], json!([]));
+
+        let session = session();
+        let deny = params(&changed, &approval, &hash, "deny");
+        assert_eq!(desk.answer(&session, &deny, &new_id().unwrap()), Ok(false));
+        let remaining = desk.pending(&session).unwrap();
+        assert_eq!(only(&remaining.approvals)["action_id"], unchanged.as_str());
     }
 
     #[test]

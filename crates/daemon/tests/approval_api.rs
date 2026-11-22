@@ -182,7 +182,7 @@ async fn exchange(ws: &mut Socket, value: &Value) -> Value {
     };
     let reply: Value = serde_json::from_str(&text).unwrap();
     assert!(
-        valid("urn:ads:contract:local-api.server-message:7", &reply),
+        valid("urn:ads:contract:local-api.server-message:9", &reply),
         "{reply}"
     );
     if let Some(code) = reply["error"].get("code") {
@@ -256,7 +256,7 @@ async fn list_answers_with_the_plan_and_answer_reaches_the_gate_once() {
     let list = command("approval.list", json!({}));
     let reply = exchange(&mut ws, &list).await;
     assert!(
-        valid("urn:ads:command:approval.list.response:3", &reply),
+        valid("urn:ads:command:approval.list.response:4", &reply),
         "{reply}"
     );
     assert_eq!(reply["result"]["unreadable"], 2);

@@ -14,6 +14,16 @@ pub struct GateHistory {
     pub events: Vec<Event>,
 }
 
+impl GateHistory {
+    /// Reports a policy warning for an already loaded history without changing the journal.
+    pub fn policy_warning(
+        &self,
+        policy: &GatePolicy,
+    ) -> Result<Option<JournalError>, JournalError> {
+        policy_warning(eligible_verdict(policy, self).err())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JournalError {
     Missing,
@@ -138,7 +148,7 @@ impl<'a> JournalGate<'a> {
         let history = self.journal.load(action_id)?;
         let mut snapshot =
             load_action(self.policy, self.work_root, action_id, &history)?.snapshot();
-        snapshot.policy_warning = policy_warning(eligible_verdict(self.policy, &history).err())?;
+        snapshot.policy_warning = history.policy_warning(self.policy)?;
         Ok(snapshot)
     }
 
