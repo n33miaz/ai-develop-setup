@@ -159,6 +159,58 @@ impl StorageConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audit_database_path_is_absent_by_default() {
+        assert_eq!(StorageConfig::defaults().audit_database_path(), None);
+    }
+
+    #[test]
+    fn audit_database_path_accepts_absolute_path_with_file_name() {
+        #[cfg(windows)]
+        let path = r"Z:\fictional-storage\audit.sqlite";
+        #[cfg(not(windows))]
+        let path = "/fictional-storage/audit.sqlite";
+
+        let config =
+            StorageConfig::from_toml_str(&format!("audit_database_path = '{path}'")).unwrap();
+        assert_eq!(config.audit_database_path(), Some(Path::new(path)));
+    }
+
+    #[test]
+    fn audit_database_path_rejects_relative_path() {
+        assert_eq!(
+            StorageConfig::from_toml_str("audit_database_path = 'audit.sqlite'"),
+            Err(StorageError::Configuration)
+        );
+    }
+
+    #[test]
+    fn audit_database_path_rejects_root() {
+        #[cfg(windows)]
+        let path = r"Z:\";
+        #[cfg(not(windows))]
+        let path = "/";
+
+        assert_eq!(
+            StorageConfig::from_toml_str(&format!("audit_database_path = '{path}'")),
+            Err(StorageError::Configuration)
+        );
+    }
+
+    #[test]
+    fn audit_database_path_rejects_parent_component() {
+        #[cfg(windows)]
+        let path = r"Z:\fictional-storage\..\audit.sqlite";
+        #[cfg(not(windows))]
+        let path = "/fictional-storage/../audit.sqlite";
+
+        assert_eq!(
+            StorageConfig::from_toml_str(&format!("audit_database_path = '{path}'")),
+            Err(StorageError::Configuration)
+        );
+    }
+
     #[test]
     fn layers_validate_without_echoing_input() {
         let base = StorageConfig::defaults();
