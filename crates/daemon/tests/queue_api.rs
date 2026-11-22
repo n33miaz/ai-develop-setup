@@ -707,6 +707,79 @@ async fn the_configured_queue_id_is_told_before_and_after_creation() {
     assert_eq!(bench.kinds(), ["created:2"]);
 }
 
+/// Holds `configured` until released, standing in for a wait on the queue mutex. The wait gives
+/// up after a while so a stalled runtime thread fails the test instead of hanging it.
+struct HeldDiscovery {
+    queue: Arc<LoggedQueue>,
+    entered: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    release: Mutex<std::sync::mpsc::Receiver<()>>,
+    gave_up: AtomicBool,
+}
+impl QueueControl for HeldDiscovery {
+    fn configured(&self, session: &LocalSession) -> Result<CommonIdV1, ApiError> {
+        if let Some(entered) = self.entered.lock().unwrap().take() {
+            entered.send(()).unwrap();
+        }
+        let waited = self
+            .release
+            .lock()
+            .unwrap()
+            .recv_timeout(Duration::from_secs(3));
+        self.gave_up.store(waited.is_err(), Ordering::SeqCst);
+        self.queue.configured(session)
+    }
+    fn get(
+        &self,
+        session: &LocalSession,
+        id: &CommonIdV1,
+    ) -> Result<CommandQueueGetResponseV2Result, ApiError> {
+        self.queue.get(session, id)
+    }
+    fn state(
+        &self,
+        session: &LocalSession,
+        id: &CommonIdV1,
+    ) -> Result<RecordTaskQueueV1State, ApiError> {
+        self.queue.state(session, id)
+    }
+    fn start(&self, session: &LocalSession, id: &CommonIdV1, cause: &str) -> Result<(), ApiError> {
+        self.queue.start(session, id, cause)
+    }
+    fn stop(&self, session: &LocalSession, id: &CommonIdV1, cause: &str) -> Result<bool, ApiError> {
+        self.queue.stop(session, id, cause)
+    }
+}
+
+#[tokio::test]
+async fn a_waiting_queue_discovery_does_not_stall_other_requests() {
+    let bench = Bench::new("queue-configured-wait");
+    let (entered, waiting) = tokio::sync::oneshot::channel();
+    let (release, held) = std::sync::mpsc::channel();
+    let discovery = Arc::new(HeldDiscovery {
+        queue: bench.open(),
+        entered: Mutex::new(Some(entered)),
+        release: Mutex::new(held),
+        gave_up: AtomicBool::new(false),
+    });
+    let f = fixture(Some(discovery.clone())).await;
+    let mut ws = authenticated(&f).await;
+    let mut other = authenticated(&f).await;
+
+    let ask = command("queue.configured", json!({}));
+    let ask = tokio::spawn(async move { exchange(&mut ws, &ask).await });
+    bounded(waiting).await.unwrap();
+    let reply = bounded(exchange(&mut other, &command("queue.get", bench.params()))).await;
+    assert_eq!(reply["result"]["queue_id"], json!(bench.queue), "{reply}");
+    let _ = release.send(());
+
+    let reply = bounded(ask).await.unwrap();
+    assert_eq!(reply["result"], json!({"queue_id": bench.queue}));
+    assert!(
+        !discovery.gave_up.load(Ordering::SeqCst),
+        "the other request had to wait for the discovery to give up"
+    );
+}
+
 #[tokio::test]
 async fn a_failed_start_write_leaves_the_queue_stopped() {
     let bench = Bench::new("queue-failed-start");

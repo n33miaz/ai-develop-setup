@@ -38,6 +38,19 @@ function open(name: string) {
   return within(details)
 }
 
+function toggleQueue(details: HTMLDetailsElement, open: boolean) {
+  return new Promise<void>((resolve) => {
+    details.addEventListener(
+      'toggle',
+      () => {
+        resolve()
+      },
+      { once: true },
+    )
+    details.open = open
+  })
+}
+
 it('creates, starts and stops a queue using the reported state', async () => {
   const api = mockApi()
   api.get
@@ -85,13 +98,9 @@ it('asks again once when the panel reopened while a failed discovery was pending
   render(<QueuePanel api={api} />)
   const details = screen.getByText('Fila de tarefas').closest('details')
   if (!details) throw new Error('missing panel')
-  const toggle = async (value: boolean) => {
-    details.open = value
-    await new Promise((resolve) => setTimeout(resolve, 0))
-  }
-  await toggle(true)
-  await toggle(false)
-  await toggle(true)
+  await toggleQueue(details, true)
+  await toggleQueue(details, false)
+  await toggleQueue(details, true)
   expect(api.configured).toHaveBeenCalledTimes(1)
   fail(new Error('offline'))
   await vi.waitFor(() => {
@@ -99,12 +108,36 @@ it('asks again once when the panel reopened while a failed discovery was pending
   })
   await new Promise((resolve) => setTimeout(resolve, 0))
   expect(api.configured).toHaveBeenCalledTimes(2)
-  await toggle(false)
-  await toggle(true)
+  await toggleQueue(details, false)
+  await toggleQueue(details, true)
   expect(
     await within(details).findByText('Fila configurada no daemon: local:queue.main'),
   ).toBeVisible()
   expect(api.configured).toHaveBeenCalledTimes(3)
+})
+
+it.each([
+  ['a connection failure', new Error('offline')],
+  ['unavailable queue controls', new CommandRefusal(QUEUE_NOT_CONFIGURED)],
+])('asks for the configured queue again after %s', async (_, error) => {
+  const api = mockApi()
+  api.configured.mockReset().mockRejectedValueOnce(error)
+  api.configured.mockResolvedValue('local:queue.main')
+  render(<QueuePanel api={api} />)
+  const details = screen.getByText('Fila de tarefas').closest('details')
+  if (!details) throw new Error('missing panel')
+  const panel = within(details)
+  await toggleQueue(details, true)
+  expect(api.configured).toHaveBeenCalledTimes(1)
+  await toggleQueue(details, false)
+  expect(api.configured).toHaveBeenCalledTimes(1)
+  await toggleQueue(details, true)
+  expect(await panel.findByText('Fila configurada no daemon: local:queue.main')).toBeVisible()
+  expect(panel.getByLabelText('ID da fila')).toHaveValue('local:queue.main')
+  expect(panel.queryByRole('alert')).toBeNull()
+  await toggleQueue(details, false)
+  await toggleQueue(details, true)
+  expect(api.configured).toHaveBeenCalledTimes(2)
 })
 
 it('tells a mistyped queue id apart and names the configured one', async () => {
