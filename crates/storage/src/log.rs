@@ -1476,7 +1476,8 @@ impl EventLog {
     /// the history does not read and that the request is the action's and still open
     /// (`Conflict` otherwise); another type, other ids or another plan hash than the request's
     /// are `InvalidEvent`. For an expiry, the decision timestamp must be at or after the
-    /// deadline. The caller uses the timestamp of the recorded closing, including on retry.
+    /// deadline. The caller uses the recorded closing timestamp, or the current time when
+    /// resuming an expiry recorded before a remaining request's deadline.
     /// Nothing else reads that history, so no license comes out of it.
     pub fn close_unreadable_request(
         &mut self,
