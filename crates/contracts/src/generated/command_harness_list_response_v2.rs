@@ -7,7 +7,7 @@ use super::common_ulid_v1::CommonUlidV1;
 use crate::support;
 use crate::support::ContractError;
 
-/// Resposta de harness.list. Resposta JSON-RPC 2.0 aceita de harness.list. Lista as ferramentas ligadas e os apelidos de pasta. A versão 2 acrescenta os apelidos das pastas ausentes na partida, omitidos quando não há nenhuma. Só nomes; nunca inclui programa, argumentos, ambiente ou caminho.
+/// Resposta de harness.list. Resposta JSON-RPC 2.0 aceita de harness.list. Lista as ferramentas ligadas e os apelidos de pasta. A versão 2 acrescenta os apelidos das pastas indisponíveis na partida, omitidos quando não há nenhuma. Só nomes; nunca inclui programa, argumentos, ambiente ou caminho.
 ///
 /// `urn:ads:command:harness.list.response:2`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -148,7 +148,7 @@ impl Serialize for CommandHarnessListResponseV2ResultWorkdirAliases {
     }
 }
 
-/// Apelidos indisponíveis porque a pasta estava ausente na partida.
+/// Apelidos cujos caminhos estavam inacessíveis ou não resolviam para uma pasta na partida.
 ///
 /// `result.missing_workdir_aliases` in `urn:ads:command:harness.list.response:2`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]

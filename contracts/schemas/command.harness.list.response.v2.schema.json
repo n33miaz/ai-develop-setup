@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:ads:command:harness.list.response:2",
   "title": "Resposta de harness.list",
-  "description": "Resposta JSON-RPC 2.0 aceita de harness.list. Lista as ferramentas ligadas e os apelidos de pasta. A versão 2 acrescenta os apelidos das pastas ausentes na partida, omitidos quando não há nenhuma. Só nomes; nunca inclui programa, argumentos, ambiente ou caminho.",
+  "description": "Resposta JSON-RPC 2.0 aceita de harness.list. Lista as ferramentas ligadas e os apelidos de pasta. A versão 2 acrescenta os apelidos das pastas indisponíveis na partida, omitidos quando não há nenhuma. Só nomes; nunca inclui programa, argumentos, ambiente ou caminho.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -41,7 +41,7 @@
           "description": "Apelidos disponíveis para abrir uma sessão."
         },
         "missing_workdir_aliases": {
-          "description": "Apelidos indisponíveis porque a pasta estava ausente na partida.",
+          "description": "Apelidos cujos caminhos estavam inacessíveis ou não resolviam para uma pasta na partida.",
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
