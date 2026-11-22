@@ -33,7 +33,7 @@ class FakeSocket extends EventTarget {
     this.dispatchEvent(new Event('close'))
   }
   receive(message: unknown) {
-    valid('urn:ads:contract:local-api.server-message:9', message)
+    valid('urn:ads:contract:local-api.server-message:10', message)
     this.receiveRaw(message)
   }
   /** Entrega sem conferir: simula um núcleo que manda o que o contrato não aceita. */
@@ -112,6 +112,11 @@ describe('local WebSocket client', () => {
       result: { queue_id: 'queue-01', state: 'stopped', policy },
     })
     await expect(queue).resolves.toEqual({ queue_id: 'queue-01', state: 'stopped', policy })
+
+    const configured = api.configured()
+    expect(socket.sent.at(-1)).toMatchObject({ method: 'queue.configured', params: {} })
+    socket.receive({ jsonrpc: '2.0', id: socket.sent.at(-1)?.id, result: { queue_id: 'queue-01' } })
+    await expect(configured).resolves.toBe('queue-01')
 
     for (const action of ['create', 'start', 'stop'] as const) {
       const result = api[action]('queue-01')

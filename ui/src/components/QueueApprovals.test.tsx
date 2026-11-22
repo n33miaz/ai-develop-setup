@@ -8,7 +8,9 @@ import queued from '../../../contracts/golden/command.queue.get.response.v2/vali
 import {
   HARNESS_NOT_CONFIGURED,
   QUEUE_NOT_CONFIGURED,
-} from '../../../contracts/generated/ts/contract.local-api.error-code.v4.constants'
+  QUEUE_NOT_CREATED,
+  QUEUE_NOT_FOUND,
+} from '../../../contracts/generated/ts/contract.local-api.error-code.v6.constants'
 import { CommandRefusal, type queueApprovals } from '../api/queueApprovals'
 import { isApprovalList, isQueueGet } from '../api/wire'
 import { createTranslator, I18nContext } from '../i18n'
@@ -20,6 +22,7 @@ type Api = ReturnType<typeof queueApprovals>
 function mockApi() {
   return {
     get: vi.fn<Api['get']>(),
+    configured: vi.fn<Api['configured']>().mockResolvedValue('queue-01'),
     create: vi.fn<Api['create']>(),
     start: vi.fn<Api['start']>(),
     stop: vi.fn<Api['stop']>(),
@@ -38,7 +41,7 @@ function open(name: string) {
 it('creates, starts and stops a queue using the reported state', async () => {
   const api = mockApi()
   api.get
-    .mockRejectedValueOnce(new CommandRefusal(QUEUE_NOT_CONFIGURED))
+    .mockRejectedValueOnce(new CommandRefusal(QUEUE_NOT_CREATED))
     .mockResolvedValueOnce({ queue_id: 'queue-01', state: 'stopped', policy: null })
     .mockResolvedValueOnce({ queue_id: 'queue-01', state: 'enabled', policy: null })
     .mockResolvedValueOnce({ queue_id: 'queue-01', state: 'stopped', policy: null })
@@ -56,6 +59,63 @@ it('creates, starts and stops a queue using the reported state', async () => {
   expect(api.create).toHaveBeenCalledWith('queue-01')
   expect(api.start).toHaveBeenCalledWith('queue-01')
   expect(api.stop).toHaveBeenCalledWith('queue-01')
+})
+
+it('fills in the queue id the daemon reports', async () => {
+  const api = mockApi()
+  api.configured.mockResolvedValueOnce('local:queue.main')
+  render(<QueuePanel api={api} />)
+  const panel = open('Fila de tarefas')
+  expect(await panel.findByText('Fila configurada no daemon: local:queue.main')).toBeVisible()
+  expect(panel.getByLabelText('ID da fila')).toHaveValue('local:queue.main')
+})
+
+it('tells a mistyped queue id apart and names the configured one', async () => {
+  const api = mockApi()
+  api.get.mockRejectedValueOnce(new CommandRefusal(QUEUE_NOT_FOUND))
+  render(<QueuePanel api={api} />)
+  const panel = open('Fila de tarefas')
+  await panel.findByText('Fila configurada no daemon: queue-01')
+  fireEvent.change(panel.getByLabelText('ID da fila'), { target: { value: 'queue-1' } })
+  fireEvent.click(panel.getByRole('button', { name: 'Consultar' }))
+  expect(await panel.findByRole('alert')).toHaveTextContent(
+    'O daemon não serve uma fila com esse ID. A fila configurada é queue-01.',
+  )
+  expect(panel.queryByRole('button', { name: 'Criar fila' })).toBeNull()
+})
+
+it('tells queue controls that did not start apart from a missing queue', async () => {
+  const api = mockApi()
+  api.configured.mockReset().mockRejectedValueOnce(new CommandRefusal(QUEUE_NOT_CONFIGURED))
+  api.get.mockRejectedValueOnce(new CommandRefusal(QUEUE_NOT_CONFIGURED))
+  render(<QueuePanel api={api} />)
+  const panel = open('Fila de tarefas')
+  expect(await panel.findByRole('alert')).toHaveTextContent('Os controles da fila não subiram')
+  fireEvent.change(panel.getByLabelText('ID da fila'), { target: { value: 'queue-01' } })
+  fireEvent.click(panel.getByRole('button', { name: 'Consultar' }))
+  expect(await panel.findByRole('alert')).toHaveTextContent('Os controles da fila não subiram')
+  expect(panel.queryByRole('button', { name: 'Criar fila' })).toBeNull()
+  expect(panel.queryByText('A fila ainda não foi criada.')).toBeNull()
+})
+
+it('offers to create a queue not created yet and refuses to start it', async () => {
+  const api = mockApi()
+  api.get
+    .mockRejectedValueOnce(new CommandRefusal(QUEUE_NOT_CREATED))
+    .mockResolvedValueOnce({ queue_id: 'queue-01', state: 'stopped', policy: null })
+  api.start.mockRejectedValueOnce(new CommandRefusal(QUEUE_NOT_CREATED))
+  render(<QueuePanel api={api} />)
+  const panel = open('Fila de tarefas')
+  await panel.findByText('Fila configurada no daemon: queue-01')
+  fireEvent.click(panel.getByRole('button', { name: 'Consultar' }))
+  expect(await panel.findByText('A fila ainda não foi criada.')).toBeVisible()
+  expect(panel.getByRole('button', { name: 'Criar fila' })).toBeVisible()
+  expect(panel.queryByRole('alert')).toBeNull()
+  fireEvent.click(panel.getByRole('button', { name: 'Consultar' }))
+  fireEvent.click(await panel.findByRole('button', { name: 'Ligar fila' }))
+  expect(await panel.findByRole('alert')).toHaveTextContent(
+    'A fila ainda não foi criada. Crie a fila',
+  )
 })
 
 it('shows a failed query and a specific executor refusal', async () => {

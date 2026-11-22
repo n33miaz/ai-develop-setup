@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:command:queue.configured:1",
+  "title": "Informar a fila configurada",
+  "description": "Pede ao núcleo o id da fila de tarefas que a configuração local dele serve, criada ou não. Só leitura: não muda nada no núcleo e não entra na cache de idempotência. A resposta aceita é command.queue.configured.response:1; sem controles de fila, a recusa volta como command.response:2 com QUEUE_NOT_CONFIGURED.",
+  "allOf": [
+    {
+      "$ref": "urn:ads:command:request:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "method",
+        "params"
+      ],
+      "properties": {
+        "method": {
+          "const": "queue.configured"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "_meta"
+          ],
+          "properties": {
+            "_meta": true
+          }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "jsonrpc": "2.0",
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAD",
+      "method": "queue.configured",
+      "params": {
+        "_meta": {
+          "idempotency_key": "01ARZ3NDEKTSV4RRFFQ69G5FAE",
+          "origin": "local"
+        }
+      }
+    }
+  ]
+}

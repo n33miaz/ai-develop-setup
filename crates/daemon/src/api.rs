@@ -7,27 +7,29 @@ use crate::pty_client::{ClientError, ErrorCode, Event, PtyClient};
 use crate::queue::{DisabledQueue, QueueControl};
 use ads_contracts::{
     CommandApprovalAnswerV1Params, CommandApprovalCloseV1Params, CommandSessionOpenV1Params,
-    ContractLocalApiErrorCodeV5ApprovalAlreadyAnswered as ApprovalAlreadyAnswered,
-    ContractLocalApiErrorCodeV5ApprovalNotApprovable as ApprovalNotApprovable,
-    ContractLocalApiErrorCodeV5ApprovalNotConfigured as ApprovalNotConfigured,
-    ContractLocalApiErrorCodeV5ApprovalNotFound as ApprovalNotFound,
-    ContractLocalApiErrorCodeV5ApprovalOutOfOrder as ApprovalOutOfOrder,
-    ContractLocalApiErrorCodeV5ApprovalPolicyChanged as ApprovalPolicyChanged,
-    ContractLocalApiErrorCodeV5ApprovalReadable as ApprovalReadable,
-    ContractLocalApiErrorCodeV5ApprovalStale as ApprovalStale,
-    ContractLocalApiErrorCodeV5CapacityExceeded as CapacityExceeded,
-    ContractLocalApiErrorCodeV5Conflict as Conflict,
-    ContractLocalApiErrorCodeV5HarnessNotConfigured as HarnessNotConfigured,
-    ContractLocalApiErrorCodeV5InternalError as InternalError,
-    ContractLocalApiErrorCodeV5InvalidParams as InvalidParams,
-    ContractLocalApiErrorCodeV5MethodNotFound as MethodNotFound,
-    ContractLocalApiErrorCodeV5QueueAlreadyCreated as QueueAlreadyCreated,
-    ContractLocalApiErrorCodeV5QueueAlreadyEnabled as QueueAlreadyEnabled,
-    ContractLocalApiErrorCodeV5QueueNotConfigured as QueueNotConfigured,
-    ContractLocalApiErrorCodeV5RemoteOriginRefused as RemoteOriginRefused,
-    ContractLocalApiErrorCodeV5SessionClosePending as SessionClosePending,
-    ContractLocalApiErrorCodeV5SessionSetupFailed as SessionSetupFailed,
-    ContractLocalApiErrorCodeV5SubscriptionReplayUnavailable as SubscriptionReplayUnavailable,
+    ContractLocalApiErrorCodeV6ApprovalAlreadyAnswered as ApprovalAlreadyAnswered,
+    ContractLocalApiErrorCodeV6ApprovalNotApprovable as ApprovalNotApprovable,
+    ContractLocalApiErrorCodeV6ApprovalNotConfigured as ApprovalNotConfigured,
+    ContractLocalApiErrorCodeV6ApprovalNotFound as ApprovalNotFound,
+    ContractLocalApiErrorCodeV6ApprovalOutOfOrder as ApprovalOutOfOrder,
+    ContractLocalApiErrorCodeV6ApprovalPolicyChanged as ApprovalPolicyChanged,
+    ContractLocalApiErrorCodeV6ApprovalReadable as ApprovalReadable,
+    ContractLocalApiErrorCodeV6ApprovalStale as ApprovalStale,
+    ContractLocalApiErrorCodeV6CapacityExceeded as CapacityExceeded,
+    ContractLocalApiErrorCodeV6Conflict as Conflict,
+    ContractLocalApiErrorCodeV6HarnessNotConfigured as HarnessNotConfigured,
+    ContractLocalApiErrorCodeV6InternalError as InternalError,
+    ContractLocalApiErrorCodeV6InvalidParams as InvalidParams,
+    ContractLocalApiErrorCodeV6MethodNotFound as MethodNotFound,
+    ContractLocalApiErrorCodeV6QueueAlreadyCreated as QueueAlreadyCreated,
+    ContractLocalApiErrorCodeV6QueueAlreadyEnabled as QueueAlreadyEnabled,
+    ContractLocalApiErrorCodeV6QueueNotConfigured as QueueNotConfigured,
+    ContractLocalApiErrorCodeV6QueueNotCreated as QueueNotCreated,
+    ContractLocalApiErrorCodeV6QueueNotFound as QueueNotFound,
+    ContractLocalApiErrorCodeV6RemoteOriginRefused as RemoteOriginRefused,
+    ContractLocalApiErrorCodeV6SessionClosePending as SessionClosePending,
+    ContractLocalApiErrorCodeV6SessionSetupFailed as SessionSetupFailed,
+    ContractLocalApiErrorCodeV6SubscriptionReplayUnavailable as SubscriptionReplayUnavailable,
 };
 use ads_ptyhost::wire::{
     Notification, OpenParams, ResizeParams, SessionId, SessionParams, WriteParams,
@@ -64,8 +66,12 @@ pub enum ApiError {
     /// Prazo do host esgotado num comando; o efeito é incerto e o serviço encerra.
     HostTimeout,
     Host(ErrorCode),
-    /// No queue bound to the audit log, or a queue id it does not serve.
+    /// The queue controls did not start: no queue is bound to the audit log.
     QueueNotConfigured,
+    /// A queue id other than the configured one.
+    QueueNotFound,
+    /// The configured queue has not been created yet.
+    QueueNotCreated,
     QueueAlreadyEnabled,
     QueueAlreadyCreated,
     /// The audit log refused a queue or gate record; unlike `Unavailable`, the service keeps running.
@@ -113,6 +119,8 @@ impl ApiError {
                 InternalError::VALUE
             }
             Self::QueueNotConfigured => QueueNotConfigured::VALUE,
+            Self::QueueNotFound => QueueNotFound::VALUE,
+            Self::QueueNotCreated => QueueNotCreated::VALUE,
             Self::QueueAlreadyEnabled => QueueAlreadyEnabled::VALUE,
             Self::ApprovalNotConfigured => ApprovalNotConfigured::VALUE,
             Self::ApprovalNotFound => ApprovalNotFound::VALUE,
@@ -141,6 +149,8 @@ impl ApiError {
             Self::HostTimeout => "service unavailable",
             Self::Host(_) => "host refused command",
             Self::QueueNotConfigured => "queue not configured",
+            Self::QueueNotFound => "queue not found",
+            Self::QueueNotCreated => "queue not created",
             Self::QueueAlreadyEnabled => "queue already enabled",
             Self::Storage => "service unavailable",
             Self::StorageBusy => "audit log busy",
@@ -1164,7 +1174,7 @@ impl LocalApi {
         })
     }
     /// Serves the queue commands from `queue`; without it they answer
-    /// `QUEUE_NOT_CONFIGURED`.
+    /// `QUEUE_NOT_CONFIGURED`, `queue.configured` included.
     pub fn with_queue(mut self, queue: Arc<dyn QueueControl>) -> Self {
         self.service.queue = queue;
         self
@@ -1354,6 +1364,7 @@ fn validate_command(value: Value) -> Result<Value, ApiError> {
             | "events.subscribe"
             | "harness.list"
             | "queue.get"
+            | "queue.configured"
             | "queue.create"
             | "queue.start"
             | "queue.stop"
@@ -1565,6 +1576,21 @@ async fn connection(
                         send(&mut ws, reply, &config).await?;
                         continue;
                     }
+                    if command["method"] == "queue.configured" {
+                        // Só leitura, como queue.get: fora da cache de idempotência, origem conferida aqui.
+                        let reply = if command["params"]["_meta"]["origin"] == "local" {
+                            match queue.configured(&session) {
+                                Ok(queue_id) => {
+                                    json!({"jsonrpc": "2.0", "id": id, "result": {"queue_id": queue_id}})
+                                }
+                                Err(error) => response(&id, Err(error)),
+                            }
+                        } else {
+                            response(&id, Err(ApiError::Remote))
+                        };
+                        send(&mut ws, reply, &config).await?;
+                        continue;
+                    }
                     if command["method"] == "approval.list" {
                         // Só leitura, como queue.get: fora da cache de idempotência, origem conferida aqui.
                         let pending = if command["params"]["_meta"]["origin"] == "local" {
@@ -1718,7 +1744,7 @@ async fn send<S>(ws: &mut S, value: Value, config: &ApiConfig) -> Result<(), Api
 where
     S: futures_util::Sink<Message> + Unpin,
 {
-    let value = checked("urn:ads:contract:local-api.server-message:9", value)?;
+    let value = checked("urn:ads:contract:local-api.server-message:10", value)?;
     timeout(
         Duration::from_millis(config.send_timeout_ms),
         ws.send(Message::Text(value.to_string().into())),

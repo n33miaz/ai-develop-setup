@@ -16,6 +16,8 @@ pub mod command_events_subscribe_v1;
 pub mod command_harness_list_response_v1;
 pub mod command_harness_list_response_v2;
 pub mod command_harness_list_v1;
+pub mod command_queue_configured_response_v1;
+pub mod command_queue_configured_v1;
 pub mod command_queue_create_v1;
 pub mod command_queue_get_response_v1;
 pub mod command_queue_get_response_v2;
@@ -52,7 +54,9 @@ pub mod contract_local_api_error_code_v2;
 pub mod contract_local_api_error_code_v3;
 pub mod contract_local_api_error_code_v4;
 pub mod contract_local_api_error_code_v5;
+pub mod contract_local_api_error_code_v6;
 pub mod contract_local_api_server_message_v1;
+pub mod contract_local_api_server_message_v10;
 pub mod contract_local_api_server_message_v2;
 pub mod contract_local_api_server_message_v3;
 pub mod contract_local_api_server_message_v4;
@@ -159,6 +163,8 @@ pub use command_events_subscribe_v1::*;
 pub use command_harness_list_response_v1::*;
 pub use command_harness_list_response_v2::*;
 pub use command_harness_list_v1::*;
+pub use command_queue_configured_response_v1::*;
+pub use command_queue_configured_v1::*;
 pub use command_queue_create_v1::*;
 pub use command_queue_get_response_v1::*;
 pub use command_queue_get_response_v2::*;
@@ -195,6 +201,7 @@ pub use contract_local_api_error_code_v2::*;
 pub use contract_local_api_error_code_v3::*;
 pub use contract_local_api_error_code_v4::*;
 pub use contract_local_api_error_code_v5::*;
+pub use contract_local_api_error_code_v6::*;
 pub use contract_local_api_server_message_v1::*;
 pub use contract_local_api_server_message_v2::*;
 pub use contract_local_api_server_message_v3::*;
@@ -204,6 +211,7 @@ pub use contract_local_api_server_message_v6::*;
 pub use contract_local_api_server_message_v7::*;
 pub use contract_local_api_server_message_v8::*;
 pub use contract_local_api_server_message_v9::*;
+pub use contract_local_api_server_message_v10::*;
 pub use contract_pty_host_frame_v1::*;
 pub use contract_pty_host_notification_v1::*;
 pub use contract_pty_host_request_v1::*;
@@ -334,6 +342,14 @@ pub const SCHEMAS: &[(&str, &str)] = &[
         "urn:ads:command:harness.list.response:2",
     ),
     ("command.harness.list.v1", "urn:ads:command:harness.list:1"),
+    (
+        "command.queue.configured.response.v1",
+        "urn:ads:command:queue.configured.response:1",
+    ),
+    (
+        "command.queue.configured.v1",
+        "urn:ads:command:queue.configured:1",
+    ),
     ("command.queue.create.v1", "urn:ads:command:queue.create:1"),
     (
         "command.queue.get.response.v1",
@@ -413,8 +429,16 @@ pub const SCHEMAS: &[(&str, &str)] = &[
         "urn:ads:contract:local-api.error-code:5",
     ),
     (
+        "contract.local-api.error-code.v6",
+        "urn:ads:contract:local-api.error-code:6",
+    ),
+    (
         "contract.local-api.server-message.v1",
         "urn:ads:contract:local-api.server-message:1",
+    ),
+    (
+        "contract.local-api.server-message.v10",
+        "urn:ads:contract:local-api.server-message:10",
     ),
     (
         "contract.local-api.server-message.v2",
@@ -778,6 +802,12 @@ pub fn reencode(id: &str, value: Value) -> Option<Result<Value, serde_json::Erro
             support::reencode::<CommandHarnessListResponseV2>(value)
         }
         "urn:ads:command:harness.list:1" => support::reencode::<CommandHarnessListV1>(value),
+        "urn:ads:command:queue.configured.response:1" => {
+            support::reencode::<CommandQueueConfiguredResponseV1>(value)
+        }
+        "urn:ads:command:queue.configured:1" => {
+            support::reencode::<CommandQueueConfiguredV1>(value)
+        }
         "urn:ads:command:queue.create:1" => support::reencode::<CommandQueueCreateV1>(value),
         "urn:ads:command:queue.get.response:1" => {
             support::reencode::<CommandQueueGetResponseV1>(value)
@@ -830,8 +860,14 @@ pub fn reencode(id: &str, value: Value) -> Option<Result<Value, serde_json::Erro
         "urn:ads:contract:local-api.error-code:5" => {
             support::reencode::<ContractLocalApiErrorCodeV5>(value)
         }
+        "urn:ads:contract:local-api.error-code:6" => {
+            support::reencode::<ContractLocalApiErrorCodeV6>(value)
+        }
         "urn:ads:contract:local-api.server-message:1" => {
             support::reencode::<ContractLocalApiServerMessageV1>(value)
+        }
+        "urn:ads:contract:local-api.server-message:10" => {
+            support::reencode::<ContractLocalApiServerMessageV10>(value)
         }
         "urn:ads:contract:local-api.server-message:2" => {
             support::reencode::<ContractLocalApiServerMessageV2>(value)

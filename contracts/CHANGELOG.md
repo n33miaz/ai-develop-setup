@@ -7,6 +7,13 @@ Formato: uma seção por data. Contrato novo, campo opcional acrescentado, vers�
 - `approval.list.response:4` e `local-api.server-message:9` informam `policy_changed` quando a política vigente impede aprovar um pedido pendente. O dono ainda pode negar o pedido.
 - `harness.list.response:2` e `local-api.server-message:8` informam os apelidos das pastas ausentes na partida, quando houver. Sem pastas ausentes, a resposta mantém a forma da versão anterior.
 
+Motivo da fila ausente e id da fila configurada.
+
+- Contratos novos (`:1`): comando `queue.configured`, só com `_meta`, e a resposta `queue.configured.response`, com o id da fila que o núcleo serve, criada ou não.
+- Versões novas:
+  - `local-api.error-code:6`, convivendo com a `:1` à `:5`: os códigos da `:5` mais `QUEUE_NOT_FOUND` (`-32026`, id que não é o da fila configurada) e `QUEUE_NOT_CREATED` (`-32027`, fila configurada ainda não criada). `QUEUE_NOT_CONFIGURED` passa a dizer só que os controles da fila não subiram. O núcleo passa a emitir a `:6`.
+  - `local-api.server-message:10`, convivendo com a `:1` à `:9`: a `:9` mais a resposta de `queue.configured`. O núcleo passa a escrever a `:10`.
+
 Contagem dos pedidos de aprovação com histórico ilegível.
 
 - Versões novas:

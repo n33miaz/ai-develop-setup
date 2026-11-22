@@ -300,12 +300,12 @@ async fn exchange(ws: &mut Socket, value: &Value) -> Value {
     };
     let reply: Value = serde_json::from_str(&text).unwrap();
     assert!(
-        valid("urn:ads:contract:local-api.server-message:7", &reply),
+        valid("urn:ads:contract:local-api.server-message:10", &reply),
         "{reply}"
     );
     if let Some(code) = reply["error"].get("code") {
         assert!(
-            valid("urn:ads:contract:local-api.error-code:4", code),
+            valid("urn:ads:contract:local-api.error-code:6", code),
             "{reply}"
         );
     }
@@ -638,21 +638,73 @@ async fn refused_queue_commands_never_reach_the_queue() {
 }
 
 #[tokio::test]
-async fn an_unknown_or_unbound_queue_is_refused() {
+async fn a_mistyped_queue_id_is_refused_as_not_found() {
+    let methods = ["queue.get", "queue.create", "queue.start", "queue.stop"];
+    let other = json!({"queue_id": "queue-elsewhere"});
     let bench = Bench::new("queue-unknown");
     let f = fixture(Some(bench.open())).await;
     let mut ws = authenticated(&f).await;
-    let other = json!({"queue_id": "queue-elsewhere"});
-    let reply = exchange(&mut ws, &command("queue.start", other)).await;
-    assert_eq!(reply["error"]["code"], -32015);
+    for method in methods {
+        let reply = exchange(&mut ws, &command(method, other.clone())).await;
+        assert_eq!(reply["error"]["code"], -32026, "{method}");
+    }
     assert_eq!(bench.kinds(), ["created:2"]);
 
+    let pending = Bench::new("queue-unknown-pending");
+    let f = fixture(Some(Arc::new(pending.bind_or_pending()))).await;
+    let mut ws = authenticated(&f).await;
+    for method in methods {
+        let reply = exchange(&mut ws, &command(method, other.clone())).await;
+        assert_eq!(reply["error"]["code"], -32026, "{method}");
+    }
+    assert!(pending.audit().is_empty());
+}
+
+#[tokio::test]
+async fn a_configured_queue_not_yet_created_is_refused_as_not_created() {
+    let bench = Bench::new("queue-not-created");
+    let f = fixture(Some(Arc::new(bench.bind_or_pending()))).await;
+    let mut ws = authenticated(&f).await;
+    for method in ["queue.get", "queue.start", "queue.stop"] {
+        let reply = exchange(&mut ws, &command(method, bench.params())).await;
+        assert_eq!(reply["error"]["code"], -32027, "{method}");
+    }
+    assert!(bench.audit().is_empty());
+}
+
+#[tokio::test]
+async fn queue_commands_without_queue_controls_are_refused_as_not_configured() {
     let f = fixture(None).await;
     let mut ws = authenticated(&f).await;
+    let params = json!({"queue_id": "queue-01"});
     for method in ["queue.get", "queue.create", "queue.start", "queue.stop"] {
-        let reply = exchange(&mut ws, &command(method, bench.params())).await;
+        let reply = exchange(&mut ws, &command(method, params.clone())).await;
         assert_eq!(reply["error"]["code"], -32015, "{method}");
     }
+    let reply = exchange(&mut ws, &command("queue.configured", json!({}))).await;
+    assert_eq!(reply["error"]["code"], -32015);
+}
+
+#[tokio::test]
+async fn the_configured_queue_id_is_told_before_and_after_creation() {
+    let bench = Bench::new("queue-configured");
+    let f = fixture(Some(Arc::new(bench.bind_or_pending()))).await;
+    let mut ws = authenticated(&f).await;
+    let ask = || command("queue.configured", json!({}));
+    let expected = json!({"queue_id": bench.queue});
+    let reply = exchange(&mut ws, &ask()).await;
+    assert!(valid("urn:ads:command:queue.configured.response:1", &reply));
+    assert_eq!(reply["result"], expected);
+
+    let create = command("queue.create", bench.params());
+    assert_eq!(exchange(&mut ws, &create).await["result"]["accepted"], true);
+    assert_eq!(exchange(&mut ws, &ask()).await["result"], expected);
+
+    let reply = exchange(&mut ws, &remote(ask())).await;
+    assert_eq!(reply["error"]["code"], -32010);
+    let forged = command("queue.configured", json!({"queue_id": "queue-elsewhere"}));
+    assert_eq!(exchange(&mut ws, &forged).await["error"]["code"], -32602);
+    assert_eq!(bench.kinds(), ["created:2"]);
 }
 
 #[tokio::test]
@@ -815,6 +867,10 @@ fn versioned_error_catalogs_keep_the_published_queue_codes() {
             "urn:ads:contract:local-api.error-code:4",
             &json!(code)
         ));
+        assert!(valid(
+            "urn:ads:contract:local-api.error-code:6",
+            &json!(code)
+        ));
         let response = json!({"jsonrpc": "2.0", "id": new_id().unwrap(), "error": {"code": code, "message": "queue"}});
         assert!(valid("urn:ads:command:response:2", &response));
     }
@@ -822,6 +878,42 @@ fn versioned_error_catalogs_keep_the_published_queue_codes() {
         "urn:ads:contract:local-api.error-code:3",
         &json!(-32024)
     ));
+    for code in [-32026, -32027] {
+        assert!(!valid(
+            "urn:ads:contract:local-api.error-code:5",
+            &json!(code)
+        ));
+        assert!(valid(
+            "urn:ads:contract:local-api.error-code:6",
+            &json!(code)
+        ));
+    }
+    let listed = json!({"jsonrpc": "2.0", "id": new_id().unwrap(), "result": {
+        "harnesses": ["test"], "workdir_aliases": ["home"], "missing_workdir_aliases": ["work"]
+    }});
+    assert!(!valid(
+        "urn:ads:contract:local-api.server-message:7",
+        &listed
+    ));
+    for schema in [
+        "urn:ads:contract:local-api.server-message:8",
+        "urn:ads:contract:local-api.server-message:9",
+        "urn:ads:contract:local-api.server-message:10",
+    ] {
+        assert!(valid(schema, &listed), "{schema}");
+    }
+    let configured =
+        json!({"jsonrpc": "2.0", "id": new_id().unwrap(), "result": {"queue_id": "queue-01"}});
+    assert!(valid(
+        "urn:ads:contract:local-api.server-message:10",
+        &configured
+    ));
+    for schema in [
+        "urn:ads:contract:local-api.server-message:8",
+        "urn:ads:contract:local-api.server-message:9",
+    ] {
+        assert!(!valid(schema, &configured), "{schema}");
+    }
     let listed = json!({"jsonrpc": "2.0", "id": new_id().unwrap(), "result": {"queue_id": "queue-01", "state": "enabled"}});
     assert!(valid(
         "urn:ads:contract:local-api.server-message:3",

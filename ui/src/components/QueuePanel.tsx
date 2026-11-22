@@ -5,7 +5,9 @@ import {
   QUEUE_ALREADY_CREATED,
   QUEUE_ALREADY_ENABLED,
   QUEUE_NOT_CONFIGURED,
-} from '../../../contracts/generated/ts/contract.local-api.error-code.v4.constants'
+  QUEUE_NOT_CREATED,
+  QUEUE_NOT_FOUND,
+} from '../../../contracts/generated/ts/contract.local-api.error-code.v6.constants'
 import { useT, type MessageKey } from '../i18n'
 import styles from './UsagePanel/UsagePanel.module.css'
 
@@ -30,6 +32,8 @@ type Action = 'create' | 'start' | 'stop'
 
 const refusals: Partial<Record<number, MessageKey>> = {
   [QUEUE_NOT_CONFIGURED]: 'queue.unconfigured',
+  [QUEUE_NOT_FOUND]: 'queue.notFound',
+  [QUEUE_NOT_CREATED]: 'queue.notCreated',
   [HARNESS_NOT_CONFIGURED]: 'queue.executor',
   [QUEUE_ALREADY_CREATED]: 'queue.alreadyCreated',
   [QUEUE_ALREADY_ENABLED]: 'queue.alreadyEnabled',
@@ -42,7 +46,27 @@ export function QueuePanel({ api }: { api: Api }) {
   const [policy, setPolicy] = useState<Queue['policy']>(null)
   const [message, setMessage] = useState<MessageKey>()
   const [busy, setBusy] = useState(false)
+  const [configured, setConfigured] = useState<string>()
   const lock = useRef(false)
+
+  const asked = useRef(false)
+
+  // Asked once, when the panel first opens: the core says which queue it serves.
+  function askConfigured() {
+    if (asked.current) return
+    asked.current = true
+    api.configured().then(
+      (queueId) => {
+        setConfigured(queueId)
+        setId((current) => current || queueId)
+      },
+      (error: unknown) => {
+        if (error instanceof CommandRefusal && error.code === QUEUE_NOT_CONFIGURED) {
+          setMessage('queue.unconfigured')
+        }
+      },
+    )
+  }
 
   async function run(action?: Action) {
     if (lock.current) return
@@ -62,7 +86,7 @@ export function QueuePanel({ api }: { api: Api }) {
       setPolicy(queue.policy)
       if (action) setMessage('controls.saved')
     } catch (error) {
-      if (!action && error instanceof CommandRefusal && error.code === QUEUE_NOT_CONFIGURED) {
+      if (!action && error instanceof CommandRefusal && error.code === QUEUE_NOT_CREATED) {
         setState('missing')
       } else {
         setMessage(
@@ -85,7 +109,12 @@ export function QueuePanel({ api }: { api: Api }) {
   }
 
   return (
-    <details className={styles.panel}>
+    <details
+      className={styles.panel}
+      onToggle={(event) => {
+        if (event.currentTarget.open) askConfigured()
+      }}
+    >
       <summary>{t('queue.heading')}</summary>
       <div className={styles.content}>
         <form onSubmit={submit} className={styles.picker}>
@@ -108,7 +137,14 @@ export function QueuePanel({ api }: { api: Api }) {
           <button disabled={busy}>{t('controls.refresh')}</button>
         </form>
         {busy && <p role="status">{t('controls.loading')}</p>}
-        {message && <p role={message === 'controls.saved' ? 'status' : 'alert'}>{t(message)}</p>}
+        {configured && <p>{t('queue.configured', { value: configured })}</p>}
+        {message && (
+          <p role={message === 'controls.saved' ? 'status' : 'alert'}>
+            {message === 'queue.notFound' && configured
+              ? t('queue.notFoundConfigured', { value: configured })
+              : t(message)}
+          </p>
+        )}
         {state && <p>{t(`queue.${state}`)}</p>}
         {state && state !== 'missing' && !policy && <p>{t('queue.limitsNotRecorded')}</p>}
         {state && state !== 'missing' && policy && (
