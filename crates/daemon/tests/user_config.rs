@@ -171,19 +171,18 @@ fn refuses_an_installation_with_a_live_daemon_lock() {
     let blocked = start();
     assert!(!blocked.status.success());
     assert!(blocked.stdout.is_empty());
-    assert!(
-        String::from_utf8(blocked.stderr)
-            .unwrap()
-            .contains("another daemon")
-    );
+    let error = String::from_utf8(blocked.stderr).unwrap();
+    assert!(error.contains("another daemon"), "{error}");
+    // A child spawned meanwhile by another test keeps a copy of the descriptor until it
+    // execs, so closing ours does not free the lock; the copy here stands for that child.
+    let copy_held_by_a_child = lock.try_clone().unwrap();
+    lock.unlock().unwrap();
     drop(lock);
     let available = start();
+    drop(copy_held_by_a_child);
     assert!(!available.status.success());
-    assert!(
-        String::from_utf8(available.stderr)
-            .unwrap()
-            .contains("invalid daemon arguments")
-    );
+    let error = String::from_utf8(available.stderr).unwrap();
+    assert!(error.contains("invalid daemon arguments"), "{error}");
 }
 #[path = "common/temp.rs"]
 mod temp;
