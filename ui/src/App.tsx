@@ -340,7 +340,7 @@ export function App({
   const liveCatalog =
     live && connection === 'connected' && catalog?.generation === generation ? catalog.value : null
   const listed = typeof liveCatalog === 'object' ? liveCatalog : null
-  const missingWorkdirs = listed?.missing_workdir_aliases
+  const unavailableWorkdirs = listed?.missing_workdir_aliases
   const available = live ? (listed?.harnesses ?? NO_STREAMS) : harnesses
   // Conectada, só abre com um apelido que o núcleo anunciou.
   const workdirAlias = !live
@@ -357,7 +357,7 @@ export function App({
           ? FAILURE_NOTICE[liveCatalog]
           : liveCatalog.harnesses.length === 0
             ? 'harness.none'
-            : workdirAlias === undefined && !missingWorkdirs
+            : workdirAlias === undefined && !unavailableWorkdirs
               ? 'harness.noWorkdir'
               : null
 
@@ -610,8 +610,10 @@ export function App({
       {catalogNotice && (
         <p role={FAILURE_NOTICES.has(catalogNotice) ? 'alert' : 'status'}>{t(catalogNotice)}</p>
       )}
-      {missingWorkdirs && (
-        <p role="alert">{t('harness.missingWorkdirs', { aliases: missingWorkdirs.join(', ') })}</p>
+      {unavailableWorkdirs && (
+        <p role="alert">
+          {t('harness.unavailableWorkdirs', { aliases: unavailableWorkdirs.join(', ') })}
+        </p>
       )}
 
       {warningMessages.length > 0 && <p role="alert">{warningMessages.join(' ')}</p>}

@@ -114,7 +114,7 @@ export const ptBR = {
   'notice.live': 'Conexão ao núcleo local. As sessões exibem os eventos recebidos.',
   'harness.loading': 'Consultando as ferramentas configuradas no núcleo.',
   'harness.none': 'Nenhuma ferramenta configurada no núcleo.',
-  'harness.missingWorkdirs': 'Pastas de trabalho ausentes na partida: {aliases}.',
+  'harness.unavailableWorkdirs': 'Pastas de trabalho indisponíveis na partida: {aliases}.',
   'harness.noWorkdir':
     'Nenhuma pasta de trabalho configurada no núcleo; não é possível abrir sessões.',
   'harness.failed': 'O núcleo recusou a lista de ferramentas.',
@@ -287,7 +287,7 @@ export const en: Record<MessageKey, string> = {
   'notice.live': 'Local core connection. Sessions display received events.',
   'harness.loading': 'Asking the core for its configured tools.',
   'harness.none': 'No tools are configured in the core.',
-  'harness.missingWorkdirs': 'Work folders missing at startup: {aliases}.',
+  'harness.unavailableWorkdirs': 'Work folders unavailable at startup: {aliases}.',
   'harness.noWorkdir': 'No work folder is configured in the core; sessions cannot be opened.',
   'harness.failed': 'The core refused the tool list.',
   'harness.timeout': 'The core did not send the tool list in time. Reopen the run URL.',

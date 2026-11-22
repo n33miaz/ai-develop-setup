@@ -118,30 +118,36 @@ describe('opening sessions', () => {
 })
 
 describe('tool list', () => {
-  it('shows the missing folder and keeps the controls and available folder usable', async () => {
-    const client = createFakeCoreClient({
-      harnesses: ['claude'],
-      workdir_aliases: ['online'],
-      missing_workdir_aliases: ['offline'],
-    })
-    const send = vi.spyOn(client, 'send')
-    const t = createTranslator('en')
-    render(
-      <I18nContext value={t}>
-        <App client={client} live workdir="offline" />
-      </I18nContext>,
-    )
-    expect(await screen.findByText('Work folders missing at startup: offline.')).toHaveRole('alert')
-    expect(screen.getByText(t('queue.heading'))).toBeVisible()
-    expect(screen.getByText(t('approvals.heading'))).toBeVisible()
-    const button = screen.getByRole('button', { name: 'Open claude' })
-    expect(button).toBeEnabled()
-    fireEvent.click(button)
-    await waitFor(() => {
-      const opened = send.mock.calls.find(([command]) => command.method === 'session.open')
-      expect(opened?.[0].params.workdir_alias).toBe('online')
-    })
-  })
+  it.each([
+    ['en', 'Work folders unavailable at startup: offline.'],
+    ['pt-BR', 'Pastas de trabalho indisponíveis na partida: offline.'],
+  ] as const)(
+    'shows the unavailable folder in %s and keeps the available folder usable',
+    async (locale, warning) => {
+      const client = createFakeCoreClient({
+        harnesses: ['claude'],
+        workdir_aliases: ['online'],
+        missing_workdir_aliases: ['offline'],
+      })
+      const send = vi.spyOn(client, 'send')
+      const t = createTranslator(locale)
+      render(
+        <I18nContext value={t}>
+          <App client={client} live workdir="offline" />
+        </I18nContext>,
+      )
+      expect(await screen.findByRole('alert')).toHaveTextContent(warning)
+      expect(screen.getByText(t('queue.heading'))).toBeVisible()
+      expect(screen.getByText(t('approvals.heading'))).toBeVisible()
+      const button = screen.getByRole('button', { name: t('session.open', { harness: 'claude' }) })
+      expect(button).toBeEnabled()
+      fireEvent.click(button)
+      await waitFor(() => {
+        const opened = send.mock.calls.find(([command]) => command.method === 'session.open')
+        expect(opened?.[0].params.workdir_alias).toBe('online')
+      })
+    },
+  )
 
   it('uses the tools and folder alias the core reports, ignoring the build-time list', async () => {
     const client = createFakeCoreClient({ harnesses: ['codex'], workdir_aliases: ['repo'] })
