@@ -8,14 +8,21 @@ use ads_core::child_env::EnvPolicy;
 use ads_core::gate::{AbsPath, GatePolicy};
 use ads_core::tool_launch::{HostRules, process_env};
 use ads_ptyhost::wire::OpenParams;
-use std::collections::BTreeMap;
-use std::path::Path;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+
+/// A validated work folder and its availability at startup.
+pub struct Workdir {
+    pub(crate) path: PathBuf,
+    pub(crate) missing: bool,
+}
 
 pub struct ToolLauncher<C, X> {
     claude: claude::ClaudeConfig,
     codex: codex::CodexConfig,
     /// The parent environment after the `[env]` policy: credentials are never kept.
     child_env: BTreeMap<String, String>,
+    missing_workdir_aliases: BTreeSet<String>,
     claude_probe: C,
     codex_probe: X,
 }
@@ -31,10 +38,32 @@ fn describe(tool: &str, shared: bool, error: impl std::fmt::Display) -> String {
 
 impl<C, X> ToolLauncher<C, X> {
     /// Work roots to pass to the audit log when opening or recovering it.
-    pub fn workdirs(&self) -> Vec<std::path::PathBuf> {
+    pub fn workdirs(&self) -> Vec<PathBuf> {
         self.claude
             .workdirs()
             .map(|dir| dir.as_str().into())
+            .collect()
+    }
+
+    /// Records missing folders for the catalog and session openings until the next startup.
+    pub fn check_workdirs(&mut self, mut warn: impl FnMut(&str)) -> Vec<Workdir> {
+        self.missing_workdir_aliases.clear();
+        // Both iterators follow the same ordered configuration map.
+        self.claude
+            .workdir_aliases()
+            .zip(self.claude.workdirs())
+            .map(|(alias, dir)| {
+                let path = PathBuf::from(dir.as_str());
+                // Gone, on a drive or share out of reach, or denied: none can be served.
+                let missing = std::fs::canonicalize(&path).is_err();
+                if missing {
+                    self.missing_workdir_aliases.insert(alias.to_owned());
+                    warn(&format!(
+                        "ads-daemon: work folder unavailable at startup: {alias}"
+                    ));
+                }
+                Workdir { path, missing }
+            })
             .collect()
     }
 
@@ -124,6 +153,7 @@ impl<C, X> ToolLauncher<C, X> {
             claude,
             codex,
             child_env,
+            missing_workdir_aliases: BTreeSet::new(),
             claude_probe,
             codex_probe,
         })
@@ -141,7 +171,7 @@ where
             .child_env
             .iter()
             .map(|(name, value)| (name.as_str(), value.as_str()));
-        match request.harness.as_str() {
+        let opened = match request.harness.as_str() {
             claude::HARNESS_ID => {
                 claude::open_params(&self.claude, request, env, &self.claude_probe).map_err(
                     |error| match error {
@@ -156,7 +186,14 @@ where
                     _ => ApiError::Invalid,
                 }),
             _ => Err(ApiError::Invalid),
+        }?;
+        if self
+            .missing_workdir_aliases
+            .contains(request.workdir_alias.as_str())
+        {
+            return Err(ApiError::Invalid);
         }
+        Ok(opened)
     }
 
     fn catalog(&self) -> HarnessCatalog {
@@ -171,7 +208,13 @@ where
         // `[workdirs]` is shared, so both adapters hold the same aliases.
         HarnessCatalog {
             harnesses,
-            workdir_aliases: self.claude.workdir_aliases().map(str::to_owned).collect(),
+            workdir_aliases: self
+                .claude
+                .workdir_aliases()
+                .filter(|alias| !self.missing_workdir_aliases.contains(*alias))
+                .map(str::to_owned)
+                .collect(),
+            missing_workdir_aliases: self.missing_workdir_aliases.iter().cloned().collect(),
         }
     }
 }

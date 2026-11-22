@@ -33,7 +33,7 @@ class FakeSocket extends EventTarget {
     this.dispatchEvent(new Event('close'))
   }
   receive(message: unknown) {
-    valid('urn:ads:contract:local-api.server-message:7', message)
+    valid('urn:ads:contract:local-api.server-message:8', message)
     this.receiveRaw(message)
   }
   /** Entrega sem conferir: simula um núcleo que manda o que o contrato não aceita. */
@@ -422,6 +422,17 @@ describe('local WebSocket client', () => {
     await expect(listed).rejects.toThrow('command rejected')
     expect(client.getState()).toBe('connected')
   })
+  it('passes missing workdir aliases through the catalog response', async () => {
+    const { client, socket } = await connected()
+    const listed = client.listHarnesses()
+    const result = {
+      harnesses: ['claude'],
+      workdir_aliases: ['online'],
+      missing_workdir_aliases: ['offline'],
+    }
+    socket.receive({ jsonrpc: '2.0', id: socket.sent[1]?.id, result })
+    await expect(listed).resolves.toEqual(result)
+  })
   it('disconnects when a reply does not have the shape of its request', async () => {
     const list = await connected()
     const listed = list.client.listHarnesses()
@@ -441,6 +452,10 @@ describe('local WebSocket client', () => {
     ['an extra field', { harnesses: ['claude'], workdir_aliases: ['default'], program: 'x' }],
     ['a POSIX path as alias', { harnesses: ['claude'], workdir_aliases: ['/srv/work'] }],
     ['a Windows path as alias', { harnesses: ['claude'], workdir_aliases: ['C:\\work'] }],
+    [
+      'a path as a missing alias',
+      { harnesses: ['claude'], workdir_aliases: [], missing_workdir_aliases: ['/srv/work'] },
+    ],
     ['a repeated tool', { harnesses: ['claude', 'claude'], workdir_aliases: [] }],
     ['no alias list', { harnesses: ['claude'] }],
   ])('drops the connection on a tool list with %s', async (_, result) => {

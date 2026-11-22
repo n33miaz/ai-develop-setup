@@ -1,0 +1,9 @@
+{
+  "jsonrpc": "2.0",
+  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAD",
+  "result": {
+    "queue_id": "queue-01",
+    "state": "stopped",
+    "policy": null
+  }
+}
