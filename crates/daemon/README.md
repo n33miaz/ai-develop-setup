@@ -172,13 +172,14 @@ obrigatório de todo comando) responde
 ([`command.harness.list.response:2`](../../contracts/README.md#api-local)): os
 identificadores das ferramentas com `program` preenchido, na ordem `claude`,
 `codex`, e os apelidos disponíveis de `[workdirs]` em ordem de nome. O campo
-`missing_workdir_aliases` só aparece quando há pastas ausentes na partida.
+`missing_workdir_aliases` só aparece quando há caminhos indisponíveis na partida,
+inclusive quando um caminho aponta para um arquivo.
 A resposta inclui apenas nomes. A lista é montada na partida e `session.open`
 confere de novo se o programa e a pasta existem no momento de abrir a sessão.
 Como só lê, não passa pela cache de idempotência: repetir a chave devolve a
 lista de novo, nunca `replayed`. `api::Launcher::catalog` fornece a lista; o
 padrão é vazio, como em `DisabledLauncher`. O daemon escreve a
-`local-api.server-message:10`, que inclui a resposta sobre pastas ausentes,
+`local-api.server-message:10`, que inclui a resposta sobre pastas indisponíveis,
 `queue.configured.response:1` e a listagem `approval.list.response:4`.
 A resposta de `harness.list` é enviada quando o cliente a solicita. Um daemon
 anterior ao comando o recusa com `METHOD_NOT_FOUND`, e a interface mostra que
