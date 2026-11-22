@@ -5,7 +5,7 @@ import {
   type CommandRequestV1,
   type CommandQueueConfiguredResponseV1,
   type CommandQueueGetResponseV2,
-  type CommandApprovalListResponseV3,
+  type CommandApprovalListResponseV4,
   type CommandResponseV2,
   type EventEnvelopeV1,
   type HarnessCatalog,
@@ -14,7 +14,7 @@ import {
 export type LocalCommandReply =
   | CommandResponseV2
   | ((
-      CommandQueueGetResponseV2 | CommandQueueConfiguredResponseV1 | CommandApprovalListResponseV3
+      CommandQueueGetResponseV2 | CommandQueueConfiguredResponseV1 | CommandApprovalListResponseV4
     ) & { error?: never })
 
 export type Unsubscribe = () => void

@@ -1,9 +1,9 @@
 import { expect, it } from 'vitest'
-import queueGet from '../../../contracts/golden/contract.local-api.server-message.v9/valid/05-queue-get.json'
-import approvalList from '../../../contracts/golden/contract.local-api.server-message.v9/valid/06-approval-list.json'
-import legacyQueue from '../../../contracts/golden/contract.local-api.server-message.v9/valid/07-legacy-queue.json'
-import unavailableWorkdir from '../../../contracts/golden/contract.local-api.server-message.v9/valid/08-unavailable-workdir.json'
-import queueConfigured from '../../../contracts/golden/contract.local-api.server-message.v9/valid/09-queue-configured.json'
+import queueGet from '../../../contracts/golden/contract.local-api.server-message.v10/valid/05-queue-get.json'
+import approvalList from '../../../contracts/golden/contract.local-api.server-message.v10/valid/06-approval-list.json'
+import legacyQueue from '../../../contracts/golden/contract.local-api.server-message.v10/valid/07-legacy-queue.json'
+import unavailableWorkdir from '../../../contracts/golden/contract.local-api.server-message.v10/valid/08-unavailable-workdir.json'
+import queueConfigured from '../../../contracts/golden/contract.local-api.server-message.v10/valid/09-queue-configured.json'
 import {
   isApprovalList,
   isHarnessList,

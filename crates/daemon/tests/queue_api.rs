@@ -122,17 +122,22 @@ impl Bench {
     }
 
     fn try_bind_or_pending(&self) -> Result<LocalQueue, QueueOpenError> {
+        self.bind_shared(Arc::new(Mutex::new(open_log(
+            &self.folder.db(),
+            &self.anchor,
+            &self.config,
+        ))))
+    }
+
+    fn bind_shared(&self, log: Arc<Mutex<EventLog>>) -> Result<LocalQueue, QueueOpenError> {
         LocalQueue::bind_or_pending(
-            Arc::new(Mutex::new(open_log(
-                &self.folder.db(),
-                &self.anchor,
-                &self.config,
-            ))),
+            log,
             id(&self.queue),
             QueueOwner {
                 owner_id: id("owner-01"),
                 device_id: id("device-01"),
             },
+            Duration::from_millis(self.config.busy_timeout_ms().into()),
         )
     }
     fn open_as(&self, owner_id: &str) -> Result<LoggedQueue, QueueOpenError> {
@@ -147,6 +152,7 @@ impl Bench {
                 owner_id: id(owner_id),
                 device_id: id("device-01"),
             },
+            Duration::from_millis(self.config.busy_timeout_ms().into()),
         )
     }
     /// Binds the queue, first writing its creation by the owner's device when the stream is empty.
@@ -294,7 +300,7 @@ async fn exchange(ws: &mut Socket, value: &Value) -> Value {
     };
     let reply: Value = serde_json::from_str(&text).unwrap();
     assert!(
-        valid("urn:ads:contract:local-api.server-message:9", &reply),
+        valid("urn:ads:contract:local-api.server-message:10", &reply),
         "{reply}"
     );
     if let Some(code) = reply["error"].get("code") {
@@ -892,19 +898,22 @@ fn versioned_error_catalogs_keep_the_published_queue_codes() {
     for schema in [
         "urn:ads:contract:local-api.server-message:8",
         "urn:ads:contract:local-api.server-message:9",
+        "urn:ads:contract:local-api.server-message:10",
     ] {
         assert!(valid(schema, &listed), "{schema}");
     }
     let configured =
         json!({"jsonrpc": "2.0", "id": new_id().unwrap(), "result": {"queue_id": "queue-01"}});
     assert!(valid(
-        "urn:ads:contract:local-api.server-message:9",
+        "urn:ads:contract:local-api.server-message:10",
         &configured
     ));
-    assert!(!valid(
+    for schema in [
         "urn:ads:contract:local-api.server-message:8",
-        &configured
-    ));
+        "urn:ads:contract:local-api.server-message:9",
+    ] {
+        assert!(!valid(schema, &configured), "{schema}");
+    }
     let listed = json!({"jsonrpc": "2.0", "id": new_id().unwrap(), "result": {"queue_id": "queue-01", "state": "enabled"}});
     assert!(valid(
         "urn:ads:contract:local-api.server-message:3",
@@ -1010,4 +1019,51 @@ async fn startup_binds_an_existing_queue_stopped() {
     assert_eq!(events.len(), 3);
     assert_eq!(events[2]["type"], "urn:ads:event:queue.stopped:1");
     assert_eq!(events[2]["data"]["reason"], "restart");
+}
+
+#[test]
+fn startup_binding_times_out_while_the_shared_log_is_locked() {
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Instant;
+
+    let mut bench = Bench::new("queue-bind-busy");
+    bench.config = StorageConfig::from_toml_str("busy_timeout_ms = 50").unwrap();
+    drop(bench.open());
+    let log = Arc::new(Mutex::new(open_log(
+        &bench.folder.db(),
+        &bench.anchor,
+        &bench.config,
+    )));
+    let result = thread::scope(|scope| {
+        let (locked, lock_ready) = mpsc::channel();
+        let (release, released) = mpsc::channel::<()>();
+        let held_log = log.clone();
+        scope.spawn(move || {
+            let _guard = held_log.lock().unwrap();
+            locked.send(()).unwrap();
+            let _ = released.recv();
+        });
+        let external_timeout = Duration::from_secs(2);
+        lock_ready.recv_timeout(external_timeout).unwrap();
+
+        let (finished, result) = mpsc::channel();
+        let bench = &bench;
+        let binding_log = log.clone();
+        scope.spawn(move || {
+            let started = Instant::now();
+            let outcome = bench.bind_shared(binding_log);
+            let _ = finished.send((outcome, started.elapsed()));
+        });
+        let result = result.recv_timeout(external_timeout);
+        drop(release);
+        result
+    });
+    let (outcome, elapsed) = result.expect("binding did not finish while the log lock was held");
+    assert!(matches!(
+        outcome,
+        Err(QueueOpenError::Storage(StorageError::Busy))
+    ));
+    assert!(elapsed >= Duration::from_millis(50));
+    assert!(bench.bind_shared(log).is_ok());
 }

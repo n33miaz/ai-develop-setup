@@ -1,8 +1,9 @@
 import { fireEvent, render, screen, within } from '@testing-library/react'
 import { expect, it, vi } from 'vitest'
-import recorded from '../../../contracts/golden/command.approval.list.response.v3/valid/02-with-effects.json'
-import refused from '../../../contracts/golden/command.approval.list.response.v3/valid/04-refused-with-more.json'
-import unreadable from '../../../contracts/golden/command.approval.list.response.v3/valid/05-empty-with-unreadable.json'
+import recorded from '../../../contracts/golden/command.approval.list.response.v4/valid/02-with-effects.json'
+import policyChanged from '../../../contracts/golden/command.approval.list.response.v4/valid/06-policy-changed.json'
+import refused from '../../../contracts/golden/command.approval.list.response.v4/valid/04-refused-with-more.json'
+import unreadable from '../../../contracts/golden/command.approval.list.response.v4/valid/05-empty-with-unreadable.json'
 import queued from '../../../contracts/golden/command.queue.get.response.v2/valid/01-recorded-policy.json'
 import {
   HARNESS_NOT_CONFIGURED,
@@ -12,6 +13,7 @@ import {
 } from '../../../contracts/generated/ts/contract.local-api.error-code.v6.constants'
 import { CommandRefusal, type queueApprovals } from '../api/queueApprovals'
 import { isApprovalList, isQueueGet } from '../api/wire'
+import { createTranslator, I18nContext } from '../i18n'
 import { ApprovalsPanel } from './ApprovalsPanel'
 import { QueuePanel } from './QueuePanel'
 
@@ -175,6 +177,37 @@ it('marks omitted and unapprovable items while allowing denial', async () => {
   fireEvent.click(panel.getByRole('button', { name: 'Negar' }))
   expect(await panel.findByRole('alert')).toHaveTextContent('O núcleo recusou')
   expect(api.answer).toHaveBeenCalledWith(expect.objectContaining({ decision: 'deny' }))
+})
+
+it.each([
+  ['pt-BR', 'A política atual impede a aprovação deste pedido.'],
+  ['en', 'The current policy prevents approval of this request.'],
+] as const)('explains a policy change and allows denial in %s', async (locale, message) => {
+  const t = createTranslator(locale)
+  const api = mockApi()
+  if (!isApprovalList(policyChanged)) throw new Error('invalid policy change fixture')
+  const item = policyChanged.result.approvals[0]
+  if (!item) throw new Error('missing approval with changed policy')
+  api.list
+    .mockResolvedValueOnce(policyChanged.result)
+    .mockResolvedValueOnce({ approvals: [], more: false, unreadable: 0 })
+  render(
+    <I18nContext.Provider value={t}>
+      <ApprovalsPanel api={api} />
+    </I18nContext.Provider>,
+  )
+  const panel = open(t('approvals.heading'))
+  fireEvent.click(panel.getByRole('button', { name: t('controls.refresh') }))
+  expect(await panel.findByText(message)).toBeVisible()
+  expect(panel.getByRole('button', { name: t('approvals.approve') })).toBeDisabled()
+  fireEvent.click(panel.getByRole('button', { name: t('approvals.deny') }))
+  expect(await panel.findByText(t('approvals.empty'))).toBeVisible()
+  expect(api.answer).toHaveBeenCalledWith({
+    action_id: item.action_id,
+    approval_id: item.approval_id,
+    plan_hash: item.plan_hash,
+    decision: 'deny',
+  })
 })
 
 it('shows the limits recorded for the queue', async () => {

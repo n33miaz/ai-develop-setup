@@ -193,6 +193,7 @@ pub(crate) fn controls(
             owner_id: ids.owner_id.clone(),
             device_id: ids.device_id.clone(),
         },
+        log.busy_timeout(),
     )
     .map_err(StartupError::Queue)?;
     let approvals = ApprovalDesk::new(

@@ -37,10 +37,10 @@ export type { RecordUsageEventV1 } from '../../../contracts/generated/ts/record.
 export type { CommandRequestV1 } from '../../../contracts/generated/ts/command.request.v1'
 export type { CommandResponseV2 } from '../../../contracts/generated/ts/command.response.v2'
 export type { CommandHarnessListResponseV2 }
-export type { ContractLocalApiServerMessageV9 } from '../../../contracts/generated/ts/contract.local-api.server-message.v9'
+export type { ContractLocalApiServerMessageV10 } from '../../../contracts/generated/ts/contract.local-api.server-message.v10'
 export type { CommandQueueGetResponseV2 } from '../../../contracts/generated/ts/command.queue.get.response.v2'
 export type { CommandQueueConfiguredResponseV1 } from '../../../contracts/generated/ts/command.queue.configured.response.v1'
-export type { CommandApprovalListResponseV3 } from '../../../contracts/generated/ts/command.approval.list.response.v3'
+export type { CommandApprovalListResponseV4 } from '../../../contracts/generated/ts/command.approval.list.response.v4'
 export type { ContractLocalApiServerMessageV2 } from '../../../contracts/generated/ts/contract.local-api.server-message.v2'
 export type {
   CommonActorV1,

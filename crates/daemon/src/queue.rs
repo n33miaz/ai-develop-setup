@@ -141,7 +141,7 @@ impl Drop for LoggedQueue {
 }
 
 enum Opening<'a> {
-    Bind,
+    Bind(std::time::Duration),
     Open(&'a QueuePolicy),
     Create {
         policy: &'a QueuePolicy,
@@ -154,12 +154,14 @@ impl LoggedQueue {
     /// Binds a queue whose stream already exists, restoring it stopped and recording the restart
     /// when the log last said enabled. An empty stream is refused with `NotCreated` and nothing is
     /// written: creating the queue is an owner act and takes a [`LocalSession`].
+    /// Supply the log's configured busy timeout to bound the initial lock wait.
     pub fn bind(
         log: Arc<Mutex<EventLog>>,
         queue_id: CommonIdV1,
         owner: QueueOwner,
+        busy_timeout: std::time::Duration,
     ) -> Result<Self, QueueOpenError> {
-        Self::acquire(log, queue_id, owner, Opening::Bind)
+        Self::acquire(log, queue_id, owner, Opening::Bind(busy_timeout))
     }
 
     /// Like [`Self::open_with_policy`], with the bundled policy for a new queue.
@@ -264,17 +266,17 @@ impl LoggedQueue {
     fn restore(mut inner: Inner, opening: Opening<'_>) -> Result<Inner, QueueOpenError> {
         let stored = {
             let log = match opening {
-                Opening::Create { timeout, .. } => {
+                Opening::Bind(timeout) | Opening::Create { timeout, .. } => {
                     crate::audit::lock_with_timeout(&inner.log, timeout)?
                 }
-                _ => inner.log.lock().map_err(|_| StorageError::Unavailable)?,
+                Opening::Open(_) => inner.log.lock().map_err(|_| StorageError::Unavailable)?,
             };
             inner.busy_timeout = std::time::Duration::from_millis(log.busy_timeout_ms().into());
             log.read_queue(&inner.record.id)?
         };
         if stored.is_empty() {
             let (initial_policy, cause) = match opening {
-                Opening::Bind => return Err(QueueOpenError::NotCreated),
+                Opening::Bind(_) => return Err(QueueOpenError::NotCreated),
                 Opening::Open(policy) => (policy, None),
                 Opening::Create { policy, cause, .. } => (policy, Some(cause)),
             };
@@ -445,18 +447,14 @@ pub struct LocalQueue {
 }
 
 impl LocalQueue {
+    /// Uses the log's configured busy timeout to bind the stream or detect that it is empty.
     pub fn bind_or_pending(
         log: Arc<Mutex<EventLog>>,
         id: CommonIdV1,
         owner: QueueOwner,
+        busy_timeout: std::time::Duration,
     ) -> Result<Self, QueueOpenError> {
-        let busy_timeout = std::time::Duration::from_millis(
-            log.lock()
-                .map_err(|_| StorageError::Unavailable)?
-                .busy_timeout_ms()
-                .into(),
-        );
-        let bound = match LoggedQueue::bind(log.clone(), id.clone(), owner.clone()) {
+        let bound = match LoggedQueue::bind(log.clone(), id.clone(), owner.clone(), busy_timeout) {
             Ok(queue) => Some(queue),
             Err(QueueOpenError::NotCreated) => None,
             Err(error) => return Err(error),
@@ -728,14 +726,17 @@ mod tests {
         let folder = Folder::new("queue-unit-create");
         let anchor = Anchor::default();
         let queue = id("queue-unit-create");
-        assert!(matches!(
+        let bind = || {
+            let log = folder.log(&anchor);
+            let busy_timeout = std::time::Duration::from_millis(log.busy_timeout_ms().into());
             LoggedQueue::bind(
-                Arc::new(Mutex::new(folder.log(&anchor))),
+                Arc::new(Mutex::new(log)),
                 queue.clone(),
-                owner()
-            ),
-            Err(QueueOpenError::NotCreated)
-        ));
+                owner(),
+                busy_timeout,
+            )
+        };
+        assert!(matches!(bind(), Err(QueueOpenError::NotCreated)));
         assert!(stored(&folder, &anchor, &queue).is_empty());
 
         let token = Token::generate().unwrap();
@@ -768,14 +769,7 @@ mod tests {
         );
 
         // An existing stream keeps its creation, whatever policy the reopening offers.
-        drop(
-            LoggedQueue::bind(
-                Arc::new(Mutex::new(folder.log(&anchor))),
-                queue.clone(),
-                owner(),
-            )
-            .unwrap(),
-        );
+        drop(bind().unwrap());
         drop(open(&policy("attempt_limit = 9\nadmission_limit = 5\n")));
         drop(
             LoggedQueue::open(

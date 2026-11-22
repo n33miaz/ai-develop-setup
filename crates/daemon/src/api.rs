@@ -1744,7 +1744,7 @@ async fn send<S>(ws: &mut S, value: Value, config: &ApiConfig) -> Result<(), Api
 where
     S: futures_util::Sink<Message> + Unpin,
 {
-    let value = checked("urn:ads:contract:local-api.server-message:9", value)?;
+    let value = checked("urn:ads:contract:local-api.server-message:10", value)?;
     timeout(
         Duration::from_millis(config.send_timeout_ms),
         ws.send(Message::Text(value.to_string().into())),
@@ -1755,7 +1755,7 @@ where
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -1815,7 +1815,7 @@ mod tests {
         assert_eq!(consume_hello(&mut hello).unwrap(), "request");
         assert!(hello.is_none());
     }
-    async fn fake_service() -> (
+    pub(crate) async fn fake_service() -> (
         LocalApi,
         Arc<ads_ptyhost::FakeBackend>,
         Arc<ads_ptyhost::PtyHost>,
@@ -2206,7 +2206,10 @@ mod tests {
         assert!(result.unwrap().sessions.is_empty());
     }
 
-    async fn authenticate(port: u16, token: &str) -> tokio_tungstenite::WebSocketStream<TcpStream> {
+    pub(crate) async fn authenticate(
+        port: u16,
+        token: &str,
+    ) -> tokio_tungstenite::WebSocketStream<TcpStream> {
         use tokio_tungstenite::tungstenite::client::IntoClientRequest;
         let mut request = format!("ws://127.0.0.1:{port}/")
             .into_client_request()

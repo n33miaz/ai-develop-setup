@@ -178,8 +178,8 @@ confere de novo se o programa e a pasta existem no momento de abrir a sessão.
 Como só lê, não passa pela cache de idempotência: repetir a chave devolve a
 lista de novo, nunca `replayed`. `api::Launcher::catalog` fornece a lista; o
 padrão é vazio, como em `DisabledLauncher`. O daemon escreve a
-`local-api.server-message:9`, que inclui a resposta sobre pastas ausentes,
-`queue.configured.response:1` e a listagem `approval.list.response:3`.
+`local-api.server-message:10`, que inclui a resposta sobre pastas ausentes,
+`queue.configured.response:1` e a listagem `approval.list.response:4`.
 A resposta de `harness.list` é enviada quando o cliente a solicita. Um daemon
 anterior ao comando o recusa com `METHOD_NOT_FOUND`, e a interface mostra que
 o daemon precisa ser atualizado.
@@ -232,11 +232,13 @@ recebe `REMOTE_ORIGIN_REFUSED`.
 ancorado: recusa um stream criado por outro dono e, a cada abertura, restaura a
 fila parada e grava `queue.stopped` com `reason: restart` se o log dizia ligada.
 Quando a composição usa um `ProductLog`, passe `ProductLog::shared_log()` à fila
-para usar a mesma conexão SQLite do portão. A primeira aquisição da trava da
-conexão, em `bind` e `open`, é a que lê o `busy_timeout_ms` do armazenamento e
-por isso espera sem prazo enquanto o portão usa a conexão; cada aquisição
-seguinte usa esse prazo, assim como a espera por uma trava do SQLite. Se o portão ainda estiver usando a conexão ao fim do
-prazo, a API responde `INTERNAL_ERROR` com a mensagem `audit log busy`. A fila
+para usar a mesma conexão SQLite do portão. A composição passa também o prazo
+`busy_timeout_ms` do log a `bind_or_pending`. A primeira aquisição da trava em
+`bind` usa esse prazo e devolve `Storage(Busy)` se ele vencer. Em `open` e
+`open_with_policy`, a primeira aquisição espera sem prazo para ler a configuração
+do log. As aquisições seguintes e a espera por uma trava do SQLite usam
+`busy_timeout_ms`. Se o prazo vencer durante um comando da fila, a API responde
+`INTERNAL_ERROR` com a mensagem `audit log busy`. A fila
 já estará parada se o comando era `queue.stop`. Os controles da fila rodam em
 tarefas bloqueantes, mantendo o atendimento de assinaturas e do terminal
 enquanto aguardam a gravação.
@@ -290,7 +292,7 @@ recebe `REMOTE_ORIGIN_REFUSED`. O dono e o aparelho vêm do daemon
 `approvals::ApprovalControl` exige a prova `auth::LocalSession`.
 
 - `approval.list` (só `_meta`) responde `{"approvals": [...], "more": ..., "unreadable": ...}`
-  ([`command.approval.list.response:3`](../../contracts/README.md#api-local)):
+  ([`command.approval.list.response:4`](../../contracts/README.md#api-local)):
   da mais antiga à mais nova, cada ação cuja aprovação foi pedida e ainda não
   foi concedida, negada nem expirada, com `approval_id`, `risk`, `summary`,
   `requested_at`, `expires_at`, `not_approvable`, o registro do plano
@@ -346,8 +348,11 @@ recebe `REMOTE_ORIGIN_REFUSED`. O dono e o aparelho vêm do daemon
   vem também o porquê: `effects_refused` (o ensaio foi recusado),
   `effects_unreadable` (o registro gravado não passa na leitura, com aviso no
   log do processo; a listagem das outras ações segue) ou `effects_not_listed`.
-  Aprovar uma dessas grava a resposta e volta `APPROVAL_NOT_APPROVABLE`, com a
-  ação ainda aguardando; negar continua permitido e nunca lê os efeitos.
+  Esses impedimentos de plano e de efeitos fazem a API gravar a resposta e
+  devolver `APPROVAL_NOT_APPROVABLE`, com a ação ainda aguardando. A listagem
+  também inclui `policy_changed` se o julgamento do portão sob a política vigente
+  impedir a aprovação. O portão reconfere a política ao responder.
+  Negar continua permitido e nunca lê os efeitos.
 - Para executar uma ação aprovada, `SessionGate::execute` exige a resposta
   local gravada que causou a concessão. Confere o ator, o canal e o
   `effects_hash`, refaz o ensaio e exige os mesmos efeitos. A licença local

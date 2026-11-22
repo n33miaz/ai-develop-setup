@@ -4,52 +4,91 @@
   "result": {
     "approvals": [
       {
-        "action_id": "act-03",
+        "action_id": "act-01",
         "approval_id": "appr-03",
-        "plan_hash": "sha256:5486cc58827bffeb2204a994db3d77fe6c8f2c863eb73de6e2a60802784293cb",
+        "plan_hash": "sha256:c7b870d89ef435eb431fcdf8e99f82f2b10c9b05a25eb86eb2ed603fa366eb94",
         "risk": "medium",
         "summary": "Limpar arquivos temporários do projeto",
         "requested_at": "2030-01-02T03:04:05Z",
         "expires_at": "2030-01-02T03:19:05Z",
-        "not_approvable": [
-          "estimate_unknown",
-          "wildcard_target",
-          "definitive_recursive_delete"
-        ],
+        "not_approvable": ["policy_changed"],
         "plan": {
           "version": 2,
-          "action_id": "act-03",
-          "plan_hash": "sha256:5486cc58827bffeb2204a994db3d77fe6c8f2c863eb73de6e2a60802784293cb",
-          "operation": "fs.clean_untracked",
-          "work_root": "C:\\work\\proj",
+          "action_id": "act-01",
+          "plan_hash": "sha256:c7b870d89ef435eb431fcdf8e99f82f2b10c9b05a25eb86eb2ed603fa366eb94",
+          "operation": "fs.delete_recursive",
+          "work_root": "/work/proj",
           "destination": null,
           "targets": [
             {
-              "path": "C:\\work\\proj\\cache",
-              "pattern": "*.tmp",
+              "path": "/work/proj/a",
+              "pattern": null,
               "repo_root": false
             },
             {
-              "path": "C:\\work\\proj\\out",
+              "path": "/work/proj/b",
               "pattern": null,
               "repo_root": false
             }
           ],
-          "estimate": null,
+          "estimate": {
+            "items": 3,
+            "bytes": 4096
+          },
           "verdict": {
-            "decision": "requires_approval",
-            "risk": "medium",
-            "reasons": [
-              {
-                "rule": "estimate_unknown",
-                "subject": "C:\\work\\proj"
-              }
-            ]
+            "decision": "allowed",
+            "risk": "low",
+            "reasons": []
           },
           "quarantined": false
         },
-        "effects_hash": null,
-        "effects": null,
+        "effects_hash": "sha256:a28773f6453ede8f3b987ed9ac96916b4affb37bd6a7b11389d69becaa27f5e8",
+        "effects": {
+          "version": 1,
+          "action_id": "act-01",
+          "plan_hash": "sha256:c7b870d89ef435eb431fcdf8e99f82f2b10c9b05a25eb86eb2ed603fa366eb94",
+          "manifest": null,
+          "steps": [
+            {
+              "target": "C:\\work\\proj\\.ads\\quarantine\\act-01",
+              "effect": "delete_recursive",
+              "stored": null,
+              "entries": [
+                {
+                  "path": [],
+                  "kind": "dir",
+                  "bytes": 0,
+                  "id": "2869847911:1125899906842681"
+                },
+                {
+                  "path": [
+                    "items"
+                  ],
+                  "kind": "dir",
+                  "bytes": 0,
+                  "id": "2869847911:1125899906842682"
+                },
+                {
+                  "path": [
+                    "items",
+                    "build.log"
+                  ],
+                  "kind": "file",
+                  "bytes": 2048,
+                  "id": "2869847911:1125899906842683"
+                },
+                {
+                  "path": [
+                    "manifest.json"
+                  ],
+                  "kind": "file",
+                  "bytes": 412,
+                  "id": "2869847911:1125899906842684"
+                }
+              ]
+            }
+          ]
+        },
         "effects_error": null
       }
     ],

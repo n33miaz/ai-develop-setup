@@ -35,7 +35,7 @@
     "instancePath": ""
   },
   "08-approval-list-version-1.json": {
-    "rule": "A listagem de aprovações é a :3, com a contagem de pedidos ilegíveis.",
+    "rule": "A listagem de aprovações traz a contagem de pedidos ilegíveis.",
     "keyword": "anyOf",
     "instancePath": ""
   },
@@ -46,16 +46,6 @@
   },
   "10-approval-list-version-2.json": {
     "rule": "A listagem de aprovações conta os pedidos com histórico ilegível.",
-    "keyword": "anyOf",
-    "instancePath": ""
-  },
-  "11-queue-configured-with-state.json": {
-    "rule": "A resposta de queue.configured e a de queue.get não se misturam: o id sozinho, ou o id com estado e política.",
-    "keyword": "anyOf",
-    "instancePath": ""
-  },
-  "12-queue-configured-with-accepted.json": {
-    "rule": "A resposta de queue.configured e a de um comando com efeito não se misturam.",
     "keyword": "anyOf",
     "instancePath": ""
   }

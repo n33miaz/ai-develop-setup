@@ -1,14 +1,13 @@
 /* Gerado por tools/gen-ts.mjs a partir de schemas/contract.local-api.server-message.v9.schema.json. Não edite à mão. */
 
 /**
- * Mensagem do núcleo à interface. Mensagens do núcleo à interface pelo WebSocket da API local. A versão 9 acrescenta à :8 a resposta de queue.configured.
+ * Mensagem do núcleo à interface. Mensagens do núcleo à interface pelo WebSocket da API local. A versão 9 inclui a resposta de approval.list que informa quando a política vigente impede a aprovação.
  */
 export type ContractLocalApiServerMessageV9 =
   | CommandResponseV2
   | CommandHarnessListResponseV2
   | CommandQueueGetResponseV2
-  | CommandQueueConfiguredResponseV1
-  | CommandApprovalListResponseV3
+  | CommandApprovalListResponseV4
   | EventEnvelopeV1;
 /**
  * Resposta de comando. Resposta JSON-RPC 2.0 a um comando: ou result ou error, nunca os dois. A versão 2 fecha a forma do result: o comando foi aceito, e replayed diz se esta é a repetição de um comando já aceito com a mesma chave de idempotência (nada foi executado de novo). O efeito do comando volta como evento, não no result.
@@ -151,19 +150,9 @@ export interface CommonQueuePolicyV1 {
   host_confirm_seconds: number;
 }
 /**
- * Resposta de queue.configured. Resposta JSON-RPC 2.0 aceita de queue.configured: o id da fila que o núcleo serve, para a interface não depender do arquivo de identidades. Não diz se a fila já foi criada; queue.get diz. A recusa volta como command.response:2 com error.
+ * Resposta de approval.list. Resposta JSON-RPC 2.0 aceita de approval.list: as ações que aguardam a resposta do dono, da mais antiga à mais nova, cada uma com a aprovação pedida, o registro do plano como o portão o julgou (alvos como pedidos, destino, quarentena, estimativa e regras), os efeitos concretos que o ensaio achou (record.action-effects:1, com o hash que a aprovação compromete; null quando não há registro legível), o código da recusa do ensaio (effects_error, ou null) e os motivos pelos quais a API não a deixa aprovar (not_approvable; vazio quando é aprovável). O campo more indica que o limite de itens ou de bytes deixou outra ação listável para depois. O campo unreadable conta os pedidos pendentes com histórico ilegível que a listagem deixou de fora até onde chegou (todos quando more é false); os ids ficam no log do daemon e approval.close os fecha. A versão 2 acrescentou effects, effects_hash, effects_error e more, e os motivos effects_refused, effects_unreadable e effects_not_listed; a versão 3 acrescentou unreadable e a versão 4 acrescenta policy_changed quando a política vigente impede a aprovação. A recusa volta como command.response:2 com error.
  */
-export interface CommandQueueConfiguredResponseV1 {
-  jsonrpc: "2.0";
-  id: CommonUlidV1;
-  result: {
-    queue_id: CommonIdV1;
-  };
-}
-/**
- * Resposta de approval.list. Resposta JSON-RPC 2.0 aceita de approval.list: as ações que aguardam a resposta do dono, da mais antiga à mais nova, cada uma com a aprovação pedida, o registro do plano como o portão o julgou (alvos como pedidos, destino, quarentena, estimativa e regras), os efeitos concretos que o ensaio achou (record.action-effects:1, com o hash que a aprovação compromete; null quando não há registro legível), o código da recusa do ensaio (effects_error, ou null) e os motivos pelos quais a API não a deixa aprovar (not_approvable; vazio quando é aprovável). O campo more indica que o limite de itens ou de bytes deixou outra ação listável para depois. O campo unreadable conta os pedidos pendentes com histórico ilegível que a listagem deixou de fora até onde chegou (todos quando more é false); os ids ficam no log do daemon e approval.close os fecha. A versão 2 acrescentou effects, effects_hash, effects_error e more, e os motivos effects_refused, effects_unreadable e effects_not_listed; a versão 3 acrescenta unreadable. A recusa volta como command.response:2 com error.
- */
-export interface CommandApprovalListResponseV3 {
+export interface CommandApprovalListResponseV4 {
   jsonrpc: "2.0";
   id: CommonUlidV1;
   result: {
@@ -179,7 +168,7 @@ export interface CommandApprovalListResponseV3 {
       requested_at: CommonTimestampV1;
       expires_at: CommonTimestampV1;
       /**
-       * @maxItems 7
+       * @maxItems 8
        */
       not_approvable:
         | []
@@ -191,6 +180,7 @@ export interface CommandApprovalListResponseV3 {
             | "effects_refused"
             | "effects_unreadable"
             | "effects_not_listed"
+            | "policy_changed"
           ]
         | [
             (
@@ -201,6 +191,7 @@ export interface CommandApprovalListResponseV3 {
               | "effects_refused"
               | "effects_unreadable"
               | "effects_not_listed"
+              | "policy_changed"
             ),
             (
               | "estimate_unknown"
@@ -210,6 +201,7 @@ export interface CommandApprovalListResponseV3 {
               | "effects_refused"
               | "effects_unreadable"
               | "effects_not_listed"
+              | "policy_changed"
             )
           ]
         | [
@@ -221,6 +213,7 @@ export interface CommandApprovalListResponseV3 {
               | "effects_refused"
               | "effects_unreadable"
               | "effects_not_listed"
+              | "policy_changed"
             ),
             (
               | "estimate_unknown"
@@ -230,6 +223,7 @@ export interface CommandApprovalListResponseV3 {
               | "effects_refused"
               | "effects_unreadable"
               | "effects_not_listed"
+              | "policy_changed"
             ),
             (
               | "estimate_unknown"
@@ -239,6 +233,7 @@ export interface CommandApprovalListResponseV3 {
               | "effects_refused"
               | "effects_unreadable"
               | "effects_not_listed"
+              | "policy_changed"
             )
           ]
         | [
@@ -250,6 +245,7 @@ export interface CommandApprovalListResponseV3 {
               | "effects_refused"
               | "effects_unreadable"
               | "effects_not_listed"
+              | "policy_changed"
             ),
             (
               | "estimate_unknown"
@@ -259,6 +255,7 @@ export interface CommandApprovalListResponseV3 {
               | "effects_refused"
               | "effects_unreadable"
               | "effects_not_listed"
+              | "policy_changed"
             ),
             (
               | "estimate_unknown"
@@ -268,6 +265,7 @@ export interface CommandApprovalListResponseV3 {
               | "effects_refused"
               | "effects_unreadable"
               | "effects_not_listed"
+              | "policy_changed"
             ),
             (
               | "estimate_unknown"
@@ -277,6 +275,7 @@ export interface CommandApprovalListResponseV3 {
               | "effects_refused"
               | "effects_unreadable"
               | "effects_not_listed"
+              | "policy_changed"
             )
           ]
         | [
@@ -288,6 +287,7 @@ export interface CommandApprovalListResponseV3 {
               | "effects_refused"
               | "effects_unreadable"
               | "effects_not_listed"
+              | "policy_changed"
             ),
             (
               | "estimate_unknown"
@@ -297,6 +297,7 @@ export interface CommandApprovalListResponseV3 {
               | "effects_refused"
               | "effects_unreadable"
               | "effects_not_listed"
+              | "policy_changed"
             ),
             (
               | "estimate_unknown"
@@ -306,6 +307,7 @@ export interface CommandApprovalListResponseV3 {
               | "effects_refused"
               | "effects_unreadable"
               | "effects_not_listed"
+              | "policy_changed"
             ),
             (
               | "estimate_unknown"
@@ -315,6 +317,7 @@ export interface CommandApprovalListResponseV3 {
               | "effects_refused"
               | "effects_unreadable"
               | "effects_not_listed"
+              | "policy_changed"
             ),
             (
               | "estimate_unknown"
@@ -324,6 +327,7 @@ export interface CommandApprovalListResponseV3 {
               | "effects_refused"
               | "effects_unreadable"
               | "effects_not_listed"
+              | "policy_changed"
             )
           ]
         | [
@@ -335,6 +339,7 @@ export interface CommandApprovalListResponseV3 {
               | "effects_refused"
               | "effects_unreadable"
               | "effects_not_listed"
+              | "policy_changed"
             ),
             (
               | "estimate_unknown"
@@ -344,6 +349,7 @@ export interface CommandApprovalListResponseV3 {
               | "effects_refused"
               | "effects_unreadable"
               | "effects_not_listed"
+              | "policy_changed"
             ),
             (
               | "estimate_unknown"
@@ -353,6 +359,7 @@ export interface CommandApprovalListResponseV3 {
               | "effects_refused"
               | "effects_unreadable"
               | "effects_not_listed"
+              | "policy_changed"
             ),
             (
               | "estimate_unknown"
@@ -362,6 +369,7 @@ export interface CommandApprovalListResponseV3 {
               | "effects_refused"
               | "effects_unreadable"
               | "effects_not_listed"
+              | "policy_changed"
             ),
             (
               | "estimate_unknown"
@@ -371,6 +379,7 @@ export interface CommandApprovalListResponseV3 {
               | "effects_refused"
               | "effects_unreadable"
               | "effects_not_listed"
+              | "policy_changed"
             ),
             (
               | "estimate_unknown"
@@ -380,6 +389,7 @@ export interface CommandApprovalListResponseV3 {
               | "effects_refused"
               | "effects_unreadable"
               | "effects_not_listed"
+              | "policy_changed"
             )
           ]
         | [
@@ -391,6 +401,7 @@ export interface CommandApprovalListResponseV3 {
               | "effects_refused"
               | "effects_unreadable"
               | "effects_not_listed"
+              | "policy_changed"
             ),
             (
               | "estimate_unknown"
@@ -400,6 +411,7 @@ export interface CommandApprovalListResponseV3 {
               | "effects_refused"
               | "effects_unreadable"
               | "effects_not_listed"
+              | "policy_changed"
             ),
             (
               | "estimate_unknown"
@@ -409,6 +421,7 @@ export interface CommandApprovalListResponseV3 {
               | "effects_refused"
               | "effects_unreadable"
               | "effects_not_listed"
+              | "policy_changed"
             ),
             (
               | "estimate_unknown"
@@ -418,6 +431,7 @@ export interface CommandApprovalListResponseV3 {
               | "effects_refused"
               | "effects_unreadable"
               | "effects_not_listed"
+              | "policy_changed"
             ),
             (
               | "estimate_unknown"
@@ -427,6 +441,7 @@ export interface CommandApprovalListResponseV3 {
               | "effects_refused"
               | "effects_unreadable"
               | "effects_not_listed"
+              | "policy_changed"
             ),
             (
               | "estimate_unknown"
@@ -436,6 +451,7 @@ export interface CommandApprovalListResponseV3 {
               | "effects_refused"
               | "effects_unreadable"
               | "effects_not_listed"
+              | "policy_changed"
             ),
             (
               | "estimate_unknown"
@@ -445,6 +461,89 @@ export interface CommandApprovalListResponseV3 {
               | "effects_refused"
               | "effects_unreadable"
               | "effects_not_listed"
+              | "policy_changed"
+            )
+          ]
+        | [
+            (
+              | "estimate_unknown"
+              | "wildcard_target"
+              | "definitive_recursive_delete"
+              | "restore_from_manifest"
+              | "effects_refused"
+              | "effects_unreadable"
+              | "effects_not_listed"
+              | "policy_changed"
+            ),
+            (
+              | "estimate_unknown"
+              | "wildcard_target"
+              | "definitive_recursive_delete"
+              | "restore_from_manifest"
+              | "effects_refused"
+              | "effects_unreadable"
+              | "effects_not_listed"
+              | "policy_changed"
+            ),
+            (
+              | "estimate_unknown"
+              | "wildcard_target"
+              | "definitive_recursive_delete"
+              | "restore_from_manifest"
+              | "effects_refused"
+              | "effects_unreadable"
+              | "effects_not_listed"
+              | "policy_changed"
+            ),
+            (
+              | "estimate_unknown"
+              | "wildcard_target"
+              | "definitive_recursive_delete"
+              | "restore_from_manifest"
+              | "effects_refused"
+              | "effects_unreadable"
+              | "effects_not_listed"
+              | "policy_changed"
+            ),
+            (
+              | "estimate_unknown"
+              | "wildcard_target"
+              | "definitive_recursive_delete"
+              | "restore_from_manifest"
+              | "effects_refused"
+              | "effects_unreadable"
+              | "effects_not_listed"
+              | "policy_changed"
+            ),
+            (
+              | "estimate_unknown"
+              | "wildcard_target"
+              | "definitive_recursive_delete"
+              | "restore_from_manifest"
+              | "effects_refused"
+              | "effects_unreadable"
+              | "effects_not_listed"
+              | "policy_changed"
+            ),
+            (
+              | "estimate_unknown"
+              | "wildcard_target"
+              | "definitive_recursive_delete"
+              | "restore_from_manifest"
+              | "effects_refused"
+              | "effects_unreadable"
+              | "effects_not_listed"
+              | "policy_changed"
+            ),
+            (
+              | "estimate_unknown"
+              | "wildcard_target"
+              | "definitive_recursive_delete"
+              | "restore_from_manifest"
+              | "effects_refused"
+              | "effects_unreadable"
+              | "effects_not_listed"
+              | "policy_changed"
             )
           ];
       plan: RecordActionPlanV2;
