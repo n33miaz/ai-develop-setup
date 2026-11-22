@@ -212,6 +212,8 @@ pub enum QueueRefusal {
     Unauthenticated,
     NotOwner,
     RemoteEnable,
+    /// A policy change can raise the admission ceilings, so it comes only from a local channel.
+    RemotePolicyChange,
     Unchanged,
     /// The `seq` the owner acted on is not the last one of the stream.
     StaleSeq,
@@ -1191,9 +1193,10 @@ pub fn reanchor_admission_clock(
     })
 }
 
-/// Authorizes a policy change against the last sequence read from storage. The caller
-/// appends conditionally at the next sequence using the authenticated device as actor
-/// and activates the policy only after the append succeeds.
+/// Authorizes a policy change against the last sequence read from storage. Like enabling,
+/// it accepts only `local_ui` and `tray`. The caller appends conditionally at the next
+/// sequence using the authenticated device as actor and activates the policy only after
+/// the append succeeds.
 pub fn change_queue_policy(
     queue: &RecordTaskQueueV1,
     device: Option<&AuthenticatedDevice>,
@@ -1205,17 +1208,18 @@ pub fn change_queue_policy(
     if device.owner_id != queue.owner_id {
         return Err(QueueRefusal::NotOwner);
     }
+    let via = match device.via {
+        Channel::LocalUi => EventQueuePolicyChangedV1DataVia::LocalUi,
+        Channel::Tray => EventQueuePolicyChangedV1DataVia::Tray,
+        Channel::RemoteDevice => return Err(QueueRefusal::RemotePolicyChange),
+    };
     if expected_seq != stream_last_seq {
         return Err(QueueRefusal::StaleSeq);
     }
     Ok(EventQueuePolicyChangedV1Data {
         queue_id: queue.id.clone(),
         owner_id: device.owner_id.clone(),
-        via: match device.via {
-            Channel::LocalUi => EventQueuePolicyChangedV1DataVia::LocalUi,
-            Channel::Tray => EventQueuePolicyChangedV1DataVia::Tray,
-            Channel::RemoteDevice => EventQueuePolicyChangedV1DataVia::RemoteDevice,
-        },
+        via,
         policy: policy.event_data(),
     })
 }

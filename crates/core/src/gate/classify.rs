@@ -684,41 +684,42 @@ mod tests {
     }
 
     /// The texts come from the request, with no size limit before the rules: the match must
-    /// neither take exponential time nor grow the stack with them. A slow matcher fails here
-    /// on the step count or on the clock instead of holding the job until its timeout.
+    /// neither take exponential time nor grow the stack with them. The whole check runs in
+    /// another thread, so a slow matcher fails on the clock instead of holding the job.
     #[test]
     fn wildcard_match_is_bounded_in_time_and_in_stack() {
-        let greedy = format!("{}b", "*a".repeat(60));
-        let long = "a".repeat(200_000);
-        let cases = [
-            (greedy, "a".repeat(100), false),
-            (format!("{long}?"), format!("{long}a"), true),
-            (format!("{long}?"), long, false),
-        ];
-        for (pattern, name, expected) in &cases {
-            // Two case folds, each quadratic at worst.
-            let (p, n) = (pattern.len() as u64, name.len() as u64);
-            let steps = 2 * (1 + p + n + (p + 1) * (n + 1));
-            assert_eq!(
-                match_name(pattern, name, &mut MatchBudget(steps)),
-                Ok(*expected),
-                "{} chars against {}",
-                p,
-                n
-            );
-        }
+        const CEILING: std::time::Duration = std::time::Duration::from_secs(30);
         let (done, finished) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let answers: Vec<bool> = cases
+            let started = std::time::Instant::now();
+            let greedy = format!("{}b", "*a".repeat(60));
+            let long = "a".repeat(200_000);
+            let cases = [
+                (greedy, "a".repeat(100)),
+                (format!("{long}?"), format!("{long}a")),
+                (format!("{long}?"), long),
+            ];
+            let answers: Vec<_> = cases
                 .iter()
-                .map(|(pattern, name, _)| may_name(pattern, name))
+                .map(|(pattern, name)| {
+                    // Two case folds, each quadratic at worst.
+                    let (p, n) = (pattern.len() as u64, name.len() as u64);
+                    let steps = 2 * (1 + p + n + (p + 1) * (n + 1));
+                    (
+                        match_name(pattern, name, &mut MatchBudget(steps)),
+                        may_name(pattern, name),
+                    )
+                })
                 .collect();
-            let _ = done.send(answers);
+            let _ = done.send((answers, started.elapsed()));
         });
+        let (answers, elapsed) = finished
+            .recv_timeout(CEILING)
+            .expect("the match finishes within the ceiling");
+        assert!(elapsed < CEILING, "the match took {elapsed:?}");
         assert_eq!(
-            finished.recv_timeout(std::time::Duration::from_secs(30)),
-            Ok(vec![false, true, false]),
-            "the match did not finish in time"
+            answers,
+            vec![(Ok(false), false), (Ok(true), true), (Ok(false), false)]
         );
     }
 }
