@@ -27,8 +27,10 @@ ela está em andamento. Sem botões, cada caso tem o seu aviso: lista vazia;
 falta de resposta em 10 segundos (reabra a URL da execução); daemon anterior ao
 comando, que responde `METHOD_NOT_FOUND` (atualize o daemon; reabrir a URL não resolve);
 e outra recusa do daemon, com aviso neutro. Os botões ficam desativados quando
-nenhum apelido está disponível. A interface mostra os apelidos das pastas ausentes
-na partida e mantém a fila e as aprovações visíveis. Cada
+nenhum apelido está disponível. A interface mostra os apelidos das pastas de
+trabalho indisponíveis na partida, que o daemon informa em `missing_workdir_aliases`:
+caminho que não existe, que não é uma pasta ou que não pode ser resolvido, como
+uma unidade inacessível. A fila e as aprovações continuam visíveis. Cada
 conexão autenticada tem uma geração própria: a lista, o apelido e os botões
 valem só para a geração que os recebeu, então uma reconexão volta ao aviso de
 consulta em andamento mesmo que a tela não chegue a mostrar a queda. A resposta
