@@ -74,21 +74,40 @@ impl KeyProvider for Keys {
     }
 }
 
-/// The vault slot; the flag makes every store refuse, so the append rolls back.
+/// The vault slot, with controls for delaying or failing writes.
 #[derive(Clone, Default)]
-struct Anchor(Arc<Mutex<Option<Commitment>>>, Arc<AtomicBool>);
+struct Anchor {
+    commitment: Arc<Mutex<Option<Commitment>>>,
+    fail_writes: Arc<AtomicBool>,
+    hold_write: Arc<Mutex<Option<HeldWrite>>>,
+}
+
+struct HeldWrite {
+    entered: tokio::sync::oneshot::Sender<()>,
+    release: std::sync::mpsc::Receiver<()>,
+}
+
 impl AnchorStore for Anchor {
     fn can_create(&self) -> Result<bool, StorageError> {
-        Ok(self.0.lock().unwrap().is_none())
+        Ok(self.commitment.lock().unwrap().is_none())
     }
     fn read(&self, _: DatabaseId) -> Result<Option<Commitment>, StorageError> {
-        Ok(*self.0.lock().unwrap())
+        Ok(*self.commitment.lock().unwrap())
     }
     fn store(&self, _: DatabaseId, commitment: &Commitment) -> Result<(), StorageError> {
-        if self.1.load(Ordering::SeqCst) {
+        if self.fail_writes.load(Ordering::SeqCst) {
             return Err(StorageError::AnchorUnavailable);
         }
-        *self.0.lock().unwrap() = Some(*commitment);
+        let hold = self.hold_write.lock().unwrap().take();
+        if let Some(hold) = hold {
+            hold.entered
+                .send(())
+                .map_err(|_| StorageError::AnchorUnavailable)?;
+            hold.release
+                .recv_timeout(Duration::from_secs(15))
+                .map_err(|_| StorageError::AnchorUnavailable)?;
+        }
+        *self.commitment.lock().unwrap() = Some(*commitment);
         Ok(())
     }
 }
@@ -187,7 +206,7 @@ impl Bench {
         Arc::new(wait_for_queue(|| self.open_as("owner-01")).await)
     }
     fn fail_writes(&self, fail: bool) {
-        self.anchor.1.store(fail, Ordering::SeqCst);
+        self.anchor.fail_writes.store(fail, Ordering::SeqCst);
     }
     /// Every event of the queue stream as JSON, read through a second connection.
     fn audit(&self) -> Vec<Value> {
@@ -707,25 +726,15 @@ async fn the_configured_queue_id_is_told_before_and_after_creation() {
     assert_eq!(bench.kinds(), ["created:2"]);
 }
 
-/// Holds `configured` until released, standing in for a wait on the queue mutex. The wait gives
-/// up after a while so a stalled runtime thread fails the test instead of hanging it.
-struct HeldDiscovery {
+struct ObservedDiscovery {
     queue: Arc<LoggedQueue>,
     entered: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
-    release: Mutex<std::sync::mpsc::Receiver<()>>,
-    gave_up: AtomicBool,
 }
-impl QueueControl for HeldDiscovery {
+impl QueueControl for ObservedDiscovery {
     fn configured(&self, session: &LocalSession) -> Result<CommonIdV1, ApiError> {
         if let Some(entered) = self.entered.lock().unwrap().take() {
             entered.send(()).unwrap();
         }
-        let waited = self
-            .release
-            .lock()
-            .unwrap()
-            .recv_timeout(Duration::from_secs(3));
-        self.gave_up.store(waited.is_err(), Ordering::SeqCst);
         self.queue.configured(session)
     }
     fn get(
@@ -750,34 +759,49 @@ impl QueueControl for HeldDiscovery {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn a_waiting_queue_discovery_does_not_stall_other_requests() {
     let bench = Bench::new("queue-configured-wait");
-    let (entered, waiting) = tokio::sync::oneshot::channel();
-    let (release, held) = std::sync::mpsc::channel();
-    let discovery = Arc::new(HeldDiscovery {
+    let (entered, discovering) = tokio::sync::oneshot::channel();
+    let f = fixture(Some(Arc::new(ObservedDiscovery {
         queue: bench.open(),
         entered: Mutex::new(Some(entered)),
-        release: Mutex::new(held),
-        gave_up: AtomicBool::new(false),
-    });
-    let f = fixture(Some(discovery.clone())).await;
+    })))
+    .await;
+    let mut writer = authenticated(&f).await;
     let mut ws = authenticated(&f).await;
     let mut other = authenticated(&f).await;
 
+    // Start holds the queue mutex through the anchor write. The anchor's timeout also
+    // releases it if discovery blocks the runtime thread that drives this test.
+    let (entered, writing) = tokio::sync::oneshot::channel();
+    let (release, held) = std::sync::mpsc::channel();
+    *bench.anchor.hold_write.lock().unwrap() = Some(HeldWrite {
+        entered,
+        release: held,
+    });
+    let start = command("queue.start", bench.params());
+    let start = tokio::spawn(async move { exchange(&mut writer, &start).await });
+    bounded(writing).await.unwrap();
+
     let ask = command("queue.configured", json!({}));
     let ask = tokio::spawn(async move { exchange(&mut ws, &ask).await });
-    bounded(waiting).await.unwrap();
-    let reply = bounded(exchange(&mut other, &command("queue.get", bench.params()))).await;
-    assert_eq!(reply["result"]["queue_id"], json!(bench.queue), "{reply}");
-    let _ = release.send(());
+    bounded(discovering).await.unwrap();
+    let subscribe = command(
+        "events.subscribe",
+        json!({"stream": "session/absent", "after_seq": 0}),
+    );
+    let reply = exchange(&mut other, &subscribe).await;
+    assert_eq!(reply["result"]["accepted"], true, "{reply}");
+    assert!(!ask.is_finished(), "discovery must wait for the queue lock");
+    release
+        .send(())
+        .expect("the independent request must finish before the lock holder times out");
 
     let reply = bounded(ask).await.unwrap();
     assert_eq!(reply["result"], json!({"queue_id": bench.queue}));
-    assert!(
-        !discovery.gave_up.load(Ordering::SeqCst),
-        "the other request had to wait for the discovery to give up"
-    );
+    let reply = bounded(start).await.unwrap();
+    assert_eq!(reply["result"]["accepted"], true, "{reply}");
 }
 
 #[tokio::test]
