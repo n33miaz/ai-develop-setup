@@ -759,10 +759,6 @@ impl ApprovalDesk {
             Closable::Readable => return Err(ApiError::ApprovalReadable),
             Closable::Requests(open) => open,
         };
-        let ts = match &earlier {
-            Some(event) => event["ts"].as_str().ok_or(ApiError::Storage)?.to_owned(),
-            None => clock()?,
-        };
         let open: Vec<_> = match &earlier {
             // The same key again: only what the recorded closing named and is still open.
             Some(event) => {
@@ -776,9 +772,21 @@ impl ApprovalDesk {
             None if open.is_empty() => return Err(ApiError::ApprovalAlreadyAnswered),
             None => open,
         };
+        let expiry_is_due = |ts: &str| open.iter().all(|request| request.expired_at(ts));
+        let ts = match &earlier {
+            Some(event) => {
+                let recorded_at = event["ts"].as_str().ok_or(ApiError::Storage)?;
+                // Older closings could be recorded before the requests were due.
+                if close.decision == Closing::Expire && !expiry_is_due(recorded_at) {
+                    clock()?
+                } else {
+                    recorded_at.to_owned()
+                }
+            }
+            None => clock()?,
+        };
         // An expiry before a deadline would record one that did not happen: nothing is written.
-        if close.decision == Closing::Expire && !open.iter().all(|request| request.expired_at(&ts))
-        {
+        if close.decision == Closing::Expire && !expiry_is_due(&ts) {
             return Err(ApiError::Invalid);
         }
         let record = match &earlier {
@@ -2736,6 +2744,73 @@ mod tests {
             assert_eq!(decisions.len(), 1);
             assert_eq!(decisions[0].1["cause"], record["id"]);
             assert_eq!(decisions[0].1["ts"], deadline);
+        }
+    }
+
+    #[test]
+    fn a_legacy_expiry_resumes_once_the_remaining_requests_are_due() {
+        let mut bench = Bench::new();
+        let gate = bench.gate(OVER_LIMIT);
+        let recorded_at = "2098-12-31T23:59:58Z";
+        let deadline = "2099-01-01T00:00:00Z";
+        let resumed_at = "2099-01-01T00:00:01Z";
+        let (action, approvals) =
+            unreadable_since(&mut bench, &gate, "act-legacy-expiry", 2, Some(deadline));
+        let desk = bench.desk(vec![gate]);
+        let close = close_params(&action, "expire");
+        let closure_stream = "closure/act-legacy-expiry";
+        let streams: Vec<_> = approvals
+            .iter()
+            .map(|approval| format!("approval/{approval}"))
+            .collect();
+        let expired = "urn:ads:event:approval.expired:2";
+
+        let record = {
+            let mut desk = desk.lock().unwrap();
+            let Closable::Requests(open) = desk
+                .log
+                .log()
+                .unwrap()
+                .closable_requests(&action, MAX_CLOSED)
+                .unwrap()
+            else {
+                panic!("expected unreadable requests");
+            };
+            let ids: Vec<_> = approvals.iter().map(String::as_str).collect();
+            let record = desk
+                .record_closing(&close, &ids, recorded_at, &new_id().unwrap())
+                .unwrap();
+            let first = open
+                .iter()
+                .find(|request| request.approval_id == approvals[0]);
+            desk.close_request(&close, first.unwrap(), &record, recorded_at)
+                .unwrap();
+            record
+        };
+        let records = stream(&desk, closure_stream);
+        assert_eq!(records.len(), 1);
+        let decisions = of_type(&desk, &streams, expired);
+        assert_eq!(decisions.len(), 1);
+
+        drop(desk);
+        bench.log = Some(bench.reopen());
+        let gate = bench.gate(OVER_LIMIT);
+        let desk = bench.desk(vec![gate]);
+        let retry =
+            |at: &str| desk.close_unreadable(&close, &new_id().unwrap(), || Ok(at.to_owned()));
+        assert_eq!(retry("2098-12-31T23:59:59Z"), Err(ApiError::Invalid));
+        assert_eq!(stream(&desk, closure_stream), records);
+        assert_eq!(of_type(&desk, &streams, expired), decisions);
+
+        assert_eq!(retry(resumed_at), Ok(true));
+        assert_eq!(retry("2098-12-31T23:59:59Z"), Ok(true));
+        assert_eq!(stream(&desk, closure_stream), records);
+        for (index, approval_stream) in streams.into_iter().enumerate() {
+            let decisions = of_type(&desk, &[approval_stream], expired);
+            assert_eq!(decisions.len(), 1);
+            assert_eq!(decisions[0].1["cause"], record);
+            let expected_ts = if index == 0 { recorded_at } else { resumed_at };
+            assert_eq!(decisions[0].1["ts"], expected_ts);
         }
     }
 
