@@ -517,7 +517,7 @@ fn replay_with_policy(
 
 #[test]
 fn policy_changes_require_the_authenticated_owner_and_current_sequence() {
-    let owner = device("device-01", "owner-01", RemoteDevice);
+    let owner = device("device-01", "owner-01", Tray);
     let other = device("device-02", "owner-02", Tray);
     let queue = stopped_record(id("queue-01"), &owner);
     let configured = policy();
@@ -534,19 +534,32 @@ fn policy_changes_require_the_authenticated_owner_and_current_sequence() {
     let data = change_queue_policy(&queue, Some(&owner), &configured, 5, 5).unwrap();
     assert_eq!(data.queue_id, queue.id);
     assert_eq!(data.owner_id, owner.owner_id);
-    assert_eq!(data.via, EventQueuePolicyChangedV1DataVia::RemoteDevice);
+    assert_eq!(data.via, EventQueuePolicyChangedV1DataVia::Tray);
     assert_eq!(QueuePolicy::from_event(&data.policy), Some(configured));
 }
 
-/// Unlike enabling, changing the policy and re-anchoring the clock accept every channel,
-/// the remote one included, as their contracts do.
+/// Like enabling, changing the policy refuses the remote channel, even from the owner and
+/// at the current sequence.
 #[test]
-fn policy_change_and_reanchor_accept_the_remote_channel() {
+fn policy_change_refuses_the_remote_channel() {
     let phone = device("phone-01", "owner-01", RemoteDevice);
     let queue = stopped_record(id("queue-01"), &phone);
     assert_eq!(RemoteDevice.enabled_via(), None);
-    let data = change_queue_policy(&queue, Some(&phone), &policy(), 5, 5).unwrap();
-    assert_eq!(data.via, EventQueuePolicyChangedV1DataVia::RemoteDevice);
+    assert_eq!(
+        change_queue_policy(&queue, Some(&phone), &policy(), 5, 5),
+        Err(QueueRefusal::RemotePolicyChange)
+    );
+    for local in [LocalUi, Tray] {
+        let owner = device("device-01", "owner-01", local);
+        assert!(change_queue_policy(&queue, Some(&owner), &policy(), 5, 5).is_ok());
+    }
+}
+
+/// Unlike enabling, re-anchoring the clock accepts the remote channel, as its contract does.
+#[test]
+fn reanchor_accepts_the_remote_channel() {
+    let phone = device("phone-01", "owner-01", RemoteDevice);
+    let queue = stopped_record(id("queue-01"), &phone);
     let anchor =
         reanchor_admission_clock(&queue, Some(&phone), &ts("2030-01-02T03:04:05Z"), 5, 5).unwrap();
     assert_eq!(anchor.via(), RemoteDevice);
