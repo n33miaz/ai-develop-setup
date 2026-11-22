@@ -2,6 +2,7 @@ import { useRef, useState, type SubmitEvent } from 'react'
 import { CommandRefusal, type queueApprovals } from '../api/queueApprovals'
 import {
   HARNESS_NOT_CONFIGURED,
+  METHOD_NOT_FOUND,
   QUEUE_ALREADY_CREATED,
   QUEUE_ALREADY_ENABLED,
   QUEUE_NOT_CONFIGURED,
@@ -39,6 +40,16 @@ const refusals: Partial<Record<number, MessageKey>> = {
   [QUEUE_ALREADY_ENABLED]: 'queue.alreadyEnabled',
 }
 
+const discoveryRefusals: Partial<Record<number, MessageKey>> = {
+  [QUEUE_NOT_CONFIGURED]: 'queue.unconfigured',
+  [METHOD_NOT_FOUND]: 'queue.discoveryUnsupported',
+}
+const discoveryNotices = new Set<MessageKey | undefined>([
+  'queue.unconfigured',
+  'queue.discoveryUnsupported',
+  'queue.discoveryFailed',
+])
+
 export function QueuePanel({ api }: { api: Api }) {
   const t = useT()
   const [id, setId] = useState('')
@@ -64,12 +75,13 @@ export function QueuePanel({ api }: { api: Api }) {
         discovery.current = 'done'
         setConfigured(queueId)
         setId((current) => current || queueId)
-        setMessage((current) => (current === 'queue.unconfigured' ? undefined : current))
+        setMessage((current) => (discoveryNotices.has(current) ? undefined : current))
       },
       (error: unknown) => {
-        if (error instanceof CommandRefusal && error.code === QUEUE_NOT_CONFIGURED) {
-          setMessage('queue.unconfigured')
-        }
+        setMessage(
+          (error instanceof CommandRefusal ? discoveryRefusals[error.code] : undefined) ??
+            'queue.discoveryFailed',
+        )
         const reopened = discovery.current === 'reopened'
         discovery.current = 'idle'
         if (reopened) askConfigured()

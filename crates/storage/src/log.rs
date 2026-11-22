@@ -1475,7 +1475,9 @@ impl EventLog {
     /// leaves the pending approvals. In the same transaction as the write it checks again that
     /// the history does not read and that the request is the action's and still open
     /// (`Conflict` otherwise); another type, other ids or another plan hash than the request's
-    /// are `InvalidEvent`. Nothing else reads that history, so no license comes out of it.
+    /// are `InvalidEvent`. For an expiry, the decision timestamp must be at or after the
+    /// deadline. The caller uses the timestamp of the recorded closing, including on retry.
+    /// Nothing else reads that history, so no license comes out of it.
     pub fn close_unreadable_request(
         &mut self,
         action_id: &Id,

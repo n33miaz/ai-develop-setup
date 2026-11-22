@@ -7,6 +7,8 @@ import unreadable from '../../../contracts/golden/command.approval.list.response
 import queued from '../../../contracts/golden/command.queue.get.response.v2/valid/01-recorded-policy.json'
 import {
   HARNESS_NOT_CONFIGURED,
+  INTERNAL_ERROR,
+  METHOD_NOT_FOUND,
   QUEUE_NOT_CONFIGURED,
   QUEUE_NOT_CREATED,
   QUEUE_NOT_FOUND,
@@ -138,6 +140,39 @@ it.each([
   await toggleQueue(details, false)
   await toggleQueue(details, true)
   expect(api.configured).toHaveBeenCalledTimes(2)
+})
+
+it.each([
+  [
+    'an internal error',
+    new CommandRefusal(INTERNAL_ERROR),
+    'Não foi possível descobrir a fila configurada no daemon.',
+  ],
+  [
+    'a daemon without discovery',
+    new CommandRefusal(METHOD_NOT_FOUND),
+    'O daemon não informa a fila configurada.',
+  ],
+  [
+    'a connection failure',
+    new Error('offline'),
+    'Não foi possível descobrir a fila configurada no daemon.',
+  ],
+])('shows a discovery notice after %s and clears it on success', async (_, error, notice) => {
+  const api = mockApi()
+  api.configured.mockReset().mockRejectedValueOnce(error).mockResolvedValue('local:queue.main')
+  render(<QueuePanel api={api} />)
+  const details = screen.getByText('Fila de tarefas').closest('details')
+  if (!details) throw new Error('missing panel')
+  const panel = within(details)
+  await toggleQueue(details, true)
+  expect(await panel.findByRole('alert')).toHaveTextContent(notice)
+  expect(panel.getByLabelText('ID da fila')).toHaveValue('')
+  await toggleQueue(details, false)
+  await toggleQueue(details, true)
+  expect(await panel.findByText('Fila configurada no daemon: local:queue.main')).toBeVisible()
+  expect(panel.getByLabelText('ID da fila')).toHaveValue('local:queue.main')
+  expect(panel.queryByRole('alert')).toBeNull()
 })
 
 it('tells a mistyped queue id apart and names the configured one', async () => {

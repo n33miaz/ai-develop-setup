@@ -1014,7 +1014,7 @@ mod tests {
             ids,
             &[Workdir {
                 path: path.clone(),
-                missing: false,
+                unavailable: false,
             }],
             1024 * 1024,
         )
@@ -1076,6 +1076,15 @@ mod tests {
 
     #[tokio::test]
     async fn missing_workdir_keeps_queue_and_other_approvals_available() {
+        unavailable_workdir_keeps_queue_and_other_approvals_available(false).await;
+    }
+
+    #[tokio::test]
+    async fn regular_file_workdir_keeps_queue_and_other_approvals_available() {
+        unavailable_workdir_keeps_queue_and_other_approvals_available(true).await;
+    }
+
+    async fn unavailable_workdir_keeps_queue_and_other_approvals_available(regular_file: bool) {
         use crate::api::{ApiConfig, ApiError, LocalApi};
         use crate::events::{new_id, now_ts};
         use crate::gate::SessionGate;
@@ -1191,16 +1200,16 @@ mod tests {
         drop(product);
         fs::rename(&offline, fixture.root.join("parked")).unwrap();
 
-        let mut warnings = Vec::new();
-        let workdirs = launcher.check_workdirs(|warning| warnings.push(warning.to_owned()));
+        let configured_paths = launcher.workdirs();
         assert_eq!(
-            warnings,
-            ["ads-daemon: work folder unavailable at startup: offline"]
-        );
-        assert_eq!(
-            check_audit_location(&offline.join("private/audit.db"), &launcher.workdirs()),
+            check_audit_location(&offline.join("private/audit.db"), &configured_paths),
             Err(StorageError::AuditDatabaseInWorkdir)
         );
+        if regular_file {
+            fs::write(&offline, b"regular file").unwrap();
+        }
+        let mut warnings = Vec::new();
+        let workdirs = launcher.check_workdirs(|warning| warnings.push(warning.to_owned()));
         let host = Arc::new(
             PtyHost::new(Arc::new(FakeBackend::with_echo()), HostConfig::defaults()).unwrap(),
         );
@@ -1215,6 +1224,7 @@ mod tests {
             .await
             .unwrap();
         let api = attach_controls(api, &workdirs, max_list_bytes, |paths| {
+            assert_eq!(paths, configured_paths);
             open_local_product_in(
                 &fixture.root.join("vault"),
                 &fixture.storage,
@@ -1260,13 +1270,19 @@ mod tests {
             call("auth.hello", json!({"token": token})).await["result"]["accepted"],
             true
         );
+        let queue = json!({"queue_id": queue_id});
+        let reply = call("queue.configured", json!({})).await;
+        assert_eq!(reply["result"], queue, "{reply}");
+        assert_eq!(
+            warnings,
+            ["ads-daemon: work folder unavailable at startup: offline"]
+        );
         assert_eq!(
             call("harness.list", json!({})).await["result"],
             json!({
                 "harnesses": [harness], "workdir_aliases": ["online"], "missing_workdir_aliases": ["offline"]
             })
         );
-        let queue = json!({"queue_id": queue_id});
         for method in ["queue.create", "queue.start"] {
             let reply = call(method, queue.clone()).await;
             assert_eq!(reply["result"]["accepted"], true, "{method}: {reply}");
@@ -1302,6 +1318,9 @@ mod tests {
             } else {
                 assert_eq!(reply["error"]["code"], ApiError::Invalid.code(), "{reply}");
             }
+        }
+        if regular_file {
+            fs::rename(&offline, fixture.root.join("parked-file")).unwrap();
         }
         fs::rename(fixture.root.join("parked"), &offline).unwrap();
         let reply = call(

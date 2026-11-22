@@ -171,6 +171,7 @@ pub(crate) fn attach_controls(
     >,
 ) -> crate::api::LocalApi {
     let controls = (|| {
+        // The database location must be checked against every configured path.
         let paths: Vec<_> = workdirs.iter().map(|dir| dir.path.clone()).collect();
         let (log, ids) = open(&paths)?;
         crate::product::controls(log, ids, workdirs, max_list_bytes)

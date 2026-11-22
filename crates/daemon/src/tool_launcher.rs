@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 /// A validated work folder and its availability at startup.
 pub struct Workdir {
     pub(crate) path: PathBuf,
-    pub(crate) missing: bool,
+    pub(crate) unavailable: bool,
 }
 
 pub struct ToolLauncher<C, X> {
@@ -45,7 +45,7 @@ impl<C, X> ToolLauncher<C, X> {
             .collect()
     }
 
-    /// Records missing folders for the catalog and session openings until the next startup.
+    /// Records unavailable folders for the catalog and session openings until the next startup.
     pub fn check_workdirs(&mut self, mut warn: impl FnMut(&str)) -> Vec<Workdir> {
         self.missing_workdir_aliases.clear();
         // Both iterators follow the same ordered configuration map.
@@ -54,15 +54,16 @@ impl<C, X> ToolLauncher<C, X> {
             .zip(self.claude.workdirs())
             .map(|(alias, dir)| {
                 let path = PathBuf::from(dir.as_str());
-                // Gone, on a drive or share out of reach, or denied: none can be served.
-                let missing = std::fs::canonicalize(&path).is_err();
-                if missing {
+                let unavailable = !std::fs::canonicalize(&path)
+                    .and_then(std::fs::metadata)
+                    .is_ok_and(|metadata| metadata.is_dir());
+                if unavailable {
                     self.missing_workdir_aliases.insert(alias.to_owned());
                     warn(&format!(
                         "ads-daemon: work folder unavailable at startup: {alias}"
                     ));
                 }
-                Workdir { path, missing }
+                Workdir { path, unavailable }
             })
             .collect()
     }

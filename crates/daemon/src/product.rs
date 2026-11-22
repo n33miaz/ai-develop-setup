@@ -221,17 +221,17 @@ fn gates(log: &ProductLog, workdirs: &[Workdir]) -> Result<Vec<SessionGate>, Sta
     let mut roots = Vec::new();
     let mut gates = Vec::new();
     for dir in workdirs {
-        let spellings = if dir.missing {
+        let spellings = if dir.unavailable {
             unreachable_workdir_spellings(&dir.path)
         } else {
             workdir_spellings(&dir.path)
         };
         for root in spellings.map_err(|_| StartupError::GateConfiguration)? {
-            // Available gates still protect the quarantines of missing work roots.
+            // Available gates still protect the quarantines of unavailable work roots.
             if !roots.contains(&root) {
                 roots.push(root.clone());
             }
-            if !dir.missing && !gates.iter().any(|(served, _)| served == &root) {
+            if !dir.unavailable && !gates.iter().any(|(served, _)| served == &root) {
                 gates.push((root, &dir.path));
             }
         }

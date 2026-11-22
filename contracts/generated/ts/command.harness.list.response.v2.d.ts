@@ -10,7 +10,7 @@ export type CommonUlidV1 = string;
 export type CommonIdV1 = string;
 
 /**
- * Resposta de harness.list. Resposta JSON-RPC 2.0 aceita de harness.list. Lista as ferramentas ligadas e os apelidos de pasta. A versão 2 acrescenta os apelidos das pastas ausentes na partida, omitidos quando não há nenhuma. Só nomes; nunca inclui programa, argumentos, ambiente ou caminho.
+ * Resposta de harness.list. Resposta JSON-RPC 2.0 aceita de harness.list. Lista as ferramentas ligadas e os apelidos de pasta. A versão 2 acrescenta os apelidos das pastas indisponíveis na partida, omitidos quando não há nenhuma. Só nomes; nunca inclui programa, argumentos, ambiente ou caminho.
  */
 export interface CommandHarnessListResponseV2 {
   jsonrpc: "2.0";
@@ -22,7 +22,7 @@ export interface CommandHarnessListResponseV2 {
      */
     workdir_aliases: CommonIdV1[];
     /**
-     * Apelidos indisponíveis porque a pasta estava ausente na partida.
+     * Apelidos cujos caminhos estavam inacessíveis ou não resolviam para uma pasta na partida.
      *
      * @minItems 1
      */
