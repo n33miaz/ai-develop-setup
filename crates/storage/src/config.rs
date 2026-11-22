@@ -185,6 +185,24 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn audit_database_path_rejects_drive_relative_path() {
+        assert_eq!(
+            StorageConfig::from_toml_str("audit_database_path = 'Z:audit.sqlite'"),
+            Err(StorageError::Configuration)
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn audit_database_path_rejects_rooted_path_without_drive() {
+        assert_eq!(
+            StorageConfig::from_toml_str(r"audit_database_path = '\audit.sqlite'"),
+            Err(StorageError::Configuration)
+        );
+    }
+
     #[test]
     fn audit_database_path_rejects_root() {
         #[cfg(windows)]
