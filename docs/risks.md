@@ -352,7 +352,7 @@ Riscos da troca de conta por pasta de perfil ([ADR 0022](adr/0022-account-profil
 - **Teto.** Não se aplica.
 - **Mitigação existente.** `CLAUDE.md` importa o `AGENTS.md`; os arquivos locais conhecidos estão no `.gitignore`; o que cada ferramenta lê está em [tools.md](tools.md).
 - **Plano B.** Hooks e CI cobram as regras de commit independentemente do agente.
-- **O que falta.** `AGENTS.override.md`, que substitui o `AGENTS.md` para o Codex na mesma pasta, não está no `.gitignore`. Nenhuma das ferramentas registradas lê `AGENTS.local.md` (ver [tools.md](tools.md)).
+- **O que falta.** Nenhuma das ferramentas registradas lê `AGENTS.local.md` (ver [tools.md](tools.md)).
 
 ### Segredo ou dado pessoal no repositório público
 
