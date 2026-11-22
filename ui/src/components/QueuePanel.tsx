@@ -44,11 +44,6 @@ const discoveryRefusals: Partial<Record<number, MessageKey>> = {
   [QUEUE_NOT_CONFIGURED]: 'queue.unconfigured',
   [METHOD_NOT_FOUND]: 'queue.discoveryUnsupported',
 }
-const discoveryNotices = new Set<MessageKey | undefined>([
-  'queue.unconfigured',
-  'queue.discoveryUnsupported',
-  'queue.discoveryFailed',
-])
 
 export function QueuePanel({ api }: { api: Api }) {
   const t = useT()
@@ -56,6 +51,7 @@ export function QueuePanel({ api }: { api: Api }) {
   const [state, setState] = useState<State>()
   const [policy, setPolicy] = useState<Queue['policy']>(null)
   const [message, setMessage] = useState<MessageKey>()
+  const [discoveryNotice, setDiscoveryNotice] = useState<MessageKey>()
   const [busy, setBusy] = useState(false)
   const [configured, setConfigured] = useState<string>()
   const lock = useRef(false)
@@ -75,10 +71,10 @@ export function QueuePanel({ api }: { api: Api }) {
         discovery.current = 'done'
         setConfigured(queueId)
         setId((current) => current || queueId)
-        setMessage((current) => (discoveryNotices.has(current) ? undefined : current))
+        setDiscoveryNotice(undefined)
       },
       (error: unknown) => {
-        setMessage(
+        setDiscoveryNotice(
           (error instanceof CommandRefusal ? discoveryRefusals[error.code] : undefined) ??
             'queue.discoveryFailed',
         )
@@ -159,6 +155,7 @@ export function QueuePanel({ api }: { api: Api }) {
         </form>
         {busy && <p role="status">{t('controls.loading')}</p>}
         {configured && <p>{t('queue.configured', { value: configured })}</p>}
+        {discoveryNotice && discoveryNotice !== message && <p role="alert">{t(discoveryNotice)}</p>}
         {message && (
           <p role={message === 'controls.saved' ? 'status' : 'alert'}>
             {message === 'queue.notFound' && configured

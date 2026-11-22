@@ -175,6 +175,38 @@ it.each([
   expect(panel.queryByRole('alert')).toBeNull()
 })
 
+it.each(['pt-BR', 'en'] as const)(
+  'keeps the manual lookup result visible after late discovery failure in %s',
+  async (locale) => {
+    const t = createTranslator(locale)
+    const api = mockApi()
+    let failDiscovery: (reason: Error) => void = () => undefined
+    api.configured.mockReturnValueOnce(
+      new Promise<string>((_, reject) => {
+        failDiscovery = reject
+      }),
+    )
+    api.get.mockRejectedValueOnce(new CommandRefusal(QUEUE_NOT_FOUND))
+    render(
+      <I18nContext.Provider value={t}>
+        <QueuePanel api={api} />
+      </I18nContext.Provider>,
+    )
+    const panel = open(t('queue.heading'))
+    await vi.waitFor(() => {
+      expect(api.configured).toHaveBeenCalledOnce()
+    })
+    fireEvent.change(panel.getByLabelText(t('queue.id')), { target: { value: 'queue-1' } })
+    fireEvent.click(panel.getByRole('button', { name: t('controls.refresh') }))
+    expect(await panel.findByText(t('queue.notFound'))).toBeVisible()
+
+    failDiscovery(new CommandRefusal(INTERNAL_ERROR))
+
+    expect(await panel.findByText(t('queue.discoveryFailed'))).toBeVisible()
+    expect(panel.getByText(t('queue.notFound'))).toBeVisible()
+  },
+)
+
 it('tells a mistyped queue id apart and names the configured one', async () => {
   const api = mockApi()
   api.get.mockRejectedValueOnce(new CommandRefusal(QUEUE_NOT_FOUND))
