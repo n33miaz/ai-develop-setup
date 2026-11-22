@@ -1579,7 +1579,7 @@ async fn connection(
                     if command["method"] == "queue.configured" {
                         // Só leitura, como queue.get: fora da cache de idempotência, origem conferida aqui.
                         let result = if command["params"]["_meta"]["origin"] == "local" {
-                            // Espera a trava da fila, que start e stop seguram enquanto gravam no log.
+// Fora do runtime async: a consulta pode tocar o armazenamento da fila.
                             let (queue, session) = (queue.clone(), session.clone());
                             tokio::task::spawn_blocking(move || queue.configured(&session))
                                 .await
