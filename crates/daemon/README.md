@@ -224,11 +224,13 @@ recebe `REMOTE_ORIGIN_REFUSED`.
 ancorado: recusa um stream criado por outro dono e, a cada abertura, restaura a
 fila parada e grava `queue.stopped` com `reason: restart` se o log dizia ligada.
 Quando a composição usa um `ProductLog`, passe `ProductLog::shared_log()` à fila
-para usar a mesma conexão SQLite do portão. A primeira aquisição da trava da
-conexão, em `bind` e `open`, é a que lê o `busy_timeout_ms` do armazenamento e
-por isso espera sem prazo enquanto o portão usa a conexão; cada aquisição
-seguinte usa esse prazo, assim como a espera por uma trava do SQLite. Se o portão ainda estiver usando a conexão ao fim do
-prazo, a API responde `INTERNAL_ERROR` com a mensagem `audit log busy`. A fila
+para usar a mesma conexão SQLite do portão. A composição passa também o prazo
+`busy_timeout_ms` do log a `bind_or_pending`. A primeira aquisição da trava em
+`bind` usa esse prazo e devolve `Storage(Busy)` se ele vencer. Em `open` e
+`open_with_policy`, a primeira aquisição espera sem prazo para ler a configuração
+do log. As aquisições seguintes e a espera por uma trava do SQLite usam
+`busy_timeout_ms`. Se o prazo vencer durante um comando da fila, a API responde
+`INTERNAL_ERROR` com a mensagem `audit log busy`. A fila
 já estará parada se o comando era `queue.stop`. Os controles da fila rodam em
 tarefas bloqueantes, mantendo o atendimento de assinaturas e do terminal
 enquanto aguardam a gravação.
