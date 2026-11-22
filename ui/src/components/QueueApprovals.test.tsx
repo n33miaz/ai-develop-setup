@@ -70,6 +70,43 @@ it('fills in the queue id the daemon reports', async () => {
   expect(panel.getByLabelText('ID da fila')).toHaveValue('local:queue.main')
 })
 
+it('asks again once when the panel reopened while a failed discovery was pending', async () => {
+  const api = mockApi()
+  let fail: (reason: Error) => void = () => undefined
+  api.configured
+    .mockReset()
+    .mockReturnValueOnce(
+      new Promise<string>((_, reject) => {
+        fail = reject
+      }),
+    )
+    .mockRejectedValueOnce(new Error('offline'))
+    .mockResolvedValueOnce('local:queue.main')
+  render(<QueuePanel api={api} />)
+  const details = screen.getByText('Fila de tarefas').closest('details')
+  if (!details) throw new Error('missing panel')
+  const toggle = async (value: boolean) => {
+    details.open = value
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  }
+  await toggle(true)
+  await toggle(false)
+  await toggle(true)
+  expect(api.configured).toHaveBeenCalledTimes(1)
+  fail(new Error('offline'))
+  await vi.waitFor(() => {
+    expect(api.configured).toHaveBeenCalledTimes(2)
+  })
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  expect(api.configured).toHaveBeenCalledTimes(2)
+  await toggle(false)
+  await toggle(true)
+  expect(
+    await within(details).findByText('Fila configurada no daemon: local:queue.main'),
+  ).toBeVisible()
+  expect(api.configured).toHaveBeenCalledTimes(3)
+})
+
 it('tells a mistyped queue id apart and names the configured one', async () => {
   const api = mockApi()
   api.get.mockRejectedValueOnce(new CommandRefusal(QUEUE_NOT_FOUND))
