@@ -2870,6 +2870,56 @@ mod gate_journal {
     }
 
     #[test]
+    fn a_diverging_anchor_refuses_the_pending_list() {
+        let path = fixture();
+        let anchor = MemoryAnchor::default();
+        let mut log = anchored(&path, &anchor).unwrap();
+        ask(&mut log, "first", 10);
+        let older = anchor.0.lock().unwrap().commitment;
+        ask(&mut log, "second", 20);
+        anchor.0.lock().unwrap().commitment = older;
+        assert_eq!(
+            log.pending_approvals(10, &mut |_| true)
+                .map(|pending| pending.len()),
+            Err(StorageError::AnchorMismatch)
+        );
+    }
+
+    #[test]
+    fn the_read_page_limit_caps_the_pending_list() {
+        let path = fixture();
+        let anchor = MemoryAnchor::default();
+        let mut log = anchored_with(&path, &anchor, "read_page_limit = 1");
+        let first = ask(&mut log, "first", 10);
+        ask(&mut log, "second", 20);
+        assert_eq!(pending_ids(&log), [first]);
+    }
+
+    #[test]
+    fn an_expiry_through_the_journal_takes_the_action_out_of_the_list() {
+        let path = fixture();
+        let anchor = MemoryAnchor::default();
+        let mut log = anchored(&path, &anchor).unwrap();
+        let first = ask(&mut log, "first", 10);
+        let second = ask(&mut log, "second", 20);
+        let plan_hash = log.load(&first).unwrap().plan.fields().plan_hash.clone();
+        let mut at_deadline = meta(2, 40);
+        at_deadline.ts = Timestamp::new("2030-01-02T03:09:05Z").unwrap();
+        JournalGate::new(&policy(), &mut log)
+            .apply(
+                &first,
+                Command::Expire {
+                    action_id: first.clone(),
+                    approval_id: Id::new("approval-first").unwrap(),
+                    plan_hash,
+                },
+                at_deadline,
+            )
+            .unwrap();
+        assert_eq!(pending_ids(&log), [second]);
+    }
+
+    #[test]
     fn pending_candidates_are_visited_once_per_action_in_request_order() {
         let path = fixture();
         let anchor = MemoryAnchor::default();

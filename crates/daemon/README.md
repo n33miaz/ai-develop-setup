@@ -548,7 +548,9 @@ e mensagens estáticas. `pty_client::Event` também omite bytes em `Debug`.
 `log 0.4.35` (MIT OR Apache-2.0), já transitiva, usa `max_level_off`:
 macros da fachada `log` são eliminadas do executável, inclusive nas dependências,
 pois o transporte tem diagnóstico capaz de mostrar payloads. Isso vale também
-em debug e não é configurável, por segurança. Não há logger nem arquivo de saída.
+em debug e não é configurável, por segurança. Não há logger nem arquivo de saída:
+os avisos ao dono, como o id da ação de um pedido pendente ou de um registro de efeitos
+ilegível, vão direto para a saída de erro, com o prefixo `ads-daemon:`.
 `zeroize`, já presente no workspace, limpa o token ao descartá-lo e a URL logo
 após a impressão, inclusive quando o envio falha. O `auth.hello` é consumido
 antes do laço autenticado; sua cópia do token é limpa. O daemon entrega o token na linha inicial de conexão, ao navegador em desenvolvimento ou pelo pipe da casca no modo desktop.
