@@ -94,6 +94,8 @@ impl Process {
             self.state.restarts = self.state.restarts.saturating_add(1);
         }
         self.attempted = true;
+        #[cfg(test)]
+        tests::CHILD_SPAWN_ATTEMPTS.with(|attempts| attempts.set(attempts.get() + 1));
         match self.command.spawn() {
             Ok(child) => {
                 self.state.pid = Some(child.id());
@@ -653,9 +655,14 @@ pub(crate) mod tests {
     use super::*;
     use ads_private_dir as private;
     use serde_json::Value;
+    use std::cell::Cell;
     use std::fs;
     use std::path::PathBuf;
     use std::time::UNIX_EPOCH;
+
+    thread_local! {
+        pub(super) static CHILD_SPAWN_ATTEMPTS: Cell<usize> = const { Cell::new(0) };
+    }
 
     fn run(
         config: &Config,
@@ -1214,6 +1221,7 @@ pub(crate) mod tests {
         let stop = dir.0.join(&settings.stop_file);
         fs::write(&stop, []).unwrap();
         fs::create_dir(dir.0.join(&settings.state_file)).unwrap();
+        CHILD_SPAWN_ATTEMPTS.set(0);
         assert!(
             run_with_interrupt(
                 &settings,
@@ -1227,6 +1235,11 @@ pub(crate) mod tests {
             .is_err()
         );
         assert!(!stop.exists());
+        assert_eq!(
+            CHILD_SPAWN_ATTEMPTS.take(),
+            0,
+            "neither daemon nor host may spawn when initial publication fails"
+        );
     }
 
     #[cfg(windows)]
