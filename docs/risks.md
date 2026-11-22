@@ -30,7 +30,7 @@ Estado da mitigação, em cada risco:
 | [Dado sensível em claro no disco](#dado-sensível-em-claro-no-disco) | armazenamento | parcial: `data` dos eventos cifrado no banco e testado; chave no cofre do Windows |
 | [Perda do estado local](#perda-do-estado-local) | armazenamento | parcial: abertura recusa arquivo corrompido sem alterá-lo; backup ausente |
 | [Atualização ruim instalada](#atualização-ruim-instalada) | lançador | decidida, não implementada |
-| [Elevação de privilégio](#elevação-de-privilégio) | auxiliar de elevação | decidida, não implementada |
+| [Elevação de privilégio](#elevação-de-privilégio) | lançador e daemon | parcial: recusa de sessão elevada no Windows |
 | [Exposição pelo transporte remoto](#exposição-pelo-transporte-remoto) | relé e sessão cifrada | decidida, não implementada |
 | [Cliente remoto adulterado pelo Worker](#cliente-remoto-adulterado-pelo-worker) | relé e interface remota | ausente (proposta na ADR 0023) |
 | [Comando remoto repetido ou de aparelho indevido](#comando-remoto-repetido-ou-de-aparelho-indevido) | núcleo e sessão cifrada | decidida (proposta), não implementada |
@@ -89,7 +89,7 @@ Estado da mitigação, em cada risco:
 - **Plano B.** A quarentena deixa marca no disco que recusa a repetição.
 - **Mitigação no log.** O [diário do portão](../crates/storage/README.md#diário-do-portão) verifica a cadeia HMAC antes de confiar em colisões, confirma a gravação antes de entregar a licença e bloqueia a reexecução após reinício. Isso vale para o `EventLog` ancorado: `StartedExecution` prova só que `GateJournal::append` devolveu `Ok`, e a durabilidade é a da implementação do traço, que é público. O caminho `Executor::execute` com um `Journal` fornecido pelo chamador continua com a garantia desse diário. Os testes cobrem corrida entre conexões, abandono de uma licença já gravada, segundo início e aprovação de outra ação com `seq` livre, remoção do início gravado e alteração de um registro com conexão aberta.
 - **Custo.** Uma verificação completa da cadeia por transição do portão, sob o lock de escrita, duas por execução; linear no número de linhas do log ([diário do portão](../crates/storage/README.md#diário-do-portão)).
-- **O que falta.** Medir a latência em históricos grandes, definir um teto para o log, abrir o log ancorado no executável do daemon e expor a execução na API local; listar e responder aprovações já existe na biblioteca ([aprovações do portão](../crates/daemon/README.md#aprovações-do-portão)). Uma queda entre a atualização da âncora e o commit pode bloquear o banco até a recuperação. Depois de um início confirmado, o operador confere o disco e prepara outra ação com nova decisão se ainda houver trabalho.
+- **O que falta.** Medir a latência em históricos grandes, definir um teto para o log e expor a execução na API local. Uma queda entre a atualização da âncora e o commit pode bloquear o banco até a recuperação. Depois de um início confirmado, o operador confere o disco e prepara outra ação com nova decisão se ainda houver trabalho.
 
 ## Terminais
 
@@ -230,11 +230,11 @@ Estado da mitigação, em cada risco:
 
 - **Descrição.** O produto ganha direitos de administrador além do necessário, ou um núcleo comprometido se eleva.
 - **Impacto.** Comprometimento da máquina.
-- **Dono.** Auxiliar de elevação (sem crate ainda).
-- **Teto.** Lista fechada de verbos; uma confirmação do sistema por ação.
-- **Mitigação existente (decidida, não implementada).** [ADR 0009](adr/0009-elevation-by-uac-signed-broker-later.md): UAC por ação, nada elevado residente; corretor assinado desenhado e desligado.
-- **Plano B.** Voltar a só mostrar o comando (condição de reversão da ADR 0009).
-- **O que falta.** Não há código de elevação, nem teste de que o daemon roda como usuário comum.
+- **Dono.** Lançador e daemon na partida. O auxiliar previsto na ADR 0009 responderia pela elevação por ação.
+- **Teto.** Para o auxiliar previsto, lista fechada de verbos e uma confirmação do sistema por ação.
+- **Mitigação existente (parcial).** No Windows, o [lançador](../crates/launcher/README.md) e o daemon recusam a partida antes de criar arquivos quando o dono padrão do token é diferente do usuário, como numa sessão elevada com dono Administradores. Os testes exercitam essa recusa com identidade simulada.
+- **Plano B.** Reiniciar em sessão comum se a partida for recusada. Para uma ação que exige elevação, só mostrar o comando (condição de reversão da ADR 0009).
+- **O que falta.** A elevação por ação e o auxiliar assinado previstos na [ADR 0009](adr/0009-elevation-by-uac-signed-broker-later.md).
 
 ## Remoto e provedores
 
@@ -350,9 +350,9 @@ Riscos da troca de conta por pasta de perfil ([ADR 0022](adr/0022-account-profil
 - **Impacto.** Regras deste repositório deixam de valer para quem altera o código.
 - **Dono.** Mantenedor.
 - **Teto.** Não se aplica.
-- **Mitigação existente.** `CLAUDE.md` importa o `AGENTS.md`; os arquivos locais conhecidos estão no `.gitignore`; o que cada ferramenta lê está em [tools.md](tools.md).
+- **Mitigação existente.** `CLAUDE.md` importa o `AGENTS.md`. O [`.gitignore`](../.gitignore) exclui os arquivos locais conhecidos, inclusive `AGENTS.override.md`.
 - **Plano B.** Hooks e CI cobram as regras de commit independentemente do agente.
-- **O que falta.** Nenhuma das ferramentas registradas lê `AGENTS.local.md` (ver [tools.md](tools.md)).
+- **O que falta.** A exclusão do Git não impede que um arquivo local substitua as instruções na máquina. Veja em [tools.md](tools.md) a ordem de leitura e as limitações das sobreposições locais.
 
 ### Segredo ou dado pessoal no repositório público
 
@@ -426,7 +426,7 @@ Riscos da fila de tarefas ([fila contínua no núcleo](../crates/core/README.md#
 - **Teto.** `queue_max_events` (padrão 100000, até 10000000) por fila; a leitura nunca recusa pelo tamanho.
 - **Mitigação existente.** Uma parada da fila ainda entra, então a partida registra a parada de uma fila cheia; o armazenamento recusa a segunda e qualquer outra versão. `QueueFull` é distinto de `Full` (disco cheio), e a mensagem de cada um diz o que fazer. Testes `a_lowered_cap_keeps_the_queue_history_readable` e `over_the_cap_only_one_replayable_stop_enters` em `crates/storage/src/queue_tests.rs`.
 - **Plano B.** O dono sobe `queue_max_events` e reabre, ou cria outra fila. Ao subir `admission_limit`, manter `queue_max_events` acima de `admission_limit` x `attempt_limit` x cerca de 4 eventos por tentativa (padrão: 1000 x 2 x 4 = 8000, folga de cerca de 12x).
-- **O que falta.** A interface precisa mostrar a mensagem de `QueueFull` ao dono quando a ligação existir.
+- **O que falta.** A interface já usa os comandos da fila, mas a API responde com erro interno quando a gravação esbarra no teto. Falta levar a mensagem específica de `QueueFull` ao dono.
 
 ### Memória da leitura do stream da fila
 
