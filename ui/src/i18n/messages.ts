@@ -27,6 +27,10 @@ export const ptBR = {
   'queue.stop': 'Parar fila',
   'queue.unconfigured':
     'Os controles da fila não subiram no daemon. Veja o diagnóstico do daemon e reinicie-o.',
+  'queue.discoveryUnsupported':
+    'O daemon não informa a fila configurada. Atualize o daemon ou digite o ID da fila.',
+  'queue.discoveryFailed':
+    'Não foi possível descobrir a fila configurada no daemon. Digite o ID da fila ou reabra o painel para tentar de novo.',
   'queue.notFound': 'O daemon não serve uma fila com esse ID. Confira o ID.',
   'queue.notFoundConfigured':
     'O daemon não serve uma fila com esse ID. A fila configurada é {value}.',
@@ -197,6 +201,10 @@ export const en: Record<MessageKey, string> = {
   'queue.stop': 'Stop queue',
   'queue.unconfigured':
     'The queue controls did not start in the daemon. Check the daemon diagnostics and restart it.',
+  'queue.discoveryUnsupported':
+    'The daemon does not report its configured queue. Update the daemon or type the queue ID.',
+  'queue.discoveryFailed':
+    'Could not discover the queue configured in the daemon. Type the queue ID or reopen the panel to try again.',
   'queue.notFound': 'The daemon serves no queue with this ID. Check the ID.',
   'queue.notFoundConfigured':
     'The daemon serves no queue with this ID. The configured queue is {value}.',
