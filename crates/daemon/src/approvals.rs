@@ -727,7 +727,7 @@ impl ApprovalControl for ApprovalDesk {
         close: &CommandApprovalCloseV1Params,
         cause: &str,
     ) -> Result<bool, ApiError> {
-        self.close_unreadable(close, cause)
+        self.close_unreadable(close, cause, now_ts)
     }
 }
 
@@ -736,6 +736,7 @@ impl ApprovalDesk {
         &self,
         close: &CommandApprovalCloseV1Params,
         cause: &str,
+        clock: impl FnOnce() -> Result<String, ApiError>,
     ) -> Result<bool, ApiError> {
         let mut guard = self.lock()?;
         let desk = &mut *guard;
@@ -758,7 +759,10 @@ impl ApprovalDesk {
             Closable::Readable => return Err(ApiError::ApprovalReadable),
             Closable::Requests(open) => open,
         };
-        let ts = now_ts()?;
+        let ts = match &earlier {
+            Some(event) => event["ts"].as_str().ok_or(ApiError::Storage)?.to_owned(),
+            None => clock()?,
+        };
         let open: Vec<_> = match &earlier {
             // The same key again: only what the recorded closing named and is still open.
             Some(event) => {
@@ -2660,6 +2664,58 @@ mod tests {
         let deny = close_params(&broken, "deny");
         assert_eq!(desk.close(&session, &deny, &new_id().unwrap()), Ok(false));
         assert!(unreadable_pending(&desk).is_empty());
+    }
+
+    #[test]
+    fn a_recorded_expiry_resumes_after_the_clock_moves_back() {
+        let mut bench = Bench::new();
+        let gate = bench.gate(OVER_LIMIT);
+        let deadline = "2099-01-01T00:00:00Z";
+        let (action, approvals) =
+            unreadable_since(&mut bench, &gate, "act-resume", 2, Some(deadline));
+        let desk = bench.desk(vec![gate]);
+        let close = close_params(&action, "expire");
+        let streams: Vec<_> = approvals
+            .iter()
+            .map(|approval| format!("approval/{approval}"))
+            .collect();
+        let expired = "urn:ads:event:approval.expired:2";
+
+        bench.vault.fail_after(2);
+        assert_eq!(
+            desk.close_unreadable(&close, &new_id().unwrap(), || Ok(deadline.to_owned())),
+            Err(ApiError::Storage)
+        );
+        bench.vault.accept_all();
+        let records = stream(&desk, "closure/act-resume");
+        assert_eq!(records.len(), 1);
+        let record = &records[0].1;
+        assert_eq!(record["ts"], deadline);
+        assert_eq!(of_type(&desk, &streams, expired).len(), 1);
+
+        drop(desk);
+        bench.log = Some(bench.reopen());
+        let gate = bench.gate(OVER_LIMIT);
+        let desk = bench.desk(vec![gate]);
+        let rewound = || Ok("2098-12-31T23:59:59Z".to_owned());
+        let new_close = close_params(&action, "expire");
+        assert_eq!(
+            desk.close_unreadable(&new_close, &new_id().unwrap(), rewound),
+            Err(ApiError::Invalid)
+        );
+        assert_eq!(stream(&desk, "closure/act-resume"), records);
+        assert_eq!(of_type(&desk, &streams, expired).len(), 1);
+        assert_eq!(
+            desk.close_unreadable(&close, &new_id().unwrap(), rewound),
+            Ok(true)
+        );
+        assert_eq!(stream(&desk, "closure/act-resume"), records);
+        for approval_stream in streams {
+            let decisions = of_type(&desk, &[approval_stream], expired);
+            assert_eq!(decisions.len(), 1);
+            assert_eq!(decisions[0].1["cause"], record["id"]);
+            assert_eq!(decisions[0].1["ts"], deadline);
+        }
     }
 
     fn again_close(close: &CommandApprovalCloseV1Params) -> CommandApprovalCloseV1Params {
