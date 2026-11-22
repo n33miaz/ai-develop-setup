@@ -1312,7 +1312,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn listing_pending_approvals_reports_policy_changes_and_still_allows_denial() {
+    async fn approving_after_a_policy_change_returns_a_refusal_and_closes_the_request() {
         use crate::api::tests::{authenticate, fake_service};
         use futures_util::{SinkExt, StreamExt};
         use std::sync::Arc;
@@ -1327,49 +1327,64 @@ mod tests {
         let replacement = bench.gate("approval_item_limit = 500");
         let desk = Arc::new(bench.desk(vec![replacement, unchanged_gate]));
         let (api, _, _, peer) = fake_service().await;
-        let api = api.with_approvals(desk.clone());
+        let api = api.with_approvals(desk);
         let port = api.port().unwrap();
         let url = api.launch_url().unwrap();
         let (_, token) = url.split_once("&token=").unwrap();
         let server = tokio::spawn(api.run());
 
-        let reply = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
             let mut ws = authenticate(port, token).await;
-            let id = new_id().unwrap();
-            let command = json!({
-                "jsonrpc": "2.0", "id": id, "method": "approval.list",
-                "params": {"_meta": {"origin": "local", "idempotency_key": id}}
-            });
-            ws.send(Message::Text(command.to_string().into()))
-                .await
-                .unwrap();
-            let reply: Value =
-                serde_json::from_str(ws.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
-            assert_eq!(reply["id"], id);
-            reply
+            let mut exchange = async |method: &str, mut params: Value| {
+                let id = new_id().unwrap();
+                params["_meta"] = json!({"origin": "local", "idempotency_key": id});
+                let command = json!({
+                    "jsonrpc": "2.0", "id": id, "method": method, "params": params
+                });
+                ws.send(Message::Text(command.to_string().into()))
+                    .await
+                    .unwrap();
+                let reply: Value =
+                    serde_json::from_str(ws.next().await.unwrap().unwrap().to_text().unwrap())
+                        .unwrap();
+                assert_eq!(reply["id"], id);
+                reply
+            };
+
+            let reply = exchange("approval.list", json!({})).await;
+            let result = &reply["result"];
+            assert_eq!(result["more"], false);
+            assert_eq!(result["unreadable"], 0);
+            let [changed_item, unchanged_item] = result["approvals"].as_array().unwrap().as_slice()
+            else {
+                panic!("expected both pending approvals: {reply}");
+            };
+            assert_eq!(changed_item["action_id"], changed.as_str());
+            assert_eq!(changed_item["not_approvable"], json!(["policy_changed"]));
+            assert_eq!(unchanged_item["action_id"], unchanged.as_str());
+            assert_eq!(unchanged_item["not_approvable"], json!([]));
+
+            let refused = exchange(
+                "approval.answer",
+                json!({
+                    "action_id": changed, "approval_id": approval,
+                    "plan_hash": hash, "decision": "approve"
+                }),
+            )
+            .await;
+            assert_eq!(refused["error"]["code"], -32021, "{refused}");
+
+            let remaining = exchange("approval.list", json!({})).await;
+            let result = &remaining["result"];
+            assert_eq!(result["more"], false);
+            assert_eq!(result["unreadable"], 0);
+            let approvals = result["approvals"].as_array().unwrap();
+            assert_eq!(only(approvals)["action_id"], unchanged.as_str());
         })
         .await
-        .expect("approval.list timed out");
+        .expect("approval exchange timed out");
         server.abort();
         peer.abort();
-
-        let result = &reply["result"];
-        assert_eq!(result["more"], false);
-        assert_eq!(result["unreadable"], 0);
-        let [changed_item, unchanged_item] = result["approvals"].as_array().unwrap().as_slice()
-        else {
-            panic!("expected both pending approvals: {reply}");
-        };
-        assert_eq!(changed_item["action_id"], changed.as_str());
-        assert_eq!(changed_item["not_approvable"], json!(["policy_changed"]));
-        assert_eq!(unchanged_item["action_id"], unchanged.as_str());
-        assert_eq!(unchanged_item["not_approvable"], json!([]));
-
-        let session = session();
-        let deny = params(&changed, &approval, &hash, "deny");
-        assert_eq!(desk.answer(&session, &deny, &new_id().unwrap()), Ok(false));
-        let remaining = desk.pending(&session).unwrap();
-        assert_eq!(only(&remaining.approvals)["action_id"], unchanged.as_str());
     }
 
     #[test]
@@ -1377,6 +1392,8 @@ mod tests {
         let mut bench = Bench::new();
         let planned_under = bench.gate(OVER_LIMIT);
         let (action, approval, hash) = bench.waiting(&planned_under, "act-policy");
+        let (manual, manual_approval, manual_hash) =
+            bench.waiting(&planned_under, "act-policy-manual-denial");
         // The same session folder, now under a policy that would allow the plan as it is.
         let allowing = bench.gate("approval_item_limit = 500");
         let desk = bench.desk(vec![allowing]);
@@ -1398,6 +1415,10 @@ mod tests {
         assert!(answered_at < denied_at);
         let state = desk.with_gates_ok(|log, gates| gates[0].inspect(log, &action).unwrap().state);
         assert_eq!(state, State::ApprovalDenied);
+
+        let deny = params(&manual, &manual_approval, &manual_hash, "deny");
+        assert_eq!(desk.answer(&session, &deny, &new_id().unwrap()), Ok(false));
+        assert!(desk.pending(&session).unwrap().approvals.is_empty());
     }
 
     #[test]
