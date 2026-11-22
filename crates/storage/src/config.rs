@@ -225,6 +225,13 @@ read_page_max_bytes = 64",
         )
         .unwrap();
         assert_eq!(paged.read_page_max_bytes(), 64);
+        let maximum_sizes = StorageConfig::from_toml_str(
+            "max_event_bytes = 16_777_216
+read_page_max_bytes = 268_435_456",
+        )
+        .unwrap();
+        assert_eq!(maximum_sizes.max_event_bytes(), 16_777_216);
+        assert_eq!(maximum_sizes.read_page_max_bytes(), 268_435_456);
         let over_log = StorageConfig::from_toml_str(
             "max_event_bytes = 64
 read_page_limit = 1",
