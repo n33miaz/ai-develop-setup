@@ -1819,17 +1819,45 @@ pub(crate) mod tests {
     /// `published`, then stops it and returns that state.
     fn shell_state(shell: Command, published: impl Fn(&Value) -> bool) -> Value {
         let dir = TestDir::new();
-        let host_release = dir.0.join("release-host");
-        let (control, daemon) = (dir.0.clone(), desktop_daemon(&dir.0));
-        let host = fixture(Some(&host_release));
-        let worker = thread::spawn(move || run(&config(), &control, daemon, host, Some(shell)));
-        let state =
-            until(|| state_value(&dir.0.join("state.json")).filter(|state| published(state)));
-        fs::write(dir.0.join("stop"), []).unwrap();
-        worker.join().unwrap().unwrap();
-        fs::write(dir.0.join("release-daemon"), []).unwrap();
-        fs::write(host_release, []).unwrap();
-        state
+        // These shells never read the bootstrap pipe. A test harness writing to it can exit
+        // on a broken pipe and trigger a daemon restart before the state is observed.
+        #[cfg(windows)]
+        let (program, args) = (
+            "powershell.exe",
+            &[
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Start-Sleep -Seconds 120",
+            ][..],
+        );
+        #[cfg(unix)]
+        let (program, args) = ("sleep", &["120"][..]);
+        let mut daemon = Command::new(program);
+        daemon.args(args);
+        let settings = config();
+        let state_file = dir.0.join(&settings.state_file);
+        let mut observed = None;
+        let start = Instant::now();
+        run_with_interrupt(
+            &settings,
+            &dir.0,
+            daemon,
+            fixture(None),
+            Some(shell),
+            SystemTime::now(),
+            || {
+                let state = state_value(&state_file).expect("published supervisor state");
+                if published(&state) {
+                    observed = Some(state);
+                    return true;
+                }
+                assert!(start.elapsed() < Duration::from_secs(30), "{state}");
+                false
+            },
+        )
+        .unwrap();
+        observed.expect("state before shutdown")
     }
 
     #[test]
