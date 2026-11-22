@@ -51,7 +51,7 @@ export function QueuePanel({ api }: { api: Api }) {
 
   const asked = useRef(false)
 
-  // Asked once, when the panel first opens: the core says which queue it serves.
+  // Asked when the panel opens until one answer arrives: the core says which queue it serves.
   function askConfigured() {
     if (asked.current) return
     asked.current = true
@@ -61,6 +61,7 @@ export function QueuePanel({ api }: { api: Api }) {
         setId((current) => current || queueId)
       },
       (error: unknown) => {
+        asked.current = false
         if (error instanceof CommandRefusal && error.code === QUEUE_NOT_CONFIGURED) {
           setMessage('queue.unconfigured')
         }

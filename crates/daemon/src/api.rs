@@ -1578,15 +1578,20 @@ async fn connection(
                     }
                     if command["method"] == "queue.configured" {
                         // Só leitura, como queue.get: fora da cache de idempotência, origem conferida aqui.
-                        let reply = if command["params"]["_meta"]["origin"] == "local" {
-                            match queue.configured(&session) {
-                                Ok(queue_id) => {
-                                    json!({"jsonrpc": "2.0", "id": id, "result": {"queue_id": queue_id}})
-                                }
-                                Err(error) => response(&id, Err(error)),
-                            }
+                        let result = if command["params"]["_meta"]["origin"] == "local" {
+                            // Espera a trava da fila, que start e stop seguram enquanto gravam no log.
+                            let (queue, session) = (queue.clone(), session.clone());
+                            tokio::task::spawn_blocking(move || queue.configured(&session))
+                                .await
+                                .unwrap_or(Err(ApiError::Storage))
                         } else {
-                            response(&id, Err(ApiError::Remote))
+                            Err(ApiError::Remote)
+                        };
+                        let reply = match result {
+                            Ok(queue_id) => {
+                                json!({"jsonrpc": "2.0", "id": id, "result": {"queue_id": queue_id}})
+                            }
+                            Err(error) => response(&id, Err(error)),
                         };
                         send(&mut ws, reply, &config).await?;
                         continue;

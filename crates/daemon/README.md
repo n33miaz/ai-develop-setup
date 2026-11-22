@@ -208,7 +208,8 @@ recebe `REMOTE_ORIGIN_REFUSED`.
   o `ts` do relógio do daemon e o id do comando em `cause`. A fila já ligada
   recebe `QUEUE_ALREADY_ENABLED` e nada é gravado. Se a gravação falhar, a fila
   continua parada e a resposta é `INTERNAL_ERROR`, sem derrubar o serviço.
-- `queue.stop` expressa o estado desejado e é sempre aceito. Ele não consulta
+- `queue.stop` expressa o estado desejado e, com os controles de fila
+  disponíveis e o id da fila configurada já criada, é sempre aceito. Ele não consulta
   a cache de idempotência: repetir uma parada antiga depois de religar a fila a
   para de novo, e uma chave já usada por outro comando não impede a parada.
   `replayed` é `false` quando esta parada desligou a fila e `true` quando ela
