@@ -270,6 +270,12 @@ read_page_limit = 1",
                 .queue_max_events(),
             1
         );
+        assert_eq!(
+            StorageConfig::from_toml_str("queue_max_events = 10000000")
+                .unwrap()
+                .queue_max_events(),
+            10_000_000
+        );
         assert_eq!(base.verify_on_append(), VerifyOnAppend::Changed);
         assert_eq!(
             StorageConfig::from_toml_str("verify_on_append = 'always'")
