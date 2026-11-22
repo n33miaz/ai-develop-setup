@@ -193,7 +193,9 @@ it.each(['pt-BR', 'en'] as const)(
       </I18nContext.Provider>,
     )
     const panel = open(t('queue.heading'))
-    await vi.waitFor(() => expect(api.configured).toHaveBeenCalledOnce())
+    await vi.waitFor(() => {
+      expect(api.configured).toHaveBeenCalledOnce()
+    })
     fireEvent.change(panel.getByLabelText(t('queue.id')), { target: { value: 'queue-1' } })
     fireEvent.click(panel.getByRole('button', { name: t('controls.refresh') }))
     expect(await panel.findByText(t('queue.notFound'))).toBeVisible()
