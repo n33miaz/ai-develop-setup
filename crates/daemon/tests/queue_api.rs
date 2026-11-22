@@ -294,7 +294,7 @@ async fn exchange(ws: &mut Socket, value: &Value) -> Value {
     };
     let reply: Value = serde_json::from_str(&text).unwrap();
     assert!(
-        valid("urn:ads:contract:local-api.server-message:8", &reply),
+        valid("urn:ads:contract:local-api.server-message:9", &reply),
         "{reply}"
     );
     if let Some(code) = reply["error"].get("code") {
@@ -882,14 +882,27 @@ fn versioned_error_catalogs_keep_the_published_queue_codes() {
             &json!(code)
         ));
     }
+    let listed = json!({"jsonrpc": "2.0", "id": new_id().unwrap(), "result": {
+        "harnesses": ["test"], "workdir_aliases": ["home"], "missing_workdir_aliases": ["work"]
+    }});
+    assert!(!valid(
+        "urn:ads:contract:local-api.server-message:7",
+        &listed
+    ));
+    for schema in [
+        "urn:ads:contract:local-api.server-message:8",
+        "urn:ads:contract:local-api.server-message:9",
+    ] {
+        assert!(valid(schema, &listed), "{schema}");
+    }
     let configured =
         json!({"jsonrpc": "2.0", "id": new_id().unwrap(), "result": {"queue_id": "queue-01"}});
     assert!(valid(
-        "urn:ads:contract:local-api.server-message:8",
+        "urn:ads:contract:local-api.server-message:9",
         &configured
     ));
     assert!(!valid(
-        "urn:ads:contract:local-api.server-message:7",
+        "urn:ads:contract:local-api.server-message:8",
         &configured
     ));
     let listed = json!({"jsonrpc": "2.0", "id": new_id().unwrap(), "result": {"queue_id": "queue-01", "state": "enabled"}});

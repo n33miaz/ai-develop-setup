@@ -48,15 +48,5 @@
     "rule": "A listagem de aprovações conta os pedidos com histórico ilegível.",
     "keyword": "anyOf",
     "instancePath": ""
-  },
-  "11-queue-configured-with-state.json": {
-    "rule": "A resposta de queue.configured e a de queue.get não se misturam: o id sozinho, ou o id com estado e política.",
-    "keyword": "anyOf",
-    "instancePath": ""
-  },
-  "12-queue-configured-with-accepted.json": {
-    "rule": "A resposta de queue.configured e a de um comando com efeito não se misturam.",
-    "keyword": "anyOf",
-    "instancePath": ""
   }
 }

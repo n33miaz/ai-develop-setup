@@ -19,6 +19,7 @@ envia `auth.hello` antes de encaminhar mensagens da janela.
 
 Na composição de auditoria, passe `ToolLauncher::workdirs()` à abertura e à recuperação.
 O daemon confere a localização e a privacidade da pasta antes de abrir o SQLite.
+Uma pasta de trabalho ausente na partida continua na conferência dos caminhos protegidos. O daemon registra o apelido no diagnóstico de partida e mantém a fila e o portão de aprovação das pastas disponíveis. Sessões e aprovações da pasta ausente voltam a ser atendidas após restaurar a pasta e reiniciar o daemon.
 A configuração e as recusas estão no [README do armazenamento](../storage/README.md#âncora-no-cofre).
 
 `ToolLauncher::session_gate` recebe os parâmetros que abriram a sessão no host, com o apelido já resolvido, e vincula o portão e o executor da cerca a todos os diretórios de `[workdirs]`. Recebe também o `ProductLog`, que só `audit::open_product` cria: o log de auditoria aberto junto com o estado do produto que ele usa. Esse estado é o banco como configurado, com `-wal`, `-shm` e `-journal`, a pasta do cofre e da trava `audit-binding.lock` e, quando o daemon segura a trava do lançador (`InstanceLock`, de `--instance-lock`), a pasta dela. Cada caminho entra na grafia configurada, na resolvida no disco e, para cada link ou junção no caminho, na do próprio link no lugar real: remover um deles quebraria o caminho configurado. Pode faltar uma entrada que ainda não foi criada (um arquivo auxiliar do SQLite, o banco antes da primeira abertura); link cujo destino não existe, destino de link escrito com `..`, caminho de rede ou mais de 32 links recusam a abertura. Esses caminhos são sempre negados como alvo, no plano e de novo na execução. O portão só aceita o `ProductLog` com o mesmo estado com que foi montado; outro devolve `JournalError::PolicyChanged`. `SessionGate::plan` usa a pasta da sessão, inspeciona os alvos dentro dos limites de `defaults/fs-executor.toml` e grava os fatos de repositório no log ancorado. Se a inspeção falhar, o plano é recusado antes da gravação. As operações `inspect`, `apply` e `execute` só aceitam ações da raiz da sessão. Quem chama fornece a estimativa e cumpre os pré-requisitos de aprovação antes de chamar `SessionGate::execute`. O portão grava `action.started` antes de chamar o executor. Ao terminar, o daemon tenta gravar o resultado e devolve separadamente o relatório da operação e o status dessa gravação. Um início confirmado continua consumido mesmo se o resultado não puder ser gravado. A composição está disponível em Rust. A API local ainda não expõe comandos de execução de arquivos. Os instantes e identificadores de `start` e `finish` vêm de quem chama, e só o `ts` decide a validade da aprovação: quando a API existir, o daemon deve carimbar `ts` e `id` ele mesmo. Os itens da issue #26 que seguem abertos estão no [portão do núcleo](../core/README.md#máquina-de-estados).
@@ -167,23 +168,21 @@ Todo comando remoto é recusado, mesmo com autenticação válida.
 
 `harness.list` (só depois de `auth.hello`; `params` leva apenas o `_meta`
 obrigatório de todo comando) responde
-`{"harnesses": [...], "workdir_aliases": [...]}`
-([`command.harness.list.response:1`](../../contracts/README.md#api-local)): os
+`{"harnesses": [...], "workdir_aliases": [...], "missing_workdir_aliases": [...]}`
+([`command.harness.list.response:2`](../../contracts/README.md#api-local)): os
 identificadores das ferramentas com `program` preenchido, na ordem `claude`,
-`codex`, e os apelidos de `[workdirs]` em ordem de nome. Só nomes: programa,
-argumentos, ambiente e caminhos nunca saem do daemon, e o contrato fechado da
-resposta não tem onde levá-los. A lista é montada uma vez, na partida (reinicie
-para reler a configuração), e não confere o disco: uma ferramenta listada ainda
-pode receber `INVALID_PARAMS` em `session.open` se o programa ou a pasta não existir.
+`codex`, e os apelidos disponíveis de `[workdirs]` em ordem de nome. O campo
+`missing_workdir_aliases` só aparece quando há pastas ausentes na partida.
+A resposta inclui apenas nomes. A lista é montada na partida e `session.open`
+confere de novo se o programa e a pasta existem no momento de abrir a sessão.
 Como só lê, não passa pela cache de idempotência: repetir a chave devolve a
 lista de novo, nunca `replayed`. `api::Launcher::catalog` fornece a lista; o
-padrão é vazio, como em `DisabledLauncher`. Essa resposta exige a
-`local-api.server-message:2`; quem não envia `harness.list`, `queue.get` nem
-`approval.list` continua recebendo só mensagens da `:1`. O daemon escreve a `:7`,
-cuja resposta de `approval.list` é a `approval.list.response:3`: ela troca a das
-versões anteriores sem negociação de versão, então quem envia `approval.list`
-precisa aceitar a `:7`. Um daemon anterior ao comando o recusa
-com `METHOD_NOT_FOUND`, e a interface mostra que o daemon precisa ser atualizado.
+padrão é vazio, como em `DisabledLauncher`. O daemon escreve a
+`local-api.server-message:9`, que inclui a resposta sobre pastas ausentes,
+`queue.configured.response:1` e a listagem `approval.list.response:3`.
+A resposta de `harness.list` é enviada quando o cliente a solicita. Um daemon
+anterior ao comando o recusa com `METHOD_NOT_FOUND`, e a interface mostra que
+o daemon precisa ser atualizado.
 
 ## Fila de tarefas
 
@@ -557,7 +556,9 @@ e mensagens estáticas. `pty_client::Event` também omite bytes em `Debug`.
 `log 0.4.35` (MIT OR Apache-2.0), já transitiva, usa `max_level_off`:
 macros da fachada `log` são eliminadas do executável, inclusive nas dependências,
 pois o transporte tem diagnóstico capaz de mostrar payloads. Isso vale também
-em debug e não é configurável, por segurança. Não há logger nem arquivo de saída.
+em debug e não é configurável, por segurança. Não há logger nem arquivo de saída:
+os avisos ao dono, como o id da ação de um pedido pendente ou de um registro de efeitos
+ilegível, vão direto para a saída de erro, com o prefixo `ads-daemon:`.
 `zeroize`, já presente no workspace, limpa o token ao descartá-lo e a URL logo
 após a impressão, inclusive quando o envio falha. O `auth.hello` é consumido
 antes do laço autenticado; sua cópia do token é limpa. O daemon entrega o token na linha inicial de conexão, ao navegador em desenvolvimento ou pelo pipe da casca no modo desktop.

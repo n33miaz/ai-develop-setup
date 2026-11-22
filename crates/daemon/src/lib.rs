@@ -4,6 +4,7 @@ pub mod api;
 pub mod approvals;
 pub mod audit;
 pub mod auth;
+mod diagnostic;
 pub mod events;
 pub mod gate;
 mod product;

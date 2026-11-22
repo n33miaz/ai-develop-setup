@@ -45,7 +45,7 @@ pub(crate) async fn run(vault: impl Vault + Send + Sync + 'static) -> ExitCode {
         } else {
             config
         };
-        let launcher = ToolLauncher::from_process_env(
+        let mut launcher = ToolLauncher::from_process_env(
             &tools,
             ads_core::tool_launch::HostRules::host(),
             ads_adapter_claude::DiskProbe,
@@ -58,7 +58,7 @@ pub(crate) async fn run(vault: impl Vault + Send + Sync + 'static) -> ExitCode {
         .await
         .map_err(|_| ApiError::Unavailable)?
         .map_err(|_| ApiError::Unavailable)?;
-        let workdirs = launcher.workdirs();
+        let workdirs = launcher.check_workdirs(|warning| eprintln!("{warning}"));
         let max_list_bytes = config.approval_list_max_bytes;
         let api = LocalApi::bind(config, host, Arc::new(launcher)).await?;
         let api = attach_product_controls(

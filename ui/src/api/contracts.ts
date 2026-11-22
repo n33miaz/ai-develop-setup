@@ -29,15 +29,15 @@ import type { EventTaskStartedV1 } from '../../../contracts/generated/ts/event.t
 import type { EventUsageReconciledV1 } from '../../../contracts/generated/ts/event.usage.reconciled.v1'
 import type { EventUsageRecordedV1 } from '../../../contracts/generated/ts/event.usage.recorded.v1'
 
-import type { CommandHarnessListResponseV1 } from '../../../contracts/generated/ts/command.harness.list.response.v1'
+import type { CommandHarnessListResponseV2 } from '../../../contracts/generated/ts/command.harness.list.response.v2'
 
 export type { EventRoutingProposedV2 } from '../../../contracts/generated/ts/event.routing.proposed.v2'
 export type { RecordUsageEventV1 } from '../../../contracts/generated/ts/record.usage_event.v1'
 
 export type { CommandRequestV1 } from '../../../contracts/generated/ts/command.request.v1'
 export type { CommandResponseV2 } from '../../../contracts/generated/ts/command.response.v2'
-export type { CommandHarnessListResponseV1 }
-export type { ContractLocalApiServerMessageV8 } from '../../../contracts/generated/ts/contract.local-api.server-message.v8'
+export type { CommandHarnessListResponseV2 }
+export type { ContractLocalApiServerMessageV9 } from '../../../contracts/generated/ts/contract.local-api.server-message.v9'
 export type { CommandQueueGetResponseV2 } from '../../../contracts/generated/ts/command.queue.get.response.v2'
 export type { CommandQueueConfiguredResponseV1 } from '../../../contracts/generated/ts/command.queue.configured.response.v1'
 export type { CommandApprovalListResponseV3 } from '../../../contracts/generated/ts/command.approval.list.response.v3'
@@ -100,7 +100,7 @@ export type UsageEvent = EventUsageReconciledV1 | EventUsageRecordedV1
 export type HostEvent = EventHostAlertAckedV1 | EventHostAlertRaisedV1 | EventHostSampleRecordedV1
 
 /** O que o núcleo sabe abrir: só nomes de ferramenta e apelidos de pasta. */
-export type HarnessCatalog = CommandHarnessListResponseV1['result']
+export type HarnessCatalog = CommandHarnessListResponseV2['result']
 
 /** Os eventos que a interface conhece hoje; os demais chegam só como envelope. */
 export type KnownEvent = SessionEvent | TaskEvent | ApprovalEvent | UsageEvent | HostEvent
