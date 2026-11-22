@@ -4,7 +4,13 @@ import approvalList from '../../../contracts/golden/contract.local-api.server-me
 import legacyQueue from '../../../contracts/golden/contract.local-api.server-message.v9/valid/07-legacy-queue.json'
 import unavailableWorkdir from '../../../contracts/golden/contract.local-api.server-message.v9/valid/08-unavailable-workdir.json'
 import queueConfigured from '../../../contracts/golden/contract.local-api.server-message.v9/valid/09-queue-configured.json'
-import { isApprovalList, isHarnessList, isQueueConfigured, isQueueGet, isServerMessage } from './wire'
+import {
+  isApprovalList,
+  isHarnessList,
+  isQueueConfigured,
+  isQueueGet,
+  isServerMessage,
+} from './wire'
 
 it('accepts the queue and approval replies the daemon writes', () => {
   for (const reply of [queueGet, legacyQueue]) {
