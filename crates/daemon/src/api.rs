@@ -1760,5 +1760,6 @@ where
 }
 
 #[cfg(test)]
-#[path = "api_tests.rs"]
-pub(crate) mod tests;
+mod tests;
+#[cfg(test)]
+pub(crate) use tests::{authenticate, fake_service};

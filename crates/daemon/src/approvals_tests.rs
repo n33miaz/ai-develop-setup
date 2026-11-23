@@ -485,7 +485,7 @@ fn an_answer_after_the_validity_is_recorded_and_expires_the_approval() {
 
 #[tokio::test]
 async fn approving_after_a_policy_change_returns_a_refusal_and_closes_the_request() {
-    use crate::api::tests::{authenticate, fake_service};
+    use crate::api::{authenticate, fake_service};
     use futures_util::{SinkExt, StreamExt};
     use std::sync::Arc;
     use tokio_tungstenite::tungstenite::Message;
