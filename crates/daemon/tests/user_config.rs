@@ -89,6 +89,19 @@ fn configuration_paths_must_be_literal_absolute_regular_small_files() {
 }
 
 #[test]
+fn invalid_utf8_is_refused_without_quoting_the_file() {
+    let path = user_file("daemon-invalid-utf8", b"# sentinel \xff\n");
+    let results = ["--config", "--host-config"].map(|flag| load(flag, &path).map(|_| ()));
+    assert_eq!(
+        results,
+        [
+            Err("--config file is not UTF-8".into()),
+            Err("--host-config file is not UTF-8".into()),
+        ]
+    );
+}
+
+#[test]
 fn unknown_tool_and_bad_toml_are_refused_without_quoting_the_file() {
     let path = user_file("daemon-unknown", b"[tools.sentinel-tool]\nprogram = ''\n");
     assert_eq!(
