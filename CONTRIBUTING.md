@@ -87,6 +87,8 @@ Co-authored-by: Nome do agente <noreply@exemplo.org>
 
 Todas essas regras e seus valores ficam em `defaults/devflow.toml` e são aplicadas pelo mesmo script no hook local e no CI (`.github/scripts/check-commits.sh`). O script valida o arquivo de parâmetros antes de olhar qualquer mensagem: valor de tipo errado ou fora do domínio termina com código 2 (erro de configuração), sem analisar commit nenhum; mensagem fora do padrão termina com código 1. O hook roda essa mesma validação antes de tudo, então configuração inválida barra o commit com código 2 mesmo com `commits.enabled = false`.
 
+Durante um merge da branch local `develop`, o hook aceita o assunto padrão do Git (`Merge branch 'develop' into <branch>`) como exceção ao formato e ao limite de tamanho do assunto. As regras de autoria, trailers, texto público e nome da branch continuam valendo.
+
 O mesmo script confere o texto público (ver "Texto público" abaixo) no assunto de cada commit e no nome da branch: recusa, por palavra inteira e sem diferenciar maiúsculas, os termos de processo de `commits.process_terms` e os códigos internos de organização de `commits.internal_code_patterns`, as duas listas em `defaults/devflow.toml`. No CI o nome da branch é o do PR; no hook, o da branch atual (em HEAD destacado não há o que conferir). No assunto o hífen une a palavra (`round-trip` passa); no nome da branch ele separa.
 
 ### DCO

@@ -5,6 +5,7 @@
 #       Modo CI: valida cada commit (sem merges) do intervalo base..head, lendo mensagem e autor do git.
 #   check-commits.sh --message <arquivo> --author <e-mail> [--strip-comments] [--branch <nome>]
 #       Modo mensagem: valida um arquivo de mensagem. É o que `.githooks/commit-msg` chama.
+#       O hook passa --merge-subject <assunto> quando há um merge de develop em andamento.
 #   Com --branch, o nome da branch passa pela mesma regra de texto público do assunto (termos de processo e códigos
 #   internos de organização, ver devflow.toml).
 #   check-commits.sh --check-config
@@ -207,9 +208,9 @@ in_list() { # <item> <lista, um por linha>: sem diferença de maiúscula
 validate_config
 [ "${1:-}" = "--check-config" ] && exit 0
 
-# check_message <arquivo> <e-mail do autor> <rótulo> <1 = ignorar linhas que começam com #>
+# check_message <arquivo> <e-mail do autor> <rótulo> <1 = ignorar linhas que começam com #> [assunto padrão do merge]
 check_message() {
-  local file="$1" author="$2" label="$3" strip="${4:-0}"
+  local file="$1" author="$2" label="$3" strip="${4:-0}" merge_subject="${5:-}"
   local -a raw=() lines=()
   local line first=-1 last=-1 i
 
@@ -254,20 +255,22 @@ check_message() {
   if [[ "$subject" =~ $nonascii ]]; then
     report "$label" "o assunto deve ter só caracteres ASCII imprimíveis (inglês, sem acento)."
   fi
-  local type_re
-  type_re="$(printf '%s\n' "$types" | paste -sd'|' -)"
-  local first_re='[a-z0-9]'
-  [ "$lowercase" = "false" ] && first_re='[A-Za-z0-9]'
-  local pat='^('"$type_re"')(\([a-z0-9-]+\))?!?: '"$first_re"
-  local upper='[A-Z]'
-  if ! [[ "$subject" =~ $pat ]]; then
-    report "$label" "o assunto \"$subject\" não segue tipo(escopo): descrição, em minúsculas."
-  elif [ "$lowercase" != "false" ] && [[ "${subject#*: }" =~ $upper ]]; then
-    # Vale para a descrição inteira, sem exceção: siglas e identificadores também vão em minúsculas.
-    report "$label" "a descrição do assunto \"$subject\" tem letra maiúscula; use só minúsculas (siglas e nomes também)."
-  fi
-  if [ "${#subject}" -gt "$max_subject" ]; then
-    report "$label" "o assunto tem ${#subject} caracteres; o máximo é $max_subject."
+  if [ "$subject" != "$merge_subject" ]; then
+    local type_re
+    type_re="$(printf '%s\n' "$types" | paste -sd'|' -)"
+    local first_re='[a-z0-9]'
+    [ "$lowercase" = "false" ] && first_re='[A-Za-z0-9]'
+    local pat='^('"$type_re"')(\([a-z0-9-]+\))?!?: '"$first_re"
+    local upper='[A-Z]'
+    if ! [[ "$subject" =~ $pat ]]; then
+      report "$label" "o assunto \"$subject\" não segue tipo(escopo): descrição, em minúsculas."
+    elif [ "$lowercase" != "false" ] && [[ "${subject#*: }" =~ $upper ]]; then
+      # Vale para a descrição inteira, sem exceção: siglas e identificadores também vão em minúsculas.
+      report "$label" "a descrição do assunto \"$subject\" tem letra maiúscula; use só minúsculas (siglas e nomes também)."
+    fi
+    if [ "${#subject}" -gt "$max_subject" ]; then
+      report "$label" "o assunto tem ${#subject} caracteres; o máximo é $max_subject."
+    fi
   fi
   if [[ "$subject" == *. ]]; then
     report "$label" "o assunto não pode terminar em ponto."
@@ -385,22 +388,23 @@ check_branch() {
   check_public_text "branch" "o nome da branch \"$1\"" "$1" 'a-z0-9'
 }
 
-usage="uso: $0 <base> <head> [--branch <nome>] | --message <arquivo> --author <e-mail> [--strip-comments] [--branch <nome>] | --check-config"
+usage="uso: $0 <base> <head> [--branch <nome>] | --message <arquivo> --author <e-mail> [--strip-comments] [--branch <nome>] [--merge-subject <assunto>] | --check-config"
 mode="${1:-}"
 if [ "$mode" = "--message" ]; then
-  file="" author="" strip=0 branch=""
+  file="" author="" strip=0 branch="" merge_subject=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --message) file="${2:-}"; shift 2 ;;
       --author) author="${2:-}"; shift 2 ;;
       --strip-comments) strip=1; shift ;;
       --branch) branch="${2:-}"; shift 2 ;;
+      --merge-subject) merge_subject="${2:?$usage}"; shift 2 ;;
       *) echo "$usage" >&2; exit 2 ;;
     esac
   done
   [ -z "$file" ] && { echo "$usage" >&2; exit 2; }
   [ -r "$file" ] || { echo "erro: arquivo ilegível: $file" >&2; exit 2; }
-  check_message "$file" "$author" "mensagem" "$strip"
+  check_message "$file" "$author" "mensagem" "$strip" "$merge_subject"
   check_branch "$branch"
 else
   base="${1:-}"
