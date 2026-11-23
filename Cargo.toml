@@ -60,7 +60,7 @@ tokio-tungstenite = { version = "=0.30.0", default-features = false, features = 
 chacha20poly1305 = { version = "0.11.0", default-features = false, features = ["alloc", "zeroize"] }
 getrandom = "0.4.3"
 zeroize = "1.9.1"
-rusqlite = { version = "=0.42.0", default-features = false, features = ["bundled", "hooks", "serialize"] }
+rusqlite = { version = "=0.43.0", default-features = false, features = ["bundled", "hooks", "serialize"] }
 ads-contracts = { path = "crates/contracts" }
 ads-core = { path = "crates/core" }
 ads-storage = { path = "crates/storage" }
