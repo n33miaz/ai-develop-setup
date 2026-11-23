@@ -52,6 +52,24 @@ fn user_file_is_split_between_api_and_tools() {
 }
 
 #[test]
+fn loads_user_and_host_configuration_in_either_order() {
+    let user_path = user_file("daemon-both-user", b"max_sessions = 7\n");
+    let host_path = user_file("daemon-both-host", b"replay_capacity_bytes = 16384\n");
+    let user = ["--config", user_path.to_str().unwrap()];
+    let host = ["--host-config", host_path.to_str().unwrap()];
+    let (default_api, default_host, ..) = load_config(std::iter::empty()).unwrap();
+    assert_ne!(default_api.max_sessions, 7);
+    assert_ne!(default_host.replay_capacity_bytes, 16_384);
+
+    for [first, second] in [[user, host], [host, user]] {
+        let args = first.into_iter().chain(second).map(str::to_owned);
+        let (api, host, ..) = load_config(args).expect(first[0]);
+        assert_eq!(api.max_sessions, 7, "{} first", first[0]);
+        assert_eq!(host.replay_capacity_bytes, 16_384, "{} first", first[0]);
+    }
+}
+
+#[test]
 fn configuration_paths_must_be_literal_absolute_regular_small_files() {
     for flag in ["--config", "--host-config"] {
         for path in [
