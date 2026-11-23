@@ -3,7 +3,7 @@
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Thread
-from subprocess import DEVNULL, PIPE, Popen
+from subprocess import DEVNULL, PIPE, Popen, TimeoutExpired
 
 
 def stop(process):
@@ -41,6 +41,11 @@ def main():
                     raise SystemExit("desktop window failed to relay the harness.list reply")
                 if daemon.poll() is not None or host.poll() is not None:
                     raise SystemExit("a background process exited with the window")
+            except TimeoutExpired as exc:
+                raise SystemExit(
+                    f"desktop window timed out after {exc.timeout} seconds "
+                    "waiting for the harness.list reply"
+                ) from None
             finally:
                 stop(shell)
         finally:
