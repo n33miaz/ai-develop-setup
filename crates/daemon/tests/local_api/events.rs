@@ -1,7 +1,7 @@
 use super::{
-    Fixture, Socket, TestLauncher, authenticated, bounded, call, closed, command, fixture,
-    host_sessions_settle, open_params, receive, refusing_fixture, scripted_fixture, transmit,
-    wait_until,
+    Fixture, PeerCall, PeerScenario, Socket, TestLauncher, authenticated, bounded, call, closed,
+    command, fixture, host_sessions_settle, open_params, receive, refusing_fixture,
+    scripted_fixture, transmit, wait_until,
 };
 use ads_daemon::api::ApiError;
 use ads_daemon::events::{EventLog, Poll};
@@ -133,11 +133,12 @@ async fn subscriptions_have_a_per_connection_limit() {
 
 #[tokio::test]
 async fn output_is_consumed_during_host_wait_and_overflow_notifies_slow_subscriber() {
-    let (f, _) = refusing_fixture(
+    let (f, _) = scripted_fixture(
         "events_per_stream = 2\nhost_timeout_ms = 500",
-        "never",
+        PeerScenario::Plain,
         ads_ptyhost::wire::ErrorCode::InternalError,
         40,
+        &[],
     )
     .await;
     let mut ws = authenticated(&f).await;
@@ -255,11 +256,12 @@ async fn assert_invalidated_session_closed(f: &Fixture, ws: &mut Socket) {
 
 #[tokio::test]
 async fn failed_host_resubscribe_invalidates_only_the_affected_stream() {
-    let (f, _) = refusing_fixture(
+    let (f, _) = scripted_fixture(
         "max_sessions = 1",
-        "recover",
+        PeerScenario::Recover,
         ads_ptyhost::wire::ErrorCode::ReplayEvicted,
         0,
+        &[(PeerCall::Resubscribe, 1)],
     )
     .await;
     let mut ws = authenticated(&f).await;
@@ -296,12 +298,17 @@ async fn failed_host_resubscribe_invalidates_only_the_affected_stream() {
 
 #[tokio::test]
 async fn host_event_gaps_refuse_replay_without_stopping_the_service() {
-    for target in ["gap-output", "gap-exit", "gap-close"] {
-        let (f, _) = refusing_fixture(
+    for scenario in [
+        PeerScenario::GapOutput,
+        PeerScenario::GapExit,
+        PeerScenario::GapClose,
+    ] {
+        let (f, _) = scripted_fixture(
             "max_sessions = 1",
-            target,
+            scenario,
             ads_ptyhost::wire::ErrorCode::InternalError,
             0,
+            &[],
         )
         .await;
         let mut ws = authenticated(&f).await;
@@ -483,12 +490,11 @@ async fn waiting_stream_eviction_wakes_an_idle_websocket() {
 
 #[tokio::test]
 async fn waiting_stream_survives_cleanup_and_resubscription_to_the_same_id() {
-    let (f, _) = scripted_fixture(
+    let (f, _) = refusing_fixture(
         "retired_sessions = 2",
-        "subscribe",
+        PeerCall::Subscribe,
         ads_ptyhost::wire::ErrorCode::InternalError,
         0,
-        &[("subscribe", 1)],
     )
     .await;
     let mut watcher = authenticated(&f).await;
@@ -740,7 +746,7 @@ async fn repeated_subscription_with_a_lower_cursor_sends_events_again() {
 async fn ended_incarnation_answers_its_ids_before_the_new_subscription() {
     let (f, calls) = scripted_fixture(
         "max_sessions = 1\nretired_sessions = 1",
-        "exit-then-hold-close",
+        PeerScenario::ExitThenHoldClose,
         ads_ptyhost::wire::ErrorCode::InternalError,
         0,
         &[],
@@ -759,7 +765,7 @@ async fn ended_incarnation_answers_its_ids_before_the_new_subscription() {
     call(&mut control, "session.open", open_params("s")).await;
     let close = command("session.close", json!({"session_id": "s"}));
     transmit(&mut control, &close).await;
-    wait_until(|| calls.lock().unwrap().iter().any(|c| c == "close")).await;
+    wait_until(|| calls.lock().unwrap().contains(&PeerCall::Close)).await;
     let queued = f.hooks.queued_commands();
     // Queued first: a subscription that pushes the waiting "a" out of the quota.
     transmit(

@@ -1,6 +1,7 @@
 use super::{
-    TestLauncher, authenticated, bounded, call, command, fixture, host_sessions_settle,
-    open_params, receive, refusing_fixture, scripted_fixture, transmit, wait_until,
+    PeerCall, PeerScenario, TestLauncher, authenticated, bounded, call, command, fixture,
+    host_sessions_settle, open_params, receive, refusing_fixture, scripted_fixture, transmit,
+    wait_until,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -9,7 +10,7 @@ use std::time::Duration;
 #[tokio::test]
 async fn failed_open_subscription_closes_host_and_allows_retry() {
     use ads_ptyhost::wire::ErrorCode;
-    let (f, calls) = refusing_fixture("", "subscribe", ErrorCode::SessionEnded, 0).await;
+    let (f, calls) = refusing_fixture("", PeerCall::Subscribe, ErrorCode::SessionEnded, 0).await;
     let mut ws = authenticated(&f).await;
     assert_eq!(
         call(&mut ws, "session.open", open_params("session")).await["error"]["code"],
@@ -23,7 +24,12 @@ async fn failed_open_subscription_closes_host_and_allows_retry() {
     .await;
     assert_eq!(
         &*calls.lock().unwrap(),
-        &["hello", "open", "subscribe", "close"]
+        &[
+            PeerCall::Hello,
+            PeerCall::Open,
+            PeerCall::Subscribe,
+            PeerCall::Close
+        ]
     );
     assert_eq!(
         call(&mut ws, "session.open", open_params("session")).await["result"]["accepted"],
@@ -34,7 +40,7 @@ async fn failed_open_subscription_closes_host_and_allows_retry() {
 #[tokio::test]
 async fn unknown_session_on_close_releases_the_slot() {
     use ads_ptyhost::wire::ErrorCode::UnknownSession;
-    let (f, _) = refusing_fixture("max_sessions = 1", "close", UnknownSession, 0).await;
+    let (f, _) = refusing_fixture("max_sessions = 1", PeerCall::Close, UnknownSession, 0).await;
     let mut ws = authenticated(&f).await;
     assert_eq!(
         call(&mut ws, "session.open", open_params("session")).await["result"]["accepted"],
@@ -62,15 +68,15 @@ async fn unknown_session_on_close_releases_the_slot() {
     );
 }
 
-fn close_calls(calls: &std::sync::Mutex<Vec<String>>) -> usize {
+fn close_calls(calls: &std::sync::Mutex<Vec<PeerCall>>) -> usize {
     calls
         .lock()
         .unwrap()
         .iter()
-        .filter(|c| *c == "close")
+        .filter(|c| *c == &PeerCall::Close)
         .count()
 }
-async fn wait_closes(calls: &std::sync::Mutex<Vec<String>>, count: usize) {
+async fn wait_closes(calls: &std::sync::Mutex<Vec<PeerCall>>, count: usize) {
     bounded(async {
         while close_calls(calls) < count {
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -83,7 +89,7 @@ async fn wait_closes(calls: &std::sync::Mutex<Vec<String>>, count: usize) {
 async fn ended_session_returns_its_slot_before_any_client_close() {
     let (f, calls) = scripted_fixture(
         "max_sessions = 1",
-        "exit-on-write",
+        PeerScenario::ExitOnWrite,
         ads_ptyhost::wire::ErrorCode::InternalError,
         0,
         &[],
@@ -136,10 +142,10 @@ async fn exhausted_release_of_an_ended_session_keeps_its_stream_and_client_close
         "max_sessions = 1
 close_retries = 2
 close_retry_ms = 20",
-        "exit-on-write",
+        PeerScenario::ExitOnWrite,
         ads_ptyhost::wire::ErrorCode::InternalError,
         0,
-        &[("close", 2)],
+        &[(PeerCall::Close, 2)],
     )
     .await;
     let mut ws = authenticated(&f).await;
@@ -165,7 +171,7 @@ close_retry_ms = 20",
             .lock()
             .unwrap()
             .iter()
-            .filter(|c| *c == "close")
+            .filter(|c| *c == &PeerCall::Close)
             .count()
     };
     bounded(async {
@@ -213,15 +219,15 @@ close_retry_ms = 20",
 }
 
 async fn terminal_event_during_a_refused_client_close_still_releases(
-    target: &'static str,
+    scenario: PeerScenario,
     reason: &str,
 ) {
     let (f, calls) = scripted_fixture(
         "max_sessions = 1\nclose_retry_ms = 20",
-        target,
+        scenario,
         ads_ptyhost::wire::ErrorCode::InternalError,
         0,
-        &[("close", 1)],
+        &[(PeerCall::Close, 1)],
     )
     .await;
     let mut watcher = authenticated(&f).await;
@@ -255,24 +261,30 @@ async fn terminal_event_during_a_refused_client_close_still_releases(
 
 #[tokio::test]
 async fn exit_during_a_refused_client_close_still_releases_the_slot() {
-    terminal_event_during_a_refused_client_close_still_releases("exit-then-hold-close", "killed")
-        .await;
+    terminal_event_during_a_refused_client_close_still_releases(
+        PeerScenario::ExitThenHoldClose,
+        "killed",
+    )
+    .await;
 }
 
 #[tokio::test]
 async fn session_closed_during_a_refused_client_close_still_releases_the_slot() {
-    terminal_event_during_a_refused_client_close_still_releases("closed-then-hold-close", "killed")
-        .await;
+    terminal_event_during_a_refused_client_close_still_releases(
+        PeerScenario::ClosedBeforeCloseResponse { hold: true },
+        "killed",
+    )
+    .await;
 }
 
 #[tokio::test]
 async fn unknown_session_on_the_automatic_release_keeps_the_natural_end() {
     let (f, calls) = scripted_fixture(
         "max_sessions = 1",
-        "exit-on-write",
+        PeerScenario::ExitOnWrite,
         ads_ptyhost::wire::ErrorCode::UnknownSession,
         0,
-        &[("close", 1)],
+        &[(PeerCall::Close, 1)],
     )
     .await;
     let mut ws = authenticated(&f).await;
@@ -309,10 +321,10 @@ async fn unknown_session_on_the_automatic_release_keeps_the_natural_end() {
 async fn refused_release_of_an_ended_session_never_reaches_a_reopened_id() {
     let (f, calls) = scripted_fixture(
         "max_sessions = 1\nretired_sessions = 1\nclose_retry_ms = 20",
-        "exit-on-write",
+        PeerScenario::ExitOnWrite,
         ads_ptyhost::wire::ErrorCode::InternalError,
         0,
-        &[("close", 1)],
+        &[(PeerCall::Close, 1)],
     )
     .await;
     let mut ws = authenticated(&f).await;
@@ -420,10 +432,10 @@ async fn more_sessions_than_the_limit_can_end_on_their_own() {
 async fn refused_automatic_close_is_retried_until_the_host_closes() {
     let (f, calls) = scripted_fixture(
         "max_sessions = 1\nclose_retry_ms = 20",
-        "gap-output",
+        PeerScenario::GapOutput,
         ads_ptyhost::wire::ErrorCode::InternalError,
         0,
-        &[("close", 2)],
+        &[(PeerCall::Close, 2)],
     )
     .await;
     let mut ws = authenticated(&f).await;
@@ -444,7 +456,7 @@ async fn refused_automatic_close_is_retried_until_the_host_closes() {
         .lock()
         .unwrap()
         .iter()
-        .filter(|c| *c == "close")
+        .filter(|c| *c == &PeerCall::Close)
         .count();
     assert_eq!(closes, 3);
     // The slot came back without any session.close from the client.
@@ -459,7 +471,7 @@ async fn refused_automatic_close_is_retried_until_the_host_closes() {
 async fn automatic_close_timeout_is_retried_without_stopping_the_service() {
     let (f, calls) = scripted_fixture(
         "max_sessions = 1\nhost_timeout_ms = 200\nclose_retry_ms = 20",
-        "gap-output-drop-close",
+        PeerScenario::GapOutputDropClose,
         ads_ptyhost::wire::ErrorCode::InternalError,
         0,
         &[],
@@ -484,7 +496,7 @@ async fn automatic_close_timeout_is_retried_without_stopping_the_service() {
             .lock()
             .unwrap()
             .iter()
-            .filter(|c| *c == "close")
+            .filter(|c| *c == &PeerCall::Close)
             .count(),
         2
     );
@@ -497,11 +509,12 @@ async fn automatic_close_timeout_is_retried_without_stopping_the_service() {
 
 #[tokio::test]
 async fn invalidation_racing_a_client_close_sends_one_close_to_the_host() {
-    let (f, calls) = refusing_fixture(
+    let (f, calls) = scripted_fixture(
         "",
-        "gap-before-close-response",
+        PeerScenario::GapBeforeCloseResponse,
         ads_ptyhost::wire::ErrorCode::InternalError,
         0,
+        &[],
     )
     .await;
     let mut ws = authenticated(&f).await;
@@ -523,7 +536,7 @@ async fn invalidation_racing_a_client_close_sends_one_close_to_the_host() {
             .lock()
             .unwrap()
             .iter()
-            .filter(|c| *c == "close")
+            .filter(|c| *c == &PeerCall::Close)
             .count(),
         1
     );
@@ -534,10 +547,10 @@ async fn invalidation_racing_a_client_close_sends_one_close_to_the_host() {
 async fn exhausted_automatic_close_reaches_the_original_subscriber() {
     let (f, calls) = scripted_fixture(
         "max_sessions = 1\nclose_retries = 3\nclose_retry_ms = 20",
-        "gap-output",
+        PeerScenario::GapOutput,
         ads_ptyhost::wire::ErrorCode::InternalError,
         0,
-        &[("close", 3)],
+        &[(PeerCall::Close, 3)],
     )
     .await;
     let mut control = authenticated(&f).await;
@@ -565,7 +578,7 @@ async fn exhausted_automatic_close_reaches_the_original_subscriber() {
             .lock()
             .unwrap()
             .iter()
-            .filter(|c| *c == "close")
+            .filter(|c| *c == &PeerCall::Close)
             .count(),
         3
     );
@@ -602,10 +615,10 @@ async fn exhausted_automatic_close_reaches_the_original_subscriber() {
 async fn failed_open_cleanup_timeout_keeps_the_record_until_the_host_closes() {
     let (f, calls) = scripted_fixture(
         "max_sessions = 1\nhost_timeout_ms = 200\nclose_retry_ms = 20",
-        "host-drop-close",
+        PeerScenario::HostDropClose,
         ads_ptyhost::wire::ErrorCode::InternalError,
         0,
-        &[("subscribe", 1)],
+        &[(PeerCall::Subscribe, 1)],
     )
     .await;
     let mut ws = authenticated(&f).await;
@@ -631,7 +644,7 @@ async fn failed_open_cleanup_timeout_keeps_the_record_until_the_host_closes() {
             .lock()
             .unwrap()
             .iter()
-            .filter(|c| *c == "close")
+            .filter(|c| *c == &PeerCall::Close)
             .count(),
         2
     );
@@ -647,10 +660,10 @@ async fn failed_open_cleanup_timeout_keeps_the_record_until_the_host_closes() {
 async fn stale_automatic_close_never_reaches_a_reopened_id() {
     let (f, calls) = scripted_fixture(
         "max_sessions = 1\nretired_sessions = 1\nclose_retry_ms = 400",
-        "gap-output",
+        PeerScenario::GapOutput,
         ads_ptyhost::wire::ErrorCode::InternalError,
         0,
-        &[("close", 1)],
+        &[(PeerCall::Close, 1)],
     )
     .await;
     let mut ws = authenticated(&f).await;
@@ -667,7 +680,7 @@ async fn stale_automatic_close_never_reaches_a_reopened_id() {
             .lock()
             .unwrap()
             .iter()
-            .filter(|c| *c == "close")
+            .filter(|c| *c == &PeerCall::Close)
             .count()
             < 1
         {
@@ -692,7 +705,7 @@ async fn stale_automatic_close_never_reaches_a_reopened_id() {
         .lock()
         .unwrap()
         .iter()
-        .filter(|c| *c == "close")
+        .filter(|c| *c == &PeerCall::Close)
         .count();
     tokio::time::sleep(Duration::from_millis(600)).await;
     assert_eq!(
@@ -704,7 +717,7 @@ async fn stale_automatic_close_never_reaches_a_reopened_id() {
             .lock()
             .unwrap()
             .iter()
-            .filter(|c| *c == "close")
+            .filter(|c| *c == &PeerCall::Close)
             .count(),
         closes
     );
@@ -717,7 +730,7 @@ async fn stale_automatic_close_never_reaches_a_reopened_id() {
 async fn subscribe_without_host_reply_keeps_the_record_and_schedules_the_close() {
     let (f, calls) = scripted_fixture(
         "max_sessions = 1\nhost_timeout_ms = 200\nclose_retry_ms = 20",
-        "host-hold-subscribe",
+        PeerScenario::HostHoldSubscribe,
         ads_ptyhost::wire::ErrorCode::InternalError,
         0,
         &[],
@@ -736,7 +749,7 @@ async fn subscribe_without_host_reply_keeps_the_record_and_schedules_the_close()
             .lock()
             .unwrap()
             .iter()
-            .filter(|c| *c == "close")
+            .filter(|c| *c == &PeerCall::Close)
             .count(),
         1
     );
@@ -750,10 +763,10 @@ async fn subscribe_without_host_reply_keeps_the_record_and_schedules_the_close()
 async fn delayed_subscriber_gets_the_exhausted_close_after_a_manual_close() {
     let (f, calls) = scripted_fixture(
         "max_sessions = 1\nclose_retries = 3\nclose_retry_ms = 20",
-        "gap-output",
+        PeerScenario::GapOutput,
         ads_ptyhost::wire::ErrorCode::InternalError,
         0,
-        &[("close", 3)],
+        &[(PeerCall::Close, 3)],
     )
     .await;
     let mut control = authenticated(&f).await;
@@ -777,7 +790,7 @@ async fn delayed_subscriber_gets_the_exhausted_close_after_a_manual_close() {
             .lock()
             .unwrap()
             .iter()
-            .filter(|c| *c == "close")
+            .filter(|c| *c == &PeerCall::Close)
             .count()
             == 3
     })
@@ -820,10 +833,10 @@ async fn delayed_subscriber_gets_the_exhausted_close_after_a_manual_close() {
     assert_eq!(notice["error"]["code"], -32013);
 }
 
-async fn host_event_during_an_automatic_close(target: &'static str) {
+async fn host_event_during_an_automatic_close(scenario: PeerScenario) {
     let (f, calls) = scripted_fixture(
         "max_sessions = 2\nhost_timeout_ms = 300\nclose_retry_ms = 20",
-        target,
+        scenario,
         ads_ptyhost::wire::ErrorCode::InternalError,
         0,
         &[],
@@ -850,19 +863,20 @@ async fn host_event_during_an_automatic_close(target: &'static str) {
     let ended = receive(&mut watcher).await;
     assert_eq!(ended["type"], "urn:ads:event:session.ended:1");
     assert_eq!(ended["data"]["reason"], "exit");
-    if target.ends_with("hold-close") {
+    let holds_close = scenario == PeerScenario::ExitOtherThenHoldClose;
+    if holds_close {
         // The event came while the close of "a" still had no reply.
         assert_eq!(close_calls(&calls), 1);
         f.release.notify_one();
     }
     // After the reply, or after the deadline and one more attempt, both slots come back.
-    let expected = if target.ends_with("hold-close") { 2 } else { 3 };
+    let expected = if holds_close { 2 } else { 3 };
     wait_closes(&calls, expected).await;
     for id in ["c", "d"] {
         assert_eq!(
             call(&mut control, "session.open", open_params(id)).await["result"]["accepted"],
             true,
-            "{target}"
+            "{scenario:?}"
         );
     }
     assert_eq!(close_calls(&calls), expected);
@@ -872,10 +886,10 @@ async fn host_event_during_an_automatic_close(target: &'static str) {
 
 #[tokio::test]
 async fn host_event_during_an_automatic_close_is_handled() {
-    host_event_during_an_automatic_close("exit-other-then-hold-close").await;
+    host_event_during_an_automatic_close(PeerScenario::ExitOtherThenHoldClose).await;
 }
 
 #[tokio::test]
 async fn host_event_during_a_timed_out_automatic_close_is_handled() {
-    host_event_during_an_automatic_close("exit-other-then-drop-close").await;
+    host_event_during_an_automatic_close(PeerScenario::ExitOtherThenDropClose).await;
 }
