@@ -85,7 +85,9 @@ fn configuration_paths_must_be_literal_absolute_regular_small_files() {
         );
     }
     let limit = user_file("daemon-limit", &vec![b'#'; MAX_CONFIG_BYTES as usize]);
-    assert!(load("--config", limit).is_ok());
+    for flag in ["--config", "--host-config"] {
+        let _ = load(flag, &limit).unwrap();
+    }
 }
 
 #[test]
