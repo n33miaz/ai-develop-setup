@@ -224,11 +224,20 @@ class PrunePlanTest(unittest.TestCase):
         self.assertEqual([tag for _, tag, _ in targets], [tags[0]])
 
     def test_rejects_release_without_numeric_id(self):
-        for bad in ("7", None, True):
+        for bad in ("7", None):
             item = pre(dev(("20261120", 1))[0])
             item["id"] = bad
             with self.assertRaises(ValueError):
                 self.plan([item])
+
+    def test_rejects_published_dev_release_with_boolean_id(self):
+        oldest, *kept = dev(("20261120", 1), ("20261120", 2), ("20261120", 3), ("20261120", 4))
+        for release_id in (False, True):
+            with self.subTest(release_id=release_id):
+                releases = [pre(oldest, release_id=release_id)] + [pre(tag) for tag in kept]
+                with self.assertRaises(ValueError) as error:
+                    self.plan(releases)
+                self.assertEqual(str(error.exception), f"release {oldest} sem id numérico")
 
 
 WORKFLOW = Path(__file__).resolve().parent.parent / ".github" / "workflows" / "prerelease.yml"
