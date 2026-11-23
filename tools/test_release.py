@@ -165,6 +165,17 @@ class PrunePlanTest(unittest.TestCase):
         self.assertEqual([tag for _, tag, _ in targets], old)
         self.assertEqual(orphans, [])
 
+    def test_excludes_releases_with_non_boolean_flags(self):
+        old, *keep = dev(("20261120", 1), ("20261120", 2), ("20261120", 3), ("20261120", 4))
+        kept_releases = [pre(tag) for tag in keep]
+        for flag, candidate in (
+            ("isPrerelease", pre(old, prerelease=1, release_id=7)),
+            ("isDraft", pre(old, draft=0, release_id=7)),
+        ):
+            with self.subTest(flag=flag):
+                targets, _ = self.plan([candidate, *kept_releases])
+                self.assertEqual(targets, [])
+
     def test_tags_without_release_are_only_reported(self):
         keep = dev(("20261120", 3), ("20261120", 4), ("20261120", 5))
         refs = [(tag, sha_of(tag)) for tag in keep + dev(("20261120", 1), ("20261120", 9)) + ["v0.0.1"]]
