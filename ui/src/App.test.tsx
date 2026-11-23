@@ -150,7 +150,9 @@ describe('App', () => {
       screen.getByRole('region', { name: 'Terminal da sessão Sessão de exemplo A' }),
     ).toBeInTheDocument()
     expect(screen.getByRole('status')).toHaveTextContent('Núcleo: desconectado')
-    expect(screen.getByText(/Em construção/)).toBeInTheDocument()
+    expect(screen.getByText(/Dados de exemplo/)).toHaveTextContent(
+      /abra o link completo que o daemon imprime/,
+    )
   })
 
   it('shows the title, the name and the activity carried by the events', () => {

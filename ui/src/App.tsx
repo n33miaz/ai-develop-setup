@@ -126,6 +126,7 @@ function isCompact() {
 interface AppProps {
   client: CoreClient
   live?: boolean
+  desktop?: boolean
   /** Reserva do modo de exemplo; conectada, a interface usa a lista do núcleo. */
   harnesses?: readonly string[]
 
@@ -141,11 +142,11 @@ interface AppProps {
   events?: (t: Translate) => SampleEvents
 }
 
-/** Tela "em construção": a estrutura final (barra lateral, terminal, conexão) com dados de exemplo. */
 export function App({
   client,
   events = sampleEvents,
   live = false,
+  desktop = false,
   sessionStreams = NO_STREAMS,
 
   harnesses = NO_STREAMS,
@@ -642,7 +643,8 @@ export function App({
         </div>
       )}
 
-      <p className={styles.notice}>{t(live ? 'notice.live' : 'notice.wip')}</p>
+      {!live && <p className={styles.notice}>{t('notice.sample')}</p>}
+      {live && connection === 'connected' && <p className={styles.notice}>{t('notice.live')}</p>}
       <UpdateNotice className={styles.notice} />
       <UsagePanel tools={live ? null : sampleUsage} />
       {live && connection === 'connected' && <QueueAndApprovals key={generation} api={controls} />}
@@ -667,6 +669,7 @@ export function App({
             onInput={input}
             onResize={resize}
             resizeDebounceMs={resizeDebounceMs}
+            browserClipboard={!desktop}
           />
         </main>
       </div>

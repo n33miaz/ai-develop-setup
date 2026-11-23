@@ -6,6 +6,7 @@ const LABEL: Record<ConnectionState, MessageKey> = {
   disconnected: 'connection.disconnected',
   connecting: 'connection.connecting',
   connected: 'connection.connected',
+  link_unavailable: 'connection.linkUnavailable',
   proof_missing: 'connection.proofMissing',
   relaunch_required: 'connection.relaunchDesktop',
   retry_exhausted: 'connection.retryExhausted',
@@ -15,7 +16,10 @@ const LABEL: Record<ConnectionState, MessageKey> = {
 export function ConnectionStatus({ state }: { state: ConnectionState }) {
   const t = useT()
   const actionable =
-    state === 'proof_missing' || state === 'relaunch_required' || state === 'retry_exhausted'
+    state === 'link_unavailable' ||
+    state === 'proof_missing' ||
+    state === 'relaunch_required' ||
+    state === 'retry_exhausted'
   const label = `${t('connection.label')}: ${t(LABEL[state])}`
   return (
     <p

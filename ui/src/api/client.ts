@@ -24,6 +24,7 @@ export type ConnectionState =
   | 'disconnected'
   | 'connecting'
   | 'connected'
+  | 'link_unavailable'
   | 'proof_missing'
   | 'relaunch_required'
   | 'retry_exhausted'

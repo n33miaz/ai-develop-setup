@@ -15,7 +15,7 @@
     "lint": "eslint . && prettier --check .",
     "format": "prettier --write .",
     "typecheck": "tsc -p tsconfig.app.json --noEmit && tsc -p tsconfig.node.json --noEmit",
-    "test": "vitest run",
+    "test": "node --test tests/web-terminal-harness.test.mjs && vitest run",
     "licenses": "node scripts/check-licenses.mjs"
   },
   "dependencies": {
