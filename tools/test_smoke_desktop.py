@@ -1,10 +1,11 @@
-"""Tests for the terminal host startup check."""
+"""Tests for the desktop smoke check."""
 
 import io
 import unittest
 from threading import Event, Timer
-from unittest.mock import Mock
+from unittest.mock import Mock, call, patch
 
+import smoke_desktop
 from smoke_desktop import wait_for_host_banner
 
 
@@ -33,3 +34,37 @@ class HostBannerTests(unittest.TestCase):
             release.set()
             fallback.cancel()
             fallback.join()
+
+
+class DesktopSmokeTests(unittest.TestCase):
+    def test_rejects_background_process_exit_after_successful_window_reply(self):
+        for exited in ("daemon", "host"):
+            with self.subTest(exited=exited):
+                host = Mock(stdout=io.BytesIO(b"ads-ptyhost ready\n"))
+                host.poll.return_value = None
+                daemon = Mock(stdout=io.BytesIO())
+                daemon.poll.return_value = None
+                background = {"host": host, "daemon": daemon}
+
+                def wait_for_window(*, timeout):
+                    if timeout == 60:
+                        background[exited].poll.return_value = 1
+                    return 0
+
+                window = Mock()
+                window.poll.return_value = 0
+                window.wait.side_effect = wait_for_window
+
+                with patch.object(smoke_desktop, "Popen", side_effect=[host, daemon, window]):
+                    with self.assertRaisesRegex(SystemExit, "a background process exited with the window"):
+                        smoke_desktop.main()
+
+                self.assertEqual(window.wait.call_args_list, [call(timeout=60), call(timeout=10)])
+                window.terminate.assert_not_called()
+                for name, process in background.items():
+                    process.wait.assert_called_once_with(timeout=10)
+                    self.assertTrue(process.stdout.closed)
+                    if name == exited:
+                        process.terminate.assert_not_called()
+                    else:
+                        process.terminate.assert_called_once_with()
