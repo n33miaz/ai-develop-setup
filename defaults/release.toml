@@ -18,3 +18,10 @@ keep = 10
 # "apply": apaga o excedente, a cada execução, com ou sem publicação nova. "dry-run": só lista no resumo da execução
 # o que apagaria. "off": não poda.
 prune = "apply"
+
+# Após publicar, cada tentativa consulta a release pela tag e, quando ela aparece, busca a listagem completa
+# para a retenção. A primeira tentativa é imediata. Ajuste o total (1 a 10) e o intervalo (1 a 15 segundos)
+# conforme o atraso de propagação. Com os padrões abaixo há até 25 segundos de pausas, além do tempo das consultas.
+# Se a listagem não confirmar a mesma release até a última tentativa, o job falha antes de emitir alvos.
+wait_attempts = 6
+wait_interval_seconds = 5
