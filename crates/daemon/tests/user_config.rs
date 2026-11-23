@@ -37,8 +37,46 @@ fn arguments_are_closed() {
 
 #[test]
 fn empty_configuration_files_preserve_defaults() {
-    let user_path = user_file("daemon-empty-user", b"");
-    let host_path = user_file("daemon-empty-host", b"");
+    let paths = {
+        let (_scratch, paths) = empty_configuration_files();
+        let [user_path, host_path] = &paths;
+        assert_empty_configuration_defaults(user_path, host_path);
+        paths
+    };
+    assert_empty_configuration_files_removed(&paths);
+}
+
+#[test]
+fn empty_configuration_files_are_removed_on_panic() {
+    let (scratch, paths) = empty_configuration_files();
+    let result = std::panic::catch_unwind(move || {
+        let _scratch = scratch;
+        panic!("unwind with empty configuration files");
+    });
+    assert!(result.is_err());
+    assert_empty_configuration_files_removed(&paths);
+}
+
+fn empty_configuration_files() -> (temp::Scratch, [PathBuf; 2]) {
+    const FILES: [&str; 2] = ["user.toml", "host.toml"];
+    let run = ads_daemon::events::new_id().unwrap();
+    let scratch = temp::Scratch::with_files(&format!("daemon-empty-config-{run}"), &FILES);
+    let paths = FILES.map(|name| {
+        let path = scratch.path().join(name);
+        std::fs::write(&path, b"").unwrap();
+        path
+    });
+    (scratch, paths)
+}
+
+fn assert_empty_configuration_files_removed(paths: &[PathBuf; 2]) {
+    let directory = paths[0].parent().unwrap();
+    for path in paths.iter().map(PathBuf::as_path).chain([directory]) {
+        assert!(!path.try_exists().unwrap(), "fixture remains: {path:?}");
+    }
+}
+
+fn assert_empty_configuration_defaults(user_path: &Path, host_path: &Path) {
     let (default_api, default_host, default_tools, default_storage) =
         load_config(std::iter::empty()).unwrap();
     let default_storage = default_storage.unwrap();
@@ -46,8 +84,8 @@ fn empty_configuration_files_preserve_defaults() {
     let user = ["--config", user_path.to_str().unwrap()];
     let host = ["--host-config", host_path.to_str().unwrap()];
     let cases = [
-        ("--config", load("--config", &user_path)),
-        ("--host-config", load("--host-config", &host_path)),
+        ("--config", load("--config", user_path)),
+        ("--host-config", load("--host-config", host_path)),
         (
             "--config and --host-config",
             load_config(user.into_iter().chain(host).map(str::to_owned)),
