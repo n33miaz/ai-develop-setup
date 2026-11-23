@@ -66,6 +66,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ads-child-env"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "toml 1.2.1+spec-1.1.0",
+]
+
+[[package]]
 name = "ads-contracts"
 version = "0.0.0"
 dependencies = [
@@ -81,6 +89,7 @@ dependencies = [
 name = "ads-core"
 version = "0.0.0"
 dependencies = [
+ "ads-child-env",
  "ads-contracts",
  "serde",
  "serde_json",
@@ -127,7 +136,7 @@ version = "0.0.0"
 name = "ads-launcher"
 version = "0.0.0"
 dependencies = [
- "ads-core",
+ "ads-child-env",
  "ads-private-dir",
  "rustix",
  "serde",

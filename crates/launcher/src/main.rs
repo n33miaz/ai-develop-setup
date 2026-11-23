@@ -9,7 +9,7 @@ use std::{
     process::{Command, ExitCode},
 };
 
-use ads_core::child_env::{EnvLayer, EnvPolicy, NameCase};
+use ads_child_env::{EnvLayer, EnvPolicy, HARNESSES_TOML, NameCase};
 use serde::Deserialize;
 
 const DAEMON_LOCK_FILE: &str = "daemon.lock";
@@ -121,8 +121,7 @@ impl Config {
             env: EnvLayer,
         }
 
-        let defaults: HarnessDefaults =
-            toml::from_str(include_str!("../../../defaults/harnesses.toml"))?;
+        let defaults: HarnessDefaults = toml::from_str(HARNESSES_TOML)?;
         let layer = EnvLayer {
             allow: Some(self.child_env_allow.clone()),
             set: Some(Default::default()),

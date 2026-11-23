@@ -18,11 +18,17 @@ kinds = ["normal", "build", "dev"]
 path = "crates/contracts"
 allow = []
 
-# Politica pura: so enxerga contratos; sem rede, banco nem PTY.
+# Política de ambiente compartilhada pelo núcleo e pelo lançador.
+
+[crates.ads-child-env]
+path = "crates/child-env"
+allow = []
+
+# Política pura do núcleo: contratos e ambiente dos filhos.
 
 [crates.ads-core]
 path = "crates/core"
-allow = ["ads-contracts"]
+allow = ["ads-child-env", "ads-contracts"]
 forbid_external = [
   "axum",
   "hyper",
@@ -63,10 +69,10 @@ allow = ["ads-contracts"]
 path = "crates/private-dir"
 allow = []
 
-# Supervisor estável: contratos e política de ambiente dos filhos.
+# Supervisor estável e independente do núcleo (ADR 0015).
 [crates.ads-launcher]
 path = "crates/launcher"
-allow = ["ads-contracts", "ads-core", "ads-private-dir"]
+allow = ["ads-contracts", "ads-child-env", "ads-private-dir"]
 
 # Casca fina: so contratos e a sessao cifrada. Nada de politica, banco ou PTY.
 

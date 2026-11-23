@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
   "crates/contracts",
+  "crates/child-env",
   "crates/core",
   "crates/storage",
   "crates/ptyhost",
@@ -23,6 +24,7 @@ members = [
 # A casca Tauri fica de fora: `cargo check`, `clippy` e `test` sem `-p` nao a compilam (ela compila so no CI).
 default-members = [
   "crates/contracts",
+  "crates/child-env",
   "crates/core",
   "crates/storage",
   "crates/ptyhost",
@@ -50,6 +52,7 @@ publish = false
 # Uma versao de cada biblioteca externa e o caminho de cada crate interno ficam aqui.
 # Quem pode depender de quem esta em defaults/dependency-matrix.toml e e cobrado por tools/check_deps.py.
 [workspace.dependencies]
+ads-child-env = { path = "crates/child-env" }
 ads-private-dir = { path = "crates/private-dir" }
 base64 = "0.23.1"
 log = { version = "0.4.35", features = ["max_level_off"] }

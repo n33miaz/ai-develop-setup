@@ -15,7 +15,8 @@ Estado: em construção, sem versão estável; só pré-lançamentos de desenvol
 
 A [arquitetura local](docs/architecture.md) descreve os processos, canais e fronteiras de confiança.
 - `contracts/`: JSON Schemas versionados e arquivos de referência (golden). É o único jeito de os módulos conversarem.
-- `core/`: política e lógica. Depende só de `contracts/`. Nunca depende de `adapters/`; um teste de CI impõe isso.
+- `child-env/`: política de ambiente dos processos filhos, compartilhada pelo núcleo e pelo lançador.
+- `core/`: política e lógica. Depende de `contracts/` e `child-env/`. Nunca depende de `adapters/`; um teste de CI impõe isso.
 - `adapters/`: um por ferramenta, provedor, transporte ou cofre. Depende de `core/` e `contracts/`. Só adapta.
 - `ptyhost/`: processo estável das sessões de terminal e do replay. O núcleo reinicia sem derrubá-lo.
 - `daemon/`: composição que liga núcleo, adaptadores, HTTP e WebSocket. `shell/`: casca Tauri. `ui/`: React 19, Vite e TypeScript.

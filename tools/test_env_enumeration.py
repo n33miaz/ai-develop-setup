@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SCANNED = ("crates/daemon/src", "crates/core/src", "crates/launcher/src", "crates/storage/src")
+SCANNED = ("crates/daemon/src", "crates/core/src", "crates/child-env/src", "crates/launcher/src", "crates/storage/src")
 
 # Ways to list the environment instead of asking for one name.
 FORBIDDEN = (
