@@ -183,13 +183,36 @@ class PrunePlanTest(unittest.TestCase):
         tags = dev(("20261120", 1), ("20261120", 2), ("20261120", 3))
         self.assertEqual(self.plan([pre(tag) for tag in tags]), ([], []))
 
+    def test_required_tag_absent_from_listing_reports_channel_count(self):
+        tag, missing = dev(("20261120", 1), ("20261120", 2))
+        releases = [pre(tag), pre("v0.1.0-rc.20261120.1")]
+        with self.assertRaises(ValueError) as error:
+            self.plan(releases, refs=[(missing, SHA)], require=missing, require_sha=SHA)
+        self.assertIn(missing, str(error.exception))
+        self.assertIn("tag ausente da listagem", str(error.exception))
+        self.assertIn("releases do canal lidas: 1", str(error.exception))
+
+    def test_required_tag_outside_kept_reports_listed_flags(self):
+        tags = dev(("20261120", 1), ("20261120", 2), ("20261120", 3), ("20261120", 4))
+        for draft, prerelease, flags in (
+            (False, True, "draft=false, prerelease=true"),
+            (True, False, "draft=true, prerelease=false"),
+            ("invalid\nflag", None, "draft=desconhecido, prerelease=desconhecido"),
+        ):
+            with self.subTest(draft=draft, prerelease=prerelease):
+                releases = [pre(tags[0], draft=draft, prerelease=prerelease)] + [pre(tag) for tag in tags[1:]]
+                with self.assertRaises(ValueError) as error:
+                    self.plan(releases, require=tags[0], require_sha=sha_of(tags[0]))
+                message = str(error.exception)
+                self.assertIn(tags[0], message)
+                self.assertIn(f"tag presente na listagem ({flags})", message)
+                self.assertIn("releases do canal lidas: 4", message)
+                self.assertNotIn("\n", message)
+
     def test_required_release_must_be_published_kept_and_on_its_commit(self):
         tags = dev(("20261120", 1), ("20261120", 2), ("20261120", 3), ("20261120", 4))
         new = tags[3]
         releases = [pre(tag) for tag in tags]
-        for bad_require in (tags[0], "v0.1.0-dev.20261120.5"):
-            with self.assertRaises(ValueError):
-                self.plan(releases, require=bad_require, require_sha=sha_of(bad_require))
         with self.assertRaises(ValueError):
             self.plan([pre(tag) for tag in tags[:3]] + [pre(new, draft=True)], require=new, require_sha=sha_of(new))
         with self.assertRaises(ValueError):
