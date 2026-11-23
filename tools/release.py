@@ -129,6 +129,12 @@ def next_release(config, sha, date, releases, tags, merged, points_at):
     }
 
 
+def flag_text(value):
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return "desconhecido"
+
+
 def prune_plan(config, releases, remote_tags, require="", require_sha=""):
     """Alvos da poda: (id da release, tag, commit da tag ou "-") dos pré-lançamentos publicados do canal além dos
     `keep` mais novos, mais as tags do canal sem release, só relatadas.
@@ -138,10 +144,17 @@ def prune_plan(config, releases, remote_tags, require="", require_sha=""):
     pattern = tag_pattern(config)
     refs = dict(remote_tags)
     by_tag = {}
+    channel_count = 0
+    required_flags = set()
     for release in releases:
         tag = release.get("tagName")
+        if require and tag == require:
+            draft = flag_text(release.get("isDraft"))
+            prerelease = flag_text(release.get("isPrerelease"))
+            required_flags.add(f"draft={draft}, prerelease={prerelease}")
         if not isinstance(tag, str) or not pattern.match(tag):
             continue
+        channel_count += 1
         if release.get("isPrerelease") is True and release.get("isDraft") is False:
             if not isinstance(release.get("id"), int) or isinstance(release.get("id"), bool):
                 raise ValueError("release %s sem id numérico" % tag)
@@ -150,7 +163,13 @@ def prune_plan(config, releases, remote_tags, require="", require_sha=""):
     kept = ordered[: config["keep"]]
     if require:
         if require not in kept:
-            raise ValueError("a release %s não está publicada entre as mais novas do canal" % require)
+            presence = "tag ausente da listagem"
+            if required_flags:
+                presence = "tag presente na listagem (%s)" % " / ".join(sorted(required_flags))
+            raise ValueError(
+                f"a release {require} não está publicada entre as mais novas do canal "
+                f"({presence}, releases do canal lidas: {channel_count})"
+            )
         if refs.get(require) != require_sha:
             raise ValueError("a tag %s não aponta para %s" % (require, require_sha or "o commit esperado"))
     targets = [(by_tag[tag], tag, refs.get(tag, "-")) for tag in ordered[config["keep"] :]]
