@@ -15,7 +15,7 @@ use serde::Deserialize;
 
 use super::{Harness, ProfileBinding, SwitchPolicy};
 
-pub(super) const DEFAULTS_TOML: &str = include_str!("../../../../defaults/harnesses.toml");
+pub(super) use ads_child_env::HARNESSES_TOML as DEFAULTS_TOML;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

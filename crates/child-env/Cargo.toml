@@ -1,0 +1,16 @@
+[package]
+name = "ads-child-env"
+description = "Shared policy for child process environments."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+
+[dev-dependencies]
+toml.workspace = true
+
+[lints]
+workspace = true

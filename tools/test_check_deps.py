@@ -136,6 +136,10 @@ class CheckLints(unittest.TestCase):
 
 
 class RealRepository(unittest.TestCase):
+    def test_launcher_cannot_depend_on_core(self):
+        _, crates = check_deps.load_matrix(check_deps.MATRIX)
+        self.assertNotIn("ads-core", crates["ads-launcher"]["allow"])
+
     def test_every_crate_follows_the_workspace_lints(self):
         metadata = {
             "workspace_root": str(check_deps.ROOT),

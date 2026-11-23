@@ -1,7 +1,7 @@
 //! Policy: tasks, approvals, scope, routing and budget.
 
 pub mod budget;
-pub mod child_env;
+pub use ads_child_env as child_env;
 pub mod gate;
 pub mod handoff;
 pub mod queue;

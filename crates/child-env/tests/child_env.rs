@@ -2,9 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ads_core::child_env::{EnvLayer, EnvList, EnvPolicy, EnvPolicyError, NameCase};
-
-const HARNESSES_TOML: &str = include_str!("../../../defaults/harnesses.toml");
+use ads_child_env::{EnvLayer, EnvList, EnvPolicy, EnvPolicyError, HARNESSES_TOML, NameCase};
 
 /// What the shipped defaults must give the child. Written here, not read from the defaults, so a
 /// wider allow list in the defaults fails this test.

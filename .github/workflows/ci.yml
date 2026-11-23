@@ -181,21 +181,21 @@ jobs:
           PUSH_BEFORE_SHA: ${{ github.event.before }}
           PUSH_AFTER_SHA: ${{ github.sha }}
           # Casca: janela, interface, processos do teste, dependências e entradas da compilação.
-          SHELL_PATHS: '^(crates/(shell|launcher|daemon|ptyhost)/|crates/(core|storage|testkit|private-dir)/|crates/adapters/(claude|codex|vault|fs)/|ui/|tools/smoke_desktop\.py$|crates/contracts/|crates/e2e/|contracts/|defaults/(action-gate|budget|handoff|harnesses|queue|refusal|routing|daemon|fs-executor|launcher|ptyhost|storage)\.toml$|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
+          SHELL_PATHS: '^(crates/(shell|launcher|daemon|ptyhost)/|crates/(child-env|core|storage|testkit|private-dir)/|crates/adapters/(claude|codex|vault|fs)/|ui/|tools/smoke_desktop\.py$|crates/contracts/|crates/e2e/|contracts/|defaults/(action-gate|budget|handoff|harnesses|queue|refusal|routing|daemon|fs-executor|launcher|ptyhost|storage)\.toml$|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
           # Interface: ela mesma e o que ela lê dos contratos (tipos gerados e os Schemas do teste de contrato).
           UI_PATHS: '^(ui/|contracts/generated/|contracts/schemas/)'
           # Contratos: os Schemas e as ferramentas, os tipos Rust gerados deles e o que muda a forma como o rustfmt os escreve.
           CONTRACTS_PATHS: '^(contracts/|crates/contracts/|rust-toolchain\.toml$|rustfmt\.toml$)'
           # PTY: host, daemon, adaptadores ligados a ele, núcleo, contratos, parâmetros, workflow e entradas da compilação.
-          PTY_PATHS: '^(crates/ptyhost/|crates/daemon/|crates/testkit/|crates/contracts/|crates/adapters/(claude|codex|vault|fs)/|crates/storage/|crates/core/|crates/private-dir/|contracts/|defaults/(action-gate|budget|handoff|harnesses|queue|refusal|routing|daemon|fs-executor|ptyhost|storage)\.toml$|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
+          PTY_PATHS: '^(crates/ptyhost/|crates/daemon/|crates/testkit/|crates/contracts/|crates/adapters/(claude|codex|vault|fs)/|crates/storage/|crates/(child-env|core)/|crates/private-dir/|contracts/|defaults/(action-gate|budget|handoff|harnesses|queue|refusal|routing|daemon|fs-executor|ptyhost|storage)\.toml$|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
           # Executor de arquivos: o crate, o portão que ele julga de novo, os parâmetros dos dois, este workflow e
           # tudo que muda o resultado da compilação.
-          FS_PATHS: '^(crates/adapters/fs/|crates/core/|crates/contracts/|contracts/|defaults/(action-gate|budget|handoff|harnesses|queue|refusal|routing|fs-executor)\.toml$|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
-          STORAGE_PATHS: '^(crates/storage/|crates/core/|crates/contracts/|contracts/|defaults/(action-gate|budget|handoff|harnesses|queue|refusal|routing|storage)\.toml$|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
+          FS_PATHS: '^(crates/adapters/fs/|crates/(child-env|core)/|crates/contracts/|contracts/|defaults/(action-gate|budget|handoff|harnesses|queue|refusal|routing|fs-executor)\.toml$|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
+          STORAGE_PATHS: '^(crates/storage/|crates/(child-env|core)/|crates/contracts/|contracts/|defaults/(action-gate|budget|handoff|harnesses|queue|refusal|routing|storage)\.toml$|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
           # Cofre: o crate, as dependências dele no workspace, este workflow e as entradas da compilação.
-          VAULT_PATHS: '^(crates/adapters/vault/|crates/core/|crates/contracts/|contracts/|defaults/(action-gate|budget|handoff|harnesses|queue|refusal|routing)\.toml$|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
+          VAULT_PATHS: '^(crates/adapters/vault/|crates/(child-env|core)/|crates/contracts/|contracts/|defaults/(action-gate|budget|handoff|harnesses|queue|refusal|routing)\.toml$|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
           # Lançador: o crate, as dependências dele no workspace, os parâmetros dele, este workflow e as entradas da compilação.
-          LAUNCHER_PATHS: '^(crates/launcher/|crates/core/|crates/private-dir/|crates/contracts/|contracts/|defaults/(action-gate|budget|handoff|harnesses|queue|refusal|routing|launcher)\.toml$|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
+          LAUNCHER_PATHS: '^(crates/(launcher|child-env|private-dir)/|defaults/(harnesses|launcher)\.toml$|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
         run: |
           set -euo pipefail
           # Na dúvida (disparo manual, push sem base conhecida, diff impossível), roda.
@@ -426,7 +426,8 @@ jobs:
         run: cargo test --locked -p ads-daemon -j 2 -- --nocapture
       - name: Parâmetros de abertura das ferramentas (caminhos e ambiente do Windows)
         run: |
-          cargo test --locked -p ads-core --lib --test child_env -j 2
+          cargo test --locked -p ads-core --lib -j 2
+          cargo test --locked -p ads-child-env -j 2
           cargo test --locked -p ads-adapter-claude -p ads-adapter-codex -j 2
 
   # Junção, ponto de reanálise e a remoção de link de pasta só existem no Windows: os testes do executor de

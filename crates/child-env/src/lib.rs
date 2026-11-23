@@ -8,6 +8,9 @@ use std::fmt;
 
 use serde::Deserialize;
 
+/// Shipped tool configuration, including the base `[env]` policy.
+pub const HARNESSES_TOML: &str = include_str!("../../../defaults/harnesses.toml");
+
 /// How variable names are compared against the allow list. Deny patterns ignore case always,
 /// with the widest comparison (see [`EnvPolicy::is_denied`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -329,7 +332,7 @@ impl EnvPolicy {
     }
 
     /// Reads only permitted parent values, using the host's name lookup rules.
-    pub(crate) fn read_parent_env(
+    pub fn read_parent_env(
         &self,
         mut read: impl FnMut(&str) -> Option<String>,
     ) -> Vec<(String, String)> {
