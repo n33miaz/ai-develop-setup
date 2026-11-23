@@ -182,6 +182,7 @@ fn refuses_an_installation_with_a_live_daemon_lock() {
     drop(copy_held_by_a_child);
     assert!(!available.status.success());
     let error = String::from_utf8(available.stderr).unwrap();
+    assert!(!error.contains("another daemon"), "{error}");
     assert!(error.contains("invalid daemon arguments"), "{error}");
 }
 #[path = "common/temp.rs"]
