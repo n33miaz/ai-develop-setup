@@ -1,6 +1,6 @@
 use super::{
-    TestLauncher, authenticated, bounded, call, closed, command, fixture, open_params,
-    refusing_fixture, transmit, wait_until,
+    PeerCall, PeerScenario, TestLauncher, authenticated, bounded, call, closed, command, fixture,
+    open_params, refusing_fixture, scripted_fixture, transmit, wait_until,
 };
 use ads_daemon::api::ApiError;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -40,18 +40,24 @@ async fn every_host_refusal_returns_its_code_and_service_survives() {
         TerminalIo,
         UnsupportedContract,
     ] {
-        for target in ["open", "write", "resize", "close", "subscribe"] {
-            let (f, _) = refusing_fixture("", target, code, 0).await;
+        for method in [
+            PeerCall::Open,
+            PeerCall::Write,
+            PeerCall::Resize,
+            PeerCall::Close,
+            PeerCall::Subscribe,
+        ] {
+            let (f, _) = refusing_fixture("", method, code, 0).await;
             let mut ws = authenticated(&f).await;
             let result = call(&mut ws, "session.open", open_params("session")).await;
-            let result = match target {
-                "write" => call(
+            let result = match method {
+                PeerCall::Write => call(
                     &mut ws,
                     "session.write",
                     json!({"session_id": "session", "data": STANDARD.encode(f.token.as_bytes())}),
                 )
                 .await,
-                "resize" => {
+                PeerCall::Resize => {
                     call(
                         &mut ws,
                         "session.resize",
@@ -59,17 +65,19 @@ async fn every_host_refusal_returns_its_code_and_service_survives() {
                     )
                     .await
                 }
-                "close" => call(&mut ws, "session.close", json!({"session_id": "session"})).await,
+                PeerCall::Close => {
+                    call(&mut ws, "session.close", json!({"session_id": "session"})).await
+                }
                 _ => result,
             };
             // The terminal is already open when the subscription is refused: setup failed, close scheduled.
-            let expected = if target == "subscribe" {
+            let expected = if method == PeerCall::Subscribe {
                 -32014
             } else {
                 code.number()
             };
-            assert_eq!(result["error"]["code"], expected, "{target}: {code:?}");
-            if target == "close" && code != UnknownSession {
+            assert_eq!(result["error"]["code"], expected, "{method:?}: {code:?}");
+            if method == PeerCall::Close && code != UnknownSession {
                 assert_eq!(
                     call(&mut ws, "session.close", json!({"session_id": "session"})).await["result"]
                         ["accepted"],
@@ -102,11 +110,12 @@ fn unavailable_service_and_host_timeout_share_the_internal_error_code() {
 
 #[tokio::test]
 async fn host_timeout_ends_the_service_after_an_uncertain_command() {
-    let (mut f, _) = refusing_fixture(
+    let (mut f, _) = scripted_fixture(
         "host_timeout_ms = 50",
-        "stall",
+        PeerScenario::Stall,
         ads_ptyhost::wire::ErrorCode::InternalError,
         0,
+        &[],
     )
     .await;
     let mut ws = authenticated(&f).await;
@@ -129,32 +138,42 @@ async fn host_timeout_ends_the_service_after_an_uncertain_command() {
 #[tokio::test]
 async fn host_lost_during_setup_answers_unavailable() {
     // Either the channel drops, or the client stops on its own full queue: the service ends.
-    for target in ["host-lost-on-subscribe", "flood-on-subscribe"] {
-        let (mut f, _) =
-            refusing_fixture("", target, ads_ptyhost::wire::ErrorCode::InternalError, 0).await;
+    for scenario in [
+        PeerScenario::HostLostOnSubscribe,
+        PeerScenario::FloodOnSubscribe,
+    ] {
+        let (mut f, _) = scripted_fixture(
+            "",
+            scenario,
+            ads_ptyhost::wire::ErrorCode::InternalError,
+            0,
+            &[],
+        )
+        .await;
         let mut ws = authenticated(&f).await;
         transmit(&mut ws, &command("session.open", open_params("session"))).await;
         // The command itself stops the service, instead of a later turn of the loop.
         assert_eq!(
             bounded(&mut f.api).await.unwrap(),
             Err(ApiError::Unavailable),
-            "{target}"
+            "{scenario:?}"
         );
         // The connection may close before the reply goes out; a reply that does says unavailable.
         if let Some(Ok(Message::Text(text))) = bounded(ws.next()).await {
             let reply: Value = serde_json::from_str(&text).unwrap();
-            assert_eq!(reply["error"]["code"], -32603, "{target}");
+            assert_eq!(reply["error"]["code"], -32603, "{scenario:?}");
         }
     }
 }
 
 #[tokio::test]
 async fn full_host_queue_during_setup_keeps_the_service() {
-    let (f, calls) = refusing_fixture(
+    let (f, calls) = scripted_fixture(
         "",
-        "busy-on-open",
+        PeerScenario::BusyOnOpen,
         ads_ptyhost::wire::ErrorCode::InternalError,
         0,
+        &[],
     )
     .await;
     let mut ws = authenticated(&f).await;
@@ -166,7 +185,12 @@ async fn full_host_queue_during_setup_keeps_the_service() {
     wait_until(|| calls.lock().unwrap().len() >= 4).await;
     assert_eq!(
         &*calls.lock().unwrap(),
-        &["hello", "open", "subscribe", "subscribe"]
+        &[
+            PeerCall::Hello,
+            PeerCall::Open,
+            PeerCall::Subscribe,
+            PeerCall::Subscribe
+        ]
     );
     assert_eq!(
         call(

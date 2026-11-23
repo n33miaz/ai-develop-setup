@@ -1,6 +1,6 @@
 use super::{
-    TestLauncher, authenticated, call, fixture, fixture_with_host, open_params, receive,
-    refusing_fixture,
+    PeerScenario, TestLauncher, authenticated, call, fixture, fixture_with_host, open_params,
+    receive, scripted_fixture,
 };
 use ads_ptyhost::HostConfig;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -165,11 +165,12 @@ async fn fake_backend_existing_session_and_full_host_do_not_stop_service() {
 
 #[tokio::test]
 async fn exit_before_close_reply_is_reported_as_requested_termination() {
-    let (f, _) = refusing_fixture(
+    let (f, _) = scripted_fixture(
         "",
-        "exit-before-close-response",
+        PeerScenario::ExitBeforeCloseResponse,
         ads_ptyhost::wire::ErrorCode::InternalError,
         0,
+        &[],
     )
     .await;
     let mut control = authenticated(&f).await;

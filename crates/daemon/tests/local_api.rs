@@ -5,7 +5,7 @@ use ads_daemon::pty_client::{ClientConfig, PtyClient};
 use ads_ptyhost::{FakeBackend, HostConfig, PtyHost, server, wire::OpenParams};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use futures_util::{SinkExt, StreamExt};
-use peer::{refusing_fixture, scripted_fixture};
+use peer::{PeerCall, PeerScenario, refusing_fixture, scripted_fixture};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::Duration;
