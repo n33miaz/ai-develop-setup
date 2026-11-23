@@ -38,6 +38,29 @@ class HostBannerTests(unittest.TestCase):
 
 
 class DesktopSmokeTests(unittest.TestCase):
+    def test_rejects_nonzero_window_exit_with_background_processes_running(self):
+        host = Mock(stdout=io.BytesIO(b"ads-ptyhost ready\n"))
+        daemon = Mock(stdout=io.BytesIO())
+        for process in (host, daemon):
+            process.poll.return_value = None
+        window = Mock()
+        window.poll.return_value = 1
+        window.wait.return_value = 1
+
+        with patch.object(smoke_desktop, "Popen", side_effect=[host, daemon, window]):
+            with self.assertRaisesRegex(
+                SystemExit,
+                r"^desktop window failed to relay the harness\.list reply$",
+            ):
+                smoke_desktop.main()
+
+        self.assertEqual(window.wait.call_args_list, [call(timeout=60), call(timeout=10)])
+        window.terminate.assert_not_called()
+        for process in (daemon, host):
+            process.terminate.assert_called_once_with()
+            process.wait.assert_called_once_with(timeout=10)
+            self.assertTrue(process.stdout.closed)
+
     def test_rejects_background_process_exit_after_successful_window_reply(self):
         for exited in ("daemon", "host"):
             with self.subTest(exited=exited):
