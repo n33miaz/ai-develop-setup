@@ -178,7 +178,7 @@ pub(crate) fn checked(schema: &str, value: Value) -> Result<Value, ApiError> {
         .map_err(|_| ApiError::Invalid)
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApiConfig {
     pub ui_base_url: String,
