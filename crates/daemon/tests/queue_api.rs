@@ -241,8 +241,11 @@ impl Drop for Fixture {
     }
 }
 
+const ASYNC_TIMEOUT: Duration = Duration::from_secs(10);
+const DISCOVERY_RELEASE_TIMEOUT: Duration = Duration::from_secs(30);
+
 async fn bounded<T>(future: impl Future<Output = T>) -> T {
-    tokio::time::timeout(Duration::from_secs(10), future)
+    tokio::time::timeout(ASYNC_TIMEOUT, future)
         .await
         .expect("test timeout")
 }
@@ -772,12 +775,13 @@ impl QueueControl for BlockingDiscovery {
         if let Some(entered) = self.entered.lock().unwrap().take() {
             entered.send(()).unwrap();
         }
-        // The timeout matches the bounded deadline to free the thread if discovery runs on the runtime.
+        // Allow time for the other request. If discovery blocks the runtime thread,
+        // only this synchronous timeout can wake it while the release sender is alive.
         let released = self
             .release
             .lock()
             .unwrap()
-            .recv_timeout(Duration::from_secs(5));
+            .recv_timeout(DISCOVERY_RELEASE_TIMEOUT);
         released.map_err(|_| ApiError::Storage)?;
         Ok(id("queue-blocked"))
     }
