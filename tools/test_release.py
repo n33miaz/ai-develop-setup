@@ -326,7 +326,7 @@ class WorkflowContractTest(unittest.TestCase):
 class PruneWorkflowTest(unittest.TestCase):
     tag = "v0.1.0-dev.20261120.11"
 
-    def run_step(self, tag_after, list_after, new=True, sha=SHA):
+    def run_step(self, tag_after, list_after, new=True, sha=SHA, listed_id=11):
         _, jobs = workflow_jobs()
         step = textwrap.dedent(jobs["prune-plan"].split("        run: |\n", 1)[1])
         doubles = r'''
@@ -361,7 +361,7 @@ python3() { "$TEST_PYTHON" "$@"; }
             )
             previous = [pre(f"v0.1.0-dev.20261120.{n}", release_id=n) for n in range(1, 11)]
             (folder / "previous.jsonl").write_text("".join(json.dumps(row) + "\n" for row in previous))
-            (folder / "new.jsonl").write_text(json.dumps(pre(self.tag, release_id=11)) + "\n")
+            (folder / "new.jsonl").write_text(json.dumps(pre(self.tag, release_id=listed_id)) + "\n")
             output = folder / "output"
             output.touch()
             env = dict(
@@ -369,6 +369,7 @@ python3() { "$TEST_PYTHON" "$@"; }
                 REF_SHA=sha, KEEP="10", MODE="apply", WAIT_ATTEMPTS="3", WAIT_INTERVAL_SECONDS="2",
                 TAG_AFTER=str(tag_after), LIST_AFTER=str(list_after), GITHUB_OUTPUT="output",
                 GITHUB_STEP_SUMMARY="summary", TEST_PYTHON=Path(sys.executable).as_posix(),
+                PYTHONIOENCODING="utf-8",
             )
             bash = shutil.which("bash")
             if os.name == "nt":
@@ -399,8 +400,16 @@ python3() { "$TEST_PYTHON" "$@"; }
                 self.assertEqual(calls, expected_calls)
                 self.assertEqual(output, "")
 
+    def test_same_tag_with_different_release_ids_exhausts_wait(self):
+        result, calls, output = self.run_step(tag_after=1, list_after=1, listed_id=12)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("poda bloqueada", result.stdout)
+        self.assertEqual(calls, ["tag", "list", "sleep 2", "tag", "list", "sleep 2", "tag", "list"])
+        self.assertEqual(output, "")
+
     def test_visible_release_on_wrong_commit_blocks_pruning(self):
-        result, _, output = self.run_step(1, 1, sha="f" * 40)
+        with mock.patch.dict(os.environ, PYTHONUTF8="0", PYTHONIOENCODING="cp1252"):
+            result, _, output = self.run_step(1, 1, sha="f" * 40)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(f"não aponta para {SHA}", result.stderr)
         self.assertEqual(output, "")
