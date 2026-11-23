@@ -1,0 +1,42 @@
+{
+  "01-response-with-both.json": {
+    "rule": "Resposta tem result ou error, não os dois.",
+    "keyword": "anyOf",
+    "instancePath": ""
+  },
+  "02-event-without-seq.json": {
+    "rule": "Evento sem seq não se encaixa no envelope.",
+    "keyword": "anyOf",
+    "instancePath": ""
+  },
+  "03-command.json": {
+    "rule": "O núcleo não manda comando à interface.",
+    "keyword": "anyOf",
+    "instancePath": ""
+  },
+  "04-list-with-accepted.json": {
+    "rule": "A resposta de harness.list e a de um comando com efeito não se misturam.",
+    "keyword": "anyOf",
+    "instancePath": ""
+  },
+  "05-queue-get-with-harnesses.json": {
+    "rule": "A resposta de queue.get e a de harness.list não se misturam.",
+    "keyword": "anyOf",
+    "instancePath": ""
+  },
+  "06-approval-list-with-queue.json": {
+    "rule": "A resposta de approval.list e a de queue.get não se misturam.",
+    "keyword": "anyOf",
+    "instancePath": ""
+  },
+  "07-approval-list-with-accepted.json": {
+    "rule": "A resposta de approval.list e a de um comando com efeito não se misturam.",
+    "keyword": "anyOf",
+    "instancePath": ""
+  },
+  "08-approval-list-version-1.json": {
+    "rule": "A listagem de aprovações é a :2, com os efeitos concretos.",
+    "keyword": "anyOf",
+    "instancePath": ""
+  }
+}

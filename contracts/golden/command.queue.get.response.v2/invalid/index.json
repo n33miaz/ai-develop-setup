@@ -1,0 +1,23 @@
+{
+  "01-missing-policy.json": {
+    "rule": "A resposta inclui policy mesmo quando seu valor é null.",
+    "keyword": "required",
+    "instancePath": "/result",
+    "params": {
+      "missingProperty": "policy"
+    }
+  },
+  "02-zero-window.json": {
+    "rule": "A janela de admissão deve ser positiva.",
+    "keyword": "minimum",
+    "instancePath": "/result/policy/window_seconds"
+  },
+  "03-extra-field.json": {
+    "rule": "O resultado contém apenas a fila, o estado e a política.",
+    "keyword": "additionalProperties",
+    "instancePath": "/result",
+    "params": {
+      "additionalProperty": "owner_id"
+    }
+  }
+}

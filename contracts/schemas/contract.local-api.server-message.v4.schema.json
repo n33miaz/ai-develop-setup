@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:contract:local-api.server-message:4",
+  "title": "Mensagem do núcleo à interface",
+  "description": "Tudo o que o núcleo manda à interface pelo WebSocket da API local: a resposta a um comando (command.response:2), a resposta aceita de harness.list (command.harness.list.response:1), de queue.get (command.queue.get.response:1) ou de approval.list (command.approval.list.response:1), ou um evento de um stream assinado (event.envelope:1). Cada mensagem é uma das cinco, nunca mais de uma. A versão 4 acrescenta à :3 a resposta de approval.list.",
+  "anyOf": [
+    {
+      "$ref": "urn:ads:command:response:2"
+    },
+    {
+      "$ref": "urn:ads:command:harness.list.response:1"
+    },
+    {
+      "$ref": "urn:ads:command:queue.get.response:1"
+    },
+    {
+      "$ref": "urn:ads:command:approval.list.response:1"
+    },
+    {
+      "$ref": "urn:ads:event:envelope:1"
+    }
+  ],
+  "examples": [
+    {
+      "jsonrpc": "2.0",
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAD",
+      "result": {
+        "accepted": true,
+        "replayed": false
+      }
+    }
+  ]
+}

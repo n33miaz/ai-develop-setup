@@ -62,4 +62,10 @@ fi
 
 # 3. Validação
 branch="$(git symbolic-ref --short -q HEAD 2>/dev/null || true)"
-exec bash "$checker" --message "$msg_file" --author "$author_email" --strip-comments --branch "$branch"
+merge_args=()
+if [ -n "$branch" ] &&
+   merge_head="$(git rev-parse --verify --quiet MERGE_HEAD)" &&
+   [ "$merge_head" = "$(git rev-parse --verify --quiet refs/heads/develop)" ]; then
+  merge_args=(--merge-subject "Merge branch 'develop' into $branch")
+fi
+exec bash "$checker" --message "$msg_file" --author "$author_email" --strip-comments --branch "$branch" "${merge_args[@]}"

@@ -1,14 +1,21 @@
 // Monta os padrões do título da tarefa da fila a partir das faixas explícitas de corpus/title-chars.json (Unicode 16),
 // para que o Ajv e o regex do Rust não dependam da tabela Unicode de cada motor. Só classes de caracteres, sem
-// quantificador aninhado. `node tools/title-alphabet.mjs --write` regrava o Schema; o teste de corpus confere que ele
-// continua igual ao que este arquivo monta.
+// quantificador aninhado. `node tools/title-alphabet.mjs --write` regrava o tipo comum do título e as versões do registro
+// que o repetem por extenso; o teste de corpus confere que eles continuam iguais ao que este arquivo monta.
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const ALPHABET_FILE = path.join(root, "corpus", "title-chars.json");
-const SCHEMA_FILE = path.join(root, "schemas", "record.queue-task.v1.schema.json");
+// Cada Schema com o título por extenso e onde ele fica no arquivo.
+export const TITLE_SCHEMAS = [
+  { file: path.join(root, "schemas", "common.queue-task-title.v1.schema.json"), title: (schema) => schema },
+  ...[1, 2].map((version) => ({
+    file: path.join(root, "schemas", `record.queue-task.v${version}.schema.json`),
+    title: (schema) => schema.properties.title,
+  })),
+];
 
 function escape(code) {
   return code <= 0xffff ? `\\u${code.toString(16).padStart(4, "0")}` : `\\u{${code.toString(16).toUpperCase()}}`;
@@ -36,10 +43,12 @@ export function readAlphabet() {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url) && process.argv.includes("--write")) {
-  const schema = JSON.parse(fs.readFileSync(SCHEMA_FILE, "utf8"));
   const { pattern, not } = titlePatterns(readAlphabet().classes);
-  schema.properties.title.pattern = pattern;
-  schema.properties.title.not = { pattern: not };
-  fs.writeFileSync(SCHEMA_FILE, `${JSON.stringify(schema, null, 2)}\n`);
-  console.log("title-alphabet: Schema regravado");
+  for (const { file, title } of TITLE_SCHEMAS) {
+    const schema = JSON.parse(fs.readFileSync(file, "utf8"));
+    title(schema).pattern = pattern;
+    title(schema).not = { pattern: not };
+    fs.writeFileSync(file, `${JSON.stringify(schema, null, 2)}\n`);
+  }
+  console.log("title-alphabet: Schemas regravados");
 }

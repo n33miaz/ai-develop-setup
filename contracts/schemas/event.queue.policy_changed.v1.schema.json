@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:event:queue.policy_changed:1",
+  "title": "Política da fila alterada",
+  "description": "Registra a política completa aprovada pelo dono para as admissões posteriores no stream.",
+  "allOf": [
+    {
+      "$ref": "urn:ads:event:envelope:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "type",
+        "stream",
+        "data",
+        "actor"
+      ],
+      "properties": {
+        "type": {
+          "const": "urn:ads:event:queue.policy_changed:1"
+        },
+        "stream": {
+          "type": "string",
+          "pattern": "^queue/"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "queue_id",
+            "owner_id",
+            "via",
+            "policy"
+          ],
+          "properties": {
+            "queue_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "owner_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "via": {
+              "enum": [
+                "local_ui",
+                "tray",
+                "remote_device"
+              ]
+            },
+            "policy": {
+              "$ref": "urn:ads:common:queue-policy:1"
+            }
+          }
+        },
+        "actor": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "kind": {
+              "const": "device"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+      "type": "urn:ads:event:queue.policy_changed:1",
+      "ts": "2030-01-02T03:04:05Z",
+      "stream": "queue/queue-01",
+      "seq": 2,
+      "actor": {
+        "kind": "device",
+        "id": "device-01"
+      },
+      "cause": null,
+      "data_class": "internal",
+      "data": {
+        "queue_id": "queue-01",
+        "owner_id": "owner-01",
+        "via": "local_ui",
+        "policy": {
+          "attempt_limit": 2,
+          "admission_limit": 1000,
+          "window_seconds": 3600,
+          "window_admissions": 10,
+          "manual_window_admissions": 10,
+          "bug_rule_window_admissions": 3,
+          "clock_skew_seconds": 5,
+          "clock_rewind_seconds": 300,
+          "host_confirm_seconds": 60
+        }
+      }
+    }
+  ]
+}

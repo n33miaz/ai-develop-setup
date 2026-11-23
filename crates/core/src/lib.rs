@@ -3,9 +3,13 @@
 pub mod budget;
 pub mod child_env;
 pub mod gate;
+pub mod handoff;
 pub mod queue;
+pub mod refusal;
 pub mod routing;
+mod timestamp;
 pub mod tool_launch;
+pub mod vault;
 
 /// Package name as declared in the manifest.
 pub const fn crate_name() -> &'static str {

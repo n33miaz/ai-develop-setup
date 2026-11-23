@@ -4,8 +4,8 @@
 use std::num::NonZeroU64;
 
 use ads_core::gate::{
-    ActionPlan, Actor, ActorKind, DataClass, Estimate, EventMeta, GatePolicy, HostFacts, Id,
-    OperationRequest, PlanRequest, TargetRequest, Timestamp, Ulid, Verdict, classify,
+    AbsPath, ActionPlan, Actor, ActorKind, DataClass, Estimate, EventMeta, GatePolicy, HostFacts,
+    Id, OperationRequest, PlanRequest, TargetRequest, Timestamp, Ulid, Verdict, classify,
 };
 
 pub const WIN_HOME: &str = "C:\\Users\\user-a";
@@ -19,7 +19,13 @@ pub const SMALL: Option<Estimate> = Some(Estimate {
 });
 
 pub fn policy(home: &str, overrides: &str) -> GatePolicy {
-    GatePolicy::from_toml_str(overrides, &HostFacts { user_home: home }).unwrap()
+    GatePolicy::from_toml_str(overrides, &HostFacts { user_home: home })
+        .unwrap()
+        .with_work_roots(
+            [WIN_ROOT, POSIX_ROOT, "/work/proj", r"C:\work\proj"]
+                .map(|path| AbsPath::parse(path).unwrap())
+                .to_vec(),
+        )
 }
 
 pub fn request(operation: OperationRequest, work_root: &str, targets: &[&str]) -> PlanRequest {
@@ -43,7 +49,7 @@ pub fn plan(operation: OperationRequest, work_root: &str, targets: &[&str]) -> A
 
 /// The verdict for a Windows plan under the shipped defaults.
 pub fn win(operation: OperationRequest, targets: &[&str]) -> Verdict {
-    classify(&plan(operation, WIN_ROOT, targets), &policy(WIN_HOME, ""))
+    classify(&plan(operation, WIN_ROOT, targets), &policy(WIN_HOME, "")).unwrap()
 }
 
 /// The verdict for a POSIX plan under the shipped defaults.
@@ -52,6 +58,7 @@ pub fn posix(operation: OperationRequest, targets: &[&str]) -> Verdict {
         &plan(operation, POSIX_ROOT, targets),
         &policy(POSIX_HOME, ""),
     )
+    .unwrap()
 }
 
 pub fn id(text: &str) -> Id {

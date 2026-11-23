@@ -6,11 +6,11 @@
 
 mod common;
 
-use std::cell::{Cell, RefCell};
+use common::shared::{Cell, RefCell};
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::sync::Arc;
 
 use ads_adapter_fs::{
     Executor, FenceError, ITEMS_DIR, Laid, MANIFEST_NAME, Manifest, Midway, Mutation, Reason,
@@ -66,7 +66,7 @@ fn an_ancestor_swapped_for_a_link_while_the_fence_is_built_is_refused() {
         return;
     }
     let aside = sandbox.root.join("base-real");
-    let swapped = Rc::new(Cell::new(false));
+    let swapped = Arc::new(Cell::new(false));
     let built = Executor::new_watched(&base.join("fence"), sandbox.policy(""), {
         let (base, outside, swapped) = (base.clone(), sandbox.outside.clone(), swapped.clone());
         move || {
@@ -166,7 +166,7 @@ fn a_file_that_grew_after_the_survey_is_not_removed_nor_moved() {
             &sandbox.policy(overrides),
             delete_of(&sandbox, "act-1", &[target]),
         );
-        let grew = Rc::new(Cell::new(false));
+        let grew = Arc::new(Cell::new(false));
         let mut executor = hooked(sandbox.executor(overrides), {
             let (grew, through) = (grew.clone(), sandbox.path(through));
             move |moment, mutation| {
@@ -243,8 +243,8 @@ fn a_move_that_is_not_verified_is_told_as_a_move_that_happened() {
     assert!(stored.exists());
 
     // The restore moves the item back; the check right after the move fails.
-    let synced = Rc::new(RefCell::new(Vec::new()));
-    let moved = Rc::new(Cell::new(false));
+    let synced = Arc::new(RefCell::new(Vec::new()));
+    let moved = Arc::new(Cell::new(false));
     let mut executor = hooked(sandbox.executor(""), {
         let (synced, moved) = (synced.clone(), moved.clone());
         move |moment, mutation| match (moment, mutation) {
@@ -397,7 +397,7 @@ fn a_manifest_that_stops_after_it_was_created_is_told_as_created() {
 // ---- a tree is removed for good only where it is contained -------------------------------------
 
 /// What a probe is told from the first removal on: `("remove" | "sync", last two names)`.
-fn recorded(log: &Rc<RefCell<Vec<(String, String)>>>, mutation: &Mutation) {
+fn recorded(log: &Arc<RefCell<Vec<(String, String)>>>, mutation: &Mutation) {
     let mut log = log.borrow_mut();
     match mutation {
         Mutation::Remove(path) => log.push(("remove".to_owned(), tail(path, 2))),
@@ -406,7 +406,7 @@ fn recorded(log: &Rc<RefCell<Vec<(String, String)>>>, mutation: &Mutation) {
     }
 }
 
-fn pairs(log: &Rc<RefCell<Vec<(String, String)>>>) -> Vec<(String, String)> {
+fn pairs(log: &Arc<RefCell<Vec<(String, String)>>>) -> Vec<(String, String)> {
     log.borrow().clone()
 }
 
@@ -440,8 +440,8 @@ fn a_tree_is_removed_in_its_holding_folder_and_every_folder_is_confirmed() {
     assert_eq!(held, holding.join("0"));
     assert!(rehearsed.untouched() && !sandbox.path("work/.ads").exists());
 
-    let log = Rc::new(RefCell::new(Vec::new()));
-    let moves = Rc::new(RefCell::new(Vec::new()));
+    let log = Arc::new(RefCell::new(Vec::new()));
+    let moves = Arc::new(RefCell::new(Vec::new()));
     let mut executor = hooked(sandbox.executor(QUARANTINE_OFF), {
         let (log, moves) = (log.clone(), moves.clone());
         let holding = fs::canonicalize(&sandbox.fence)
@@ -522,7 +522,7 @@ fn a_tree_removal_that_stops_confirms_the_folders_it_changed() {
             &sandbox.policy(QUARANTINE_OFF),
             delete_of(&sandbox, "act-1", &["work/tree"]),
         );
-        let log = Rc::new(RefCell::new(Vec::new()));
+        let log = Arc::new(RefCell::new(Vec::new()));
         let mut executor = hooked(sandbox.executor(QUARANTINE_OFF), {
             let log = log.clone();
             move |moment, mutation| {
@@ -588,7 +588,7 @@ fn a_folder_being_emptied_stays_where_it_is() {
         delete_of(&sandbox, "act-1", &["work/tree"]),
     );
     // (the instant, the folder, whether it was taken)
-    let attempts = Rc::new(RefCell::new(Vec::new()));
+    let attempts = Arc::new(RefCell::new(Vec::new()));
     let mut executor = hooked(sandbox.executor(QUARANTINE_OFF), {
         let (attempts, outside) = (attempts.clone(), sandbox.outside.clone());
         let mut taken_one = false;
@@ -683,7 +683,7 @@ fn by_default_nothing_is_removed_for_good_where_folders_cannot_be_held() {
     for (at, (overrides, request)) in cases.into_iter().enumerate() {
         let flow = through_gate(&sandbox.policy(overrides), request);
         let before = tree(&sandbox.root);
-        let told = Rc::new(Cell::new(0));
+        let told = Arc::new(Cell::new(0));
         let mut executor = hooked(sandbox.shipped_executor(overrides), {
             let told = told.clone();
             move |_, _| {

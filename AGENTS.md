@@ -2,7 +2,7 @@
 
 Repositório público: todo commit é permanente e visível. Este arquivo é o contrato de qualquer pessoa ou agente de IA que altere o repo. Mudança que viole uma regra abaixo volta antes de ser aceita.
 
-Estado: em construção, sem versão publicada. O que cada módulo já tem e o que ainda é esqueleto está em [docs/modules.md](docs/modules.md); os riscos conhecidos e o que falta para cada um, em [docs/risks.md](docs/risks.md).
+Estado: em construção, sem versão estável; só pré-lançamentos de desenvolvimento ([ADR 0025](docs/adr/0025-semver-dev-prereleases-until-first-installer.md)). O que cada módulo já tem e o que ainda é esqueleto está em [docs/modules.md](docs/modules.md); os riscos conhecidos e o que falta para cada um, em [docs/risks.md](docs/risks.md).
 
 ## Produto e nome
 - `ai-develop-setup` é um codinome. Identificadores de contrato usam a URN `urn:ads:<tipo>:<nome>:<versão>`, sem domínio e sem nome comercial, para o nome comercial poder mudar depois sem quebrar contratos.
@@ -12,11 +12,16 @@ Estado: em construção, sem versão publicada. O que cada módulo já tem e o q
 - Títulos, descrições, comentários, branches e commits descrevem o assunto e o resultado da entrega, sem o histórico do processo interno de trabalho, sem códigos internos de organização e sem marcas de ferramentas nem rodapé de autoria por ferramenta. O único rastro de ferramenta permitido é o trailer de coautoria regido por `defaults/devflow.toml`. O checador de commits recusa no assunto e no nome da branch os termos e códigos listados em `defaults/devflow.toml` (`commits.process_terms`, `commits.internal_code_patterns`); detalhes em CONTRIBUTING.md, "Texto público".
 
 ## Camadas
+
+A [arquitetura local](docs/architecture.md) descreve os processos, canais e fronteiras de confiança.
 - `contracts/`: JSON Schemas versionados e arquivos de referência (golden). É o único jeito de os módulos conversarem.
 - `core/`: política e lógica. Depende só de `contracts/`. Nunca depende de `adapters/`; um teste de CI impõe isso.
 - `adapters/`: um por ferramenta, provedor, transporte ou cofre. Depende de `core/` e `contracts/`. Só adapta.
 - `ptyhost/`: processo estável das sessões de terminal e do replay. O núcleo reinicia sem derrubá-lo.
 - `daemon/`: composição que liga núcleo, adaptadores, HTTP e WebSocket. `shell/`: casca Tauri. `ui/`: React 19, Vite e TypeScript.
+- `storage/`: estado local e cifra por coluna. `e2e/`: sessão cifrada do transporte remoto.
+- `private-dir/`: criação e conferência de pastas e arquivos privados do usuário, usadas pelo lançador e pelo daemon.
+- `launcher/`: supervisão e atualização. `testkit/`: auxiliares exclusivos dos testes.
 - `defaults/`: parâmetros e regras em TOML. `tools/`: scripts do repositório. `docs/`: ADRs, mapa de módulos, riscos, arquivos de instruções por ferramenta, guardas.
 - `docs/modules.md` mapeia cada módulo em uma frase, com o estado; sem entrada, sem merge (`python tools/check_deps.py check` reprova). Os nomes das pastas são propostas até um ADR em `docs/adr/` fixá-los.
 
@@ -40,7 +45,7 @@ Estado: em construção, sem versão publicada. O que cada módulo já tem e o q
 - Bloqueado ou em dúvida: relate; não adivinhe nem contorne.
 
 ## Git
-- Fluxo: `feature/<nº-da-issue>-<assunto>` ou `fix/<nº-da-issue>-<assunto>` a partir de `develop`; PR para `develop`; junção pela interface do GitHub com merge commit no fluxo de autoria de agente, para preservar os commits. No modo expresso a `develop` é a produção; `homolog` e `main` existem, protegidas e sem uso. Nunca fazer push direto nelas: a exceção do ruleset é do mantenedor, não dos agentes (ver `docs/rulesets.md`).
+- Fluxo: `feature/<nº-da-issue>-<assunto>`, `fix/<nº-da-issue>-<assunto>`, `ci/<nº-da-issue>-<assunto>` ou `docs/<nº-da-issue>-<assunto>` a partir de `develop`; PR para `develop`; junção pela interface do GitHub com merge commit no fluxo de autoria de agente, para preservar os commits. No modo expresso a `develop` é a produção; `homolog` e `main` existem, protegidas e sem uso. Nunca fazer push direto nelas: a exceção do ruleset é do mantenedor, não dos agentes (ver `docs/rulesets.md`).
 - Uma issue por entrega, aberta antes do trabalho, sem dados pessoais (ver CONTRIBUTING.md). Branch, PR (`Closes #n`) e commits apontam para ela.
 - Título de issue e de PR: descritivo do problema ou do resultado, em inglês, sem prefixo `tipo(escopo):`, sem ponto final, até 72 caracteres ("Prevent deletions outside the workspace"). O padrão de commit vale só para commits. A issue leva um rótulo `type:` e pelo menos um `area:` (ADR 0019; lista no CONTRIBUTING.md).
 - Commit: `tipo(escopo): assunto`. Conventional Commits em inglês, imperativo, minúsculas na descrição inteira (siglas também), assunto de até 50 caracteres, sem ponto final e **sem corpo descritivo**: só o assunto, uma linha em branco e os trailers permitidos. A descrição vai no PR. Cada commit é uma entrega completa (contrato, código e teste juntos). Correção de revisão entra como commit novo; nunca `amend` em commit já enviado.

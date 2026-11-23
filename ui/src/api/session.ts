@@ -6,10 +6,12 @@ export function sessionInput(
   onError: () => void,
   onSuccess: () => void = () => undefined,
 ) {
+  const generation = client.getGeneration()
+  const isCurrent = () => client.getState() === 'connected' && client.getGeneration() === generation
   let pending = Promise.resolve()
 
   return (bytes: Uint8Array) => {
-    if (bytes.length === 0) return
+    if (bytes.length === 0 || !isCurrent()) return
 
     const chunks: string[] = []
     for (let offset = 0; offset < bytes.length; offset += 65536) {
@@ -23,6 +25,7 @@ export function sessionInput(
       let sent = true
       try {
         for (const data of chunks) {
+          if (!isCurrent()) return
           const response = await client.send(
             newCommand('session.write', { session_id: sessionId, data }),
           )

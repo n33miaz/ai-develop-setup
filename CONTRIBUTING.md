@@ -8,7 +8,7 @@ O restante deste documento descreve o fluxo do mantenedor e dos agentes que trab
 
 ## Fluxo de branches
 
-`feature/<nº-da-issue>-<assunto>` (ou `fix/...`) → PR → `develop` → `homolog` → `main`.
+`feature/<nº-da-issue>-<assunto>` (ou `fix/...`, `ci/...`, `docs/...`) → PR → `develop` → `homolog` → `main`.
 
 | Branch | Modo expresso (agora) | Modo completo (depois) |
 |---|---|---|
@@ -87,6 +87,8 @@ Co-authored-by: Nome do agente <noreply@exemplo.org>
 
 Todas essas regras e seus valores ficam em `defaults/devflow.toml` e são aplicadas pelo mesmo script no hook local e no CI (`.github/scripts/check-commits.sh`). O script valida o arquivo de parâmetros antes de olhar qualquer mensagem: valor de tipo errado ou fora do domínio termina com código 2 (erro de configuração), sem analisar commit nenhum; mensagem fora do padrão termina com código 1. O hook roda essa mesma validação antes de tudo, então configuração inválida barra o commit com código 2 mesmo com `commits.enabled = false`.
 
+Durante um merge da branch local `develop`, o hook aceita o assunto padrão do Git (`Merge branch 'develop' into <branch>`) como exceção ao formato e ao limite de tamanho do assunto. As regras de autoria, trailers, texto público e nome da branch continuam valendo.
+
 O mesmo script confere o texto público (ver "Texto público" abaixo) no assunto de cada commit e no nome da branch: recusa, por palavra inteira e sem diferenciar maiúsculas, os termos de processo de `commits.process_terms` e os códigos internos de organização de `commits.internal_code_patterns`, as duas listas em `defaults/devflow.toml`. No CI o nome da branch é o do PR; no hook, o da branch atual (em HEAD destacado não há o que conferir). No assunto o hífen une a palavra (`round-trip` passa); no nome da branch ele separa.
 
 ### DCO
@@ -115,6 +117,7 @@ bash .github/scripts/check-commits.test.sh
 ## Pull requests
 
 - Título descritivo, na mesma regra do título da issue (em geral o mesmo). O padrão de mensagem vale para os commits da branch. Descrição em português: o que mudou, por que, como testar, checklist P1 a P8 e `Closes #n`.
+- Todo PR recebe uma revisão automática (configurada em `.coderabbit.yaml`); apontamentos de severidade alta ou média são resolvidos, com teste, antes da junção.
 - No fluxo de autoria de agente, use merge commit depois do check `ci-ok` verde para preservar os commits e suas identidades. Apague a branch após a junção.
 - Antes de juntar, confira o `ci-ok` da execução mais recente do commit exato.
 
@@ -130,6 +133,8 @@ Proposta, aguardando ratificação do mantenedor. Mudanças nos módulos abaixo 
 | Autenticação da API local ([ADR 0020](docs/adr/0020-local-api-authentication.md)) | Decide quem comanda os terminais do usuário |
 | Ambiente do processo filho e entrada de comandos (adaptadores de ferramenta, `session.open` e `session.write` no núcleo) | Decide o que roda, com que ambiente e com que entrada; é onde credencial de CLI de IA poderia vazar (C1) |
 | Canal do `ptyhost` (pipe do usuário) | Separa as sessões de um usuário das de outro (P3) |
+| Ponte da casca (`crates/shell/src/bridge.rs`, `crates/shell/src/stdin.rs`) | Recebe o token pelo pipe herdado, exige a prova do daemon antes de enviá-lo e decide o que chega à janela pelo IPC |
+| Pastas privadas e sinais do lançador (`crates/private-dir`, sinais em `crates/launcher/src/supervisor.rs`) | Decidem quem para ou reinicia a instalação e quem alcança a pasta de controle e a pasta da auditoria |
 
 Documentação de proposta (como uma ADR ainda não ratificada) não é mudança no módulo e pode ser juntada só com o `ci-ok`.
 
@@ -148,6 +153,10 @@ O Dependabot abre, toda segunda-feira, PRs para a `develop` com as atualizaçõe
 
 Depois do CI verde num PR do Dependabot, o workflow `dependabot-coauthor.yml` acrescenta o mantenedor como coautor nas mensagens dos commits do PR, confere que cada commit mantém a árvore e o autor que o CI aprovou e pede o CI de novo, para o `ci-ok` existir no commit reescrito. Ele só age em PR aberto do Dependabot para a `develop`, sem commit de merge. É a única reescrita de histórico do repositório, automática e restrita a branches `dependabot/*` ainda não juntadas; desliga-se com `coauthor = "none"` em `defaults/dependencies.toml`. Os commits do Dependabot ficam fora do job `commits` (são de robô), e o PR é juntado como os demais, por merge commit depois do `ci-ok` verde.
 
+## Versões
+
+Até a primeira versão estável, quando o CI de uma junção na `develop` termina verde, sai um pré-lançamento (junções muito próximas podem sair num só) em SemVer, `0.1.0-dev.<AAAAMMDD>.<N>+<commit curto>`, com tag `v0.1.0-dev.<AAAAMMDD>.<N>` e notas geradas dos PRs; ficam os dez mais novos ([ADR 0025](docs/adr/0025-semver-dev-prereleases-until-first-installer.md)). Os parâmetros estão em `defaults/release.toml`. Ninguém cria tag nem release à mão: o workflow `prerelease.yml` faz isso.
+
 ## Segredos e dados
 
-Nunca commite segredos, `.env`, chaves, bancos, logs ou dados de usuário. O CI varre segredos (gitleaks) e uma lista de termos proibidos mantida fora do repo.
+Nunca commite segredos, `.env`, chaves, bancos, logs ou dados de usuário. O CI varre segredos (gitleaks). A lista de termos proibidos, mantida fora do repo, é conferida localmente antes do push; o job `terms` do CI só roda com a variável de repositório `TERMS_CHECK = on` e o segredo `FORBIDDEN_TERMS`, e hoje está desligado (ver [AGENTS.md](AGENTS.md)).

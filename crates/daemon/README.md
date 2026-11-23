@@ -4,8 +4,25 @@ O executável serve a API local por WebSocket em `127.0.0.1`, com porta efêmera
 autenticação por execução ([ADR 0020](../../docs/adr/0020-local-api-authentication.md)).
 Claude e Codex são abertos pelo host de terminais com programa, argumentos e
 pasta definidos no TOML do usuário. Ferramenta sem programa recebe
-`-32011` (`harness not configured`). Ferramenta desconhecida, programa ou pasta
-inexistente e apelido de pasta fora da configuração recebem `-32602`.
+`HARNESS_NOT_CONFIGURED`. Ferramenta desconhecida, programa ou pasta
+inexistente e apelido de pasta fora da configuração recebem `INVALID_PARAMS`.
+
+## Modo desktop
+
+O lançador seleciona `--desktop` antes das opções de configuração e conecta
+a saída padrão do daemon ao pipe privado da casca. Nesse modo o daemon envia
+porta e token somente nesse canal. A API exige um upgrade sem cabeçalho
+`Origin` e mantém a conferência de `Host` e do token. O processo Rust da casca
+envia `auth.hello` antes de encaminhar mensagens da janela.
+
+## Portão de ações de arquivo
+
+Na composição de auditoria, passe `ToolLauncher::workdirs()` à abertura e à recuperação.
+O daemon confere a localização e a privacidade da pasta antes de abrir o SQLite.
+Uma pasta de trabalho indisponível na partida continua na conferência dos caminhos protegidos. O daemon registra o apelido no diagnóstico de partida e mantém a fila e o portão de aprovação das pastas disponíveis. Sessões e aprovações da pasta indisponível voltam a ser atendidas após corrigir o caminho e reiniciar o daemon.
+A configuração e as recusas estão no [README do armazenamento](../storage/README.md#âncora-no-cofre).
+
+`ToolLauncher::session_gate` recebe os parâmetros que abriram a sessão no host, com o apelido já resolvido, e vincula o portão e o executor da cerca a todos os diretórios de `[workdirs]`. Recebe também o `ProductLog`, que só `audit::open_product` cria: o log de auditoria aberto junto com o estado do produto que ele usa. Esse estado é o banco como configurado, com `-wal`, `-shm` e `-journal`, a pasta do cofre e da trava `audit-binding.lock` e, quando o daemon segura a trava do lançador (`InstanceLock`, de `--instance-lock`), a pasta dela. Cada caminho entra na grafia configurada, na resolvida no disco e, para cada link ou junção no caminho, na do próprio link no lugar real: remover um deles quebraria o caminho configurado. Pode faltar uma entrada que ainda não foi criada (um arquivo auxiliar do SQLite, o banco antes da primeira abertura); link cujo destino não existe, destino de link escrito com `..`, caminho de rede ou mais de 32 links recusam a abertura. Esses caminhos são sempre negados como alvo, no plano e de novo na execução. O portão só aceita o `ProductLog` com o mesmo estado com que foi montado; outro devolve `JournalError::PolicyChanged`. `SessionGate::plan` usa a pasta da sessão, inspeciona os alvos dentro dos limites de `defaults/fs-executor.toml` e grava os fatos de repositório no log ancorado. Se a inspeção falhar, o plano é recusado antes da gravação. As operações `inspect`, `apply` e `execute` só aceitam ações da raiz da sessão. Quem chama fornece a estimativa e cumpre os pré-requisitos de aprovação antes de chamar `SessionGate::execute`. O portão grava `action.started` antes de chamar o executor. Ao terminar, o daemon tenta gravar o resultado e devolve separadamente o relatório da operação e o status dessa gravação. Um início confirmado continua consumido mesmo se o resultado não puder ser gravado. A composição está disponível em Rust. A API local ainda não expõe comandos de execução de arquivos. Os instantes e identificadores de `start` e `finish` vêm de quem chama, e só o `ts` decide a validade da aprovação: quando a API existir, o daemon deve carimbar `ts` e `id` ele mesmo. Os itens da issue #26 que seguem abertos estão no [portão do núcleo](../core/README.md#máquina-de-estados).
 
 ## Abrir Claude ou Codex no navegador
 
@@ -86,9 +103,11 @@ inválidos recebem o mesmo HTTP 403 antes do upgrade; cabeçalhos repetidos,
 origem ausente e query string também são recusados.
 
 O arquivo de `--config` é opcional. As tabelas `[tools.claude]`,
-`[tools.codex]`, `[workdirs]` e `[env]` sobrepõem os
-[padrões das ferramentas](../../defaults/harnesses.toml); `[env]` e
-`[workdirs]` valem para as duas. Sem arquivo, ambas ficam desligadas. As chaves
+`[tools.codex]`, `[workdirs]`, `[accounts]` e `[env]` sobrepõem os
+[padrões das ferramentas](../../defaults/harnesses.toml). `[env]` e
+`[workdirs]` valem para as duas. As tabelas de perfil em `[accounts]`
+são aceitas para as duas ferramentas citadas. Entradas para outras ferramentas
+são recusadas. Sem arquivo, ambas ficam desligadas. As chaves
 da API na raiz do mesmo TOML sobrepõem os padrões do daemon listados abaixo.
 Reinicie o daemon para reler a configuração. A configuração inválida impede a
 partida e a mensagem omite o conteúdo do arquivo.
@@ -107,6 +126,35 @@ política `[env]`; o daemon guarda só o resultado, sem as variáveis negadas.
 
 ## Comandos, limites e recuperação
 
+Os nomes, valores e significados dos erros emitidos pela API local estão no
+[contrato de códigos de erro](../../contracts/schemas/contract.local-api.error-code.v6.schema.json).
+
+| Nome | Código na resposta |
+|---|---|
+| `METHOD_NOT_FOUND` | `-32601` |
+| `INVALID_PARAMS` | `-32602` |
+| `INTERNAL_ERROR` | `-32603` |
+| `CAPACITY_EXCEEDED` | `-32003` |
+| `SUBSCRIPTION_REPLAY_UNAVAILABLE` | `-32004` |
+| `REMOTE_ORIGIN_REFUSED` | `-32010` |
+| `HARNESS_NOT_CONFIGURED` | `-32011` |
+| `CONFLICT` | `-32012` |
+| `SESSION_CLOSE_PENDING` | `-32013` |
+| `SESSION_SETUP_FAILED` | `-32014` |
+| `QUEUE_NOT_CONFIGURED` | `-32015` |
+| `QUEUE_ALREADY_CREATED` | `-32024` |
+| `QUEUE_ALREADY_ENABLED` | `-32016` |
+| `APPROVAL_NOT_CONFIGURED` | `-32017` |
+| `APPROVAL_NOT_FOUND` | `-32018` |
+| `APPROVAL_ALREADY_ANSWERED` | `-32019` |
+| `APPROVAL_STALE` | `-32020` |
+| `APPROVAL_POLICY_CHANGED` | `-32021` |
+| `APPROVAL_OUT_OF_ORDER` | `-32022` |
+| `APPROVAL_NOT_APPROVABLE` | `-32023` |
+| `APPROVAL_READABLE` | `-32025` |
+| `QUEUE_NOT_FOUND` | `-32026` |
+| `QUEUE_NOT_CREATED` | `-32027` |
+
 `api::Launcher::prepare` recebe os parâmetros gerados de `session.open` (ferramenta,
 apelido de pasta, identificador e tamanho) e devolve `OpenParams` do ptyhost.
 O daemon confere que identificador e tamanho foram preservados. Cada adaptador
@@ -120,20 +168,274 @@ Todo comando remoto é recusado, mesmo com autenticação válida.
 
 `harness.list` (só depois de `auth.hello`; `params` leva apenas o `_meta`
 obrigatório de todo comando) responde
-`{"harnesses": [...], "workdir_aliases": [...]}`
-([`command.harness.list.response:1`](../../contracts/README.md#api-local)): os
+`{"harnesses": [...], "workdir_aliases": [...], "missing_workdir_aliases": [...]}`
+([`command.harness.list.response:2`](../../contracts/README.md#api-local)): os
 identificadores das ferramentas com `program` preenchido, na ordem `claude`,
-`codex`, e os apelidos de `[workdirs]` em ordem de nome. Só nomes: programa,
-argumentos, ambiente e caminhos nunca saem do daemon, e o contrato fechado da
-resposta não tem onde levá-los. A lista é montada uma vez, na partida (reinicie
-para reler a configuração), e não confere o disco: uma ferramenta listada ainda
-pode receber `-32602` em `session.open` se o programa ou a pasta não existir.
+`codex`, e os apelidos disponíveis de `[workdirs]` em ordem de nome. O campo
+`missing_workdir_aliases` só aparece quando há caminhos indisponíveis na partida,
+inclusive quando um caminho aponta para um arquivo.
+A resposta inclui apenas nomes. A lista é montada na partida e `session.open`
+confere de novo se o programa e a pasta existem no momento de abrir a sessão.
 Como só lê, não passa pela cache de idempotência: repetir a chave devolve a
 lista de novo, nunca `replayed`. `api::Launcher::catalog` fornece a lista; o
-padrão é vazio, como em `DisabledLauncher`. A resposta é a única mensagem
-que precisa da `local-api.server-message:2`; quem não envia `harness.list`
-continua recebendo só mensagens da `:1`. Um daemon anterior ao comando o recusa
-com `-32601`, e a interface mostra que o daemon precisa ser atualizado.
+padrão é vazio, como em `DisabledLauncher`. O daemon escreve a
+`local-api.server-message:10`, que inclui a resposta sobre pastas indisponíveis,
+`queue.configured.response:1` e a listagem `approval.list.response:4`.
+A resposta de `harness.list` é enviada quando o cliente a solicita. Um daemon
+anterior ao comando o recusa com `METHOD_NOT_FOUND`, e a interface mostra que
+o daemon precisa ser atualizado.
+
+## Fila de tarefas
+
+A fila nasce parada e só o dono a liga. `queue.create`, `queue.get`, `queue.start` e
+`queue.stop` nomeiam a fila em `params.queue_id` e não aceitam mais nenhum
+campo: o dono e o aparelho vêm do daemon, nunca do pedido. Valem as mesmas
+conferências dos outros comandos: só depois de `auth.hello`, e origem remota
+recebe `REMOTE_ORIGIN_REFUSED`.
+
+- `queue.create` grava `queue.created:2` com a política de `defaults/queue.toml`,
+  o aparelho do dono como ator e o id do comando em `cause`. A fila fica
+  disponível parada após a gravação. A cache de idempotência permite repetir o
+  pedido confirmado. Um novo pedido para uma fila existente recebe
+  `QUEUE_ALREADY_CREATED`.
+- `queue.get` devolve `queue_id`, `state` (`stopped` ou `enabled`) e `policy`
+  ([`command.queue.get.response:2`](../../contracts/README.md#api-local)). Lê os
+  limites e janelas do log de auditoria ancorado. Vale o último
+  `queue.policy_changed:1` ou, na ausência desse evento, a política de
+  `queue.created:2`. Uma fila criada por `queue.created:1` sem mudança de
+  política retorna `policy: null`. A consulta fica fora da cache de idempotência.
+- `queue.start` liga a fila só depois de gravar `queue.enabled` no log de
+  auditoria ancorado, com o aparelho local como ator, o dono, `via: local_ui`,
+  o `ts` do relógio do daemon e o id do comando em `cause`. A fila já ligada
+  recebe `QUEUE_ALREADY_ENABLED` e nada é gravado. Se a gravação falhar, a fila
+  continua parada e a resposta é `INTERNAL_ERROR`, sem derrubar o serviço.
+- `queue.stop` expressa o estado desejado e, com os controles de fila
+  disponíveis e o id da fila configurada já criada, é sempre aceito. Ele não consulta
+  a cache de idempotência: repetir uma parada antiga depois de religar a fila a
+  para de novo, e uma chave já usada por outro comando não impede a parada.
+  `replayed` é `false` quando esta parada desligou a fila e `true` quando ela
+  já estava parada (nada é gravado). A fila ligada para antes de o evento ser
+  gravado (`queue.stopped` com `reason: owner`), então nenhuma tarefa nova é
+  admitida mesmo se a gravação falhar. Nesse caso a resposta é
+  `INTERNAL_ERROR`, embora a fila tenha parado, e a parada que faltou é gravada
+  antes da próxima mudança feita pelo mesmo processo, com o id do comando de
+  parada em `cause` e o `ts` do momento da gravação. Se o processo terminar
+  antes, a causa se perde: a próxima abertura grava a parada como
+  `reason: restart`, com o daemon como ator.
+- Daemon sem controles de fila recebe `QUEUE_NOT_CONFIGURED`; id que não é o
+  da fila configurada recebe `QUEUE_NOT_FOUND`; a fila configurada ainda não
+  criada recebe `QUEUE_NOT_CREATED` em `queue.get`, `queue.start` e
+  `queue.stop`.
+- `queue.configured` informa à sessão local o id da fila configurada, criada
+  ou não, sem que a interface precise ler o arquivo de identidades. É só
+  leitura e fica fora da cache de idempotência, como `queue.get`.
+
+`queue::LoggedQueue::bind` liga uma fila já criada ao stream `queue/<id>` do log
+ancorado: recusa um stream criado por outro dono e, a cada abertura, restaura a
+fila parada e grava `queue.stopped` com `reason: restart` se o log dizia ligada.
+Quando a composição usa um `ProductLog`, passe `ProductLog::shared_log()` à fila
+para usar a mesma conexão SQLite do portão. A composição passa também o prazo
+`busy_timeout_ms` do log a `bind_or_pending`. A primeira aquisição da trava em
+`bind` usa esse prazo e devolve `Storage(Busy)` se ele vencer. Em `open` e
+`open_with_policy`, a primeira aquisição espera sem prazo para ler a configuração
+do log. As aquisições seguintes e a espera por uma trava do SQLite usam
+`busy_timeout_ms`. Se o prazo vencer durante um comando da fila, a API responde
+`INTERNAL_ERROR` com a mensagem `audit log busy`. A fila
+já estará parada se o comando era `queue.stop`. Os controles da fila rodam em
+tarefas bloqueantes, mantendo o atendimento de assinaturas e do terminal
+enquanto aguardam a gravação.
+Com o stream vazio, `bind` recusa com `NotCreated` e não grava nada. Criar a fila
+(`queue.created:2`, com o aparelho do dono como ator e a política inicial) é ato
+do dono: `open` (política embutida em `defaults/queue.toml`) e `open_with_policy`
+(política fornecida pela composição) exigem a prova de sessão `auth::LocalSession`,
+a mesma de ligar e desligar; sem ela a chamada não compila. Num stream que já
+existe, as duas apenas ligam a fila e a política da criação continua valendo. Um
+processo mantém no máximo um handle por fila (a segunda abertura recebe
+`AlreadyOpen`); a composição compartilha esse handle com todos os consumidores.
+O carregamento de um arquivo do usuário está pendente. Dono e aparelho
+(`QueueOwner`) são dados da configuração do núcleo; criar e agir na fila exigem
+essa prova. Só este crate a emite (`Token::open_session` é restrita ao crate), e
+em produção o único emissor é o laço de conexão, ao conferir o token do
+`auth.hello`. A prova sela a API da fila; quem tem o próprio `EventLog` grava
+abaixo dessa camada, e o replay confere a coerência dos atores, não a
+autenticidade deles (ver o README do núcleo). A transição usa
+`ads_core::queue::change_local_queue_state`, sem fabricar `AuthenticatedDevice`.
+Na partida, a composição passa o log aberto e os identificadores estáveis da
+fila, do dono e do aparelho a `queue::LocalQueue::bind_or_pending` e entrega o
+controle a `LocalApi::with_queue`. Apenas `NotCreated` deixa a fila aguardando
+`queue.create`. Outras falhas de abertura são devolvidas à composição.
+
+No Windows, a partida abre o log de auditoria antes de anunciar a API. A
+configuração opcional `[storage]` no TOML do daemon aceita as chaves de
+[defaults/storage.toml](../../defaults/storage.toml). A pasta privada
+`%LOCALAPPDATA%/ads` mantém `local-identities.toml` com os IDs da fila, do dono
+e do aparelho. Use `queue_id` desse arquivo nos comandos e mantenha uma cópia
+do arquivo junto ao plano de recuperação da auditoria.
+
+A primeira partida gera as identidades se não houver banco, arquivos
+auxiliares ou fixação de auditoria no cofre. O arquivo inválido é preservado.
+Se ele faltar com histórico existente, restaure a cópia correspondente e
+reinicie. A fila existente volta parada. A fila nova aguarda uma chamada
+autenticada a `queue.create`.
+
+A trava do lançador continua valendo. A trava privada `local-runtime.lock`
+mantém um único daemon com controles persistentes por usuário. Se a
+composição falhar, o diagnóstico de uma linha sai em stderr e a API responde
+`QUEUE_NOT_CONFIGURED` e `APPROVAL_NOT_CONFIGURED` nesses comandos.
+O acesso ao terminal continua disponível. Uma plataforma sem cofre entra
+nesse mesmo estado.
+
+## Aprovações do portão
+
+O dono vê e responde as ações que o portão segurou para aprovação. Valem as
+conferências dos outros comandos: só depois de `auth.hello`, e origem remota
+recebe `REMOTE_ORIGIN_REFUSED`. O dono e o aparelho vêm do daemon
+(`approvals::ApprovalOwner`), nunca do pedido, e cada chamada a
+`approvals::ApprovalControl` exige a prova `auth::LocalSession`.
+
+- `approval.list` (só `_meta`) responde `{"approvals": [...], "more": ..., "unreadable": ...}`
+  ([`command.approval.list.response:4`](../../contracts/README.md#api-local)):
+  da mais antiga à mais nova, cada ação cuja aprovação foi pedida e ainda não
+  foi concedida, negada nem expirada, com `approval_id`, `risk`, `summary`,
+  `requested_at`, `expires_at`, `not_approvable`, o registro do plano
+  (`record.action-plan:2`) como o portão o julgou e os efeitos concretos
+  (`record.action-effects:1`) com o seu `effects_hash`, ou os dois `null`, e o
+  código da recusa do ensaio em `effects_error`. Só ações de uma pasta de
+  sessão servida aqui: o filtro vem antes do limite, então pedidos de outras
+  pastas nunca ocupam a página. No máximo `read_page_limit` da configuração do
+  armazenamento por pedido, e nunca mais de 1000 (o limite do contrato da
+  resposta). As ações entram da mais antiga à mais nova enquanto couberem em
+  `approval_list_max_bytes`. A mais antiga sempre entra, mesmo acima desse teto.
+  `more: true` indica que uma ação da lista ficou para depois pelo limite de
+  itens ou de bytes. Um registro de efeitos maior que metade desse teto não é
+  mostrado e a ação fica com `effects_not_listed`. A listagem e a resposta
+  conferem o tamanho cifrado descontando o invólucro e a tag antes de ler os efeitos.
+  A leitura é feita sob a trava da mesa, uma ação por vez e na ordem do pedido:
+  cada item é montado e medido assim que lido. Se o tamanho cifrado já mostra
+  que os efeitos listáveis excedem o espaço restante, a leitura do registro
+  fica para a próxima página. O teto limita a montagem da página e a leitura
+  dos efeitos. O tempo sob a trava também inclui a autenticação da cadeia
+  inteira e a leitura dos históricos de outras pastas ou ilegíveis, inclusive
+  ao procurar mais um pedido listável após atingir o limite de itens. O daemon
+  omite pedidos cujo histórico é ilegível, registra o `action_id` no log,
+  conta-os em `unreadable` (de qualquer pasta, até onde a listagem chegou:
+  todos quando `more` é `false`) e segue a listagem. O portão precisa de um histórico legível para negar ou
+  expirar um pedido; um pedido ilegível sai por `approval.close` (abaixo). Pedido ou decisão gravados fora do formato do
+  portão são ignorados. Só lê e fica fora da cache de idempotência.
+- O que o registro do plano garante: a operação, os alvos como foram pedidos
+  (caminho e curinga), o destino, se há quarentena, a estimativa e as regras.
+  Ele não lista o conteúdo de uma pasta alvo nem os itens do manifesto de uma
+  restauração. Isso fica nos efeitos concretos: quando o veredito pede
+  aprovação, `SessionGate::plan` ensaia o plano que o portão entrega ao executor
+  (`Executor::rehearse_effects`) e grava o resultado em `effects.recorded:1`, uma
+  vez só, no stream `effects/<action_id>` (o log recusa um segundo `seq` 1).
+  Ensaio recusado (por exemplo maior que `max_effects_bytes`, com
+  `E_FS_EFFECTS_TOO_LARGE`) grava `effects.refused:1` com o código no mesmo
+  lugar, e registro que o log ou o contrato recusam grava
+  `E_EFFECTS_UNRECORDABLE`; se nem isso for gravado, fica um aviso no log do
+  processo. O que o executor compara é nome, tipo, identidade no volume e, de
+  arquivo, tamanho: conteúdo reescrito no mesmo objeto, com o mesmo tamanho, e
+  datas não entram. Objeto apagado e recriado sob o mesmo nome só é visto onde a
+  identidade do volume é estável; nos outros volumes (FAT, exFAT, rede, não
+  classificado) o ensaio de apagar de verdade e de restaurar é recusado com
+  `E_FS_IDENTITY_UNSTABLE` ([identidade por sistema de
+  arquivos](../adapters/fs/README.md#identidade-por-sistema-de-arquivos)).
+- A API só aprova ação cujo efeito concreto está fixado. `not_approvable`
+  (`approvals::not_approvable`) lista por que não: `estimate_unknown` (sem
+  estimativa e sem efeitos gravados), `wildcard_target` (alvo com curinga, que o
+  executor não executa), `definitive_recursive_delete` (`fs.clean_untracked`
+  sem quarentena, ou `fs.delete_recursive` sem quarentena e sem efeitos
+  gravados) e `restore_from_manifest` (mover de volta à raiz de trabalho sem
+  efeitos gravados). Quando o plano precisa de efeitos e não há o que mostrar,
+  vem também o porquê: `effects_refused` (o ensaio foi recusado),
+  `effects_unreadable` (o registro gravado não passa na leitura, com aviso no
+  log do processo; a listagem das outras ações segue) ou `effects_not_listed`.
+  Esses impedimentos de plano e de efeitos fazem a API gravar a resposta e
+  devolver `APPROVAL_NOT_APPROVABLE`, com a ação ainda aguardando. A listagem
+  também inclui `policy_changed` se o julgamento do portão sob a política vigente
+  impedir a aprovação. O portão reconfere a política ao responder.
+  Negar continua permitido e nunca lê os efeitos.
+- Para executar uma ação aprovada, `SessionGate::execute` exige a resposta
+  local gravada que causou a concessão. Confere o ator, o canal e o
+  `effects_hash`, refaz o ensaio e exige os mesmos efeitos. A licença local
+  leva esses efeitos ao executor para nova conferência antes da primeira
+  alteração. Ausência de resposta ou de efeitos, ou divergência dos efeitos,
+  encerra a ação em `action.failed` com `E_FS_EFFECTS_CHANGED`. Uma ação
+  precisa de novo plano e nova aprovação para executar depois dessa falha.
+  A API de aprovação ainda pode registrar uma concessão sem efeitos quando
+  o plano já fixa o que mudaria. Essa concessão fica no histórico e não
+  libera a execução. Os [pré-requisitos do portão](../core/README.md#pré-requisitos-de-execução-da-composição-local)
+  descrevem o alcance da licença.
+- `approval.answer` leva `action_id`, `approval_id`, `plan_hash` (o que o dono
+  viu) e `decision` (`approve` ou `deny`). Antes de gravar qualquer coisa, o
+  daemon confere que a ação existe e que a aprovação é a pedida no histórico
+  dela, em qualquer estado (`APPROVAL_NOT_FOUND`), e que a ação ainda aguarda
+  resposta (`APPROVAL_ALREADY_ANSWERED`); nessas recusas nada é gravado. Depois
+  grava `answer.recorded:2` no stream `answer/<approval_id>`: o aparelho como
+  ator, o dono, o `ts` do relógio do daemon, a decisão, o hash do plano, o
+  `effects_hash` dos efeitos gravados da ação (ou `null`), a chave de
+  idempotência e o id do comando em `cause`. Se essa gravação falhar, a
+  resposta é `INTERNAL_ERROR` e o portão não age. Só então o portão registra
+  `approval.granted:2` ou `approval.denied:2`, com o mesmo ator e `cause`
+  apontando para o registro da resposta.
+- Resposta velha fica registrada e é recusada com `APPROVAL_STALE`: com outro
+  hash que não o do plano em espera, o portão não age; com a validade vencida,
+  aprovando ou negando, o portão registra `approval.expired:2` e a ação sai da
+  lista.
+- Aprovar reconfere a política atual e a ordem no tempo. Política ou tolerância
+  do relógio mudada desde o plano vira negação registrada pelo portão
+  (`E_POLICY_CHANGED` ou `E_CLOCK_POLICY_CHANGED`) e a resposta
+  `APPROVAL_POLICY_CHANGED`. Relógio antes do último passo da ação devolve
+  `APPROVAL_OUT_OF_ORDER` sem decisão; a resposta do dono já ficou gravada e
+  pode ser repetida com a mesma chave. Aprovar não executa nada: a licença de
+  execução só sai em `SessionGate::execute`, que confere política e tempo de
+  novo.
+- `approval.close` leva `action_id` (o que o log registrou) e `decision`
+  (`deny` ou `expire`; nunca aprova). É a recuperação de um pedido que a lista
+  omite: sob a trava da mesa, `EventLog::closable_requests` diz se a ação tem
+  pedido do portão (senão `APPROVAL_NOT_FOUND`), se o histórico é legível
+  (`APPROVAL_READABLE`: continua só por `approval.answer`) e quais pedidos
+  seguem sem decisão (nenhum: `APPROVAL_ALREADY_ANSWERED`), até 64, cada um com
+  o `plan_hash` e o `expires_at` lidos da própria linha. `expire` antes do
+  `expires_at` de qualquer um desses pedidos é recusado com `INVALID_PARAMS`,
+  porque gravaria uma expiração que não aconteceu; `deny` vale a qualquer
+  momento. Nada é gravado nessas recusas. Depois o
+  daemon grava `closure.recorded:1` em `closure/<action_id>` (aparelho do dono,
+  dono, decisão, pedidos e chave de idempotência, `cause` no id do comando) e,
+  para cada pedido, `approval.denied:2` (motivo `E_HISTORY_UNREADABLE`) ou
+  `approval.expired:2` com `cause` nesse registro, por
+  `EventLog::close_unreadable_request`. Essa escrita confere de novo, na mesma
+  transação, que o histórico segue ilegível, que o pedido é da ação, está aberto
+  e tem aquele hash, que o tipo é negação ou expiração e que uma expiração não
+  vem antes do prazo do pedido; nunca grava
+  `approval.granted` e o histórico continua sem ler, então nenhuma licença sai
+  dele. A mesma chave com a mesma decisão não grava outro registro: fecha só o
+  que o registro nomeou e ficou aberto e volta `replayed: true`; com outra
+  decisão, `CONFLICT`.
+- Repetições: a cache em memória (`idempotency_keys` comandos aceitos) devolve
+  `replayed: true` sem chamar o portão. Fora dela, a chave fica no log, junto da
+  resposta, enquanto o log existir: a mesma chave com o mesmo conteúdo nunca
+  grava outra resposta. Se o portão já decidiu por causa dela, volta o mesmo
+  resultado (aceito com `replayed: true`, ou a mesma recusa); se só a resposta
+  foi gravada (falha entre os dois registros, relógio atrasado, reinício), a
+  decisão é tomada de novo com `cause` na resposta gravada; recusas que não
+  dependem do portão voltam iguais. A mesma chave com outra decisão ou outro
+  hash recebe `CONFLICT`. A busca é no stream da aprovação nomeada.
+
+`approvals::ApprovalDesk` guarda o log ancorado (`audit::ProductLog`) e as
+portas de sessão (`gate::SessionGate`) ligadas a ele; planejar, pedir aprovação
+e executar passam por `ApprovalDesk::with_gates`, sob a mesma trava das
+respostas. `approval.answer` roda em uma tarefa bloqueante e cada espera
+pela trava da mesa ou da conexão usa `busy_timeout_ms`. Ao fim do prazo,
+a API responde `INTERNAL_ERROR` com a mensagem `audit log busy`. Se um pânico
+invalidar a trava da conexão, a fila e o portão recusam novos acessos ao log.
+A lista vem de `EventLog::pending_approvals`, que confere a âncora e
+a cadeia uma vez antes de ler e aplica o filtro da mesa antes do limite. O
+executável entrega a mesa à API. As raízes de `[workdirs]` delimitam os portões
+com a política padrão de arquivos. Cada portão restringe a observação à sua
+raiz, protege também os demais espaços configurados e o estado do produto.
+Sem raízes configuradas, a lista fica vazia. A criação de pedidos depende de
+um produtor que use o portão.
 
 Padrões em [defaults/daemon.toml](../../defaults/daemon.toml), aplicados ao iniciar:
 
@@ -152,10 +454,11 @@ Padrões em [defaults/daemon.toml](../../defaults/daemon.toml), aplicados ao ini
 | `accept_retry_ms` | 50 | Espera após erro de aceitação TCP; reduz tentativas sob falta de recursos. |
 | `max_message_bytes` | 131072 | Limite de mensagem e quadro WebSocket recebido; reduzir pode impedir escritas grandes. |
 | `send_timeout_ms` | 5000 | Prazo por envio; cliente lento é desconectado. |
-| `host_timeout_ms` | 10000 | Prazo único por comando no host e na conexão inicial. Cada chamada ao host começa dentro do prazo, e uma resposta já recebida vale mesmo se o prazo vencer enquanto o daemon trata um evento do host. Falha encerra o serviço para evitar repetir efeito incerto. Duas exceções não encerram: no fechamento automático o prazo esgotado conta como tentativa falha, e na preparação depois de um `session.open` confirmado ele responde `-32014` (`session setup failed`), como qualquer outra falha dessa etapa (ver abaixo). |
-| `retired_sessions` | 1024 | Ids de sessões podadas que não podem ser reabertos nesta execução (acima do limite, o mais antigo volta a ser aceito) e, em separado, streams assinados antes do `session.open` (acima do limite, a espera mais antiga termina com `-32004` no id da assinatura, mesmo se a conexão estiver ociosa). |
+| `approval_list_max_bytes` | 4194304 | Teto de uma resposta de `approval.list`, de 1 MiB a 8 MiB: metade do quadro de 16 MiB que a casca desktop aceita, para caber também a ação mais antiga, listada mesmo quando passa do teto. Ações além dele ficam para a próxima listagem (`more`); registro de efeitos maior que a metade não é mostrado nem aprovável pela API. |
+| `host_timeout_ms` | 10000 | Prazo único por comando no host e na conexão inicial. Cada chamada ao host começa dentro do prazo, e uma resposta já recebida vale mesmo se o prazo vencer enquanto o daemon trata um evento do host. Falha encerra o serviço para evitar repetir efeito incerto. Duas exceções não encerram: no fechamento automático o prazo esgotado conta como tentativa falha, e na preparação depois de um `session.open` confirmado ele responde `SESSION_SETUP_FAILED`, como qualquer outra falha dessa etapa (ver abaixo). |
+| `retired_sessions` | 1024 | Ids de sessões podadas que não podem ser reabertos nesta execução (acima do limite, o mais antigo volta a ser aceito) e, em separado, streams assinados antes do `session.open` (acima do limite, a espera mais antiga termina com `SUBSCRIPTION_REPLAY_UNAVAILABLE` no id da assinatura, mesmo se a conexão estiver ociosa). |
 | `subscription_ids_per_stream` | 2 | Ids de assinatura por conexão: este valor vezes `max_sessions`. Reassinar a mesma encarnação na mesma conexão soma um id, que só sai quando o stream termina; ids de encarnação já terminada não contam. A interface mantém uma assinatura por stream e conexão, então raramente passa de um id por stream; aumente para clientes que reassinam muito. |
-| `close_retries` | 3 | Tentativas do fechamento automático de sessão invalidada, de `open` que falhou ou de sessão que terminou sozinha; esgotadas numa sessão invalidada, a assinatura do stream recebe `-32013`. |
+| `close_retries` | 3 | Tentativas do fechamento automático de sessão invalidada, de `open` que falhou ou de sessão que terminou sozinha; esgotadas numa sessão invalidada, a assinatura do stream recebe `SESSION_CLOSE_PENDING`. |
 | `close_retry_ms` | 1000 | Espera entre tentativas do fechamento automático. |
 
 Os inteiros de capacidade aceitam de 1 a 1048576 (`max_message_bytes`: mínimo
@@ -164,23 +467,22 @@ Quando há uma lacuna irrecuperável, o daemon invalida o stream e solicita o
 fechamento ao host. Recusa do host (fora `UnknownSession`) ou prazo esgotado
 repetem o pedido até `close_retries` vezes, com aviso no erro padrão sem
 conteúdo. Quem já assinava o stream não recebe nada enquanto as tentativas
-correm; o resultado final chega com o id da assinatura: `-32013` (`session close
-pending`) se as tentativas se esgotarem, `-32004` se o host confirmar. Só essa
-assinatura termina. Um `events.subscribe` novo desse stream recebe `-32004`
-durante as tentativas e `-32013` depois delas, até um `session.close` confirmado.
+correm; o resultado final chega com o id da assinatura: `SESSION_CLOSE_PENDING` se as tentativas se esgotarem, `SUBSCRIPTION_REPLAY_UNAVAILABLE` se o host confirmar. Só essa
+assinatura termina. Um `events.subscribe` novo desse stream recebe `SUBSCRIPTION_REPLAY_UNAVAILABLE`
+durante as tentativas e `SESSION_CLOSE_PENDING` depois delas, até um `session.close` confirmado.
 `session.close` continua aceito enquanto o registro da sessão invalidada estiver
 retido. Cada tentativa vale só para a instância da sessão que a gerou e é
 descartada quando a vaga é devolvida. Se um `open` falhar depois de o host abrir o
 terminal, seja pelo prazo, seja por recusa do host ou do registro, a resposta é
-sempre `-32014` (`session setup failed`), inclusive com a fila de pedidos do cliente do host
+sempre `SESSION_SETUP_FAILED`, inclusive com a fila de pedidos do cliente do host
 cheia; só uma falha que encerra o serviço, como a perda do host ou a parada do cliente dele por
-qualquer causa, responde `-32603`. Recusas anteriores ao terminal aberto mantêm o próprio código.
-Com `-32014`, o fechamento vai para a mesma fila, com prazo próprio por tentativa;
+qualquer causa, responde `INTERNAL_ERROR`. Recusas anteriores ao terminal aberto mantêm o próprio código.
+Com `SESSION_SETUP_FAILED`, o fechamento vai para a mesma fila, com prazo próprio por tentativa;
 o registro e a vaga ficam até o host confirmar, e então o id volta a ser aceito.
 A conexão que abriu não recebe nenhum evento dessa sessão: os eventos só seguem
 depois da resposta, e o stream invalidado já não os tem. O resultado final chega
-a uma assinatura feita antes do `open`: `-32004` quando o host confirma o
-fechamento, `-32013` quando as tentativas se esgotam.
+a uma assinatura feita antes do `open`: `SUBSCRIPTION_REPLAY_UNAVAILABLE` quando o host confirma o
+fechamento, `SESSION_CLOSE_PENDING` quando as tentativas se esgotam.
 `UnknownSession` no fechamento libera a vaga; num stream válido (não invalidado) que ainda não
 tinha evento terminal, grava `ended` com `reason: "error"`. Um `ended` já gravado fica como está, e
 um stream invalidado não recebe `ended`. Quando o processo de uma
@@ -191,20 +493,20 @@ processos que restar e devolve a vaga: um servidor de desenvolvimento ou outro p
 ferramenta tenha iniciado e que ainda esteja vivo é encerrado nessa hora, mesmo sem pedido da
 interface. O stream liberado mantém os eventos ainda retidos, dentro de `events_per_stream` e até a
 poda descrita abaixo. Um `session.close` dessa sessão depois da liberação é aceito sem novo efeito
-enquanto o registro dela estiver retido, ou seja, até ela ser podada; depois disso recebe `-32602`.
+enquanto o registro dela estiver retido, ou seja, até ela ser podada; depois disso recebe `INVALID_PARAMS`.
 O id podado não pode ser reaberto enquanto a lápide existir, e nenhuma tentativa automática da
 encarnação anterior alcança uma reaberta. Quando a lápide expira e o id volta a ser aceito, um
 `session.close` com ele se refere à sessão atual: o protocolo identifica a sessão só pelo id, e a
 interface gera um id novo a cada abertura. Se as tentativas se esgotarem, a vaga fica ocupada e o
 stream não muda; um `session.close` do cliente continua aceito e a libera. Ao atingir o limite de registros fechados,
 o daemon descarta os mais antigos conforme novas sessões são fechadas. O stream
-descartado vira lápide e o mesmo `session_id` é recusado com `-32012` enquanto
+descartado vira lápide e o mesmo `session_id` é recusado com `CONFLICT` enquanto
 ela existir (`retired_sessions`). Cada assinatura fica presa à encarnação do
 stream que assinou; quem assina antes do `session.open` fica presa à que o open
 preencher. Se ela for podada, removida ou tiver o fechamento resolvido, mesmo
 depois de a lápide expirar e o id voltar a ser usado, a assinatura recebe o
-primeiro resultado final com o seu id (`-32013` se as tentativas se esgotaram,
-`-32004` nos demais casos) e termina sem derrubar a conexão, sem nunca entregar
+primeiro resultado final com o seu id (`SESSION_CLOSE_PENDING` se as tentativas se esgotaram,
+`SUBSCRIPTION_REPLAY_UNAVAILABLE` nos demais casos) e termina sem derrubar a conexão, sem nunca entregar
 eventos de outra sessão. Uma invalidação no meio de um lote suspende os quadros
 seguintes. Assinaturas novas são validadas pelo estado atual.
 
@@ -216,16 +518,16 @@ conexão, a mesma encarnação de um stream junta o id à assinatura existente: 
 cursor só, o menor pedido, e o resultado final chega a cada id. Se o novo `after_seq` for menor que
 o que já saiu, os eventos desde ele saem de novo; o consumidor descarta por `seq` o que já tinha. Os
 ids por conexão são limitados a `subscription_ids_per_stream × max_sessions`, sem contar os de
-encarnação já terminada; acima disso a assinatura é recusada com `-32003`. Se a encarnação
+encarnação já terminada; acima disso a assinatura é recusada com `CAPACITY_EXCEEDED`. Se a encarnação
 assinada antes já terminou, o fim dela chega aos ids antigos antes da confirmação da nova. Filas, conexões e chaves
 também têm limites separados. Seq e offset recomeçam ao reiniciar.
 
 Uma chave ainda retida com o mesmo método e parâmetros devolve `replayed: true`,
-sem repetir o efeito; outro conteúdo com a mesma chave recebe `-32012`. O id do
+sem repetir o efeito; outro conteúdo com a mesma chave recebe `CONFLICT`. O id do
 pedido pode mudar. A cache guarda só a chave e SHA-256 dos parâmetros, nunca a
 entrada do terminal. Depois da expulsão FIFO não há garantia de deduplicação.
 `after_seq = 0` pede tudo que resta no stream; cursor descartado ou futuro recebe
-`-32004`. Se o cliente ficar para trás durante uma assinatura, recebe `-32004`
+`SUBSCRIPTION_REPLAY_UNAVAILABLE`. Se o cliente ficar para trás durante uma assinatura, recebe `SUBSCRIPTION_REPLAY_UNAVAILABLE`
 com o id do pedido de assinatura antes de a conexão fechar;
 nenhum buraco é ocultado. Reconecte com o último seq recebido ou peça 0
 explicitamente para aceitar o histórico ainda disponível.
@@ -261,11 +563,12 @@ e mensagens estáticas. `pty_client::Event` também omite bytes em `Debug`.
 `log 0.4.35` (MIT OR Apache-2.0), já transitiva, usa `max_level_off`:
 macros da fachada `log` são eliminadas do executável, inclusive nas dependências,
 pois o transporte tem diagnóstico capaz de mostrar payloads. Isso vale também
-em debug e não é configurável, por segurança. Não há logger nem arquivo de saída.
+em debug e não é configurável, por segurança. Não há logger nem arquivo de saída:
+os avisos ao dono, como o id da ação de um pedido pendente ou de um registro de efeitos
+ilegível, vão direto para a saída de erro, com o prefixo `ads-daemon:`.
 `zeroize`, já presente no workspace, limpa o token ao descartá-lo e a URL logo
 após a impressão, inclusive quando o envio falha. O `auth.hello` é consumido
-antes do laço autenticado; sua cópia do token é limpa. A única
-exposição intencional do token é a linha inicial na saída padrão.
+antes do laço autenticado; sua cópia do token é limpa. O daemon entrega o token na linha inicial de conexão, ao navegador em desenvolvimento ou pelo pipe da casca no modo desktop.
 
 Os testes exercitam recusas de upgrade e autenticação, comandos negados,
 deduplicação entre conexões, limites, replay e eventos com o backend falso.
@@ -319,13 +622,21 @@ cargo build -p ads-ptyhost -j 2
 cargo test -p ads-daemon -j 2
 ```
 
-O teste cria a configuração sob a pasta de artefatos do Cargo e usa um pipe exclusivo.
+O teste de eco cria a configuração sob `.test-tmp/` e usa um pipe exclusivo.
 Configura `claude` e `codex` com o programa `cmd.exe` e argumentos fixos
 `/d /c echo <ferramenta>-ok [%<chave>%] [%SystemRoot%]`, e o daemon recebe
 `ANTHROPIC_API_KEY` e `OPENAI_API_KEY` com um valor de teste. Pela API WebSocket,
 confere que a chave chega literal ao filho (`%...%` não expandido, ou seja, a
 variável não existe nele) e que `SystemRoot`, permitida, chega com o valor do
-pai; depois encerra o host de teste. Não abre agentes nem shells interativos. Só no Windows,
+pai; depois encerra o host de teste. Não abre agentes nem shells interativos.
+
+O alvo de integração `controls_binary` executa a inicialização definida em `src/main.rs`
+em um processo filho, com configuração e banco temporários sob `.test-tmp/` e um
+cofre em memória compilado apenas no teste. Pela API WebSocket local, autentica
+com `auth.hello`, cria e consulta uma fila e lista as aprovações. O executável
+distribuído usa o cofre do sistema operacional.
+
+Só no Windows,
 `ended_session_leaves_no_child_behind_on_windows` (`tests/local_api.rs`) roda o host no próprio
 processo de teste com ConPTY: um `cmd.exe` abre outro, minimizado num console próprio, que espera
 60 s com `timeout.exe`, e sai depois de 3 s. O teste acha esse filho pelo processo pai, não pela lista

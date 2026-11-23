@@ -1,0 +1,12 @@
+{
+  "jsonrpc": "2.0",
+  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAD",
+  "result": {
+    "accepted": true,
+    "replayed": false
+  },
+  "error": {
+    "code": -32603,
+    "message": "internal error"
+  }
+}

@@ -72,7 +72,9 @@ pub(crate) fn open_listed(
 ) -> Result<Entry, Stop> {
     let node = match parent.listed(name) {
         Ok(node) => node,
-        Err(sys::Error::Missing) => return Err(changed(fence, rel, "is gone")),
+        Err(error @ sys::Error::Missing(_)) => {
+            return Err(changed(fence, rel, "is gone").with_cause(error));
+        }
         Err(error) => return Err(Stop::io("opening", fence.text_of(rel), error)),
     };
     let meta = node
@@ -83,13 +85,41 @@ pub(crate) fn open_listed(
 }
 
 pub(crate) fn list(fence: &Fence, node: &Node, rel: &[String]) -> Result<Vec<String>, Stop> {
-    node.names().map_err(|error| match error.kind() {
+    list_with_budget(fence, node, rel, &mut None)
+}
+
+pub(crate) fn charge_entries(budget: &mut Option<usize>, count: usize) -> Result<(), Stop> {
+    if let Some(remaining) = budget {
+        *remaining = remaining.checked_sub(count).ok_or_else(|| {
+            Stop::new(
+                Reason::PlanEntryLimit,
+                "plan inspection exceeds max_plan_entries",
+            )
+        })?;
+    }
+    Ok(())
+}
+
+pub(crate) fn list_with_budget(
+    fence: &Fence,
+    node: &Node,
+    rel: &[String],
+    budget: &mut Option<usize>,
+) -> Result<Vec<String>, Stop> {
+    let names = match *budget {
+        Some(remaining) => node.names_limited(remaining),
+        None => node.names(),
+    };
+    let names = names.map_err(|error| match error.kind() {
         std::io::ErrorKind::InvalidData => Stop::new(
             Reason::NotPhysical,
             format!("{} holds a name that is not text", fence.text_of(rel)),
-        ),
+        )
+        .with_cause(error),
         _ => Stop::io("listing", fence.text_of(rel), error),
-    })
+    })?;
+    charge_entries(budget, names.len())?;
+    Ok(names)
 }
 
 /// Counts the tree of the open `entry` at `rel` and takes its inventory.
@@ -99,9 +129,19 @@ pub(crate) fn survey(
     rel: &[String],
     max_depth: u32,
 ) -> Result<(Seen, Facts), Stop> {
+    survey_with_budget(fence, entry, rel, max_depth, &mut None)
+}
+
+pub(crate) fn survey_with_budget(
+    fence: &Fence,
+    entry: &Entry,
+    rel: &[String],
+    max_depth: u32,
+    budget: &mut Option<usize>,
+) -> Result<(Seen, Facts), Stop> {
     let mut facts = Facts::default();
     let mut rel = rel.to_vec();
-    let seen = walk(fence, entry, &mut rel, 0, max_depth, &mut facts)?;
+    let seen = walk(fence, entry, &mut rel, 0, max_depth, &mut facts, budget)?;
     Ok((seen, facts))
 }
 
@@ -112,6 +152,7 @@ fn walk(
     depth: u32,
     max_depth: u32,
     facts: &mut Facts,
+    budget: &mut Option<usize>,
 ) -> Result<Seen, Stop> {
     let mut children = BTreeMap::new();
     match entry.kind {
@@ -125,7 +166,7 @@ fn walk(
                     format!("{} is deeper than {max_depth} levels", fence.text_of(rel)),
                 ));
             }
-            for name in list(fence, &entry.node, rel)? {
+            for name in list_with_budget(fence, &entry.node, rel, budget)? {
                 // In any case: a file system that ignores case reads `.GIT` as `.git`.
                 if name.eq_ignore_ascii_case(".git") {
                     if depth == 0 {
@@ -136,7 +177,7 @@ fn walk(
                 }
                 rel.push(name);
                 let child = open_listed(fence, &entry.node, rel, rel.last().expect("pushed"))?;
-                let seen = walk(fence, &child, rel, depth + 1, max_depth, facts)?;
+                let seen = walk(fence, &child, rel, depth + 1, max_depth, facts, budget)?;
                 let name = rel.pop().expect("pushed");
                 children.insert(name, seen);
             }

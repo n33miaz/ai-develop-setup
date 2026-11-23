@@ -46,6 +46,7 @@ dependencies = [
  "rustix",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "toml 1.2.1+spec-1.1.0",
  "windows",
 ]
@@ -57,14 +58,23 @@ version = "0.0.0"
 [[package]]
 name = "ads-adapter-vault"
 version = "0.0.0"
+dependencies = [
+ "ads-core",
+ "getrandom 0.4.3",
+ "windows",
+ "zeroize",
+]
 
 [[package]]
 name = "ads-contracts"
 version = "0.0.0"
 dependencies = [
+ "base64 0.23.1",
+ "hmac",
  "regex",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -74,8 +84,9 @@ dependencies = [
  "ads-contracts",
  "serde",
  "serde_json",
- "sha2",
+ "sha2 0.10.9",
  "toml 1.2.1+spec-1.1.0",
+ "zeroize",
 ]
 
 [[package]]
@@ -84,17 +95,22 @@ version = "0.0.0"
 dependencies = [
  "ads-adapter-claude",
  "ads-adapter-codex",
+ "ads-adapter-fs",
+ "ads-adapter-vault",
  "ads-contracts",
  "ads-core",
+ "ads-private-dir",
  "ads-ptyhost",
+ "ads-storage",
  "ads-testkit",
  "base64 0.23.1",
  "futures-util",
  "getrandom 0.4.3",
  "log",
+ "rusqlite",
  "serde",
  "serde_json",
- "sha2",
+ "sha2 0.10.9",
  "subtle",
  "time",
  "tokio",
@@ -110,6 +126,23 @@ version = "0.0.0"
 [[package]]
 name = "ads-launcher"
 version = "0.0.0"
+dependencies = [
+ "ads-core",
+ "ads-private-dir",
+ "rustix",
+ "serde",
+ "serde_json",
+ "toml 1.2.1+spec-1.1.0",
+ "windows",
+]
+
+[[package]]
+name = "ads-private-dir"
+version = "0.0.0"
+dependencies = [
+ "rustix",
+ "windows",
+]
 
 [[package]]
 name = "ads-ptyhost"
@@ -129,8 +162,16 @@ dependencies = [
 name = "ads-shell"
 version = "0.0.0"
 dependencies = [
+ "ads-contracts",
+ "futures-util",
+ "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
+ "tokio",
+ "tokio-tungstenite",
+ "windows",
+ "zeroize",
 ]
 
 [[package]]
@@ -138,13 +179,13 @@ name = "ads-storage"
 version = "0.0.0"
 dependencies = [
  "ads-contracts",
+ "ads-core",
  "chacha20poly1305",
  "getrandom 0.4.3",
- "hmac",
  "rusqlite",
  "serde",
  "serde_json",
- "sha2",
+ "sha2 0.11.1",
  "subtle",
  "toml 1.2.1+spec-1.1.0",
  "zeroize",
@@ -314,6 +355,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2f6c7dbe95a6ed67ad9f18e57daf93a2f034c524b99fd2b76d18fdfeb6660aa"
 dependencies = [
  "hybrid-array",
+ "zeroize",
 ]
 
 [[package]]
@@ -572,9 +614,9 @@ checksum = "be95d4a884358a21a199689323c29e9256b4a1b315e22f183d155422041d3a9a"
 
 [[package]]
 name = "cookie"
-version = "0.18.2"
+version = "0.18.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a373e3602691c3cdea496d2f0ee5935151e6168fe87739483c463db1b2f2f87"
+checksum = "d55f2d6c30eeec7d5c6f98bd4395d4abb1895629eab97ee6522d340623615f8a"
 dependencies = [
  "time",
  "version_check",
@@ -836,6 +878,7 @@ dependencies = [
  "block-buffer 0.12.1",
  "const-oid",
  "crypto-common 0.2.2",
+ "zeroize",
 ]
 
 [[package]]
@@ -1130,9 +1173,9 @@ checksum = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
 
 [[package]]
 name = "form_urlencoded"
-version = "1.2.2"
+version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
+checksum = "afa489199eaffb1211795df1c6236ce1ad0d41a6fa45250add73e3b02420f06e"
 dependencies = [
  "percent-encoding",
 ]
@@ -3195,6 +3238,8 @@ version = "1.0.154"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7e9cc8b1b85264074fbcc02a88680c4096b1e47df8f739dceb03bf482f04bd6"
 dependencies = [
+ "foldhash",
+ "indexmap 2.14.2",
  "itoa",
  "memchr",
  "serde",
@@ -3335,6 +3380,17 @@ dependencies = [
  "cfg-if",
  "cpufeatures 0.2.17",
  "digest 0.10.7",
+]
+
+[[package]]
+name = "sha2"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47d7069beb7d6ac7b9acd1039986e73443f24234f41074da099d6f994ac9ad19"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.3.1",
+ "digest 0.11.3",
 ]
 
 [[package]]
@@ -3737,7 +3793,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
- "sha2",
+ "sha2 0.10.9",
  "syn 2.0.119",
  "tauri-utils",
  "thiserror 2.0.21",
@@ -4246,9 +4302,9 @@ dependencies = [
 
 [[package]]
 name = "url"
-version = "2.5.8"
+version = "2.5.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff67a8a4397373c3ef660812acab3268222035010ab8680ec4215f38ba3d0eed"
+checksum = "f00cd2407bb42c0ef17be88d4cf020f5cceffd121665bac9b8b9493a369b3b1a"
 dependencies = [
  "form_urlencoded",
  "idna",
@@ -4877,7 +4933,7 @@ dependencies = [
  "objc2-web-kit",
  "percent-encoding",
  "raw-window-handle",
- "sha2",
+ "sha2 0.10.9",
  "soup3",
  "tao-macros",
  "thiserror 2.0.21",

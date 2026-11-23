@@ -1,0 +1,97 @@
+{
+  "jsonrpc": "2.0",
+  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAD",
+  "result": {
+    "approvals": [
+      {
+        "action_id": "act-01",
+        "approval_id": "appr-03",
+        "plan_hash": "sha256:c7b870d89ef435eb431fcdf8e99f82f2b10c9b05a25eb86eb2ed603fa366eb94",
+        "risk": "medium",
+        "summary": "Limpar arquivos temporários do projeto",
+        "requested_at": "2030-01-02T03:04:05Z",
+        "expires_at": "2030-01-02T03:19:05Z",
+        "not_approvable": [],
+        "plan": {
+          "version": 2,
+          "action_id": "act-01",
+          "plan_hash": "sha256:c7b870d89ef435eb431fcdf8e99f82f2b10c9b05a25eb86eb2ed603fa366eb94",
+          "operation": "fs.delete_recursive",
+          "work_root": "/work/proj",
+          "destination": null,
+          "targets": [
+            {
+              "path": "/work/proj/a",
+              "pattern": null,
+              "repo_root": false
+            },
+            {
+              "path": "/work/proj/b",
+              "pattern": null,
+              "repo_root": false
+            }
+          ],
+          "estimate": {
+            "items": 3,
+            "bytes": 4096
+          },
+          "verdict": {
+            "decision": "allowed",
+            "risk": "low",
+            "reasons": []
+          },
+          "quarantined": false
+        },
+        "effects_hash": "sha256:a28773f6453ede8f3b987ed9ac96916b4affb37bd6a7b11389d69becaa27f5e8",
+        "effects": {
+          "version": 1,
+          "action_id": "act-01",
+          "plan_hash": "sha256:c7b870d89ef435eb431fcdf8e99f82f2b10c9b05a25eb86eb2ed603fa366eb94",
+          "manifest": null,
+          "steps": [
+            {
+              "target": "C:\\work\\proj\\.ads\\quarantine\\act-01",
+              "effect": "delete_recursive",
+              "stored": null,
+              "entries": [
+                {
+                  "path": [],
+                  "kind": "dir",
+                  "bytes": 0,
+                  "id": "2869847911:1125899906842681"
+                },
+                {
+                  "path": [
+                    "items"
+                  ],
+                  "kind": "dir",
+                  "bytes": 0,
+                  "id": "2869847911:1125899906842682"
+                },
+                {
+                  "path": [
+                    "items",
+                    "build.log"
+                  ],
+                  "kind": "file",
+                  "bytes": 2048,
+                  "id": "2869847911:1125899906842683"
+                },
+                {
+                  "path": [
+                    "manifest.json"
+                  ],
+                  "kind": "file",
+                  "bytes": 412,
+                  "id": "2869847911:1125899906842684"
+                }
+              ]
+            }
+          ]
+        },
+        "effects_error": null
+      }
+    ],
+    "more": false
+  }
+}

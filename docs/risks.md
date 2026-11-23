@@ -14,17 +14,23 @@ Estado da mitigação, em cada risco:
 
 | Risco | Dono | Estado da mitigação |
 |---|---|---|
-| [Ação destrutiva fora do escopo](#ação-destrutiva-fora-do-escopo) | portão de ações e executor de arquivos | implementada e testada; executor ainda não ligado |
+| [Ação destrutiva fora do escopo](#ação-destrutiva-fora-do-escopo) | portão de ações e executor de arquivos | implementada e testada; ligada só na biblioteca do daemon, com itens da #26 abertos |
 | [Troca no disco durante a execução](#troca-no-disco-durante-a-execução) | executor de arquivos | implementada e testada, com limites escritos |
-| [Licença de execução usada duas vezes](#licença-de-execução-usada-duas-vezes) | portão, executor e armazenamento | parcial: só dentro de um processo |
-| [Perda de sessões de terminal](#perda-de-sessões-de-terminal) | host de terminais | implementada e testada; lançador ausente |
+| [Licença de execução usada duas vezes](#licença-de-execução-usada-duas-vezes) | portão, executor e armazenamento | implementada e testada com o `EventLog` ancorado; execução pela API local pendente |
+| [Perda de sessões de terminal](#perda-de-sessões-de-terminal) | host de terminais | implementada e testada; host supervisionado pelo [lançador](../crates/launcher/README.md) |
 | [Outro usuário da máquina alcança as sessões](#outro-usuário-da-máquina-alcança-as-sessões) | host de terminais e daemon | implementada e testada no Windows; teste com duas contas ausente |
-| [Credencial de CLI de IA vaza para o processo filho](#credencial-de-cli-de-ia-vaza-para-o-processo-filho) | adaptadores de ferramenta e host | parcial |
-| [Página ou programa local comanda os terminais](#página-ou-programa-local-comanda-os-terminais) | daemon (API local) | decidida (proposta); só o lado da interface implementado |
-| [Dado sensível em claro no disco](#dado-sensível-em-claro-no-disco) | armazenamento | parcial: `data` dos eventos cifrado no banco e testado; chave ainda fora do cofre |
+| [Credencial de CLI de IA vaza para o processo filho](#credencial-de-cli-de-ia-vaza-para-o-processo-filho) | adaptadores de ferramenta e host | parcial: filtro do ambiente implementado |
+| [Programa ou pasta configurados por um link](#programa-ou-pasta-configurados-por-um-link) | adaptadores de ferramenta | implementada e testada; a abertura usa o caminho resolvido |
+| [Página ou programa local comanda os terminais](#página-ou-programa-local-comanda-os-terminais) | daemon (API local) | implementada e testada; ADR proposta; conferência manual da porta da interface |
+| [Outro usuário ocupa a porta da interface](#outro-usuário-ocupa-a-porta-da-interface) | daemon e interface | parcial: endereço e origens testados; propriedade da porta conferida à mão |
+| [Origem da WebView compartilhada no Windows](#origem-da-webview-compartilhada-no-windows) | casca e daemon | implementada e testada |
+| [Outra conta ocupa a porta do daemon após a saída](#outra-conta-ocupa-a-porta-do-daemon-após-a-saída) | casca e daemon | implementada e testada; janela indisponível até o reinício do daemon |
+| [Outra conta ocupa vagas de autenticação pendente](#outra-conta-ocupa-vagas-de-autenticação-pendente) | daemon (API local) | parcial: teto e expulsão testados; sem limite por conta |
+| [Outra conta comanda o lançador pela pasta de controle](#outra-conta-comanda-o-lançador-pela-pasta-de-controle) | lançador e pasta privada | implementada e testada; outra conta simulada nos testes |
+| [Dado sensível em claro no disco](#dado-sensível-em-claro-no-disco) | armazenamento | parcial: `data` dos eventos cifrado no banco e testado; chave no cofre do Windows |
 | [Perda do estado local](#perda-do-estado-local) | armazenamento | parcial: abertura recusa arquivo corrompido sem alterá-lo; backup ausente |
 | [Atualização ruim instalada](#atualização-ruim-instalada) | lançador | decidida, não implementada |
-| [Elevação de privilégio](#elevação-de-privilégio) | auxiliar de elevação | decidida, não implementada |
+| [Elevação de privilégio](#elevação-de-privilégio) | lançador e daemon | parcial: recusa de sessão elevada no Windows |
 | [Exposição pelo transporte remoto](#exposição-pelo-transporte-remoto) | relé e sessão cifrada | decidida, não implementada |
 | [Cliente remoto adulterado pelo Worker](#cliente-remoto-adulterado-pelo-worker) | relé e interface remota | ausente (proposta na ADR 0023) |
 | [Comando remoto repetido ou de aparelho indevido](#comando-remoto-repetido-ou-de-aparelho-indevido) | núcleo e sessão cifrada | decidida (proposta), não implementada |
@@ -40,6 +46,11 @@ Estado da mitigação, em cada risco:
 | [Dependência com licença incompatível](#dependência-com-licença-incompatível) | mantenedor e CI | implementada e testada |
 | [Cadeia de suprimento do CI e das dependências](#cadeia-de-suprimento-do-ci-e-das-dependências) | mantenedor e CI | parcial |
 | [Código `unsafe`](#código-unsafe) | crates com exceção | implementada e testada |
+| [Compatibilidade dos contratos da fila contínua](#compatibilidade-dos-contratos-da-fila-contínua) | núcleo e contratos | parcial: leitura das versões preservada; regra das marcas combinantes pendente |
+| [Perda do contexto de admissão da fila](#perda-do-contexto-de-admissão-da-fila) | núcleo e produtor da fila | parcial: filas novas gravam a política; admissão no daemon pendente |
+| [Stream da fila no teto de eventos](#stream-da-fila-no-teto-de-eventos) | armazenamento e produtor da fila | implementada e testada; aviso na interface pendente |
+| [Memória da leitura do stream da fila](#memória-da-leitura-do-stream-da-fila) | armazenamento e produtor da fila | parcial: sem medição |
+| [Carimbo adiantado aceito no replay da fila](#carimbo-adiantado-aceito-no-replay-da-fila) | produtor da fila | implementada e testada na admissão ao vivo; o daemon ainda não a chama |
 
 ## Arquivos e ações destrutivas
 
@@ -49,9 +60,14 @@ Estado da mitigação, em cada risco:
 - **Impacto.** Perda de dados do usuário sem volta.
 - **Dono.** Portão de ações ([`crates/core`](../crates/core/README.md#portão-de-ações-destrutivas-srcgate)) e executor de arquivos ([`crates/adapters/fs`](../crates/adapters/fs/README.md)).
 - **Teto.** `approval_item_limit` e `approval_byte_limit` (acima deles, aprovação), `quarantine_enabled` (apagar vira mover para a quarentena) em [`defaults/action-gate.toml`](../defaults/action-gate.toml); `definitive_delete` em [`defaults/fs-executor.toml`](../defaults/fs-executor.toml).
-- **Mitigação existente (implementada e testada).** O portão normaliza o caminho só por texto, nega pastas protegidas, raiz de trabalho, raízes permitidas e repositórios, exige aprovação acima dos limites e reescreve apagar como quarentena ([regras](../crates/core/README.md#regras)); a aprovação vale só para o `plan_hash` do plano julgado ([máquina de estados](../crates/core/README.md#máquina-de-estados)). O executor julga de novo com a política confiável, abre tudo por identificador sem seguir link e só move ou apaga o que levantou ([o que é conferido](../crates/adapters/fs/README.md#o-que-é-conferido-antes-da-primeira-alteração)). Testes em `crates/core/tests/gate_*.rs` e `crates/adapters/fs/tests/`; os jobs `rust` e `fs-windows` do CI rodam os dois.
+- **Mitigação existente (implementada e testada).** O portão normaliza o caminho só por texto, nega pastas protegidas, raiz de trabalho, raízes permitidas e repositórios, exige aprovação acima dos limites e reescreve apagar como quarentena ([regras](../crates/core/README.md#regras)); a aprovação vale só para o `plan_hash` do plano julgado ([máquina de estados](../crates/core/README.md#máquina-de-estados)). A composição do daemon tira a raiz dos parâmetros de abertura da sessão e vincula a política a todos os apelidos de pasta de trabalho. Isso protege as quarentenas dos demais apelidos. Ela também vincula o estado do próprio produto ao log que o portão grava (`audit::open_product`): o banco de auditoria com seus arquivos `-wal`, `-shm` e `-journal`, a pasta do cofre e da trava e a pasta da trava do lançador, na grafia configurada, na resolvida no disco e na de cada link do caminho. Alvo que é um deles, fica dentro ou contém um é sempre negado (`protected.product_data`), mesmo dentro de uma pasta de trabalho, por curinga ou com a quarentena desligada, e o executor nega de novo uma licença emitida sem essa proteção; link sem destino recusa a abertura, e o portão recusa um log de outro estado. O executor abre por identificador sem seguir link, registra os repositórios encontrados no plano, inclusive pelo alcance de curingas, e confere os fatos novamente ao executar. Só move ou apaga o que levantou ([o que é conferido](../crates/adapters/fs/README.md#o-que-é-conferido-antes-da-primeira-alteração)). Testes em `crates/core/tests/gate_*.rs`, `crates/adapters/fs/tests/` e na composição do daemon (`crates/daemon/src/audit_tests.rs`, com junções no Windows); os jobs `rust` e `fs-windows` do CI rodam os dois primeiros, e `rust` e `pty-windows` rodam os do daemon.
 - **Plano B.** Quarentena com [restauração](../crates/adapters/fs/README.md#restauração); execução que para diz exatamente o que mudou ([falha no meio](../crates/adapters/fs/README.md#falha-no-meio-e-recuperação)).
-- **O que falta.** Nada no workspace chama o executor ainda. Curinga, `fs.overwrite`, `fs.clean_untracked` e mover para fora da quarentena são recusados por falta de definição ([o que não é executado](../crates/adapters/fs/README.md#o-que-não-é-executado)). Purga de leva com repositório não tem regra. Um caminho protegido escrito em outra forma Unicode não é reconhecido pelo texto; só o executor, no disco, o alcança.
+- **Quarentena e raiz de trabalho declarada (fechado).** O plano usa a pasta configurada da sessão. O diário recusa ações de outra raiz e o executor confere os fatos de repositório novamente antes de agir.
+- **Mudança de política com ação gravada.** O diário reconstrói o estado com o veredito autenticado e permite registrar o resultado de uma ação iniciada. Uma divergência antes da concessão de aprovação ou do início gera uma recusa gravada. Para prosseguir sob a política vigente, o operador cria outro plano. Os testes cobrem a recusa de uma ação aprovada e a gravação do resultado após reabrir o diário ancorado.
+- **Custo da classificação.** O portão limita o trabalho de comparação de alvos e de montagem de entradas no destino. A reescrita para quarentena usa o mesmo orçamento do plano pedido. Um plano acima do [teto de classificação](../crates/core/README.md#regras) é recusado antes de entrar no diário. Se os repositórios encontrados no disco esgotarem o orçamento durante a execução, o adaptador para antes da primeira alteração. Dividir o lote reduz o trabalho. Os testes cobrem o esgotamento do teto e uma ida à quarentena de 10 mil alvos.
+
+- **Decisão de ligar o executor.** `SessionGate::execute` liga o portão ao executor de arquivos antes de fechar todos os itens da issue #26, que pedia o contrário. O portão confere a ordem dos instantes de eventos novos com tolerância configurável. Na leitura do histórico autenticado, um recuo acima da tolerância vigente pode gerar aviso na consulta. O resultado da execução pode ser registrado com um carimbo válido. A confiabilidade do relógio que fornece os instantes e os pré-requisitos de execução continuam pendentes. É aceitável porque a ligação existe só como biblioteca Rust: a API local não expõe nenhuma operação de arquivo, então nenhum cliente alcança a ação destrutiva. Expor a ação pela API depende de fechar esses itens ou de nova decisão registrada ([portão do núcleo](../crates/core/README.md#máquina-de-estados)).
+- **O que falta.** A API local ainda não expõe operações de arquivo. Curinga, `fs.overwrite`, `fs.clean_untracked` e mover para fora da quarentena são recusados por falta de definição ([o que não é executado](../crates/adapters/fs/README.md#o-que-não-é-executado)). A purga de leva com repositório é negada, e ainda falta definir como esvaziá-la. A proteção de quarentenas de outros projetos depende dos apelidos que permanecem configurados. Um caminho protegido escrito em outra forma Unicode não é reconhecido pelo texto; só o executor, no disco, o alcança.
 
 ### Troca no disco durante a execução
 
@@ -67,11 +83,13 @@ Estado da mitigação, em cada risco:
 
 - **Descrição.** A mesma aprovação ou a mesma licença executa a ação mais de uma vez, por repetição, por reinício ou por dois executores.
 - **Impacto.** A ação roda de novo sobre um disco que já mudou.
-- **Dono.** Portão (tipos), executor (diário) e quem persiste os eventos.
-- **Teto.** Não definido.
+- **Dono.** Portão, executor e armazenamento.
+- **Teto.** Um início por ação e uma ação por aprovação. O tempo de espera pelo lock é `busy_timeout_ms`.
 - **Mitigação existente.** Dentro de um processo, nem a ação nem a licença podem ser copiadas e o `replay` recusa log com `action.started` repetido ([máquina de estados](../crates/core/README.md#máquina-de-estados)); o executor exige que o diário registre o consumo antes de tudo e lembra as licenças recebidas (`E_FS_PERMIT_REUSED`); a pasta da ação na quarentena é criada de forma exclusiva ([entrada do executor](../crates/adapters/fs/README.md#entrada)).
 - **Plano B.** A quarentena deixa marca no disco que recusa a repetição.
-- **O que falta.** Não há diário persistente: entre reinícios, com a quarentena desligada, nada impede a segunda execução. A gravação atômica de `action.started` é dever do armazenamento: o log de eventos já grava só-anexo, com `seq` conferido por stream, mas ainda não confere as invariantes do portão (uso único da licença) nem está ligado ao executor. O formato da linha já leva `action_id` e `approval_id` em claro, autenticados e encadeados, para os índices únicos que entram com a ponte ([log de eventos](../crates/storage/README.md#log-de-eventos)). Mesmo com esses índices, cortar o fim do log ou voltar uma cópia anterior de `audit.db` some com o `action.started` e faz a licença parecer não usada: a cadeia com chave (HMAC) recusa linha forjada, alterada ou fora de ordem, mas não tem âncora fora do arquivo. Falta a âncora no cofre (último `position` e `chain` gravados a cada `append` do portão e conferidos ao abrir) antes de a ponte valer como uso único entre reinícios. Linha forjada sem chave é detectada, não impedida: o banco a aceita e só a leitura e `verify_chain` a recusam; com os índices únicos, ela poderia ocupar a vaga da licença verdadeira e bloqueá-la, então a ponte confere o HMAC da linha com que colidiu antes de confiar no conflito.
+- **Mitigação no log.** O [diário do portão](../crates/storage/README.md#diário-do-portão) verifica a cadeia HMAC antes de confiar em colisões, confirma a gravação antes de entregar a licença e bloqueia a reexecução após reinício. Isso vale para o `EventLog` ancorado: `StartedExecution` prova só que `GateJournal::append` devolveu `Ok`, e a durabilidade é a da implementação do traço, que é público. O caminho `Executor::execute` com um `Journal` fornecido pelo chamador continua com a garantia desse diário. Os testes cobrem corrida entre conexões, abandono de uma licença já gravada, segundo início e aprovação de outra ação com `seq` livre, remoção do início gravado e alteração de um registro com conexão aberta.
+- **Custo.** Uma verificação completa da cadeia por transição do portão, sob o lock de escrita, duas por execução; linear no número de linhas do log ([diário do portão](../crates/storage/README.md#diário-do-portão)).
+- **O que falta.** Medir a latência em históricos grandes, definir um teto para o log e expor a execução na API local. Uma queda entre a atualização da âncora e o commit pode bloquear o banco até a recuperação. Depois de um início confirmado, o operador confere o disco e prepara outra ação com nova decisão se ainda houver trabalho.
 
 ## Terminais
 
@@ -83,7 +101,7 @@ Estado da mitigação, em cada risco:
 - **Teto.** `replay_capacity_bytes`, `subscriber_queue_chunks`, `max_sessions` e `max_frame_bytes` em [`defaults/ptyhost.toml`](../defaults/ptyhost.toml).
 - **Mitigação existente (implementada e testada).** Processo separado ([ADR 0003](adr/0003-separate-pty-host-process.md)) com anel de replay numerado: quem reconecta retoma pelo `seq`, sem buraco e sem duplicata, e pedido fora do anel volta erro com o limite ([regras do replay](../crates/ptyhost/README.md#regras-do-replay)). Testes `client_dropped_twenty_times_loses_and_repeats_nothing`, `real_terminal_survives_twenty_client_drops_without_losing_a_byte` e os 20 ciclos de ConPTY (`twenty_cycles_leave_no_process_and_no_handle`) no job `pty-windows`. Na API local, a preparação que vence após uma abertura confirmada preserva a vaga até o host confirmar a limpeza. O descarte por cota de uma espera acorda o assinante ocioso e encerra só a assinatura dessa encarnação. No Windows, uma sessão cujo shell sai deixando vivo um filho num console próprio, dentro do job, não deixa processo depois da devolução automática da vaga (`ended_session_leaves_no_child_behind_on_windows`). Os limites estão no [README do daemon](../crates/daemon/README.md).
 - **Plano B.** Condição de reversão da ADR 0003; para o PTY no Windows, ConPTY direto.
-- **O que falta.** O lançador que inicia o host destacado não existe; não há pedido de desligamento; o processo raiz entra no Job Object depois de criado; não há teto de conexões nem prazo para um terminal que não responde ([limites conhecidos](../crates/ptyhost/README.md#limites-conhecidos)).
+- **O que falta.** Reassumir a supervisão do host após `stop` segue pendente no [lançador](../crates/launcher/README.md). Os limites de desligamento, criação de processos e conexões estão no [README do host](../crates/ptyhost/README.md#limites-conhecidos). O daemon não adota sessões antigas ao reiniciar. A fila já define o destino da tarefa em `running` quando o núcleo reinicia (espera de `host_confirm_seconds` pela confirmação do host e cancelamento terminal se o prazo vencer, sem gastar tentativa). O daemon ainda precisa parear tarefa e sessão, consultar o host, aplicar o prazo e solicitar o encerramento se a sessão reaparecer ([fila contínua](../crates/core/README.md#fila-contínua)).
 
 ### Outro usuário da máquina alcança as sessões
 
@@ -101,9 +119,20 @@ Estado da mitigação, em cada risco:
 - **Impacto.** Credencial exposta ou login do CLI alterado.
 - **Dono.** Adaptadores de ferramenta e host de terminais.
 - **Teto.** Não se aplica.
-- **Mitigação existente.** O processo filho vê só o `env` do pedido, nada herdado do host (testes `the_child_environment_is_exactly_what_the_spec_carries` e `child_sees_only_the_environment_of_the_spec`). O comando `session.open` da API local recusa `program`, `args`, `env` e `cwd` no Schema ([API local](../contracts/README.md#api-local)). Os erros do cliente do daemon não carregam ambiente (`errors_never_include_the_host_message_or_environment`).
+- **Mitigação existente.** [`child_env`](../crates/core/src/child_env.rs) filtra o ambiente herdado com a lista comum `allow` e os padrões `deny` de [`[env]`](../defaults/harnesses.toml), para as duas ferramentas integradas. O processo filho vê só o `env` do pedido, nada herdado do host (testes `the_child_environment_is_exactly_what_the_spec_carries` e `child_sees_only_the_environment_of_the_spec`). O comando `session.open` da API local recusa `program`, `args`, `env` e `cwd` no Schema ([API local](../contracts/README.md#api-local)). Os erros do cliente do daemon não carregam ambiente (`errors_never_include_the_host_message_or_environment`).
 - **Plano B.** Não há.
-- **O que falta.** Os adaptadores de ferramenta são esqueletos: ainda não há lista permitida de ambiente por ferramenta. O teste que compara o status do CLI antes e depois, pedido pela regra C1 do [AGENTS.md](../AGENTS.md), não existe.
+- **Mitigação existente (ambiente das ferramentas).** O filho recebe os nomes de `allow` e os valores de `env.set`. O lançador recusa credenciais conhecidas nas duas listas durante a carga, antes de preparar a abertura (`launcher_configuration_refuses_credentials_before_a_session_exists`). O teste `a_real_child_gets_exactly_the_allowed_names_and_the_set_values` executa um programa do sistema com o ambiente montado pelo núcleo e confere os nomes e valores recebidos. No Windows, a cópia do pai compara só ASCII. A recusa de duplicatas e a precedência de `env.set` usam uma comparação mais ampla, que também trata `ÄX` e `äx` como equivalentes.
+- **O que falta.** Ainda falta o teste da regra C1 que compara o status do CLI antes e depois da sessão. Os padrões cobrem credenciais pelo nome, inclusive nomes genéricos de sessão como `APP_SESSION_ID`. Uma credencial sob um nome que escape dos padrões ainda pode passar se esse nome for incluído em `allow` ou `env.set`. Em Linux e macOS ainda falta verificar com um CLI real se a ferramenta e os programas que ela abre acham suas configurações sem `HOME`.
+
+### Programa ou pasta configurados por um link
+
+- **Descrição.** O programa ou a pasta de trabalho configurados são uma junção ou um link simbólico. As conferências da configuração leem só o texto; ao abrir a sessão, a busca segue o link.
+- **Impacto.** Um link pode levar a outro programa, a uma pasta fora do local esperado, à raiz de um volume ou a um compartilhamento de rede.
+- **Dono.** Adaptadores de ferramenta (`ads-core::tool_launch`).
+- **Teto.** Não se aplica.
+- **Mitigação existente.** Na abertura, o núcleo canonicaliza o caminho, recusa destinos de rede e prefixos de dispositivo no Windows, e recusa uma pasta de trabalho que resolva para a raiz. O programa deve resolver para um arquivo e a pasta para um diretório. O host recebe o caminho resolvido. Os testes em disco usam junções no Windows e links simbólicos nos demais sistemas.
+- **Plano B.** Corrigir o caminho no arquivo de configuração se o destino for recusado.
+- **O que falta.** O lançamento ainda usa caminhos. Uma entrada no caminho resolvido pode mudar entre a conferência e o uso pelo host. No Linux e no macOS uma montagem de rede (NFS, SMB) parece um caminho local e não é reconhecida. Passar o caminho resolvido quebra programas que dependem do nome com que são chamados (atalhos de gerenciadores de versão, `busybox`, atalhos de aplicativos da Microsoft Store no Windows); nesse caso, configure o programa real.
 
 ### Página ou programa local comanda os terminais
 
@@ -111,9 +140,9 @@ Estado da mitigação, em cada risco:
 - **Impacto.** Comando arbitrário num terminal do usuário com uma ferramenta de IA dentro.
 - **Dono.** Daemon (API local).
 - **Teto.** Prazo do `auth.hello` (padrão proposto 5 s).
-- **Mitigação existente (implementada, ADR ainda proposta).** [ADR 0020](adr/0020-local-api-authentication.md): porta efêmera em `127.0.0.1`, conferência de `Host` e `Origin`, token por execução entregue pelo fragmento e conferido em tempo constante, recusa de origem remota. O Schema `urn:ads:command:auth.hello:1` existe.
+- **Mitigação existente (implementada, ADR ainda proposta).** [ADR 0020](adr/0020-local-api-authentication.md): porta efêmera em `127.0.0.1`, conferência de `Host` e `Origin`, token por execução entregue pelo fragmento e conferido em tempo constante, recusa de origem remota. Os testes em [`local_api.rs`](../crates/daemon/tests/local_api.rs) exercitam a autenticação, inclusive o prazo único. O Schema `urn:ads:command:auth.hello:1` existe.
 - **Plano B.** Condição de reversão da ADR 0020.
-- **O que falta.** A ADR aguarda ratificação. A API local implementa porta efêmera, `Host`, `Origin`, token e prazo único, com testes em `crates/daemon/tests/local_api.rs`. A propriedade da porta da interface ainda exige conferência manual (risco abaixo). O lado da interface já lê o token do fragmento, guarda só na aba e manda `auth.hello` primeiro ([README da raiz](../README.md#interface-e-conexão-local)).
+- **O que falta.** A ADR aguarda ratificação. A propriedade da porta da interface ainda exige [conferência manual](#outro-usuário-ocupa-a-porta-da-interface). O [README da interface](../ui/README.md) descreve o cliente.
 
 ### Outro usuário ocupa a porta da interface
 
@@ -123,7 +152,24 @@ Estado da mitigação, em cada risco:
 - **Teto.** Um token por execução; o alcance fica nas sessões dessa execução. Não há teto de dano dentro de um terminal autorizado, portanto não abrir a URL sem verificar a propriedade da porta.
 - **Mitigação existente.** `ui_base_url` parametrizável em `defaults/daemon.toml`; `allowed_origins` vazio deriva somente a origem dessa URL. O Vite usa porta fixa e `strictPort` no desenvolvimento e na prévia, escutando em `127.0.0.1`; o `ui_base_url` padrão usa o mesmo endereço, e não `localhost`, para o navegador não tentar `[::1]:5173`, que outra conta pode ocupar sem colidir com o `strictPort`. Um teste compara os dois endereços. Só abrir depois de conferir que o processo que escuta é do próprio usuário. Configuração e igualdade exata das origens têm testes; a propriedade da porta da interface ainda depende da conferência manual.
 - **Plano B.** Não abrir a URL quando a propriedade não puder ser confirmada; parar o daemon para invalidar o token e reiniciá-lo depois de resolver a ocupação da porta.
-- **O que falta.** O daemon servir a interface na sua porta efêmera ou a casca Tauri entregar o token por canal do usuário, conforme o [limite conhecido da ADR 0020](adr/0020-local-api-authentication.md#limite-conhecido). O teste com duas contas no Windows ainda falta.
+- **O que falta.** No desktop, a casca carrega o bundle local e recebe a credencial pelo pipe, sem usar a porta da interface. Servir a interface no navegador pela porta efêmera do daemon e o teste com duas contas no Windows continuam pendentes. Veja o [limite conhecido da ADR 0020](adr/0020-local-api-authentication.md#limite-conhecido).
+
+### Origem da WebView compartilhada no Windows
+
+- **Descrição.** Outros aplicativos Tauri e páginas locais podem usar `http://tauri.localhost`.
+- **Impacto.** Usar essa origem como identidade da janela permitiria upgrades WebSocket de outras páginas.
+- **Dono.** Casca e daemon.
+- **Teto.** O listener desktop recusa qualquer `Origin`. Um cliente nativo ainda alcança o loopback e precisa do token da execução para comandar sessões.
+- **Mitigação existente.** O Rust autentica pelo WebSocket, mantém o token fora do JavaScript e encaminha mensagens por IPC somente à janela principal. Como essa conferência olha a URL do documento principal e não a origem de quem chama, a política de conteúdo da janela proíbe frames e objetos incorporados, e um teste da configuração exige essa regra. Um teste confere a recusa de `http://tauri.localhost`.
+- **Plano B.** Invalidar a credencial reiniciando o daemon. Se a restrição por janela falhar, suspender o modo desktop até corrigir a fronteira IPC.
+
+### Outra conta ocupa a porta do daemon após a saída
+
+- **Descrição.** Uma conta local pode ocupar a porta depois de o daemon encerrar, enquanto a janela ainda estiver aberta.
+- **Impacto.** Indisponibilidade: com a credencial antiga, a janela não consegue abrir conexão, seja numa tentativa já em curso, seja ao recarregar a interface. Uma prova ausente ou inválida bloqueia novas aberturas até o fim dessa execução da casca.
+- **Dono.** Casca e daemon.
+- **Teto.** A casca só envia o token e a entrada do usuário se o servidor provar conhecer a credencial recebida pelo pipe, com uma prova vinculada à conexão. Um teste confirma que a porta reocupada não recebe mensagens da casca.
+- **Plano B.** Quando o lançador consegue iniciar uma nova execução do daemon, ele substitui a janela, que recebe a porta e o token novos. Se ele desistiu ou o daemon não foi reiniciado, crie o arquivo `restart` na pasta de controle do [lançador](../crates/launcher/README.md). Abrir outro lançador não resolve: a trava da pasta de controle recusa a segunda instância.
 
 ### Outra conta ocupa vagas de autenticação pendente
 
@@ -133,7 +179,17 @@ Estado da mitigação, em cada risco:
 - **Teto.** O padrão de `max_pending_auth` é 32 vagas, com o prazo de `auth_timeout_ms` por conexão, incluindo o handshake.
 - **Mitigação existente.** O padrão de 32 exige mais sockets simultâneos para ocupar toda a fila. O limite conta tarefas, inclusive as que estão sendo expulsas, até terminarem. Com a fila cheia, a conexão mais antiga que ainda não concluiu o upgrade é expulsa e a nova entra quando a vaga volta: segurar as vagas com sockets crus exige abri-los sem parar. A espera entre falhas de aceitação permite que o serviço continue atendendo as conexões já autenticadas. Uma conexão que já fez upgrade conserva a vaga até autenticar ou vencer `auth_timeout_ms`, então a interface não é expulsa entre o upgrade e o `auth.hello`; se todas as vagas estiverem nessa fase, a conexão nova é recusada. Testes em `crates/daemon/tests/local_api.rs` (33ª conexão, conexão em autenticação preservada, recusa com todas em autenticação) e em `crates/daemon/src/api.rs` (teto que inclui as expulsas).
 - **Plano B.** Ajustar `max_pending_auth` em `defaults/daemon.toml` ou na configuração local e reiniciar o daemon.
-- **O que falta.** Quem renova sockets mais rápido do que a interface conclui o upgrade ainda pode expulsá-la antes dele; quem faz upgrade em todas as vagas e não manda `auth.hello` bloqueia conexões novas até `auth_timeout_ms` vencer, e precisa repetir isso a cada prazo. Não há limite por endereço nem por conta, porque em loopback todas as contas chegam de `127.0.0.1`. A saída é a mesma do risco anterior: o daemon servir a interface ou a casca Tauri entregar o token por canal só do usuário.
+- **O que falta.** Quem renova sockets mais rápido do que a interface conclui o upgrade ainda pode expulsá-la antes dele; quem faz upgrade em todas as vagas e não manda `auth.hello` bloqueia conexões novas até `auth_timeout_ms` vencer, e precisa repetir isso a cada prazo. Não há limite por endereço nem por conta, porque em loopback todas as contas chegam de `127.0.0.1`. Um transporte restrito à conta do usuário permitiria separar as vagas no desktop. A entrega do token pelo pipe protege a credencial e a API ainda usa TCP em loopback.
+
+### Outra conta comanda o lançador pela pasta de controle
+
+- **Descrição.** Outra conta local cria os sinais `stop` ou `restart` na pasta de controle do lançador, troca a pasta ou um ancestral por um link, ou lê e altera a trava e o `state.json`.
+- **Impacto.** Daemon, janela e lançador encerrados ou reiniciados por quem não é o usuário; estado da instalação lido por outra conta.
+- **Dono.** Lançador ([`crates/launcher`](../crates/launcher/README.md)) e pasta privada (`crates/private-dir`).
+- **Teto.** Um lançador por pasta de controle, pela trava do sistema operacional.
+- **Mitigação existente (implementada e testada).** A pasta, a trava e o estado nascem acessíveis só pela conta atual; pasta ou trava existente com outro dono ou com acesso de outra conta é recusada antes de iniciar qualquer processo. Sinal de outro dono ou que dá acesso a outra conta fica no lugar, é ignorado e aparece em `last_error`; o sinal apagado é o mesmo arquivo conferido. Tudo é aberto relativo à pasta já conferida, sem seguir link ([README do lançador](../crates/launcher/README.md)). Testes `refuses_a_control_folder_other_accounts_can_use`, `refuses_a_lock_file_other_accounts_can_use`, `ignores_a_signal_file_owned_by_another_account`, `ignores_a_signal_file_other_accounts_can_use` e `removes_only_the_signal_it_checked` em `crates/launcher/src/supervisor_tests.rs`, no job `launcher-windows`.
+- **Plano B.** Apagar a pasta ou a trava recusada para o lançador recriá-la, ou restringi-la à conta do usuário.
+- **O que falta.** No Windows, o sistema local e o grupo Administradores são tolerados na lista de acesso. A outra conta dos testes é uma identidade simulada; não há teste com duas contas reais. Programas da mesma conta do usuário criam sinais válidos.
 
 ## Estado local
 
@@ -143,19 +199,20 @@ Estado da mitigação, em cada risco:
 - **Impacto.** Quem lê o disco lê o trabalho do usuário.
 - **Dono.** Armazenamento ([`crates/storage`](../crates/storage/README.md)) e cofre ([`crates/adapters/vault`](../crates/adapters/vault/README.md)).
 - **Teto.** Não se aplica.
-- **Mitigação existente.** [ADR 0005](adr/0005-column-level-encryption.md): cifra autenticada por coluna, chave no cofre do sistema. A cifra (XChaCha20-Poly1305, com dados associados autenticados) está implementada e testada em `crates/storage/src/cipher.rs`, inclusive recusa de chave e de dados associados trocados e diagnóstico sem chave nem texto ([ADR 0021](adr/0021-storage-atomic-file-and-cipher.md), proposta). O log de eventos (`crates/storage/src/log.rs`) grava o `data` de todo evento cifrado, com as colunas em claro da linha como dados associados; o teste da ADR 0005 procura uma frase sentinela no banco, no `-wal` e no `-shm`, reabre e recusa chave errada (`crates/storage/tests/event_log.rs`). Hoje nada sensível chega ao log: nenhum produtor está ligado a ele, o anel de replay fica só em memória e o cliente do daemon não persiste saída nem tem telemetria ([daemon](../crates/daemon/README.md)).
+- **Mitigação existente.** [ADR 0005](adr/0005-column-level-encryption.md): cifra autenticada por coluna, chave no cofre do sistema. A cifra (XChaCha20-Poly1305, com dados associados autenticados) está implementada e testada em `crates/storage/src/cipher.rs`, inclusive recusa de chave e de dados associados trocados e diagnóstico sem chave nem texto ([ADR 0021](adr/0021-storage-atomic-file-and-cipher.md), proposta). O log de eventos (`crates/storage/src/log.rs`) grava o `data` de todo evento cifrado, com as colunas em claro da linha como dados associados; o teste da ADR 0005 procura uma frase sentinela no banco, no `-wal` e no `-shm`, reabre e recusa chave errada (`crates/storage/src/event_log_tests.rs`). O executável no Windows abre o log para o diário do portão e a fila, com a chave no cofre. O anel de replay fica só em memória e o cliente do daemon não persiste saída nem tem telemetria ([daemon](../crates/daemon/README.md)).
 - **Plano B.** Banco inteiro cifrado (condição de reversão da ADR 0005).
-- **O que falta.** A chave ainda não vem do cofre, que é esqueleto; sem cofre, só os testes injetam chave. Ficam em claro, por decisão da ADR 0005, `id`, `type`, `ts`, `stream`, `seq`, autor, `cause`, classe do dado, `action_id` e `approval_id` (os dois só nos eventos do portão, e o primeiro já está no nome do stream): revelam o ritmo de uso e os nomes dos streams.
+- **O que falta.** A composição recusa fila e aprovações se o cofre estiver indisponível ou se a plataforma não tiver suporte. A perda da chave ou das identidades bloqueia os controles de auditoria. O mantenedor do armazenamento restaura a chave e as identidades correspondentes e confere a abertura pelo diagnóstico de partida. O impacto fica restrito aos controles persistentes. O limite por entrada e a execução do teste local estão no [README do cofre](../crates/adapters/vault/README.md). Ficam em claro, por decisão da ADR 0005, `id`, `type`, `ts`, `stream`, `seq`, autor, `cause`, classe do dado, `action_id` e `approval_id` (os dois só nos eventos do portão, e o primeiro já está no nome do stream): revelam o ritmo de uso e os nomes dos streams.
 
 ### Perda do estado local
 
 - **Descrição.** Banco local corrompido ou apagado.
 - **Impacto.** Perda de auditoria, métricas e estado das tarefas.
 - **Dono.** Armazenamento.
-- **Mitigação existente.** A abertura confere o arquivo antes de tocá-lo e recusa arquivo estranho, mais novo, truncado ou corrompido sem alterar os bytes do banco nem do `-wal`, recusa `-journal` ou `-wal` sobrando que o SQLite desfaria ou apagaria e recusa WAL do produto em que o SQLite descartaria commits confirmados ([reparo manual](../crates/storage/README.md#reparo-de--journal-sobrando)); `synchronous = FULL`; tudo o que participa de uma invariante fica num arquivo só ([ADR 0021](adr/0021-storage-atomic-file-and-cipher.md), proposta). Testes em `crates/storage/tests/open.rs`. O log de eventos é só-anexo e encadeado: gatilhos recusam UPDATE, DELETE, substituição e salto de `seq` por stream, e `verify_chain` aponta a primeira linha alterada, forjada, fora de ordem ou faltando no meio, com a cadeia em HMAC de chave derivada da chave da cifra; a conexão do produto recusa DDL depois da migração (`crates/storage/tests/event_log.rs`).
+- **Mitigação existente.** A abertura confere o arquivo antes de tocá-lo e recusa arquivo estranho, mais novo, truncado ou corrompido sem alterar os bytes do banco nem do `-wal`, recusa `-journal` ou `-wal` sobrando que o SQLite desfaria ou apagaria e recusa WAL do produto em que o SQLite descartaria commits confirmados ([reparo manual](../crates/storage/README.md#reparo-de--journal-sobrando)); `synchronous = FULL`; as linhas e os registros de chaves ficam num arquivo só ([ADR 0021](adr/0021-storage-atomic-file-and-cipher.md), proposta). Testes em `crates/storage/tests/open.rs`. O log de eventos é só-anexo e encadeado: gatilhos recusam UPDATE, DELETE, substituição e salto de `seq` por stream, e `verify_chain` aponta a primeira linha alterada, forjada, fora de ordem ou faltando no meio, com a cadeia em HMAC de chave derivada da chave da cifra; a conexão do produto recusa DDL depois da migração (`crates/storage/src/event_log_tests.rs`).
 - **Teto.** `inspection_max_bytes`, `integrity_check_on_open`, `max_event_bytes`, `read_page_limit` e `read_page_max_bytes` em [`defaults/storage.toml`](../defaults/storage.toml).
-- **Plano B.** Não definido. A [ADR 0004](adr/0004-local-sqlite-no-cloud-database.md) cita backup local com restauração testada como condição de reversão, sem mecanismo.
-- **O que falta.** Backup e restauração testada (P5), trava de instância e pasta por usuário (a ADR 0021 as deixa para a composição). Quem escreve no arquivo pode remover os gatilhos e alterar linhas; sem a chave não recalcula a cadeia, mas cortar o fim do log ou voltar uma cópia anterior do arquivo não deixa rastro: a cadeia não tem âncora fora do arquivo (ver [Licença de execução usada duas vezes](#licença-de-execução-usada-duas-vezes)). A abertura recusa esquema com gatilho removido ou alterado, mas não um esquema restaurado depois da adulteração.
+- **Plano B.** Restaurar uma cópia que corresponda à âncora ou usar a [recuperação confirmada](../crates/storage/README.md#âncora-no-cofre) após conferir a cadeia. Cofre inacessível ou divergência bloqueiam escrita.
+- **Exposição da pasta de auditoria.** O daemon cria a pasta final com permissões da conta atual e recusa pastas existentes com acesso de terceiros, compartilhamentos de rede e destinos dentro de raízes de trabalho. A recusa ocorre antes da abertura do banco. Para retomar, use um local privado e siga a recuperação confirmada quando houver mudança de endereço. [Configuração e erros](../crates/storage/README.md#âncora-no-cofre).
+- **O que falta.** Backup e restauração testada (P5). Quem escreve no arquivo pode remover os gatilhos e alterar linhas; sem a chave não recalcula a cadeia, e a abertura confere a âncora para detectar alterações no fim do log e nos registros de chaves. A abertura também inspeciona o esquema e verifica a cadeia integralmente. Falta expor ao dono um comando do daemon para preparar, conferir e aplicar o plano de recuperação.
 
 ## Atualização e privilégio
 
@@ -167,17 +224,17 @@ Estado da mitigação, em cada risco:
 - **Teto.** Duas trocas por dia; prova de 10 minutos com volta em três quedas (ADR 0015).
 - **Mitigação existente (decidida, não implementada).** [ADR 0015](adr/0015-ci-built-artifact-with-verified-self-update.md): manifesto assinado no CI e conferido com chave embutida, versão anterior guardada, volta automática. Os Schemas `record.update-manifest` e `record.update-status` existem.
 - **Plano B.** Suspender a atualização automática (condição de reversão da ADR 0015).
-- **O que falta.** O lançador é esqueleto; o job de artefato do CI está só descrito em comentário.
+- **O que falta.** A atualização e a conferência de saúde e do commit esperado seguem pendentes, conforme o [README do lançador](../crates/launcher/README.md). O job de artefato do CI está só descrito em comentário.
 
 ### Elevação de privilégio
 
 - **Descrição.** O produto ganha direitos de administrador além do necessário, ou um núcleo comprometido se eleva.
 - **Impacto.** Comprometimento da máquina.
-- **Dono.** Auxiliar de elevação (sem crate ainda).
-- **Teto.** Lista fechada de verbos; uma confirmação do sistema por ação.
-- **Mitigação existente (decidida, não implementada).** [ADR 0009](adr/0009-elevation-by-uac-signed-broker-later.md): UAC por ação, nada elevado residente; corretor assinado desenhado e desligado.
-- **Plano B.** Voltar a só mostrar o comando (condição de reversão da ADR 0009).
-- **O que falta.** Não há código de elevação, nem teste de que o daemon roda como usuário comum.
+- **Dono.** Lançador e daemon na partida. O auxiliar previsto na ADR 0009 responderia pela elevação por ação.
+- **Teto.** Para o auxiliar previsto, lista fechada de verbos e uma confirmação do sistema por ação.
+- **Mitigação existente (parcial).** No Windows, o [lançador](../crates/launcher/README.md) e o daemon recusam a partida antes de criar arquivos quando o dono padrão do token é diferente do usuário, como numa sessão elevada com dono Administradores. Os testes exercitam essa recusa com identidade simulada.
+- **Plano B.** Reiniciar em sessão comum se a partida for recusada. Para uma ação que exige elevação, só mostrar o comando (condição de reversão da ADR 0009).
+- **O que falta.** A elevação por ação e o auxiliar assinado previstos na [ADR 0009](adr/0009-elevation-by-uac-signed-broker-later.md).
 
 ## Remoto e provedores
 
@@ -219,7 +276,7 @@ Estado da mitigação, em cada risco:
 - **Teto.** `adapters.agy.headless = false` por padrão, decidido na ADR 0010. Troca de conta: `switch = "propose"` por padrão (o mantenedor confirma cada troca) até o isolamento por perfil estar validado; Antigravity fixo em manual ([ADR 0022](adr/0022-account-profile-folders-and-automatic-switching.md)).
 - **Mitigação existente (decidida, não implementada).** [ADR 0010](adr/0010-api-key-for-automation-agy-headless-on-demand.md): automação pela chave de API, modo sem interface só depois de aceite registrado. [ADR 0022](adr/0022-account-profile-folders-and-automatic-switching.md): troca só entre pastas de perfil em que o mantenedor fez o login, nunca no meio da sessão. O FAQ do Antigravity declara a rotação automática fora dos termos; Claude Code e Codex documentam várias contas por pasta, sem dizer se a troca automática entre elas é aceita.
 - **Plano B.** Voltar a troca para manual em todas as ferramentas (condição de reversão da ADR 0022); retirar a CLI do produto (condição de reversão da ADR 0010).
-- **O que falta.** Adaptadores são esqueletos; os parâmetros `adapters.agy.headless`, `switch` e `switch_at_pct` ainda não existem em `defaults/`. Os termos atuais de Claude e Codex sobre troca automática entre contas não foram conferidos.
+- **O que falta.** Os adaptadores de Antigravity e API são esqueletos; os parâmetros `adapters.agy.headless`, `switch` e `switch_at_pct` ainda não existem em `defaults/`. Os termos atuais de Claude e Codex sobre troca automática entre contas não foram conferidos.
 
 ### Gasto de IA sem teto
 
@@ -243,7 +300,7 @@ Estado da mitigação, em cada risco:
 
 ## Contas por pasta de perfil
 
-Riscos da troca de conta por pasta de perfil ([ADR 0022](adr/0022-account-profile-folders-and-automatic-switching.md)). Nenhum código de perfil existe ainda; o adaptador atual nega `CLAUDE_*` e `CODEX_*` no ambiente do filho.
+Riscos da troca de conta por pasta de perfil ([ADR 0022](adr/0022-account-profile-folders-and-automatic-switching.md)). O núcleo valida a configuração de perfil e oferece a ligação após o filtro de ambiente. A abertura ainda usa o filtro sem ligação a perfil.
 
 ### Login sem chave do Console desfaz os perfis do Claude
 
@@ -271,9 +328,9 @@ Riscos da troca de conta por pasta de perfil ([ADR 0022](adr/0022-account-profil
 - **Impacto.** Quebra da regra C1; credencial exposta.
 - **Dono.** Núcleo (ligação ao perfil) e coletores de uso.
 - **Teto.** Lista de subpastas permitidas por ferramenta.
-- **Mitigação existente (decidida, não implementada).** A variável de pasta é constante do adaptador, injetada depois do filtro de ambiente; `CLAUDE_*` e `CODEX_*` continuam em `env.deny`. Coletores que leiam subpastas do perfil dependem de decisão do mantenedor e de exceção explícita na regra C1; até lá, só o comando de status.
+- **Mitigação existente.** O núcleo valida a sobreposição de caminhos por texto. A ligação ao perfil está fora da abertura de ferramentas. O filtro `env.deny` continua barrando `CLAUDE_*` e `CODEX_*`. Coletores que leiam subpastas do perfil dependem de decisão do mantenedor e de exceção explícita na regra C1; até lá, só o comando de status.
 - **Plano B.** Remover a ligação ao perfil (condição de reversão da ADR 0022).
-- **O que falta.** O tipo de ligação ao perfil no núcleo; teste de arquivo sentinela nos coletores; teste com duas pastas de perfil e variável de chave envenenada no processo pai.
+- **O que falta.** A pasta do perfil e seus ancestrais ainda podem conter links simbólicos ou junções que contornem a comparação por texto. O núcleo deve conferir esses caminhos no PR que ligar os perfis à abertura, após a validação do isolamento na máquina do mantenedor. Até lá, a abertura segue sem seleção de perfil. Qualquer coletor de perfil exige a decisão prevista na ADR e um teste de arquivo sentinela.
 
 ### Chave passa na frente do login do perfil
 
@@ -293,9 +350,9 @@ Riscos da troca de conta por pasta de perfil ([ADR 0022](adr/0022-account-profil
 - **Impacto.** Regras deste repositório deixam de valer para quem altera o código.
 - **Dono.** Mantenedor.
 - **Teto.** Não se aplica.
-- **Mitigação existente.** `CLAUDE.md` importa o `AGENTS.md`; os arquivos locais conhecidos estão no `.gitignore`; o que cada ferramenta lê está em [tools.md](tools.md).
+- **Mitigação existente.** `CLAUDE.md` importa o `AGENTS.md`. O [`.gitignore`](../.gitignore) exclui os arquivos locais conhecidos, inclusive `AGENTS.override.md`.
 - **Plano B.** Hooks e CI cobram as regras de commit independentemente do agente.
-- **O que falta.** `AGENTS.override.md`, que substitui o `AGENTS.md` para o Codex na mesma pasta, não está no `.gitignore`. Nenhuma das ferramentas registradas lê `AGENTS.local.md` (ver [tools.md](tools.md)).
+- **O que falta.** A exclusão do Git não impede que um arquivo local substitua as instruções na máquina. Veja em [tools.md](tools.md) a ordem de leitura e as limitações das sobreposições locais.
 
 ### Segredo ou dado pessoal no repositório público
 
@@ -325,14 +382,68 @@ Riscos da troca de conta por pasta de perfil ([ADR 0022](adr/0022-account-profil
 - **Teto.** Não se aplica.
 - **Mitigação existente.** Actions fixadas por SHA de commit em `.github/workflows/`; `Cargo.lock` e `package-lock.json` versionados e usados com `--locked` e `npm ci --ignore-scripts`; avisos de segurança pelo `cargo deny`; CodeQL e Scorecard semanais, só avisando ([ADR 0013](adr/0013-only-fast-checks-block.md), `.github/workflows/weekly.yml`).
 - **Plano B.** Condição de reversão da ADR 0013 (a análise passa a bloquear).
-- **O que falta.** O job de revisão de dependências por PR está só descrito em comentário no `ci.yml`.
+- **O que falta.** Revisão de dependências por PR. O CI não tem esse job, e o `ci.yml` não traz mais o comentário que o previa; o gatilho que ele citava (existir `Cargo.lock` ou `package-lock.json`) já está cumprido. O limite para o job entrar no `ci-ok` está em [ci-timings.md](ci-timings.md).
 
 ### Código `unsafe`
 
 - **Descrição.** Erro de memória em chamada direta ao sistema.
-- **Impacto.** Falha ou brecha no host de terminais ou no executor de arquivos.
-- **Dono.** `ads-ptyhost` e `ads-adapter-fs`.
+- **Impacto.** Falha ou brecha no host de terminais, no executor de arquivos, no cofre, nas pastas privadas, no lançador ou na casca.
+- **Dono.** Os crates com exceção listados em [unsafe.md](unsafe.md).
 - **Teto.** Orçamento por crate em [unsafe.md](unsafe.md).
 - **Mitigação existente (implementada e testada).** `unsafe_code = "forbid"` no workspace; exceção só em um módulo Windows de cada crate, com cada bloco listado e comentado; o lint reprova a compilação fora deles.
 - **Plano B.** Não há.
-- **O que falta.** O cofre vai precisar de exceção própria quando ganhar código.
+- **O que falta.** Manter as chamadas nativas dentro do orçamento documentado em [docs/unsafe.md](unsafe.md).
+
+## Fila contínua
+
+Riscos da fila de tarefas ([fila contínua no núcleo](../crates/core/README.md#fila-contínua), [fila no daemon](../crates/daemon/README.md#fila-de-tarefas)).
+
+### Compatibilidade dos contratos da fila contínua
+
+- **Descrição.** O título da tarefa aceita marca combinante que não segue uma letra ou um número. O apelido e a origem já são os tipos comuns em `queue.task_created:3` e `:4` e em `record.queue-task:2` e `:3`, e o título é o tipo comum em `queue.task_created:4` e `record.queue-task:3`.
+- **Impacto.** Endurecer a regra do título exige versões novas da criação e do registro sem perder a leitura das existentes.
+- **Dono.** Núcleo e contratos.
+- **Teto.** Não se aplica.
+- **Mitigação existente.** As versões anteriores repetem as mesmas regras, conferidas contra os tipos comuns por `contracts/tools/corpus.test.mjs`.
+- **Plano B.** Exigir que marcas combinantes sigam letra ou número em uma versão futura do registro e da criação. Até lá, preservar a leitura das versões existentes.
+- **Tarefas sem título.** Uma tarefa criada pelas versões 1 a 3 de `queue.task_created` não registrou título nem ferramenta, e o registro reconstruído (`record.queue-task:3`) traz `null` nos dois. Não há como recuperar esses valores do log; a interface mostra a ausência em vez de um valor inventado. O daemon ainda não grava tarefas, então nenhum banco real tem uma tarefa assim.
+
+### Perda do contexto de admissão da fila
+
+- **Descrição.** Um trecho legado anterior à primeira política gravada pode ter limites históricos desconhecidos.
+- **Impacto.** O replay reconstrói as tarefas desse trecho, mas não valida os limites de admissão que não foram registrados.
+- **Dono.** Núcleo e produtor da fila.
+- **Teto.** O trecho legado da fila afetada. O teto de tentativas de cada tarefa continua verificável pelo seu evento de criação.
+- **Mitigação existente.** Filas novas registram a política inicial no primeiro evento. O replay aplica os limites gravados em ordem, e o teste de reabertura cobre uma redução no arquivo de configuração.
+- **Plano B.** Para admitir tarefas numa fila sem política gravada, o dono registra os limites a aplicar dali em diante. Se a cadeia do log falhar, manter a fila parada e recuperar um backup íntegro.
+- **O que falta.** Antes de habilitar a admissão no daemon, disponibilizar a gravação condicional de política pelo dono e recusar novas tarefas enquanto o replay devolver política ausente, conforme o [README do núcleo](../crates/core/README.md#fila-contínua).
+
+### Stream da fila no teto de eventos
+
+- **Descrição.** Ao atingir `queue_max_events` ([storage.toml](../defaults/storage.toml)), o `append` da fila recusa com `QueueFull` todo evento menos uma única `queue.stopped:1`: nenhuma ativação, admissão nem mudança de estado de tarefa entra, inclusive o fim de uma tarefa em `running`.
+- **Impacto.** A fila para de andar; a tarefa em execução fica em `running` no log até o teto subir. O gasto continua limitado, porque `queued → running` também é recusado.
+- **Dono.** Armazenamento e produtor da fila.
+- **Teto.** `queue_max_events` (padrão 100000, até 10000000) por fila; a leitura nunca recusa pelo tamanho.
+- **Mitigação existente.** Uma parada da fila ainda entra, então a partida registra a parada de uma fila cheia; o armazenamento recusa a segunda e qualquer outra versão. `QueueFull` é distinto de `Full` (disco cheio), e a mensagem de cada um diz o que fazer. Testes `a_lowered_cap_keeps_the_queue_history_readable` e `over_the_cap_only_one_replayable_stop_enters` em `crates/storage/src/queue_tests.rs`.
+- **Plano B.** O dono sobe `queue_max_events` e reabre, ou cria outra fila. Ao subir `admission_limit`, manter `queue_max_events` acima de `admission_limit` x `attempt_limit` x cerca de 4 eventos por tentativa (padrão: 1000 x 2 x 4 = 8000, folga de cerca de 12x).
+- **O que falta.** A interface já usa os comandos da fila, mas a API responde com erro interno quando a gravação esbarra no teto. Falta levar a mensagem específica de `QueueFull` ao dono.
+
+### Memória da leitura do stream da fila
+
+- **Descrição.** `read_queue` lê o stream inteiro da fila num único vetor antes do replay. As páginas de `read_page_limit` e `read_page_max_bytes` limitam cada leitura ao banco, não o total guardado em memória.
+- **Impacto.** Uma fila grande ocupa memória proporcional ao seu histórico na partida do daemon; no extremo, a leitura falha por falta de memória e a fila não volta.
+- **Dono.** Armazenamento e produtor da fila.
+- **Teto.** `queue_max_events` x `max_event_bytes` ([storage.toml](../defaults/storage.toml)), mais a expansão dos eventos interpretados: no padrão, 100000 x 1 MiB (cerca de 98 GiB no pior caso teórico); no máximo aceito, 10000000 x 1 MiB. Com eventos de algumas centenas de bytes, a estimativa (ainda não medida) é de dezenas de MiB no padrão.
+- **Mitigação existente.** Padrão de `queue_max_events` em 100000; eventos da fila pequenos por contrato; páginas da leitura limitadas.
+- **Plano B.** Replay incremental, página a página, sem guardar o stream; ou instantâneo autenticado do estado do replay para ler só a cauda.
+- **O que falta.** Medir a memória da leitura na partida com uma fila no teto padrão.
+
+### Carimbo adiantado aceito no replay da fila
+
+- **Descrição.** No replay, o relógio de cada criação é o próprio `ts` gravado, então `AheadOfClock` não dispara. Um produtor com a chave da cadeia HMAC, por erro ou de propósito, pode gravar uma criação com carimbo adiantado, e o replay a aceita. A admissão ao vivo recusaria essa criação. Com uma política gravada, o replay compara o `ts` de cada criação com o das criações anteriores da mesma fila e recusa a fila inteira (`Admission` com `BehindLastAdmission`) quando uma anterior fica mais de `clock_rewind_seconds` depois dele. A comparação usa segundos inteiros: a fração de cada carimbo é descartada antes de comparar, então uma anterior em `00:00:10.900Z` e uma posterior em `00:00:00Z` ficam a 10 segundos, não a 10,9. Antes da comparação, a última âncora gravada ajusta só as anteriores que ela cobre (`seq` até o da âncora) e que ainda estão mais de `clock_skew_seconds` adiante da criação comparada: essas contam no instante da âncora. Sem esse ajuste, vale o carimbo gravado: uma criação comum gravada depois da adiantada, sem âncora entre as duas, faz o replay recusar a fila na partida quando a adiantada fica mais de `clock_rewind_seconds` depois dela; dentro dessa tolerância, o replay a aceita e a adiantada conta na janela dela. No trecho sem política (`queue.created:1` antes do primeiro `queue.policy_changed:1`), o replay só confere que o carimbo é legível e que a origem não se repete; não compara os carimbos entre si.
+- **Impacto.** A criação adiantada deixa de contar as admissões anteriores na própria janela e passa a ocupar a janela das seguintes. Se o adiantamento passar de `clock_rewind_seconds`, as admissões ao vivo seguintes são recusadas com `BehindLastAdmission`: a fila trava em vez de abrir.
+- **Dono.** Produtor da fila.
+- **Teto.** `admission_limit` da política gravada, que independe de horário, e o teto de tentativas de cada tarefa.
+- **Mitigação existente (implementada e testada).** A admissão ao vivo recusa com `AheadOfClock` o `ts` mais de `clock_skew_seconds` adiante do `now` informado pelo produtor. A âncora do dono (`reanchor_admission_clock`) faz as criações cobertas que estão adiante do relógio contarem no instante da âncora. Ver o [README do núcleo](../crates/core/README.md#fila-contínua).
+- **Plano B.** O dono reancora a fila para retomar a admissão. Se o histórico estiver adulterado, manter a fila parada e recuperar o stream do backup íntegro antes de repetir o replay.
+- **O que falta.** O replay não compara os carimbos com o relógio real e, no trecho sem política, não compara os carimbos entre si. Na admissão ao vivo, uma criação anterior com carimbo adiante do novo pedido além de `clock_rewind_seconds` pode gerar `BehindLastAdmission`.

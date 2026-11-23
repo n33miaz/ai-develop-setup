@@ -1,0 +1,40 @@
+# Programas e control_dir relativos partem da pasta do binário.
+# Os caminhos *_config relativos partem da pasta do TOML com --config.
+# No Windows, o lançador acrescenta .exe aos padrões embutidos.
+daemon_program = "ads-daemon"
+ptyhost_program = "ads-ptyhost"
+shell_program = "ads-shell"
+# No Windows, abre a interface empacotada. Desative para usar o navegador.
+shell_autostart = true
+# Dimensões iniciais em pixels lógicos.
+shell_width = 960
+shell_height = 640
+shell_start_minimized = false
+# Prazo, em milissegundos, entre o pedido de fechamento da janela e o término forçado,
+# no sinal stop, na desistência do daemon e na troca de janela. 0 força o término na hora.
+shell_close_timeout_ms = 3000
+# daemon_config e ptyhost_config são opcionais. Sem eles, cada filho usa seus padrões.
+# Pasta exclusiva da instalação. Criada só para a conta atual; existente, é recusada se outra conta tiver acesso.
+control_dir = "launcher-control"
+# Nomes dentro da pasta de controle. Mantenha os padrões para clientes do supervisor.
+lock_file = "supervisor.lock"
+state_file = "state.json"
+restart_file = "restart"
+stop_file = "stop"
+
+# Intervalo de consulta dos processos e sinais, em milissegundos.
+poll_ms = 100
+# Espera inicial entre tentativas e teto para a progressão por duplicação.
+restart_initial_ms = 250
+restart_max_ms = 10000
+# Duração da janela móvel e limite de falhas por filho. Saídas e falhas de spawn contam.
+crash_window_ms = 600000
+crash_window_limit = 5
+
+# Nomes herdados pelos filhos. A sobreposição substitui toda a lista.
+# O lançador aplica também as proibições de defaults/harnesses.toml.
+child_env_allow = [
+  "SystemRoot", "windir", "ComSpec", "PATH", "PATHEXT",
+  "USERPROFILE", "APPDATA", "LOCALAPPDATA", "HOMEDRIVE", "HOMEPATH",
+  "TEMP", "TMP", "HOME", "TMPDIR", "LANG", "LC_ALL", "XDG_RUNTIME_DIR",
+]

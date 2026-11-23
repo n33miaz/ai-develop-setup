@@ -5,7 +5,7 @@
 use std::io;
 use std::path::Path;
 
-use super::{Error, Identity, Meta};
+use super::{Error, Identity, Meta, VolumeFacts};
 
 pub const HOLDS: bool = false;
 
@@ -35,6 +35,10 @@ impl Node {
         match self.never {}
     }
 
+    pub fn volume(&self) -> io::Result<VolumeFacts> {
+        match self.never {}
+    }
+
     pub fn hold(&self) -> io::Result<Self> {
         match self.never {}
     }
@@ -56,6 +60,10 @@ impl Node {
     }
 
     pub fn names(&self) -> io::Result<Vec<String>> {
+        self.names_limited(usize::MAX)
+    }
+
+    pub fn names_limited(&self, _limit: usize) -> io::Result<Vec<String>> {
         match self.never {}
     }
 

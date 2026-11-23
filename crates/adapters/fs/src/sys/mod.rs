@@ -16,7 +16,7 @@ pub use linux::{Claim, HOLDS, Node};
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
-pub use windows::{Claim, HOLDS, Node};
+pub use windows::{Claim, HOLDS, Node, NtStatusError};
 
 #[cfg(not(any(target_os = "linux", windows)))]
 mod unsupported;
@@ -32,8 +32,10 @@ pub enum Kind {
     Link,
 }
 
-/// Which object an entry is: the device and inode, or the volume and file id on Windows. Two
-/// spellings of one object have one identity; another object under the same name has another.
+/// Which object an entry is: the device and inode (with its birth time, where the system
+/// gives it), or the volume and file id on Windows. Two spellings of one object have one
+/// identity; another object under the same name has another only on a volume whose identity
+/// is stable (see [`VolumeFacts::stable`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Identity {
     pub volume: u64,
@@ -58,6 +60,80 @@ pub struct Meta {
     pub mount: Mount,
 }
 
+/// What the file system of a volume says about itself, read on an open entry of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VolumeFacts {
+    #[cfg_attr(not(windows), allow(dead_code))]
+    Windows {
+        /// `NTFS`, `ReFS`, `FAT32`, `exFAT`...
+        file_system: String,
+        /// Reached through a network redirector.
+        remote: bool,
+        /// The file system can open a file by its id: its ids name objects, not places.
+        open_by_id: bool,
+    },
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    Linux {
+        /// `f_type` of `statfs`.
+        magic: u64,
+        /// `statx` reports the birth time, which goes into the identity.
+        birth: bool,
+    },
+}
+
+// Linux file systems whose inode lives as long as its object; with the birth time in the
+// identity, an inode handed again to a new object gets a new identity.
+const EXT: u64 = 0xEF53;
+const XFS: u64 = 0x5846_5342;
+const BTRFS: u64 = 0x9123_683E;
+const TMPFS: u64 = 0x0102_1994;
+const F2FS: u64 = 0xF2F5_2010;
+const ZFS: u64 = 0x2FC1_2FC1;
+
+impl VolumeFacts {
+    /// Whether an object deleted and created again under the same name gets another identity.
+    /// NTFS and ReFS, local and able to open by id: yes. A known local Linux file system that
+    /// reports the birth time: yes, to the granularity of its clock. FAT, exFAT, a network
+    /// share and anything not listed here: no, or not known, which counts as no.
+    pub fn stable(&self) -> bool {
+        match self {
+            Self::Windows {
+                file_system,
+                remote,
+                open_by_id,
+            } => {
+                let local_ids = !remote && *open_by_id;
+                local_ids && matches!(file_system.as_str(), "NTFS" | "ReFS")
+            }
+            Self::Linux { magic, birth } => {
+                *birth && matches!(*magic, EXT | XFS | BTRFS | TMPFS | F2FS | ZFS)
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for VolumeFacts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Windows {
+                file_system,
+                remote,
+                open_by_id,
+            } => write!(
+                f,
+                "{file_system}{}{}",
+                if *remote { ", over the network" } else { "" },
+                if *open_by_id { "" } else { ", no open by id" }
+            ),
+            Self::Linux { magic, birth } => write!(
+                f,
+                "file system {magic:#x}{}",
+                if *birth { "" } else { ", no birth time" }
+            ),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Crossing {
     Same,
@@ -79,9 +155,9 @@ pub fn crossing(fence: &Mount, entry: &Mount) -> Crossing {
 
 #[derive(Debug)]
 pub enum Error {
-    Missing,
+    Missing(io::Error),
     /// The name is taken.
-    Exists,
+    Exists(io::Error),
     /// The entry under the name is not the object that was checked.
     Changed,
     /// The name reaches an entry the folder lists under another spelling.
@@ -93,9 +169,18 @@ pub enum Error {
 impl From<io::Error> for Error {
     fn from(error: io::Error) -> Self {
         match error.kind() {
-            io::ErrorKind::NotFound => Self::Missing,
-            io::ErrorKind::AlreadyExists => Self::Exists,
+            io::ErrorKind::NotFound => Self::Missing(error),
+            io::ErrorKind::AlreadyExists => Self::Exists(error),
             _ => Self::Io(error),
+        }
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Missing(error) | Self::Exists(error) | Self::Io(error) => Some(error),
+            _ => None,
         }
     }
 }
@@ -103,8 +188,8 @@ impl From<io::Error> for Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Missing => f.write_str("it does not exist"),
-            Self::Exists => f.write_str("the name is taken"),
+            Self::Missing(_) => f.write_str("it does not exist"),
+            Self::Exists(_) => f.write_str("the name is taken"),
             Self::Changed => f.write_str("it is not the entry that was checked"),
             Self::Alias => f.write_str("the folder lists it under another spelling"),
             Self::Io(error) => write!(f, "{error}"),
@@ -187,6 +272,61 @@ mod tests {
             crossing(&mount(Some(40), None), &mount(Some(40), Some(false))),
             Crossing::Same
         );
+    }
+
+    // Pure: the decision about volumes, with made-up answers of the system.
+
+    fn windows(file_system: &str, remote: bool, open_by_id: bool) -> VolumeFacts {
+        VolumeFacts::Windows {
+            file_system: file_system.to_owned(),
+            remote,
+            open_by_id,
+        }
+    }
+
+    #[test]
+    fn only_local_ntfs_and_refs_keep_identities_on_windows() {
+        assert!(windows("NTFS", false, true).stable());
+        assert!(windows("ReFS", false, true).stable());
+        for unstable in [
+            windows("FAT32", false, true),
+            windows("FAT", false, false),
+            windows("exFAT", false, true),
+            windows("UDF", false, false),
+            windows("", false, true),
+            // A share served by NTFS is still a share.
+            windows("NTFS", true, true),
+            windows("NTFS", false, false),
+            windows("ntfs", false, true),
+        ] {
+            assert!(!unstable.stable(), "{unstable}");
+        }
+    }
+
+    #[test]
+    fn only_known_local_linux_file_systems_with_a_birth_time_keep_identities() {
+        let linux = |magic, birth| VolumeFacts::Linux { magic, birth };
+        for magic in [EXT, XFS, BTRFS, TMPFS, F2FS, ZFS] {
+            assert!(linux(magic, true).stable(), "{magic:#x}");
+            // Without the birth time a freed inode handed again is the same identity.
+            assert!(!linux(magic, false).stable(), "{magic:#x}");
+        }
+        // vfat, exfat, nfs, smb, cifs, smb2, fuse, overlay, 9p, ntfs3, and an unknown one.
+        for magic in [
+            0x4d44,
+            0x2011_BAB0,
+            0x6969,
+            0x517B,
+            0xFF53_4D42,
+            0xFE53_4D42,
+            0x6573_5546,
+            0x794C_7630,
+            0x0102_1997,
+            0x7366_746E,
+            0,
+        ] {
+            assert!(!linux(magic, true).stable(), "{magic:#x}");
+        }
     }
 
     #[test]

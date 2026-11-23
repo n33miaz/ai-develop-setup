@@ -133,6 +133,8 @@ pub struct EventRoutingFallbackV1DataFrom {
 pub struct EventRoutingFallbackV1DataFromModel(String);
 
 impl EventRoutingFallbackV1DataFromModel {
+    pub const MAX_CHARS: usize = 128;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -147,7 +149,7 @@ impl EventRoutingFallbackV1DataFromModel {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        (1..=128).contains(&length)
+        (1..=Self::MAX_CHARS).contains(&length)
     }
 
     pub fn as_str(&self) -> &str {
@@ -196,6 +198,8 @@ pub struct EventRoutingFallbackV1DataTo {
 pub struct EventRoutingFallbackV1DataToModel(String);
 
 impl EventRoutingFallbackV1DataToModel {
+    pub const MAX_CHARS: usize = 128;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -210,7 +214,7 @@ impl EventRoutingFallbackV1DataToModel {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        (1..=128).contains(&length)
+        (1..=Self::MAX_CHARS).contains(&length)
     }
 
     pub fn as_str(&self) -> &str {

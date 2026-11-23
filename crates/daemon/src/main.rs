@@ -1,8 +1,9 @@
 //! Inicialização do daemon local.
 
+use ads_core::vault::Vault;
 use ads_daemon::api::{ApiError, LocalApi};
 use ads_daemon::pty_client::{ClientConfig, PtyClient};
-use ads_daemon::startup::load_config;
+use ads_daemon::startup::{InstanceLock, attach_product_controls, load_config};
 use ads_daemon::tool_launcher::ToolLauncher;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -14,13 +15,39 @@ fn print_launch_url(url: &mut String, out: &mut impl std::io::Write) -> std::io:
     result
 }
 
+#[cfg_attr(
+    test,
+    allow(dead_code, reason = "the integration target calls run directly")
+)]
+fn main() -> ExitCode {
+    run(ads_adapter_vault::OsVault)
+}
+
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> ExitCode {
+pub(crate) async fn run(vault: impl Vault + Send + Sync + 'static) -> ExitCode {
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let (config, host_config, tools) = load_config(std::env::args().skip(1))?;
-        let launcher = ToolLauncher::from_toml_str(
+        // The daemon runs as a common user: an elevated session would leave its files owned
+        // by the Administrators group.
+        ads_daemon::audit::check_session()?;
+        let mut args = std::env::args_os().skip(1).peekable();
+        let instance_lock = if args.next_if(|arg| arg == "--instance-lock").is_some() {
+            let path = args.next().ok_or("missing daemon instance lock path")?;
+            Some(InstanceLock::acquire(std::path::Path::new(&path))?)
+        } else {
+            None
+        };
+        let desktop = args.next_if(|arg| arg == "--desktop").is_some();
+        let args = args.map(|arg| arg.into_string().map_err(|_| "invalid daemon argument"));
+        let (config, host_config, tools, storage) =
+            load_config(args.collect::<Result<Vec<_>, _>>()?.into_iter())?;
+        let config = if desktop {
+            config.for_desktop()
+        } else {
+            config
+        };
+        let mut launcher = ToolLauncher::from_process_env(
             &tools,
-            ads_adapter_claude::process_env(),
+            ads_core::tool_launch::HostRules::host(),
             ads_adapter_claude::DiskProbe,
             ads_adapter_codex::DiskProbe,
         )?;
@@ -31,9 +58,26 @@ async fn main() -> ExitCode {
         .await
         .map_err(|_| ApiError::Unavailable)?
         .map_err(|_| ApiError::Unavailable)?;
+        let workdirs = launcher.check_workdirs(|warning| eprintln!("{warning}"));
+        let max_list_bytes = config.approval_list_max_bytes;
         let api = LocalApi::bind(config, host, Arc::new(launcher)).await?;
-        let mut url = zeroize::Zeroizing::new(api.launch_url()?);
-        print_launch_url(&mut url, &mut std::io::stdout()).map_err(|_| ApiError::Unavailable)?;
+        let api = attach_product_controls(
+            api,
+            storage,
+            vault,
+            instance_lock.as_ref(),
+            &workdirs,
+            max_list_bytes,
+        );
+        if desktop {
+            let mut bootstrap = zeroize::Zeroizing::new(api.desktop_bootstrap()?);
+            // A closed or unavailable window must not interrupt the daemon.
+            let _ = print_launch_url(&mut bootstrap, &mut std::io::stdout());
+        } else {
+            let mut url = zeroize::Zeroizing::new(api.launch_url()?);
+            print_launch_url(&mut url, &mut std::io::stdout())
+                .map_err(|_| ApiError::Unavailable)?;
+        }
         Ok(api.run().await?)
     }
     .await;
@@ -48,9 +92,9 @@ async fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     #[test]
     fn printed_url_is_one_line_and_erased_even_when_output_fails() {
+        use super::print_launch_url;
         let original = "http://localhost:5173/#core=ws://127.0.0.1:1234&token=credential-sentinel";
         let mut url = original.to_owned();
         let mut bytes = Vec::new();

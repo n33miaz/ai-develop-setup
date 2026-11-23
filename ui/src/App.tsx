@@ -24,11 +24,16 @@ import {
   type HarnessCatalog,
 } from './api'
 
+import { INVALID_PARAMS } from './api/contracts'
 import { sessionInput } from './api/session'
 
 import styles from './App.module.css'
 import { ConnectionStatus } from './components/ConnectionStatus'
 import { Sidebar } from './components/Sidebar/Sidebar'
+import { queueApprovals } from './api/queueApprovals'
+import { QueuePanel } from './components/QueuePanel'
+import { ApprovalsPanel } from './components/ApprovalsPanel'
+import { UsagePanel } from './components/UsagePanel/UsagePanel'
 import { eventByteSource, staticByteSource } from './components/Terminal/byteSource'
 import { Terminal } from './components/Terminal/Terminal'
 import { useT, type MessageKey, type Translate } from './i18n'
@@ -41,13 +46,22 @@ import {
   type SessionView,
 } from './model/views'
 import { sampleEvents, sampleOutput, type SampleEvents } from './sample/data'
+import { sampleUsage } from './sample/usage'
 import type { ThemePreference } from './theme/theme'
 import { useTheme } from './theme/useTheme'
 import type { SessionEvent } from './api'
 import { UpdateNotice } from './pwa/UpdateNotice'
 
+function QueueAndApprovals({ api }: { api: ReturnType<typeof queueApprovals> }) {
+  return (
+    <>
+      <QueuePanel api={api} />
+      <ApprovalsPanel api={api} />
+    </>
+  )
+}
+
 const NO_STREAMS: readonly string[] = []
-const INVALID_PARAMS = -32602
 
 const THEME_LABEL: Record<ThemePreference, MessageKey> = {
   system: 'theme.system',
@@ -146,6 +160,7 @@ export function App({
   const sidebarId = useId()
   const connection = useConnectionState(client)
   const generation = useConnectionGeneration(client)
+  const controls = useMemo(() => queueApprovals(client), [client])
   const { preference, cycle } = useTheme()
   const compact = useSyncExternalStore(subscribeCompact, isCompact)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -325,6 +340,7 @@ export function App({
   const liveCatalog =
     live && connection === 'connected' && catalog?.generation === generation ? catalog.value : null
   const listed = typeof liveCatalog === 'object' ? liveCatalog : null
+  const unavailableWorkdirs = listed?.missing_workdir_aliases
   const available = live ? (listed?.harnesses ?? NO_STREAMS) : harnesses
   // Conectada, só abre com um apelido que o núcleo anunciou.
   const workdirAlias = !live
@@ -341,7 +357,7 @@ export function App({
           ? FAILURE_NOTICE[liveCatalog]
           : liveCatalog.harnesses.length === 0
             ? 'harness.none'
-            : workdirAlias === undefined
+            : workdirAlias === undefined && !unavailableWorkdirs
               ? 'harness.noWorkdir'
               : null
 
@@ -594,6 +610,11 @@ export function App({
       {catalogNotice && (
         <p role={FAILURE_NOTICES.has(catalogNotice) ? 'alert' : 'status'}>{t(catalogNotice)}</p>
       )}
+      {unavailableWorkdirs && (
+        <p role="alert">
+          {t('harness.unavailableWorkdirs', { aliases: unavailableWorkdirs.join(', ') })}
+        </p>
+      )}
 
       {warningMessages.length > 0 && <p role="alert">{warningMessages.join(' ')}</p>}
 
@@ -623,6 +644,8 @@ export function App({
 
       <p className={styles.notice}>{t(live ? 'notice.live' : 'notice.wip')}</p>
       <UpdateNotice className={styles.notice} />
+      <UsagePanel tools={live ? null : sampleUsage} />
+      {live && connection === 'connected' && <QueueAndApprovals key={generation} api={controls} />}
       <div className={styles.body}>
         <Sidebar
           id={sidebarId}

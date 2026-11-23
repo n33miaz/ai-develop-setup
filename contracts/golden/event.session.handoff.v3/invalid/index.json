@@ -1,0 +1,32 @@
+{
+  "status.json": {
+    "rule": "O estado deve indicar proposta, aceite ou recusa.",
+    "keyword": "enum",
+    "instancePath": "/data/status"
+  },
+  "stream.json": {
+    "rule": "O evento pertence à família handoff.",
+    "keyword": "pattern",
+    "instancePath": "/stream"
+  },
+  "class.json": {
+    "rule": "O evento tem classificação privada.",
+    "keyword": "const",
+    "instancePath": "/data_class"
+  },
+  "accepted-actor.json": {
+    "rule": "Aceite e recusa exigem um aparelho como autor.",
+    "keyword": "const",
+    "instancePath": "/actor/kind"
+  },
+  "declined-actor.json": {
+    "rule": "Aceite e recusa exigem um aparelho como autor.",
+    "keyword": "const",
+    "instancePath": "/actor/kind"
+  },
+  "alternative.json": {
+    "rule": "A alternativa aceita é um identificador opaco do catálogo.",
+    "keyword": "pattern",
+    "instancePath": "/data/alternative_id"
+  }
+}

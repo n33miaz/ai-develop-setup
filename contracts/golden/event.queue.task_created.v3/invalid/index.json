@@ -1,0 +1,27 @@
+{
+  "manual-agent.json": {
+    "rule": "Origem manual exige um aparelho.",
+    "keyword": "const",
+    "instancePath": "/actor/kind"
+  },
+  "manual-daemon.json": {
+    "rule": "Origem manual exige um aparelho.",
+    "keyword": "const",
+    "instancePath": "/actor/kind"
+  },
+  "wrong-version.json": {
+    "rule": "O tipo identifica a versão do evento.",
+    "keyword": "const",
+    "instancePath": "/type"
+  },
+  "alias-upper.json": {
+    "rule": "O apelido segue o tipo comum de apelido.",
+    "keyword": "pattern",
+    "instancePath": "/data/workspace_alias"
+  },
+  "issue-zero.json": {
+    "rule": "A issue é um número positivo.",
+    "keyword": "minimum",
+    "instancePath": "/data/origin/ref"
+  }
+}

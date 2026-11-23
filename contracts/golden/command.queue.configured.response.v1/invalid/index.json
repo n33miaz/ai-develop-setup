@@ -1,0 +1,31 @@
+{
+  "01-missing-queue-id.json": {
+    "rule": "O resultado sempre traz o id da fila.",
+    "keyword": "required",
+    "instancePath": "/result",
+    "params": {
+      "missingProperty": "queue_id"
+    }
+  },
+  "02-with-state.json": {
+    "rule": "O resultado traz só o id; o estado vem de queue.get.",
+    "keyword": "additionalProperties",
+    "instancePath": "/result",
+    "params": {
+      "additionalProperty": "state"
+    }
+  },
+  "03-queue-id-not-id.json": {
+    "rule": "O id segue o formato comum de id.",
+    "keyword": "pattern",
+    "instancePath": "/result/queue_id"
+  },
+  "04-with-accepted.json": {
+    "rule": "A resposta de queue.configured e a de um comando com efeito não se misturam.",
+    "keyword": "additionalProperties",
+    "instancePath": "/result",
+    "params": {
+      "additionalProperty": "accepted"
+    }
+  }
+}

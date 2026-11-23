@@ -6,17 +6,23 @@ pub enum StorageError {
     Configuration,
     Io,
     Busy,
+    Unavailable,
     Constraint,
     ReadOnly,
     Permission,
     CantOpen,
+    /// The disk is full, or at open the database passes `inspection_max_bytes`.
     Full,
+    /// A queue stream reached `queue_max_events`: raise it and reopen, or create another queue.
+    QueueFull,
     Corrupt,
     ForeignApplication,
     SchemaTooNew,
     UnsupportedSchema,
     /// Written by a pre-release format no build reads any more; move the file aside.
     RetiredSchema,
+    /// A version 3 log returned to a previously used key; migration would break verification.
+    LegacyKeyReuse,
     PragmaMismatch,
     /// The product connection refused a statement outside its allow-list.
     Denied,
@@ -25,6 +31,21 @@ pub enum StorageError {
     /// A key with this id was registered with different key material.
     WrongKey,
     KeyUnavailable,
+    AnchorUnavailable,
+    AnchorMissing,
+    NonCanonicalDatabase,
+    AuditDirectoryNotPrivate,
+    /// The session gives the files it creates an owner other than the user (an elevated
+    /// Windows session gives them the Administrators group).
+    ElevatedSession,
+    AuditDatabaseOnNetwork,
+    AuditDatabaseInWorkdir,
+    DuplicateDatabaseIdentity,
+    AnchorMismatch,
+    /// The chain could not be authenticated after an external commit.
+    HistoryChanged {
+        position: i64,
+    },
     /// Ciphertext, nonce or an authenticated clear column was altered.
     Tampered,
     TooLarge,
@@ -38,7 +59,29 @@ pub enum StorageError {
 
 impl fmt::Display for StorageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "storage: {self:?}")
+        match self {
+            Self::AuditDirectoryNotPrivate => f.write_str(
+                "storage: check ownership and permissions on the audit folder and database files; a run as administrator (elevated) leaves its files owned by the Administrators group; on Windows, open Properties > Security > Advanced, set your account as owner, disable inheritance, and keep access only for your account and SYSTEM",
+            ),
+            Self::ElevatedSession => f.write_str(
+                "storage: this program is running as administrator (elevated), so the files it creates would belong to the Administrators group and be refused afterwards; close it and start it again from a normal, non-elevated session",
+            ),
+            Self::AuditDatabaseOnNetwork => f.write_str(
+                "storage: set audit_database_path to a local drive",
+            ),
+            Self::AuditDatabaseInWorkdir => f.write_str(
+                "storage: set audit_database_path outside the configured work folders",
+            ),
+            Self::Full => write!(
+                f,
+                "storage: Full: the disk is full, or the database passes inspection_max_bytes at open; free space and retry, or raise inspection_max_bytes"
+            ),
+            Self::QueueFull => write!(
+                f,
+                "storage: QueueFull: the queue reached queue_max_events; raise queue_max_events in storage.toml and reopen, or create another queue"
+            ),
+            _ => write!(f, "storage: {self:?}"),
+        }
     }
 }
 
@@ -103,6 +146,13 @@ impl From<std::io::Error> for StorageError {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn elevated_session_names_the_cause_and_the_action() {
+        let text = super::StorageError::ElevatedSession.to_string();
+        assert!(text.contains("Administrators group"), "{text}");
+        assert!(text.contains("non-elevated session"), "{text}");
+    }
+
     use super::*;
     #[test]
     fn sqlite_error_categories_are_distinct() {
@@ -135,6 +185,14 @@ mod tests {
         ] {
             assert_eq!(StorageError::from(std::io::Error::from(kind)), expected);
         }
+        assert_ne!(StorageError::QueueFull, StorageError::Full);
+        let full = StorageError::Full.to_string();
+        let queue_full = StorageError::QueueFull.to_string();
+        assert!(full.contains("free space") && !full.contains("queue_max_events"));
+        assert!(queue_full.contains("raise queue_max_events") && !queue_full.contains("disk"));
+        assert!(!full.contains("  "), "{full}");
+        assert!(!queue_full.contains("  "), "{queue_full}");
+        assert_eq!(StorageError::Busy.to_string(), "storage: Busy");
         assert_eq!(
             StorageError::from(rusqlite::Error::QueryReturnedNoRows),
             StorageError::UnsupportedSchema

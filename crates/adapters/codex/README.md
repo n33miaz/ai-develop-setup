@@ -5,8 +5,8 @@ Adapta a ferramenta de linha de comando Codex ao contrato do núcleo: transforma
 ## Uso
 
 ```rust
-let config = CodexConfig::from_toml_str(&texto_do_arquivo_do_usuario, NameCase::host())?;
-let params = open_params(&config, &pedido.params, process_env(), &DiskProbe)?;
+let config = CodexConfig::from_toml_str(&texto_do_arquivo_do_usuario, HostRules::host())?;
+let params = open_params(&config, &pedido.params, process_env(config.env()), &DiskProbe)?;
 ```
 
 O adaptador seleciona a tabela `[tools.codex]`. A leitura das camadas, a

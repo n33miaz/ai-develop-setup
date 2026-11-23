@@ -13,6 +13,8 @@ use ads_core::gate::Event;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JournalError(pub String);
 
+impl std::error::Error for JournalError {}
+
 impl fmt::Display for JournalError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)

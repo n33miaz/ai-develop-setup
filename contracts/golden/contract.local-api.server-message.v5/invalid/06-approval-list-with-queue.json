@@ -1,0 +1,59 @@
+{
+  "jsonrpc": "2.0",
+  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAD",
+  "result": {
+    "approvals": [
+      {
+        "action_id": "act-03",
+        "approval_id": "appr-03",
+        "plan_hash": "sha256:5486cc58827bffeb2204a994db3d77fe6c8f2c863eb73de6e2a60802784293cb",
+        "risk": "medium",
+        "summary": "Limpar arquivos temporários do projeto",
+        "requested_at": "2030-01-02T03:04:05Z",
+        "expires_at": "2030-01-02T03:19:05Z",
+        "not_approvable": [
+          "estimate_unknown",
+          "wildcard_target",
+          "definitive_recursive_delete"
+        ],
+        "plan": {
+          "version": 2,
+          "action_id": "act-03",
+          "plan_hash": "sha256:5486cc58827bffeb2204a994db3d77fe6c8f2c863eb73de6e2a60802784293cb",
+          "operation": "fs.clean_untracked",
+          "work_root": "C:\\work\\proj",
+          "destination": null,
+          "targets": [
+            {
+              "path": "C:\\work\\proj\\cache",
+              "pattern": "*.tmp",
+              "repo_root": false
+            },
+            {
+              "path": "C:\\work\\proj\\out",
+              "pattern": null,
+              "repo_root": false
+            }
+          ],
+          "estimate": null,
+          "verdict": {
+            "decision": "requires_approval",
+            "risk": "medium",
+            "reasons": [
+              {
+                "rule": "estimate_unknown",
+                "subject": "C:\\work\\proj"
+              }
+            ]
+          },
+          "quarantined": false
+        },
+        "effects_hash": null,
+        "effects": null,
+        "effects_error": null
+      }
+    ],
+    "queue_id": "queue-01",
+    "more": false
+  }
+}

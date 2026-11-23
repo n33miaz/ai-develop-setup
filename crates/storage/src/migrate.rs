@@ -2,7 +2,7 @@ use crate::{
     StorageError,
     open::{APPLICATION_ID, SCHEMA_VERSION},
 };
-use rusqlite::{Connection, TransactionBehavior};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 
 pub(crate) const META_SQL: &str =
     "CREATE TABLE meta (key TEXT PRIMARY KEY, value BLOB NOT NULL) STRICT, WITHOUT ROWID";
@@ -68,10 +68,106 @@ BEGIN
 END;
 "#;
 
+const GENESIS_SQL: &str = r#"
+CREATE TABLE log_genesis (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  link BLOB NOT NULL CHECK (length(link) = 32)
+) STRICT, WITHOUT ROWID;
+CREATE TRIGGER log_genesis_no_update BEFORE UPDATE ON log_genesis
+BEGIN SELECT RAISE(ABORT, 'append-only'); END;
+CREATE TRIGGER log_genesis_no_delete BEFORE DELETE ON log_genesis
+BEGIN SELECT RAISE(ABORT, 'append-only'); END;
+CREATE TRIGGER log_genesis_no_replace BEFORE INSERT ON log_genesis
+BEGIN
+  SELECT RAISE(ABORT, 'append-only')
+  WHERE EXISTS (SELECT 1 FROM log_genesis WHERE singleton = NEW.singleton);
+END;
+DROP TRIGGER event_append_order;
+CREATE TRIGGER event_append_order BEFORE INSERT ON event
+BEGIN
+  SELECT RAISE(ABORT, 'append-only')
+  WHERE EXISTS (SELECT 1 FROM event WHERE id = NEW.id OR position = NEW.position);
+  SELECT RAISE(ABORT, 'seq')
+  WHERE NEW.seq IS NOT coalesce((SELECT max(seq) FROM event WHERE stream = NEW.stream), 0) + 1;
+  SELECT RAISE(ABORT, 'chain')
+  WHERE NEW.position IS NOT coalesce((SELECT max(position) FROM event), 0) + 1
+     OR NEW.prev_chain IS NOT coalesce(
+          (SELECT chain FROM event ORDER BY position DESC LIMIT 1),
+          (SELECT link FROM log_genesis WHERE singleton = 1));
+END;
+"#;
+
+/// Version 6: the database itself binds a `queue.*` type to a `queue/<id>` stream and back,
+/// as the table CHECKs bind the gate families. A trigger, because SQLite adds a table CHECK
+/// only by rebuilding the append-only table. `<id>` is a `common.id:1`, 1 to 64 ASCII characters,
+/// so its bytes and characters agree unless a NUL ends the text early for `length()`.
+const QUEUE_BINDING_SQL: &str = r#"
+CREATE TRIGGER event_queue_binding BEFORE INSERT ON event
+BEGIN
+  SELECT RAISE(ABORT, 'queue')
+  WHERE (substr(NEW.type, 1, 20) = 'urn:ads:event:queue.') IS NOT (substr(NEW.stream, 1, 6) = 'queue/')
+     OR (substr(NEW.stream, 1, 6) = 'queue/'
+         AND (length(CAST(NEW.stream AS BLOB)) NOT BETWEEN 7 AND 70
+              OR length(CAST(NEW.stream AS TEXT)) <> length(CAST(NEW.stream AS BLOB))));
+END;
+"#;
+
+#[cfg(test)]
+pub(crate) const DROP_QUEUE_BINDING_SQL: &str = "DROP TRIGGER event_queue_binding;";
+
+/// Rows a version 3 to 5 file may hold that the version 6 binding refuses.
+const QUEUE_BINDING_VIOLATIONS: &str = "SELECT EXISTS (
+    SELECT 1 FROM event
+    WHERE (substr(type, 1, 20) = 'urn:ads:event:queue.') IS NOT (substr(stream, 1, 6) = 'queue/')
+       OR (substr(stream, 1, 6) = 'queue/'
+           AND (length(CAST(stream AS BLOB)) NOT BETWEEN 7 AND 70
+                OR length(CAST(stream AS TEXT)) <> length(CAST(stream AS BLOB))))
+)";
+
 /// `(version, script)`: each script takes the file from the previous listed
 /// version to `version`. Version 2 (a pre-release event log) is retired: its rows
 /// cannot be re-sealed without the key, which opening never receives.
-const STEPS: [(i64, &str); 2] = [(1, META_SQL), (3, EVENT_LOG_SQL)];
+const STEPS: [(i64, &str); 5] = [
+    (1, META_SQL),
+    (3, EVENT_LOG_SQL),
+    (4, GENESIS_SQL),
+    (5, GATE_JOURNAL_SQL),
+    (6, QUEUE_BINDING_SQL),
+];
+
+const GATE_JOURNAL_SQL: &str = r#"
+CREATE INDEX event_action_history ON event(action_id, position) WHERE action_id IS NOT NULL;
+CREATE INDEX event_approval_history ON event(approval_id, position) WHERE approval_id IS NOT NULL;
+CREATE UNIQUE INDEX event_gate_action ON event(action_id)
+WHERE format = 3 AND type IN ('urn:ads:event:action.planned:1', 'urn:ads:event:action.denied:1');
+CREATE UNIQUE INDEX event_gate_start ON event(action_id)
+WHERE format = 3 AND type = 'urn:ads:event:action.started:1';
+CREATE UNIQUE INDEX event_gate_approval ON event(approval_id)
+WHERE format = 3 AND type = 'urn:ads:event:approval.requested:2';
+CREATE TRIGGER event_gate_no_replace BEFORE INSERT ON event
+WHEN NEW.format = 3
+BEGIN
+  SELECT RAISE(ABORT, 'append-only') WHERE EXISTS (
+    SELECT 1 FROM event WHERE format = 3 AND (
+      (action_id = NEW.action_id
+         AND type IN ('urn:ads:event:action.planned:1', 'urn:ads:event:action.denied:1')
+         AND NEW.type IN ('urn:ads:event:action.planned:1', 'urn:ads:event:action.denied:1'))
+      OR (action_id = NEW.action_id AND type = 'urn:ads:event:action.started:1' AND NEW.type = type)
+      OR (approval_id = NEW.approval_id AND type = 'urn:ads:event:approval.requested:2' AND NEW.type = type)
+    )
+  );
+END;
+"#;
+#[cfg(test)]
+pub(crate) const DROP_GATE_JOURNAL_SQL: &str = "
+DROP TRIGGER event_gate_no_replace;
+DROP INDEX event_action_history;
+DROP INDEX event_approval_history;
+DROP INDEX event_gate_action;
+DROP INDEX event_gate_start;
+DROP INDEX event_gate_approval;
+";
+
 pub(crate) const RETIRED: [i64; 1] = [2];
 
 /// Refuses versions this build never reads: negative, newer or retired.
@@ -125,12 +221,17 @@ pub(crate) fn schema(c: &Connection) -> Result<Vec<SchemaRow>, StorageError> {
 }
 
 pub(crate) fn migrate(connection: &mut Connection) -> Result<(), StorageError> {
-    migrate_with(connection, &STEPS)
+    migrate_with(connection, &STEPS, || {
+        let mut link = [0; 32];
+        getrandom::fill(&mut link).map_err(|_| crate::cipher::CipherError::Random)?;
+        Ok(link)
+    })
 }
 
 fn migrate_with(
     connection: &mut Connection,
     steps: &[(i64, &'static str)],
+    random_link: impl FnOnce() -> Result<[u8; 32], StorageError>,
 ) -> Result<(), StorageError> {
     let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let version: i64 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
@@ -139,9 +240,44 @@ fn migrate_with(
     if schema(&tx)? != expected_with(steps, version)? {
         return Err(StorageError::UnsupportedSchema);
     }
+    if version == 3 {
+        let reused_key: bool = tx.query_row(
+            "SELECT EXISTS (
+                SELECT key_id
+                FROM (
+                    SELECT key_id, lag(key_id) OVER (ORDER BY position) AS previous_key
+                    FROM event
+                )
+                WHERE key_id IS NOT previous_key
+                GROUP BY key_id
+                HAVING count(*) > 1
+            )",
+            [],
+            |row| row.get(0),
+        )?;
+        if reused_key {
+            return Err(StorageError::LegacyKeyReuse);
+        }
+    }
+    // The binding only adds a check: a file holding a row it refuses stays as it was.
+    if matches!(version, 3..=5) && tx.query_row(QUEUE_BINDING_VIOLATIONS, [], |row| row.get(0))? {
+        return Err(StorageError::UnsupportedSchema);
+    }
     if version < SCHEMA_VERSION {
         for step in scripts(steps, version, SCHEMA_VERSION) {
             tx.execute_batch(step)?;
+        }
+        if version < 4 {
+            let first_link: Option<Vec<u8>> = tx
+                .query_row("SELECT prev_chain FROM event WHERE position = 1", [], |r| {
+                    r.get(0)
+                })
+                .optional()?;
+            let link = match first_link {
+                Some(link) => link,
+                None => random_link()?.to_vec(),
+            };
+            tx.execute("INSERT INTO log_genesis VALUES (1, ?1)", [link])?;
         }
         tx.pragma_update(None, "application_id", APPLICATION_ID)?;
         tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
@@ -171,18 +307,195 @@ mod tests {
 
     #[test]
     fn failure_in_the_middle_leaves_version_one_intact() {
-        let mut c = Connection::open_in_memory().unwrap();
+        let path = crate::open::tests::test_directory().join("audit.db");
+        let mut c = Connection::open(&path).unwrap();
+        c.pragma_update(None, "journal_mode", "WAL").unwrap();
         c.execute_batch(META_SQL).unwrap();
+        c.execute("INSERT INTO meta VALUES ('kept', x'01')", [])
+            .unwrap();
         c.pragma_update(None, "user_version", 1).unwrap();
         let before = schema(&c).unwrap();
-        // The second script creates a table, then fails.
-        let broken: [(i64, &str); 2] = [(1, META_SQL), (3, "CREATE TABLE half (x); CREATE TABLE")];
-        assert!(migrate_with(&mut c, &broken).is_err());
+        let broken = [
+            (1, META_SQL),
+            (3, EVENT_LOG_SQL),
+            (4, "CREATE TABLE half (x); CREATE TABLE"),
+        ];
+        assert!(migrate_with(&mut c, &broken, || unreachable!()).is_err());
+        drop(c);
+        let mut c = Connection::open(&path).unwrap();
         assert_eq!(version(&c), 1);
         assert_eq!(schema(&c).unwrap(), before);
+        assert_eq!(
+            c.query_row("SELECT value FROM meta WHERE key = 'kept'", [], |r| r
+                .get::<_, Vec<u8>>(0))
+                .unwrap(),
+            [1]
+        );
         // The real steps still migrate the same file afterwards.
         migrate(&mut c).unwrap();
         assert_eq!(version(&c), SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn version_three_authenticated_chain_survives_migration_and_append() {
+        use crate::cipher::{CipherError, KeyId, KeyProvider, SecretKey};
+        use ads_contracts::{CommonUlidV1, EventEnvelopeV1};
+
+        struct TestKeys;
+        impl KeyProvider for TestKeys {
+            fn current(&self) -> Result<(KeyId, SecretKey), CipherError> {
+                Ok((KeyId::new("key-a")?, SecretKey::new(&[1; 32])))
+            }
+
+            fn by_id(&self, _: &KeyId) -> Result<SecretKey, CipherError> {
+                Ok(SecretKey::new(&[1; 32]))
+            }
+        }
+
+        let path = crate::open::tests::test_directory().join("audit.db");
+        let config = crate::StorageConfig::defaults();
+        let open = || crate::EventLog::open_unanchored(&path, &config, Box::new(TestKeys)).unwrap();
+        let event = |n| {
+            let mut event: EventEnvelopeV1 = serde_json::from_str(include_str!(
+                "../../../contracts/golden/event.envelope.v1/valid/01-base.json"
+            ))
+            .unwrap();
+            event.seq = std::num::NonZeroU64::new(n).unwrap();
+            event.id = CommonUlidV1::new(format!("01J{n:023}")).unwrap();
+            event
+        };
+
+        let prepare_v3 = |path: &std::path::Path| {
+            let open =
+                || crate::EventLog::open_unanchored(path, &config, Box::new(TestKeys)).unwrap();
+            drop(open());
+            let c = Connection::open(path).unwrap();
+            let update_trigger: Option<String> = c
+                .query_row(
+                    "SELECT (SELECT sql FROM sqlite_schema WHERE name = 'log_genesis_no_update')",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            c.execute_batch(
+                "DROP TRIGGER IF EXISTS log_genesis_no_update;
+                 UPDATE log_genesis SET link = zeroblob(32);",
+            )
+            .unwrap();
+            if let Some(sql) = update_trigger {
+                c.execute_batch(&sql).unwrap();
+            }
+            drop(c);
+
+            let mut log = open();
+            log.append(&event(1)).unwrap();
+            log.append(&event(2)).unwrap();
+            assert_eq!(log.verify_chain(), Ok(2));
+            drop(log);
+
+            let c = Connection::open(path).unwrap();
+            let old_trigger = expected_schema(3)
+                .unwrap()
+                .into_iter()
+                .find(|(_, name, _, _)| name == "event_append_order")
+                .unwrap()
+                .3
+                .unwrap();
+            c.execute_batch(DROP_QUEUE_BINDING_SQL).unwrap();
+            c.execute_batch(DROP_GATE_JOURNAL_SQL).unwrap();
+            c.execute_batch("DROP TRIGGER event_append_order; DROP TABLE log_genesis;")
+                .unwrap();
+            c.execute_batch(&old_trigger).unwrap();
+            c.pragma_update(None, "user_version", 3).unwrap();
+            assert_eq!(schema(&c).unwrap(), expected_schema(3).unwrap());
+            let first_link: Vec<u8> = c
+                .query_row("SELECT prev_chain FROM event WHERE position = 1", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            assert_eq!(first_link, [0; 32]);
+            drop(c);
+        };
+        prepare_v3(&path);
+        let second = crate::open::tests::test_directory().join("audit.db");
+        prepare_v3(&second);
+
+        struct Unbound;
+        impl crate::anchor::AnchorStore for Unbound {
+            fn can_create(&self) -> Result<bool, StorageError> {
+                Ok(true)
+            }
+
+            fn read(
+                &self,
+                _: crate::anchor::DatabaseId,
+            ) -> Result<Option<crate::anchor::Commitment>, StorageError> {
+                Ok(None)
+            }
+
+            fn store(
+                &self,
+                _: crate::anchor::DatabaseId,
+                _: &crate::anchor::Commitment,
+            ) -> Result<(), StorageError> {
+                unreachable!()
+            }
+        }
+        let identity = |path: &std::path::Path| {
+            crate::EventLog::plan_reanchor(path, &config, Box::new(TestKeys), &Unbound)
+                .unwrap()
+                .summary()
+                .proposed_id
+        };
+        let first_id = identity(&path);
+        assert_ne!(first_id, [0; 32]);
+        assert_ne!(first_id, identity(&second));
+
+        let mut log = open();
+        assert_eq!(log.verify_chain(), Ok(2));
+        let stored = log.read_stream(&event(1).stream, 1, 2).unwrap();
+        assert_eq!(stored[0].event, event(1));
+        assert_eq!(stored[1].event, event(2));
+        assert_eq!(log.append(&event(3)).unwrap().get(), 3);
+        assert_eq!(log.verify_chain(), Ok(3));
+        drop(log);
+        assert_eq!(identity(&path), first_id);
+    }
+
+    #[test]
+    fn random_failure_leaves_empty_version_three_unchanged() {
+        let mut c = Connection::open_in_memory().unwrap();
+        c.execute_batch(META_SQL).unwrap();
+        c.execute_batch(EVENT_LOG_SQL).unwrap();
+        c.pragma_update(None, "user_version", 3).unwrap();
+        let error = StorageError::from(crate::cipher::CipherError::Random);
+        assert_eq!(migrate_with(&mut c, &STEPS, || Err(error)), Err(error));
+        assert_eq!(version(&c), 3);
+        assert_eq!(schema(&c).unwrap(), expected_schema(3).unwrap());
+        migrate_with(&mut c, &STEPS, || Ok([7; 32])).unwrap();
+        let link: Vec<u8> = c
+            .query_row("SELECT link FROM log_genesis", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(link, [7; 32]);
+        c.execute(
+            "INSERT INTO cipher_key VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["key-a", "xchacha20poly1305", [0_u8; 24], [0_u8; 16]],
+        )
+        .unwrap();
+        let error = c
+            .execute(
+                "INSERT INTO event VALUES (
+                1, 1, '01J00000000000000000000001', 'urn:ads:event:task.noted:1',
+                '2026-11-19T12:00:00Z', 'task/t1', 1, 'device', 'phone',
+                NULL, 'private', NULL, NULL, 'key-a', zeroblob(24), zeroblob(16),
+                zeroblob(32), zeroblob(32)
+            )",
+                [],
+            )
+            .unwrap_err();
+        assert!(
+            matches!(error, rusqlite::Error::SqliteFailure(_, Some(message)) if message == "chain")
+        );
     }
 
     #[test]

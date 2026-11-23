@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use crate::child_env::{EnvLayer, EnvPolicy, EnvPolicyError, NameCase};
-use crate::gate::{AbsPath, PathError};
+use crate::gate::{AbsPath, PathError, PathStyle};
 use ads_contracts::{
     CommonIdV1, ContractPtyHostRequestV1SessionOpenParamsArgsItem as ArgItem,
     ContractPtyHostRequestV1SessionOpenParamsCwd as Cwd,
@@ -13,7 +13,7 @@ use ads_contracts::{
 };
 use serde::Deserialize;
 
-use super::Harness;
+use super::{Harness, ProfileBinding, SwitchPolicy};
 
 pub(super) const DEFAULTS_TOML: &str = include_str!("../../../../defaults/harnesses.toml");
 
@@ -21,6 +21,7 @@ pub(super) const DEFAULTS_TOML: &str = include_str!("../../../../defaults/harnes
 #[serde(deny_unknown_fields)]
 struct FileLayer {
     env: Option<EnvLayer>,
+    accounts: Option<BTreeMap<String, BTreeMap<String, ProfileLayer>>>,
     workdirs: Option<BTreeMap<String, String>>,
     /// Other tools' tables belong to other adapters and are not read here.
     tools: Option<BTreeMap<String, toml::Table>>,
@@ -32,6 +33,14 @@ struct ToolLayer {
     program: Option<String>,
     args: Option<Vec<String>>,
     mode: Option<Mode>,
+    switch: Option<super::SwitchMode>,
+    switch_at_pct: Option<u8>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProfileLayer {
+    profile_dir: String,
 }
 
 /// How the tool is used. Headless use is not offered.
@@ -39,6 +48,47 @@ struct ToolLayer {
 #[serde(rename_all = "lowercase")]
 pub enum Mode {
     Interactive,
+}
+
+/// The rules of the system the tool runs on: how it compares variable names and how it writes
+/// an absolute path. Passed in, so that both systems' rules can be checked on either.
+///
+/// ```compile_fail,E0574
+/// use ads_core::{child_env::NameCase, gate::PathStyle, tool_launch::HostRules};
+/// let _ = HostRules { case: NameCase::Sensitive, paths: PathStyle::Windows };
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostRules {
+    Windows,
+    Posix,
+}
+
+impl HostRules {
+    pub const WINDOWS: Self = Self::Windows;
+    pub const POSIX: Self = Self::Posix;
+
+    const fn case(self) -> NameCase {
+        match self {
+            Self::Windows => NameCase::Insensitive,
+            Self::Posix => NameCase::Sensitive,
+        }
+    }
+
+    const fn paths(self) -> PathStyle {
+        match self {
+            Self::Windows => PathStyle::Windows,
+            Self::Posix => PathStyle::Posix,
+        }
+    }
+
+    /// The rules of the system this code runs on.
+    pub const fn host() -> Self {
+        if cfg!(windows) {
+            Self::WINDOWS
+        } else {
+            Self::POSIX
+        }
+    }
 }
 
 /// Why the parameters were refused. Carries a key, a position or a reason code, never the
@@ -54,6 +104,9 @@ pub enum ConfigError {
     /// The program path is not absolute and literal.
     Program(PathError),
     ProgramTooLong,
+    /// The program path is absolute only in the other system's style (`/usr/bin/tool` on
+    /// Windows, `C:\tool.exe` elsewhere), where it would not name this file.
+    ProgramOtherSystem,
     /// Too long, or with NUL or another control character.
     Argument(usize),
     /// Entries of `[workdirs]` count the shipped ones first, each layer in name order.
@@ -65,6 +118,20 @@ pub enum ConfigError {
     WorkdirTooLong(usize),
     /// A drive root or `/`: the tool would work on the whole disk.
     WorkdirIsRoot(usize),
+    /// Absolute only in the other system's style, like [`ConfigError::ProgramOtherSystem`].
+    WorkdirOtherSystem(usize),
+    ProfileAlias(usize),
+    ProfileDir {
+        index: usize,
+        error: PathError,
+    },
+    ProfileDirTooLong(usize),
+    ProfileDirIsRoot(usize),
+    ProfileDirForeignStyle(usize),
+    ProfileDirOverlapsWorkdir(usize),
+    ProfileDirsOverlap,
+    ProfileUnsupported,
+    SwitchPolicy,
 }
 
 impl fmt::Display for ConfigError {
@@ -78,6 +145,9 @@ impl fmt::Display for ConfigError {
             Self::Env(error) => error.fmt(f),
             Self::Program(error) => write!(f, "program path refused: {error}"),
             Self::ProgramTooLong => f.write_str("program path too long"),
+            Self::ProgramOtherSystem => {
+                f.write_str("program path is written for another operating system")
+            }
             Self::Argument(index) => write!(f, "invalid argument {index}"),
             Self::Alias(index) => write!(f, "invalid folder alias at entry {index}"),
             Self::Workdir { index, error } => {
@@ -85,6 +155,37 @@ impl fmt::Display for ConfigError {
             }
             Self::WorkdirTooLong(index) => write!(f, "folder at entry {index} too long"),
             Self::WorkdirIsRoot(index) => write!(f, "folder at entry {index} is a drive root"),
+            Self::WorkdirOtherSystem(index) => {
+                write!(
+                    f,
+                    "folder at entry {index} is written for another operating system"
+                )
+            }
+            Self::ProfileAlias(index) => write!(f, "invalid profile alias at entry {index}"),
+            Self::ProfileDir { index, error } => {
+                write!(f, "profile folder at entry {index} refused: {error}")
+            }
+            Self::ProfileDirTooLong(index) => write!(f, "profile folder at entry {index} too long"),
+            Self::ProfileDirIsRoot(index) => {
+                write!(f, "profile folder at entry {index} is a drive root")
+            }
+            Self::ProfileDirForeignStyle(index) => {
+                write!(
+                    f,
+                    "profile folder at entry {index} is not absolute on this system"
+                )
+            }
+            Self::ProfileDirOverlapsWorkdir(index) => {
+                write!(
+                    f,
+                    "profile folder at entry {index} overlaps a working folder"
+                )
+            }
+            Self::ProfileDirsOverlap => f.write_str("configured account profile folders overlap"),
+            Self::ProfileUnsupported => {
+                f.write_str("account profiles are unavailable for this tool")
+            }
+            Self::SwitchPolicy => f.write_str("invalid account switch policy"),
         }
     }
 }
@@ -101,16 +202,19 @@ pub struct ToolConfig<H: Harness> {
     mode: Mode,
     workdirs: BTreeMap<String, Cwd>,
     env: EnvPolicy,
+    profiles: BTreeMap<String, ProfileBinding>,
+    switch_policy: SwitchPolicy,
 }
 
 impl<H: Harness> ToolConfig<H> {
     /// The shipped defaults: the tool is off and no folder is known.
-    pub fn defaults(case: NameCase) -> Self {
-        Self::from_toml_str("", case).expect("the shipped defaults are complete")
+    pub fn defaults(host: HostRules) -> Self {
+        Self::from_toml_str("", host).expect("the shipped defaults are complete")
     }
 
-    /// The shipped defaults with the user's file `overrides` over them.
-    pub fn from_toml_str(overrides: &str, case: NameCase) -> Result<Self, ConfigError> {
+    /// The shipped defaults with the user's file `overrides` over them, judged by the rules of
+    /// `host`.
+    pub fn from_toml_str(overrides: &str, host: HostRules) -> Result<Self, ConfigError> {
         #[cfg(test)]
         let defaults = H::DEFAULTS;
         #[cfg(not(test))]
@@ -120,7 +224,7 @@ impl<H: Harness> ToolConfig<H> {
         let env = EnvPolicy::from_layers(
             base.env.as_ref().ok_or(ConfigError::MissingKey("env"))?,
             over.env.as_ref(),
-            case,
+            host.case(),
         )
         .map_err(ConfigError::Env)?;
 
@@ -144,6 +248,9 @@ impl<H: Harness> ToolConfig<H> {
             None
         } else {
             let path = AbsPath::parse(&program).map_err(ConfigError::Program)?;
+            if path.style() != host.paths() {
+                return Err(ConfigError::ProgramOtherSystem);
+            }
             Some(Program::new(path.to_string()).map_err(|_| ConfigError::ProgramTooLong)?)
         };
         let args = args
@@ -171,8 +278,53 @@ impl<H: Harness> ToolConfig<H> {
             if path.is_root() {
                 return Err(ConfigError::WorkdirIsRoot(index));
             }
+            if path.style() != host.paths() {
+                return Err(ConfigError::WorkdirOtherSystem(index));
+            }
             let cwd = Cwd::new(path.to_string()).map_err(|_| ConfigError::WorkdirTooLong(index))?;
-            workdirs.insert(String::from(id), cwd);
+            workdirs.insert(String::from(id), (path, cwd));
+        }
+
+        let switch = over_tool.and_then(|tool| tool.switch).or(base_tool.switch);
+        let switch_at_pct = over_tool
+            .and_then(|tool| tool.switch_at_pct)
+            .or(base_tool.switch_at_pct);
+        let switch_policy = SwitchPolicy::from_config(H::PROFILE_ENV, switch, switch_at_pct)?;
+
+        let mut profiles = BTreeMap::new();
+        for (index, (alias, profile)) in [base.accounts, over.accounts]
+            .into_iter()
+            .flatten()
+            .filter_map(|mut accounts| accounts.remove(H::ID))
+            .flatten()
+            .enumerate()
+        {
+            let variable = H::PROFILE_ENV.ok_or(ConfigError::ProfileUnsupported)?;
+            let binding = ProfileBinding::from_config(
+                alias,
+                &profile.profile_dir,
+                variable,
+                host.paths(),
+                index,
+            )?;
+            profiles.insert(binding.alias().as_str().to_owned(), (index, binding));
+        }
+        let mut validated_profiles = BTreeMap::<String, ProfileBinding>::new();
+        for (alias, (index, binding)) in profiles {
+            if workdirs
+                .values()
+                .any(|(path, _)| binding.overlaps_path(path))
+            {
+                return Err(ConfigError::ProfileDirOverlapsWorkdir(index));
+            }
+            let path = binding.path();
+            if validated_profiles
+                .values()
+                .any(|other| other.overlaps_path(&path))
+            {
+                return Err(ConfigError::ProfileDirsOverlap);
+            }
+            validated_profiles.insert(alias, binding);
         }
 
         Ok(Self {
@@ -180,8 +332,13 @@ impl<H: Harness> ToolConfig<H> {
             program,
             args,
             mode,
-            workdirs,
+            workdirs: workdirs
+                .into_iter()
+                .map(|(alias, (_, cwd))| (alias, cwd))
+                .collect(),
             env,
+            profiles: validated_profiles,
+            switch_policy,
         })
     }
 
@@ -210,6 +367,30 @@ impl<H: Harness> ToolConfig<H> {
     /// The configured folder aliases in name order; never the folders themselves.
     pub fn workdir_aliases(&self) -> impl Iterator<Item = &str> {
         self.workdirs.keys().map(String::as_str)
+    }
+
+    /// The configured working folders, including aliases of the same folder.
+    pub fn workdirs(&self) -> impl Iterator<Item = &Cwd> {
+        self.workdirs.values()
+    }
+
+    pub fn profile(&self, alias: &CommonIdV1) -> Option<&ProfileBinding> {
+        self.profiles.get(alias.as_str())
+    }
+
+    /// Checks both directions without consulting the filesystem.
+    pub fn has_overlapping_profiles(&self, other: &ToolConfig<impl Harness>) -> bool {
+        self.profiles.values().any(|profile| {
+            let path = profile.path();
+            other
+                .profiles
+                .values()
+                .any(|other| other.overlaps_path(&path))
+        })
+    }
+
+    pub fn switch_policy(&self) -> SwitchPolicy {
+        self.switch_policy
     }
 
     pub fn env(&self) -> &EnvPolicy {

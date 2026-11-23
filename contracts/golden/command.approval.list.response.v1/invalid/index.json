@@ -1,0 +1,44 @@
+{
+  "01-with-accepted.json": {
+    "rule": "A resposta de approval.list e a de um comando com efeito não se misturam.",
+    "keyword": "additionalProperties",
+    "instancePath": "/result",
+    "params": {
+      "additionalProperty": "accepted"
+    }
+  },
+  "02-unknown-reason.json": {
+    "rule": "Os motivos de não aprovável são um conjunto fechado.",
+    "keyword": "enum",
+    "instancePath": "/result/approvals/0/not_approvable/0"
+  },
+  "03-missing-reasons.json": {
+    "rule": "Cada aprovação diz se a API a deixa aprovar.",
+    "keyword": "required",
+    "instancePath": "/result/approvals/0",
+    "params": {
+      "missingProperty": "not_approvable"
+    }
+  },
+  "04-missing-plan.json": {
+    "rule": "Cada aprovação leva o registro do plano.",
+    "keyword": "required",
+    "instancePath": "/result/approvals/0",
+    "params": {
+      "missingProperty": "plan"
+    }
+  },
+  "05-extra-field.json": {
+    "rule": "Cada aprovação é fechada.",
+    "keyword": "additionalProperties",
+    "instancePath": "/result/approvals/0",
+    "params": {
+      "additionalProperty": "owner_id"
+    }
+  },
+  "06-plan-version-1.json": {
+    "rule": "O plano é o registro que o portão escreve, na versão 2.",
+    "keyword": "const",
+    "instancePath": "/result/approvals/0/plan/version"
+  }
+}

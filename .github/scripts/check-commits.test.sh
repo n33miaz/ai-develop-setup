@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Testes do checador de commits e do hook. Roda local, sem repositório: bash .github/scripts/check-commits.test.sh
-# Os arquivos de trabalho ficam numa pasta fixa da própria árvore, ignorada pelo git (.test-tmp/), regravados a cada
-# execução; o teste não apaga nada. Saída 0 = todos passaram.
+# Testes do checador de commits e do hook: bash .github/scripts/check-commits.test.sh
+# Os arquivos de trabalho ficam em .test-tmp/, incluindo o repositório isolado do teste de merge.
+# Saída 0 = todos passaram.
 set -u
 export LC_ALL=C
 
@@ -412,6 +412,50 @@ hook_expect_rc 1 "hook: recusa committer diferente de agent.codex" ha-valid code
 
 sed '/^agent.codex = /d' "$agent_cfg" > "$tmp/missing-agent.toml"
 check_config 2 "agent-author exige identidade do agente" "$tmp/missing-agent.toml"
+
+check_merge_hook() (
+  # Um repositório novo por execução evita reaproveitar estado de um merge que falhou.
+  repo="$(mktemp -d "$tmp/merge-hook.XXXXXX")" || exit 1
+  cd "$repo" || exit 1
+  while IFS= read -r variable; do unset "$variable"; done < <(git rev-parse --local-env-vars)
+  export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$repo/gitconfig"
+  export GIT_AUTHOR_NAME="${agent% <*}" GIT_AUTHOR_EMAIL="$agent_email"
+  export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME" GIT_COMMITTER_EMAIL="$agent_email"
+  export ADS_AI_AUTHOR=codex ADS_DEVFLOW_TOML="$agent_cfg"
+  branch=fix/default-merge-subject
+  merge_subject="Merge branch 'develop' into $branch"
+
+  git init -q --template= -b develop &&
+    mkdir -p .githooks .github/scripts &&
+    cp "$hook" .githooks/commit-msg &&
+    cp "$checker" "$here/lib-devflow.sh" .github/scripts/ &&
+    chmod +x .githooks/commit-msg &&
+    git config core.hooksPath .githooks &&
+    git commit -q --allow-empty -m 'test: create base' &&
+    git checkout -q -b "$branch" &&
+    git commit -q --allow-empty -m 'test: advance active branch' &&
+    git checkout -q develop &&
+    git commit -q --allow-empty -m 'test: advance develop' &&
+    git checkout -q "$branch" || exit 1
+
+  if git commit --allow-empty -m "$merge_subject" > ordinary-commit.txt 2>&1; then
+    echo "O hook aceitou o assunto de merge em um commit comum."
+    exit 1
+  fi
+  grep -q 'não segue tipo(escopo)' ordinary-commit.txt ||
+    { cat ordinary-commit.txt; exit 1; }
+
+  git merge --no-edit develop || exit 1
+  [ "$(git log -1 --format=%s)" = "$merge_subject" ] &&
+    git rev-parse --verify HEAD^2 >/dev/null &&
+    git log -1 --format=%B | grep -Fxq "Signed-off-by: $agent" &&
+    git log -1 --format=%B | grep -Fxq "Co-authored-by: $owner"
+)
+if check_merge_hook > "$tmp/out.txt" 2>&1; then
+  hook_ok "hook: aceita o merge de develop com trailers e recusa o mesmo assunto em commit comum"
+else
+  hook_bad "hook: assunto padrão no merge de develop"
+fi
 
 echo
 echo "Resultado: $passed passaram, $failed falharam."

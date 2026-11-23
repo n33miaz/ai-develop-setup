@@ -1,18 +1,18 @@
 //! The fence: the one folder everything the executor touches has to be physically inside.
 //!
-//! The fence is opened once and stays open. A path of a plan is text: here it becomes a list
+//! The fence is bound to a directory at construction. A path of a plan becomes a list
 //! of names below the fence, and each name is opened relative to the folder opened before it,
 //! never following a link. What comes back is the open entry and its identity, not a path:
 //! whoever mutates does it through what is open (see `sys`).
 
-use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::{fs, io};
 
 use ads_core::gate::{AbsPath, PathStyle};
 
 use crate::reason::{Reason, Stop};
 pub use crate::sys::Kind;
-use crate::sys::{self, Crossing, Meta, Node};
+use crate::sys::{self, Crossing, Meta, Node, VolumeFacts};
 
 /// A path split into the volume it starts at and its names.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,7 +24,7 @@ struct Parts {
 
 /// A name that can only mean one entry of one folder.
 pub(crate) fn check_name(name: &str) -> Result<(), Stop> {
-    sys::plain(name).map_err(|error| Stop::new(Reason::NotPhysical, error))
+    sys::plain(name).map_err(|error| Stop::caused_by(Reason::NotPhysical, error))
 }
 
 /// The parts of a path the operating system resolved (the output of `canonicalize`).
@@ -91,10 +91,13 @@ fn parts_of_text(path: &AbsPath) -> Result<Parts, Stop> {
 }
 
 /// Why a folder cannot be a fence.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum FenceError {
     /// The folder does not exist or cannot be resolved.
-    Unresolved(String),
+    Unresolved {
+        detail: String,
+        cause: crate::reason::Cause,
+    },
     NotADirectory,
     /// A drive root or `/`: a fence that fences nothing.
     FilesystemRoot,
@@ -107,10 +110,47 @@ pub enum FenceError {
     NotPlain(String),
 }
 
+impl FenceError {
+    fn unresolved(error: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self::unresolved_with(error.to_string(), error)
+    }
+
+    fn unresolved_with(
+        detail: String,
+        error: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::Unresolved {
+            detail,
+            cause: std::sync::Arc::new(error),
+        }
+    }
+}
+
+impl PartialEq for FenceError {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Unresolved { detail: a, .. }, Self::Unresolved { detail: b, .. })
+            | (Self::NotPlain(a), Self::NotPlain(b)) => a == b,
+            _ => std::mem::discriminant(self) == std::mem::discriminant(other),
+        }
+    }
+}
+
+impl Eq for FenceError {}
+
+impl std::error::Error for FenceError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Unresolved { cause, .. } => Some(cause.as_ref()),
+            _ => None,
+        }
+    }
+}
+
 impl std::fmt::Display for FenceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Unresolved(error) => write!(f, "the fence cannot be resolved: {error}"),
+            Self::Unresolved { detail, .. } => write!(f, "the fence cannot be resolved: {detail}"),
             Self::NotADirectory => f.write_str("the fence is not a folder"),
             Self::FilesystemRoot => f.write_str("the fence is the root of a file system"),
             Self::NotLocal => f.write_str("the fence is not a local path"),
@@ -123,7 +163,7 @@ impl std::fmt::Display for FenceError {
 /// The fence as text: how a path of a plan is told to be inside it, and written back.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Frame {
-    /// As the operating system resolved it. Opened once; afterwards only shown to people.
+    /// As the operating system resolved it. I/O uses the individual names in `parts`.
     root: PathBuf,
     parts: Parts,
 }
@@ -156,7 +196,7 @@ impl Frame {
         };
         Node::anchor(Path::new(&anchor)).map_err(|error| match error.kind() {
             std::io::ErrorKind::Unsupported => FenceError::UnsupportedSystem,
-            _ => FenceError::Unresolved(error.to_string()),
+            _ => FenceError::unresolved(error),
         })
     }
 
@@ -172,10 +212,9 @@ impl Frame {
     /// Where nothing holds (Linux) this sees a folder that moved during the walk and was not
     /// put back before the second one, and nothing else.
     fn open(&self, walked: &mut dyn FnMut(&str)) -> Result<Node, FenceError> {
-        let unresolved = |error: &dyn std::fmt::Display| FenceError::Unresolved(error.to_string());
         let mut node = self.anchor()?;
         if sys::HOLDS {
-            node = node.hold().map_err(|error| unresolved(&error))?;
+            node = node.hold().map_err(FenceError::unresolved)?;
         }
         let mut held = Vec::new();
         let mut ids = Vec::new();
@@ -184,9 +223,14 @@ impl Frame {
             let child = match node.child(name) {
                 Ok(child) => child,
                 Err(sys::Error::Alias) => return Err(FenceError::NotPlain(name.clone())),
-                Err(error) => return Err(unresolved(&format!("{name}: {error}"))),
+                Err(error) => {
+                    return Err(FenceError::unresolved_with(
+                        format!("{name}: {error}"),
+                        error,
+                    ));
+                }
             };
-            let meta = child.meta().map_err(|error| unresolved(&error))?;
+            let meta = child.meta().map_err(FenceError::unresolved)?;
             match meta.kind {
                 Some(Kind::Dir) => {}
                 Some(Kind::Link) => return Err(FenceError::NotPlain(name.clone())),
@@ -194,13 +238,18 @@ impl Frame {
             }
             let child = match sys::HOLDS {
                 true => {
-                    let fixed = child
-                        .hold()
-                        .map_err(|error| unresolved(&format!("{name}: {error}")))?;
+                    let fixed = child.hold().map_err(|error| {
+                        FenceError::unresolved_with(format!("{name}: {error}"), error)
+                    })?;
                     match node.holds(name, meta.id) {
                         Ok(true) => fixed,
                         Ok(false) => return Err(FenceError::NotPlain(name.clone())),
-                        Err(error) => return Err(unresolved(&format!("{name}: {error}"))),
+                        Err(error) => {
+                            return Err(FenceError::unresolved_with(
+                                format!("{name}: {error}"),
+                                error,
+                            ));
+                        }
                     }
                 }
                 false => child,
@@ -210,7 +259,7 @@ impl Frame {
             walked(name);
         }
         self.walk_again(&ids)?;
-        // The holds go with `held`: afterwards the fence is an open folder like any other.
+        // The final handle keeps the fence and its ancestors in place on Windows.
         drop(held);
         Ok(node)
     }
@@ -224,9 +273,7 @@ impl Frame {
                 Ok(child) => child,
                 Err(_) => return Err(FenceError::NotPlain(name.clone())),
             };
-            let now = node
-                .meta()
-                .map_err(|error| FenceError::Unresolved(error.to_string()))?;
+            let now = node.meta().map_err(FenceError::unresolved)?;
             if now.id != *id || now.kind != Some(Kind::Dir) {
                 return Err(FenceError::NotPlain(name.clone()));
             }
@@ -279,13 +326,15 @@ pub(crate) struct Held {
 
 /// The base folder, open. Paths are named by their names below it (`rel`).
 #[derive(Debug)]
-pub struct Fence {
+pub(crate) struct FenceBinding {
     frame: Frame,
-    root: Node,
+    root: Option<Node>,
     home: Meta,
+    /// What the volume of the fence said about itself, or why the query failed.
+    volume: Result<VolumeFacts, Stop>,
 }
 
-impl Fence {
+impl FenceBinding {
     /// Resolves `base` and opens the fence. The resolution only says which names to walk:
     /// the fence is then opened from the root of its volume, name by name, without
     /// following a link. If the path changed in between, the walk refuses or opens exactly
@@ -293,18 +342,109 @@ impl Fence {
     /// with each name the walk opened, for tests.
     pub(crate) fn build(
         base: &Path,
+        movable: bool,
         resolved: impl FnOnce(),
         walked: &mut dyn FnMut(&str),
     ) -> Result<Self, FenceError> {
-        let unresolved = |error: std::io::Error| FenceError::Unresolved(error.to_string());
-        let frame = Frame::from_resolved(fs::canonicalize(base).map_err(unresolved)?)?;
+        let frame = Frame::from_resolved(fs::canonicalize(base).map_err(FenceError::unresolved)?)?;
         resolved();
         let root = frame.open(walked)?;
-        let home = root.meta().map_err(unresolved)?;
+        let home = root.meta().map_err(FenceError::unresolved)?;
         if home.kind != Some(Kind::Dir) {
             return Err(FenceError::NotADirectory);
         }
-        Ok(Self { frame, root, home })
+        let volume = root.volume().map_err(unclassified_volume);
+        Ok(Self {
+            frame,
+            root: if movable && sys::HOLDS {
+                None
+            } else {
+                Some(root)
+            },
+            home,
+            volume,
+        })
+    }
+
+    pub(crate) fn open(&self) -> Result<Fence<'_>, Stop> {
+        let root = if let Some(root) = &self.root {
+            root.again()
+                .map_err(|_| Stop::new(Reason::Io, "cannot reopen the work folder"))?
+        } else {
+            let root = self.frame.open(&mut |_| {}).map_err(work_folder_error)?;
+            let current = root
+                .meta()
+                .map_err(|_| Stop::new(Reason::Io, "cannot identify the work folder"))?;
+            if current.id != self.home.id || current.kind != Some(Kind::Dir) {
+                return Err(Stop::new(Reason::Changed, "the work folder was replaced"));
+            }
+            if !self.volume.as_ref().is_ok_and(VolumeFacts::stable) {
+                return Err(Stop::new(
+                    Reason::IdentityUnstable,
+                    "the volume cannot verify the identity of a reopened work folder",
+                ));
+            }
+            root
+        };
+        Ok(Fence {
+            frame: &self.frame,
+            root,
+            home: self.home,
+            volume: self.volume.as_ref(),
+        })
+    }
+
+    /// Takes what the volume said as unsaid, as on a volume nothing here can classify. Only
+    /// ever stricter: for tests of the refusal.
+    pub(crate) fn forget_volume(&mut self) {
+        self.volume = Err(unclassified_volume(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "volume classification unavailable",
+        )));
+    }
+
+    pub(crate) fn text(&self) -> String {
+        self.frame.text_of(&[])
+    }
+}
+
+fn work_folder_error(error: FenceError) -> Stop {
+    match error {
+        FenceError::Unresolved { cause, .. }
+            if matches!(
+                cause.downcast_ref::<sys::Error>(),
+                Some(sys::Error::Missing(_))
+            ) || cause
+                .downcast_ref::<io::Error>()
+                .is_some_and(|error| error.kind() == io::ErrorKind::NotFound) =>
+        {
+            Stop::new(Reason::Missing, "the work folder no longer exists")
+        }
+        FenceError::NotADirectory => Stop::new(
+            Reason::NotADirectory,
+            "the work folder path is no longer a directory",
+        ),
+        FenceError::NotPlain(_) => Stop::new(
+            Reason::NotPhysical,
+            "the work folder path is no longer physical",
+        ),
+        _ => Stop::new(Reason::Io, "cannot open the work folder"),
+    }
+}
+
+pub(crate) struct Fence<'a> {
+    frame: &'a Frame,
+    root: Node,
+    home: Meta,
+    volume: Result<&'a VolumeFacts, &'a Stop>,
+}
+
+impl Fence<'_> {
+    /// Refuses `what` unless an object deleted and recreated under the same name gets another
+    /// identity on the volume of the fence: what depends on telling the two apart is not done
+    /// where they cannot be told apart.
+    pub(crate) fn stable_identity(&self, what: &str) -> Result<(), Stop> {
+        require_stable_identity(self.volume, what)
     }
 
     /// The fence as a plan writes it (`C:\work`, `/work`).
@@ -361,11 +501,34 @@ impl Fence {
 
     /// Opens the last name of `rel` in its open folder. `None` when it does not exist.
     fn step(&self, parent: &Node, rel: &[String]) -> Result<Option<Entry>, Stop> {
+        self.step_with_budget(parent, rel, &mut None)
+    }
+
+    fn step_with_budget(
+        &self,
+        parent: &Node,
+        rel: &[String],
+        budget: &mut Option<usize>,
+    ) -> Result<Option<Entry>, Stop> {
         let name = rel.last().expect("a step has a name");
         check_name(name)?;
+        if cfg!(windows) && budget.is_some() {
+            let names = crate::survey::list_with_budget(self, parent, rel, budget)?;
+            if names.contains(name) {
+                return crate::survey::open_listed(self, parent, rel, name).map(Some);
+            }
+            return match parent.listed(name) {
+                Err(sys::Error::Missing(_)) => Ok(None),
+                Err(error) => Err(Stop::io("opening", self.text_of(rel), error)),
+                Ok(_) => Err(Stop::new(
+                    Reason::NotPhysical,
+                    format!("{} is another spelling of an entry", self.text_of(rel)),
+                )),
+            };
+        }
         let node = match parent.child(name) {
             Ok(node) => node,
-            Err(sys::Error::Missing) => return Ok(None),
+            Err(sys::Error::Missing(_)) => return Ok(None),
             Err(sys::Error::Alias) => {
                 return Err(Stop::new(
                     Reason::NotPhysical,
@@ -384,13 +547,21 @@ impl Fence {
     /// Opens the folder `rel`, name by name from the fence. Every name has to be a folder:
     /// a link on the way is refused, never followed.
     pub(crate) fn open_dir(&self, rel: &[String]) -> Result<Node, Stop> {
+        self.open_dir_with_budget(rel, &mut None)
+    }
+
+    pub(crate) fn open_dir_with_budget(
+        &self,
+        rel: &[String],
+        budget: &mut Option<usize>,
+    ) -> Result<Node, Stop> {
         let mut node = self
             .root
             .again()
             .map_err(|error| Stop::io("opening", self.text(), error))?;
         for depth in 1..=rel.len() {
             let upto = &rel[..depth];
-            let Some(entry) = self.step(&node, upto)? else {
+            let Some(entry) = self.step_with_budget(&node, upto, budget)? else {
                 return Err(Stop::new(
                     Reason::Missing,
                     format!("{} does not exist", self.text_of(upto)),
@@ -476,14 +647,18 @@ impl Fence {
     /// is accepted only as the last name, and is opened as a link: what it points to is never
     /// looked at.
     pub(crate) fn locate(&self, rel: &[String]) -> Result<Spot, Stop> {
+        self.locate_with_budget(rel, &mut None)
+    }
+
+    fn locate_with_budget(&self, rel: &[String], budget: &mut Option<usize>) -> Result<Spot, Stop> {
         let Some((name, folder)) = rel.split_last() else {
             return Err(Stop::new(
                 Reason::NotPhysical,
                 "the fence itself is not an entry",
             ));
         };
-        let parent = self.open_dir(folder)?;
-        let entry = self.step(&parent, rel)?;
+        let parent = self.open_dir_with_budget(folder, budget)?;
+        let entry = self.step_with_budget(&parent, rel, budget)?;
         Ok(Spot {
             parent,
             name: name.clone(),
@@ -493,7 +668,15 @@ impl Fence {
 
     /// Like [`Self::locate`], for an entry that has to exist.
     pub(crate) fn existing(&self, rel: &[String]) -> Result<(Spot, Entry), Stop> {
-        let mut spot = self.locate(rel)?;
+        self.existing_with_budget(rel, &mut None)
+    }
+
+    pub(crate) fn existing_with_budget(
+        &self,
+        rel: &[String],
+        budget: &mut Option<usize>,
+    ) -> Result<(Spot, Entry), Stop> {
+        let mut spot = self.locate_with_budget(rel, budget)?;
         match spot.entry.take() {
             Some(entry) => Ok((spot, entry)),
             None => Err(Stop::new(
@@ -504,9 +687,63 @@ impl Fence {
     }
 }
 
+fn unclassified_volume(error: io::Error) -> Stop {
+    Stop::new(
+        Reason::IdentityUnstable,
+        format!("the system did not say what the volume of the fence is: {error}"),
+    )
+    .with_cause(error)
+}
+
+fn require_stable_identity(volume: Result<&VolumeFacts, &Stop>, what: &str) -> Result<(), Stop> {
+    match volume {
+        Ok(volume) if volume.stable() => Ok(()),
+        Ok(volume) => Err(Stop::new(
+            Reason::IdentityUnstable,
+            format!(
+                "{what}: the volume of the fence ({volume}) does not tell a recreated \
+                 object from the one it replaced"
+            ),
+        )),
+        Err(stop) => {
+            let mut stop = stop.clone();
+            stop.detail = format!("{what}: {}", stop.detail);
+            Err(stop)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unresolved_fence_keeps_the_system_error() {
+        use std::{error::Error, io};
+
+        let io_error = io::Error::new(io::ErrorKind::NotFound, "missing");
+        let error = FenceError::unresolved(io_error);
+        assert_eq!(error.to_string(), "the fence cannot be resolved: missing");
+        let cause = error.source().unwrap().downcast_ref::<io::Error>().unwrap();
+        assert_eq!(cause.kind(), io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn an_unstable_volume_refusal_has_readable_spacing() {
+        let volume = VolumeFacts::Linux {
+            magic: 0xef53,
+            birth: false,
+        };
+        let stop = require_stable_identity(Ok(&volume), "a restore").unwrap_err();
+        assert_eq!(stop.reason, Reason::IdentityUnstable);
+        assert_eq!(
+            stop.detail,
+            format!(
+                "a restore: the volume of the fence ({volume}) {}",
+                "does not tell a recreated object from the one it replaced"
+            )
+        );
+    }
 
     // Pure: nothing here looks at the disk.
 

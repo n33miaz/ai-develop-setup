@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:event:effects.refused:1",
+  "title": "Ensaio de efeitos recusado",
+  "description": "O ensaio de uma ação que pede aprovação não gerou registro de efeitos: o executor recusou o ensaio (por exemplo E_FS_EFFECTS_TOO_LARGE, acima de max_effects_bytes, ou E_FS_PLAN_ENTRY_LIMIT) ou o núcleo não conseguiu gravar o registro (E_EFFECTS_UNRECORDABLE). Gravado pelo núcleo no lugar de effects.recorded:1, no stream effects/<action_id>, uma vez só (seq 1). A ação continua sem poder ser aprovada pela API onde precisa de efeitos, e a listagem mostra o código.",
+  "allOf": [
+    {
+      "$ref": "urn:ads:event:envelope:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "type",
+        "stream",
+        "seq",
+        "data",
+        "actor"
+      ],
+      "properties": {
+        "type": {
+          "const": "urn:ads:event:effects.refused:1"
+        },
+        "stream": {
+          "type": "string",
+          "pattern": "^effects/"
+        },
+        "seq": {
+          "const": 1
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action_id",
+            "plan_hash",
+            "error_code"
+          ],
+          "properties": {
+            "action_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "plan_hash": {
+              "$ref": "urn:ads:common:sha256:1"
+            },
+            "error_code": {
+              "type": "string",
+              "pattern": "^E_[A-Z0-9_]{1,60}$"
+            }
+          }
+        },
+        "actor": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "kind": {
+              "const": "daemon"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAC",
+      "type": "urn:ads:event:effects.refused:1",
+      "ts": "2030-01-02T03:04:05Z",
+      "stream": "effects/act-07",
+      "seq": 1,
+      "actor": {
+        "kind": "daemon",
+        "id": "core"
+      },
+      "cause": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+      "data_class": "internal",
+      "data": {
+        "action_id": "act-07",
+        "plan_hash": "sha256:5486cc58827bffeb2204a994db3d77fe6c8f2c863eb73de6e2a60802784293cb",
+        "error_code": "E_FS_EFFECTS_TOO_LARGE"
+      }
+    }
+  ]
+}

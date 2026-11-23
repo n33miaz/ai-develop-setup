@@ -43,7 +43,13 @@ pub enum PathError {
     /// `LPT0` to `LPT9` and the same with a superscript 1, 2 or 3.
     DeviceName,
     ControlCharacter,
+    /// The normalized path has more characters than `urn:ads:common:abspath:2` holds.
+    TooLong,
+    /// The wildcard has more characters than the record of the plan holds.
+    PatternTooLong,
 }
+
+impl std::error::Error for PathError {}
 
 impl fmt::Display for PathError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -64,6 +70,8 @@ impl fmt::Display for PathError {
             Self::ReservedCharacter => "reserved character",
             Self::DeviceName => "device name",
             Self::ControlCharacter => "control character",
+            Self::TooLong => "path longer than the contract holds",
+            Self::PatternTooLong => "wildcard longer than the contract holds",
         };
         f.write_str(text)
     }
@@ -128,9 +136,14 @@ impl AbsPath {
         self.depth() > base.depth() && self.is_within(base)
     }
 
-    /// Like [`Self::is_within`], with the widest comparison of names, in both styles. For deny
-    /// rules only: some file systems ignore case, and a deny rule must not be dodged by
-    /// changing it. Never use it to grant.
+    /// Matches a deny rule for this root and its descendants, ignoring case in both styles.
+    pub fn matches_denied_root(&self, root: &AbsPath) -> bool {
+        self.is_loosely_within(root)
+    }
+
+    /// Equal to `base` or inside it when each component matches in its Unicode lowercase or
+    /// uppercase form (not title case or full case folding). Deny only, never grant:
+    /// it makes names equal that no file system does, so it can only widen a refusal.
     pub(crate) fn is_loosely_within(&self, base: &AbsPath) -> bool {
         self.within(base, same_name_loosely)
     }
@@ -154,7 +167,7 @@ impl AbsPath {
 }
 
 /// Whether two names could be the same folder on some file system: equal after either Unicode
-/// case mapping. Wider than any real file system on purpose, so it only ever serves to deny.
+/// lowercase or uppercase mapping. This deny-only comparison does not normalize Unicode.
 pub(crate) fn same_name_loosely(a: &str, b: &str) -> bool {
     a.to_lowercase() == b.to_lowercase() || a.to_uppercase() == b.to_uppercase()
 }
@@ -177,7 +190,25 @@ impl fmt::Display for AbsPath {
 impl TargetPath {
     /// Like [`AbsPath::parse`], accepting `*` and `?` in the last component.
     pub fn parse(raw: &str) -> Result<Self, PathError> {
+        let target = Self::parse_record_target(raw)?;
+        // A rule that fires cites the whole text of the target in the record.
+        let limit = ads_contracts::RecordActionPlanV2VerdictReasonsItemSubject::MAX_CHARS;
+        if target.to_string().chars().count() > limit {
+            return Err(PathError::TooLong);
+        }
+        Ok(target)
+    }
+
+    // Saved records bound the path and wildcard separately.
+    pub(super) fn parse_record_target(raw: &str) -> Result<Self, PathError> {
         let (base, pattern) = parse(raw)?;
+        let limit = ads_contracts::RecordActionPlanV2TargetsItemPattern::MAX_CHARS;
+        if pattern
+            .as_deref()
+            .is_some_and(|pattern| pattern.chars().count() > limit)
+        {
+            return Err(PathError::PatternTooLong);
+        }
         Ok(Self { base, pattern })
     }
 
@@ -190,6 +221,31 @@ impl TargetPath {
     pub fn pattern(&self) -> Option<&str> {
         self.pattern.as_deref()
     }
+
+    /// What makes two targets the same one: on Windows the case of ASCII letters is ignored,
+    /// in the path and in the wildcard (Windows matches it that way), as in
+    /// [`AbsPath::is_within`]; elsewhere the text is the identity.
+    pub(crate) fn identity(&self) -> TargetIdentity {
+        let fold = |text: &str| match self.base.style {
+            PathStyle::Windows => text.to_ascii_lowercase(),
+            PathStyle::Posix => text.to_owned(),
+        };
+        TargetIdentity {
+            style: self.base.style,
+            drive: self.base.drive,
+            components: self.base.components.iter().map(|name| fold(name)).collect(),
+            pattern: self.pattern.as_deref().map(fold),
+        }
+    }
+}
+
+/// The key two spellings of one target share; see [`TargetPath::identity`].
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct TargetIdentity {
+    style: PathStyle,
+    drive: Option<char>,
+    components: Vec<String>,
+    pattern: Option<String>,
 }
 
 impl fmt::Display for TargetPath {
@@ -301,14 +357,16 @@ fn parse(raw: &str) -> Result<(AbsPath, Option<String>), PathError> {
         }
     }
 
-    Ok((
-        AbsPath {
-            style,
-            drive,
-            components,
-        },
-        pattern,
-    ))
+    let path = AbsPath {
+        style,
+        drive,
+        components,
+    };
+    // A plan holding a longer path would have no record, and so could never become an action.
+    if path.to_string().chars().count() > ads_contracts::CommonAbspathV2::MAX_CHARS {
+        return Err(PathError::TooLong);
+    }
+    Ok((path, pattern))
 }
 
 fn check_windows_name(name: &str) -> Result<(), PathError> {

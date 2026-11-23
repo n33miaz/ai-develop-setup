@@ -1,5 +1,7 @@
 //! The rules: `plan + policy -> verdict`. Pure; the answer depends on nothing else.
 
+use std::collections::HashSet;
+
 use super::event::{
     ActionPlanFields, ActionPlanRecord, ContractError, Decision, Id, PathText, PatternText,
     PlanEstimate, PlanReason, PlanTarget, PlanVerdict, Risk, RuleCode, RuleList, SubjectText,
@@ -23,6 +25,9 @@ pub enum Rule {
     /// The target is not strictly inside the work root or an allowed root.
     OutsideAllowedRoots,
     RepositoryRoot,
+    RepositoryMetadata,
+    WorkRootUnknown,
+    QuarantineOfOtherRoot,
     /// The target is the quarantine folder or contains it.
     QuarantineItself,
     DestinationProtected(Protection),
@@ -62,6 +67,9 @@ impl Rule {
             Self::AllowedRootItself,
             Self::OutsideAllowedRoots,
             Self::RepositoryRoot,
+            Self::RepositoryMetadata,
+            Self::WorkRootUnknown,
+            Self::QuarantineOfOtherRoot,
             Self::QuarantineItself,
             Self::DestinationOutsideAllowedRoots,
             Self::DestinationInsideTarget,
@@ -88,6 +96,9 @@ impl Rule {
             Self::AllowedRootItself => "allowed_root_itself".to_owned(),
             Self::OutsideAllowedRoots => "outside_allowed_roots".to_owned(),
             Self::RepositoryRoot => "repository_root".to_owned(),
+            Self::RepositoryMetadata => "repository_metadata".to_owned(),
+            Self::WorkRootUnknown => "work_root_unknown".to_owned(),
+            Self::QuarantineOfOtherRoot => "quarantine_of_other_root".to_owned(),
             Self::QuarantineItself => "quarantine_itself".to_owned(),
             Self::DestinationOutsideAllowedRoots => "destination_outside_allowed_roots".to_owned(),
             Self::DestinationInsideTarget => "destination_inside_target".to_owned(),
@@ -110,6 +121,9 @@ impl Rule {
             | Self::AllowedRootItself
             | Self::OutsideAllowedRoots
             | Self::RepositoryRoot
+            | Self::RepositoryMetadata
+            | Self::WorkRootUnknown
+            | Self::QuarantineOfOtherRoot
             | Self::QuarantineItself
             | Self::DestinationProtected(_)
             | Self::DestinationOutsideAllowedRoots
@@ -141,6 +155,7 @@ pub struct Verdict {
     /// The operation as asked, which the quarantine rewrite replaces in `plan`.
     requested: Operation,
     quarantined: bool,
+    pub(super) gate_clock_rewind_seconds: u64,
 }
 
 impl Verdict {
@@ -230,12 +245,40 @@ impl Verdict {
     }
 }
 
+/// The classification could not finish within the configured work budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClassificationBudgetExceeded;
+
+impl std::fmt::Display for ClassificationBudgetExceeded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("gate classification work budget exceeded")
+    }
+}
+
+impl std::error::Error for ClassificationBudgetExceeded {}
+
+struct MatchBudget(u64);
+
+impl MatchBudget {
+    fn charge(&mut self, steps: usize) -> Result<(), ClassificationBudgetExceeded> {
+        self.0 = self
+            .0
+            .checked_sub(steps as u64)
+            .ok_or(ClassificationBudgetExceeded)?;
+        Ok(())
+    }
+}
+
 /// Judges the plan and, when a delete becomes a move to quarantine, the rewritten plan as well,
 /// before the verdict is closed: the generated destination goes through the rules of any move.
 /// The verdict keeps every finding of both and takes the strictest level, so judging
 /// [`Verdict::plan`] again never finds anything the verdict does not already hold. One denied
 /// target, or a denied destination, denies the whole plan, and a denied plan is not rewritten.
-pub fn classify(plan: &ActionPlan, policy: &GatePolicy) -> Verdict {
+/// If the shared move matching budget runs out, no verdict is issued.
+pub fn classify(
+    plan: &ActionPlan,
+    policy: &GatePolicy,
+) -> Result<Verdict, ClassificationBudgetExceeded> {
     let strictest = |findings: &[Finding]| {
         findings
             .iter()
@@ -243,7 +286,10 @@ pub fn classify(plan: &ActionPlan, policy: &GatePolicy) -> Verdict {
             .max()
             .unwrap_or(Decision::Allowed)
     };
-    let mut findings = judge(plan, policy);
+    let mut budget = MatchBudget(policy.classification_match_steps());
+    let mut findings = Vec::new();
+    let mut seen = HashSet::new();
+    judge(plan, policy, &mut budget, &mut findings, &mut seen)?;
 
     let deletes = matches!(
         plan.operation(),
@@ -257,47 +303,75 @@ pub fn classify(plan: &ActionPlan, policy: &GatePolicy) -> Verdict {
     if policy.quarantine_enabled() && deletes && !purge && strictest(&findings) != Decision::Denied
     {
         // The folder is named after the hash of the plan as asked, so two plans never share one.
+        budget.charge(plan.targets().len())?;
         let hash = plan.hash();
         let name = hash.as_str()["sha256:".len()..][..16].to_owned();
         let moved = plan.as_move_to(policy.quarantine_root(plan.work_root()).join(&[name]));
-        for finding in judge(&moved, policy) {
-            if !findings.contains(&finding) {
-                findings.push(finding);
-            }
-        }
+        judge(&moved, policy, &mut budget, &mut findings, &mut seen)?;
         rewrite = Some(moved);
     }
 
     let decision = strictest(&findings);
     let rewrite = rewrite.filter(|_| decision != Decision::Denied);
     let quarantined = rewrite.is_some();
-    Verdict {
+    Ok(Verdict {
         decision,
         findings,
         plan: rewrite.unwrap_or_else(|| plan.clone()),
         requested: plan.operation().clone(),
         quarantined,
-    }
+        gate_clock_rewind_seconds: policy.gate_clock_rewind_seconds(),
+    })
 }
 
-/// Every rule that fires on the plan exactly as it is written, with no rewrite. Each finding
-/// comes once.
-fn judge(plan: &ActionPlan, policy: &GatePolicy) -> Vec<Finding> {
-    let mut findings: Vec<Finding> = Vec::new();
+/// Adds every rule that fires on the plan, in order, without duplicate findings.
+fn judge(
+    plan: &ActionPlan,
+    policy: &GatePolicy,
+    budget: &mut MatchBudget,
+    findings: &mut Vec<Finding>,
+    seen: &mut HashSet<Finding>,
+) -> Result<(), ClassificationBudgetExceeded> {
     let mut find = |rule: Rule, subject: &dyn std::fmt::Display| {
         let finding = Finding {
             rule,
             subject: subject.to_string(),
         };
-        if !findings.contains(&finding) {
+        if seen.insert(finding.clone()) {
             findings.push(finding);
         }
     };
 
     let work_root = plan.work_root();
-    if let Some(protection) = policy.protection(work_root) {
+    if let Some(protection) = policy.place_protection(work_root) {
         find(Rule::WorkRootProtected(protection), work_root);
     }
+    let same_root = |root: &AbsPath| root.is_within(work_root) && work_root.is_within(root);
+    let roots = policy.work_roots().unwrap_or_default();
+    if !roots.iter().any(same_root) {
+        find(Rule::WorkRootUnknown, work_root);
+    }
+    let other_quarantines: Vec<_> = roots
+        .iter()
+        .filter(|root| !same_root(root))
+        .map(|root| policy.quarantine_root(root))
+        .collect();
+    let repository_metadata = |path: &AbsPath| {
+        path.components()
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case(".git"))
+    };
+    let in_other_quarantine = |path: &AbsPath| {
+        other_quarantines
+            .iter()
+            .any(|root| path.is_loosely_within(root))
+    };
+    let overlaps_other_quarantine = |path: &AbsPath| {
+        in_other_quarantine(path)
+            || other_quarantines
+                .iter()
+                .any(|root| root.is_loosely_within(path))
+    };
     let strictly_allowed = |path: &AbsPath| {
         path.is_strictly_within(work_root)
             || policy
@@ -332,6 +406,12 @@ fn judge(plan: &ActionPlan, policy: &GatePolicy) -> Vec<Finding> {
         if !strictly_allowed(scope) {
             find(Rule::OutsideAllowedRoots, subject);
         }
+        if repository_metadata(scope) {
+            find(Rule::RepositoryMetadata, subject);
+        }
+        if overlaps_other_quarantine(scope) {
+            find(Rule::QuarantineOfOtherRoot, subject);
+        }
         if target.is_repo_root() {
             find(Rule::RepositoryRoot, subject);
         }
@@ -348,7 +428,13 @@ fn judge(plan: &ActionPlan, policy: &GatePolicy) -> Vec<Finding> {
     }
 
     if let Operation::Move { destination } = plan.operation() {
-        if let Some(protection) = policy.protection(destination) {
+        if repository_metadata(destination) {
+            find(Rule::RepositoryMetadata, destination);
+        }
+        if in_other_quarantine(destination) {
+            find(Rule::QuarantineOfOtherRoot, destination);
+        }
+        if let Some(protection) = policy.place_protection(destination) {
             find(Rule::DestinationProtected(protection), destination);
         }
         let allowed = destination.is_within(work_root)
@@ -359,10 +445,17 @@ fn judge(plan: &ActionPlan, policy: &GatePolicy) -> Vec<Finding> {
         if !allowed {
             find(Rule::DestinationOutsideAllowedRoots, destination);
         }
-        let into_itself = plan
-            .targets()
-            .iter()
-            .any(|target| destination.is_loosely_within(target.path().scope()));
+        let mut into_itself = false;
+        for target in plan.targets() {
+            let scope = target.path().scope();
+            if scope.depth() <= destination.depth() {
+                budget.charge(scope.depth())?;
+                if destination.is_loosely_within(scope) {
+                    into_itself = true;
+                    break;
+                }
+            }
+        }
         if into_itself {
             find(Rule::DestinationInsideTarget, destination);
         }
@@ -376,6 +469,55 @@ fn judge(plan: &ActionPlan, policy: &GatePolicy) -> Vec<Finding> {
             .chain(policy.allowed_roots())
             .chain(&quarantine)
             .collect();
+        // Every move entry is one level below the destination. Only targets at or
+        // above it, or targets under one of its immediate children, can overlap.
+        let scope_and_rule = plan
+            .targets()
+            .iter()
+            .map(|target| (target.path().scope(), Rule::DestinationInsideTarget));
+        let reserved_paths = other_quarantines
+            .iter()
+            .map(|path| (path, Rule::QuarantineOfOtherRoot))
+            .chain(
+                reserved
+                    .iter()
+                    .map(|&path| (path, Rule::DestinationEntryReserved)),
+            )
+            .chain(
+                policy
+                    .product_paths()
+                    .iter()
+                    .map(|path| (path, Rule::DestinationProtected(Protection::ProductData))),
+            );
+        let mut candidates = Vec::new();
+        let mut seen_children = HashSet::new();
+        let mut lower_names = HashSet::new();
+        let mut upper_names = HashSet::new();
+        for (path, rule) in reserved_paths.chain(scope_and_rule) {
+            budget.charge(1)?;
+            if path.depth() <= destination.depth() {
+                continue;
+            }
+            budget.charge(destination.depth())?;
+            if path.is_loosely_within(destination) {
+                let name = &path.components()[destination.depth()];
+                budget.charge(name.len())?;
+                if seen_children.insert((rule, name)) {
+                    candidates.push((rule, Some(name)));
+                    if rule == Rule::DestinationInsideTarget {
+                        lower_names.insert(name.to_lowercase());
+                        upper_names.insert(name.to_uppercase());
+                    }
+                }
+            }
+        }
+        // Copying or formatting an entry visits each component and its bytes.
+        let destination_work: usize = destination
+            .components()
+            .iter()
+            .map(|component| 1 + component.len())
+            .sum();
+        let mut matched_patterns = HashSet::new();
         for target in plan.targets() {
             let scope = target.path().scope();
             match target.path().pattern() {
@@ -383,15 +525,19 @@ fn judge(plan: &ActionPlan, policy: &GatePolicy) -> Vec<Finding> {
                     let Some(name) = scope.components().last() else {
                         continue;
                     };
+                    budget.charge(destination_work + 1 + name.len())?;
                     let entry = destination.join(std::slice::from_ref(name));
+                    if overlaps_other_quarantine(&entry) {
+                        find(Rule::QuarantineOfOtherRoot, &entry);
+                    }
                     if let Some(protection) = policy.protection(&entry) {
                         find(Rule::DestinationProtected(protection), &entry);
                     }
                     // On a target, inside one, or holding one: the tree of any target.
-                    let onto_a_target = plan.targets().iter().any(|other| {
-                        let other = other.path().scope();
-                        entry.is_loosely_within(other) || other.is_loosely_within(&entry)
-                    });
+                    let onto_a_target = into_itself
+                        || (!lower_names.is_empty()
+                            && (lower_names.contains(&name.to_lowercase())
+                                || upper_names.contains(&name.to_uppercase())));
                     if onto_a_target {
                         find(Rule::DestinationInsideTarget, &entry);
                     }
@@ -403,21 +549,17 @@ fn judge(plan: &ActionPlan, policy: &GatePolicy) -> Vec<Finding> {
                 // Such a child that is, or holds, a reserved folder or the folder of any target
                 // of the plan (this one included) denies; when in doubt, it may name it.
                 Some(pattern) => {
-                    let named = |path: &AbsPath| {
-                        let below = path.depth() > destination.depth()
-                            && path.is_loosely_within(destination);
-                        let name = below.then(|| &path.components()[destination.depth()])?;
-                        may_name(pattern, name)
-                            .then(|| destination.join(std::slice::from_ref(name)))
-                    };
-                    for path in &reserved {
-                        if let Some(entry) = named(path) {
-                            find(Rule::DestinationEntryReserved, &entry);
-                        }
+                    if !matched_patterns.insert(pattern) {
+                        continue;
                     }
-                    for other in plan.targets() {
-                        if let Some(entry) = named(other.path().scope()) {
-                            find(Rule::DestinationInsideTarget, &entry);
+                    for (rule, candidate) in &mut candidates {
+                        budget.charge(1)?;
+                        if let Some(name) = *candidate
+                            && match_name(pattern, name, budget)?
+                        {
+                            budget.charge(destination_work + 1 + name.len())?;
+                            find(*rule, &destination.join(std::slice::from_ref(name)));
+                            *candidate = None;
                         }
                     }
                 }
@@ -451,18 +593,31 @@ fn judge(plan: &ActionPlan, policy: &GatePolicy) -> Vec<Finding> {
         }
     }
 
-    findings
+    Ok(())
 }
 
 /// Whether a wildcard (`*` any run of characters, `?` any one) could name `name` on some file
 /// system: case is ignored either way. For deny rules only.
-fn may_name(pattern: &str, name: &str) -> bool {
-    // No recursion and no blow-up: both texts come from the request and have no size limit
-    // here. On a mismatch the last `*` takes one more character and the match resumes there.
-    fn matches(pattern: &[char], name: &[char]) -> bool {
+pub fn may_name(pattern: &str, name: &str) -> bool {
+    match_name(pattern, name, &mut MatchBudget(u64::MAX))
+        .expect("standalone match fits in the step counter")
+}
+
+fn match_name(
+    pattern: &str,
+    name: &str,
+    budget: &mut MatchBudget,
+) -> Result<bool, ClassificationBudgetExceeded> {
+    // On a mismatch the last `*` takes one more character and matching resumes there.
+    fn matches(
+        pattern: &[char],
+        name: &[char],
+        budget: &mut MatchBudget,
+    ) -> Result<bool, ClassificationBudgetExceeded> {
         let (mut p, mut n) = (0, 0);
         let mut star: Option<(usize, usize)> = None;
         while n < name.len() {
+            budget.charge(1)?;
             if p < pattern.len() && pattern[p] == '*' {
                 star = Some((p, n));
                 p += 1;
@@ -474,22 +629,33 @@ fn may_name(pattern: &str, name: &str) -> bool {
                 p = at + 1;
                 n = taken + 1;
             } else {
-                return false;
+                return Ok(false);
             }
         }
-        pattern[p..].iter().all(|rest| *rest == '*')
+        for rest in &pattern[p..] {
+            budget.charge(1)?;
+            if *rest != '*' {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
-    let folded = |fold: fn(&str) -> String| {
+    let mut folded = |fold: fn(&str) -> String| {
+        budget.charge(1 + pattern.len() + name.len())?;
         let pattern: Vec<char> = fold(pattern).chars().collect();
         let name: Vec<char> = fold(name).chars().collect();
-        matches(&pattern, &name)
+        matches(&pattern, &name, budget)
     };
-    folded(str::to_lowercase) || folded(str::to_uppercase)
+    if folded(str::to_lowercase)? {
+        Ok(true)
+    } else {
+        folded(str::to_uppercase)
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::may_name;
+    use super::{MatchBudget, match_name, may_name};
 
     #[test]
     fn wildcard_names_what_it_could_match_in_any_case() {
@@ -518,13 +684,42 @@ mod tests {
     }
 
     /// The texts come from the request, with no size limit before the rules: the match must
-    /// neither take exponential time nor grow the stack with them.
+    /// neither take exponential time nor grow the stack with them. The whole check runs in
+    /// another thread, so a slow matcher fails on the clock instead of holding the job.
     #[test]
     fn wildcard_match_is_bounded_in_time_and_in_stack() {
-        let greedy = format!("{}b", "*a".repeat(60));
-        assert!(!may_name(&greedy, &"a".repeat(100)));
-        let long = "a".repeat(200_000);
-        assert!(may_name(&format!("{long}?"), &format!("{long}a")));
-        assert!(!may_name(&format!("{long}?"), &long));
+        const CEILING: std::time::Duration = std::time::Duration::from_secs(30);
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let started = std::time::Instant::now();
+            let greedy = format!("{}b", "*a".repeat(60));
+            let long = "a".repeat(200_000);
+            let cases = [
+                (greedy, "a".repeat(100)),
+                (format!("{long}?"), format!("{long}a")),
+                (format!("{long}?"), long),
+            ];
+            let answers: Vec<_> = cases
+                .iter()
+                .map(|(pattern, name)| {
+                    // Two case folds, each quadratic at worst.
+                    let (p, n) = (pattern.len() as u64, name.len() as u64);
+                    let steps = 2 * (1 + p + n + (p + 1) * (n + 1));
+                    (
+                        match_name(pattern, name, &mut MatchBudget(steps)),
+                        may_name(pattern, name),
+                    )
+                })
+                .collect();
+            let _ = done.send((answers, started.elapsed()));
+        });
+        let (answers, elapsed) = finished
+            .recv_timeout(CEILING)
+            .expect("the match finishes within the ceiling");
+        assert!(elapsed < CEILING, "the match took {elapsed:?}");
+        assert_eq!(
+            answers,
+            vec![(Ok(false), false), (Ok(true), true), (Ok(false), false)]
+        );
     }
 }

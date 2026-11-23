@@ -3,23 +3,26 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use ads_core::gate::{AbsPath, Event, ExecutionPermit, GatePolicy};
+use ads_core::gate::{
+    AbsPath, ActionPlan, Event, ExecutionPermit, GatePolicy, Id, StartedExecution,
+};
 
 use crate::disk::{Disk, Probe};
-use crate::fence::{Fence, FenceError};
+use crate::effects::Effects;
+use crate::fence::{FenceBinding, FenceError};
 use crate::journal::Journal;
 use crate::limits::Limits;
-use crate::prepare::prepare;
+use crate::prepare::{Grant, observe_plan, prepare};
 use crate::reason::{Reason, Stop};
 use crate::report::{Completed, Failure, Report};
 use crate::survey::{Facts, survey};
 
 /// Runs the plan of a permit inside a fence, under a policy the caller trusts.
 pub struct Executor {
-    pub(crate) fence: Fence,
+    fence: FenceBinding,
     pub(crate) policy: GatePolicy,
     pub(crate) limits: Limits,
-    probe: Option<Box<dyn Probe>>,
+    probe: Option<Box<dyn Probe + Send>>,
     /// The actions this executor already took a permit for. A second line of defence only:
     /// it is forgotten with the executor. The record that lasts is the one of the journal.
     spent: HashSet<String>,
@@ -31,6 +34,16 @@ impl Executor {
     /// happens.
     pub fn new(fence: &Path, policy: GatePolicy) -> Result<Self, FenceError> {
         Self::new_watched(fence, policy, || {})
+    }
+
+    /// Binds the fence's identity while allowing the owner to move it between operations.
+    /// On Windows each operation reopens and holds the original directory, and refuses
+    /// volumes that cannot distinguish a replacement directory.
+    pub fn new_movable(fence: &Path, policy: GatePolicy) -> Result<Self, FenceError> {
+        Ok(Self::with_fence(
+            FenceBinding::build(fence, true, || {}, &mut |_| {})?,
+            policy,
+        ))
     }
 
     /// Like [`Self::new`], calling `resolved` after the path of the fence was resolved and
@@ -53,13 +66,29 @@ impl Executor {
         resolved: impl FnOnce(),
         mut walked: impl FnMut(&str),
     ) -> Result<Self, FenceError> {
-        Ok(Self {
-            fence: Fence::build(fence, resolved, &mut walked)?,
+        Ok(Self::with_fence(
+            FenceBinding::build(fence, false, resolved, &mut walked)?,
+            policy,
+        ))
+    }
+
+    fn with_fence(fence: FenceBinding, policy: GatePolicy) -> Self {
+        Self {
+            fence,
             policy,
             limits: Limits::defaults(),
             probe: None,
             spent: HashSet::new(),
-        })
+        }
+    }
+
+    /// Treats the volume of the fence as one this executor cannot classify: definitive
+    /// deletes and restores are refused (`E_FS_IDENTITY_UNSTABLE`). Never the other way
+    /// round. For tests of that refusal.
+    #[doc(hidden)]
+    pub fn with_unclassified_volume(mut self) -> Self {
+        self.fence.forget_volume();
+        self
     }
 
     pub fn with_limits(mut self, limits: Limits) -> Self {
@@ -68,7 +97,7 @@ impl Executor {
     }
 
     /// Has `probe` told about every mutation, before it and right before its system call.
-    pub fn with_probe(mut self, probe: Box<dyn Probe>) -> Self {
+    pub fn with_probe(mut self, probe: Box<dyn Probe + Send>) -> Self {
         self.probe = Some(probe);
         self
     }
@@ -80,8 +109,9 @@ impl Executor {
 
     /// What is on disk at `target`, to fill a plan with facts instead of guesses. Read only.
     pub fn measure(&self, work_root: &AbsPath, target: &AbsPath) -> Result<Facts, Stop> {
-        let work = self.fence.relative(work_root)?;
-        let rel = self.fence.relative(target)?;
+        let fence = self.fence.open()?;
+        let work = fence.relative(work_root)?;
+        let rel = fence.relative(target)?;
         if !target.is_strictly_within(work_root)
             || rel.len() <= work.len()
             || !rel.starts_with(&work)
@@ -91,16 +121,44 @@ impl Executor {
                 format!("{target} is not strictly inside the work root"),
             ));
         }
-        let (_, entry) = self.fence.existing(&rel)?;
-        Ok(survey(&self.fence, &entry, &rel, self.limits.max_depth)?.1)
+        let (_, entry) = fence.existing(&rel)?;
+        Ok(survey(&fence, &entry, &rel, self.limits.max_depth)?.1)
+    }
+
+    /// Inspects the requested targets before the daemon records its plan.
+    pub fn observe_plan(&self, plan: &ActionPlan) -> Result<ActionPlan, Stop> {
+        observe_plan(&self.fence.open()?, &self.policy, &self.limits, plan)
     }
 
     /// Goes through every check of an execution and says what would be done, changing
     /// nothing.
     pub fn rehearse(&self, permit: &ExecutionPermit) -> Result<Report, Box<Failure>> {
-        let job = prepare(&self.fence, &self.policy, &self.limits, permit)
-            .map_err(Failure::before_anything)?;
+        let job = prepare(
+            &self.fence.open().map_err(Failure::before_anything)?,
+            &self.policy,
+            &self.limits,
+            &Grant::of(permit),
+            None,
+        )
+        .map_err(Failure::before_anything)?;
         Ok(job.report)
+    }
+
+    /// Goes through every check of an execution of `plan` as if its approval were granted,
+    /// changing nothing, and returns its concrete effects: what an approval has to cover.
+    /// The targets are inspected within `max_plan_entries`; a record larger than
+    /// `max_effects_bytes` is refused.
+    pub fn rehearse_effects(&self, action_id: &Id, plan: &ActionPlan) -> Result<Effects, Stop> {
+        let grant = Grant::assumed(action_id, plan);
+        let budget = Some(self.limits.max_plan_entries);
+        let job = prepare(
+            &self.fence.open()?,
+            &self.policy,
+            &self.limits,
+            &grant,
+            budget,
+        )?;
+        Effects::of(&job, &grant).within(&self.limits)
     }
 
     /// Runs the plan of `permit`. Nothing is read or changed before `journal` records that
@@ -118,21 +176,66 @@ impl Executor {
         started: &Event,
         journal: &mut dyn Journal,
     ) -> Result<Completed, Box<Failure>> {
-        let matches = match started {
-            Event::ActionStarted(envelope) => {
-                let data = envelope.data();
-                &data.action_id == permit.action_id()
-                    && &data.plan_hash == permit.plan_hash()
-                    && data.approval_id.as_ref() == permit.approval_id()
-            }
-            _ => false,
-        };
-        if !matches {
+        if !started_by(&permit, started) {
             return Err(Failure::before_anything(Stop::new(
                 Reason::StartedMismatch,
                 "the event is not the action.started of this permit",
             )));
         }
+        self.run(permit, started, None, |started| journal.consume(started))
+    }
+
+    /// Like [`Self::execute`], for a plan approved with the record `approved` (see
+    /// [`Self::execute_approved`]).
+    pub fn execute_with_effects(
+        &mut self,
+        permit: ExecutionPermit,
+        started: &Event,
+        journal: &mut dyn Journal,
+        approved: &Effects,
+    ) -> Result<Completed, Box<Failure>> {
+        if !started_by(&permit, started) {
+            return Err(Failure::before_anything(Stop::new(
+                Reason::StartedMismatch,
+                "the event is not the action.started of this permit",
+            )));
+        }
+        self.run(permit, started, Some(approved), |started| {
+            journal.consume(started)
+        })
+    }
+
+    /// Runs an authorization obtained after the gate committed its start.
+    pub fn execute_recorded(
+        &mut self,
+        started: StartedExecution,
+    ) -> Result<Completed, Box<Failure>> {
+        let (permit, event) = started.into_parts();
+        // Only `JournalGate::authorize` builds a `StartedExecution`, with the two together.
+        debug_assert!(started_by(&permit, &event));
+        self.run(permit, &event, None, |_| Ok(()))
+    }
+
+    /// Like [`Self::execute_recorded`], for a plan approved with the record `approved`: the
+    /// checks of the execution have to find exactly these effects, or it stops before the
+    /// first change with [`Reason::EffectsChanged`].
+    pub fn execute_approved(
+        &mut self,
+        started: StartedExecution,
+        approved: &Effects,
+    ) -> Result<Completed, Box<Failure>> {
+        let (permit, event) = started.into_parts();
+        debug_assert!(started_by(&permit, &event));
+        self.run(permit, &event, Some(approved), |_| Ok(()))
+    }
+
+    fn run(
+        &mut self,
+        permit: ExecutionPermit,
+        started: &Event,
+        approved: Option<&Effects>,
+        consume: impl FnOnce(&Event) -> Result<(), crate::JournalError>,
+    ) -> Result<Completed, Box<Failure>> {
         let action_id = permit.action_id().as_str().to_owned();
         if self.spent.contains(&action_id) {
             return Err(Failure::before_anything(Stop::new(
@@ -140,13 +243,30 @@ impl Executor {
                 format!("a permit of {action_id} was already taken by this executor"),
             )));
         }
-        journal
-            .consume(started)
-            .map_err(|error| Failure::before_anything(Stop::new(Reason::JournalRefused, error)))?;
+        consume(started).map_err(|error| {
+            Failure::before_anything(Stop::caused_by(Reason::JournalRefused, error))
+        })?;
         self.spent.insert(action_id);
 
-        let mut job = prepare(&self.fence, &self.policy, &self.limits, &permit)
+        let grant = Grant::of(&permit);
+        let fence = self.fence.open().map_err(Failure::before_anything)?;
+        let mut job = prepare(&fence, &self.policy, &self.limits, &grant, None)
             .map_err(Failure::before_anything)?;
+        if let Some(approved) = approved {
+            let found = Effects::of(&job, &grant);
+            if &found != approved {
+                return Err(Failure::before_anything(Stop::new(
+                    Reason::EffectsChanged,
+                    format!(
+                        "approved for {} entries in {} steps; found {} entries in {} steps, or other ones",
+                        approved.entries(),
+                        approved.steps.len(),
+                        found.entries(),
+                        found.steps.len()
+                    ),
+                )));
+            }
+        }
         if let Some(manifest) = &mut job.manifest {
             manifest.started_at = started.ts().to_string();
         }
@@ -157,11 +277,14 @@ impl Executor {
         let floor = job.floor.clone();
         let private = job.private.clone();
         let mut disk = Disk {
-            fence: &self.fence,
+            fence: &fence,
             floor: &floor,
             private: private.as_deref(),
             work: job.work,
-            probe: self.probe.as_deref_mut(),
+            probe: self
+                .probe
+                .as_deref_mut()
+                .map(|probe| probe as &mut (dyn Probe + 'static)),
             limits: &self.limits,
             laid: Vec::new(),
             holding: None,
@@ -174,9 +297,23 @@ impl Executor {
             Err((stage, stop)) => Err(Box::new(Failure {
                 reason: stop.reason,
                 detail: stop.detail,
+                cause: stop.cause,
                 stage,
                 report,
             })),
         }
+    }
+}
+
+/// `started` is the `action.started` of `permit`: same action, same plan, same approval.
+fn started_by(permit: &ExecutionPermit, started: &Event) -> bool {
+    match started {
+        Event::ActionStarted(envelope) => {
+            let data = envelope.data();
+            &data.action_id == permit.action_id()
+                && &data.plan_hash == permit.plan_hash()
+                && data.approval_id.as_ref() == permit.approval_id()
+        }
+        _ => false,
     }
 }

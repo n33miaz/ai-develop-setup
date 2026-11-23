@@ -2,6 +2,85 @@
 
 Formato: uma seção por data. Contrato novo, campo opcional acrescentado, versão nova de uma URN e contrato aposentado entram aqui. As regras de versão estão no [README](README.md).
 
+## 2026-11-21
+
+- `approval.list.response:4` e `local-api.server-message:9` informam `policy_changed` quando a política vigente impede aprovar um pedido pendente. O dono ainda pode negar o pedido.
+- `harness.list.response:2` e `local-api.server-message:8` informam os apelidos das pastas ausentes na partida, quando houver. Sem pastas ausentes, a resposta mantém a forma da versão anterior.
+
+Motivo da fila ausente e id da fila configurada.
+
+- Contratos novos (`:1`): comando `queue.configured`, só com `_meta`, e a resposta `queue.configured.response`, com o id da fila que o núcleo serve, criada ou não.
+- Versões novas:
+  - `local-api.error-code:6`, convivendo com a `:1` à `:5`: os códigos da `:5` mais `QUEUE_NOT_FOUND` (`-32026`, id que não é o da fila configurada) e `QUEUE_NOT_CREATED` (`-32027`, fila configurada ainda não criada). `QUEUE_NOT_CONFIGURED` passa a dizer só que os controles da fila não subiram. O núcleo passa a emitir a `:6`.
+  - `local-api.server-message:10`, convivendo com a `:1` à `:9`: a `:9` mais a resposta de `queue.configured`. O núcleo passa a escrever a `:10`.
+
+Contagem dos pedidos de aprovação com histórico ilegível.
+
+- Versões novas:
+  - `approval.list.response:3`, convivendo com a `:1` e a `:2`: o `result` traz `unreadable`, quantos pedidos pendentes com histórico ilegível a listagem deixou de fora. O núcleo passa a responder a `:3`.
+  - `local-api.server-message:7`, convivendo com a `:1` à `:6`: a resposta de `approval.list` na `:3`. O núcleo passa a escrever a `:7`; para quem envia `approval.list`, a resposta muda de forma, sem negociação.
+
+Fechamento de pedidos de aprovação com histórico ilegível.
+
+- Contratos novos (`:1`):
+  - Comando `approval.close` (`action_id` e `decision`, `deny` ou `expire`): o dono fecha os pedidos pendentes de uma ação cujo histórico o núcleo não lê. Nunca aprova.
+  - Evento `closure.recorded`: o fechamento, com aparelho, dono, decisão, os pedidos fechados e a chave de idempotência, gravado no stream `closure/<action_id>` antes de qualquer efeito. Família de stream nova `closure`, amarrada a `action_id`.
+- Versão nova, convivendo com a `:1` à `:4`: `local-api.error-code:5`, com os códigos da `:4` mais `APPROVAL_READABLE` (`-32025`). O núcleo passa a emitir a `:5`.
+
+Efeitos concretos das ações aprovadas.
+
+- Contratos novos (`:1`):
+  - Registro `record.action-effects`: o que o ensaio de uma ação achou no disco, passo a passo, com cada entrada (nomes, tipo, tamanho e identidade) e o resumo do manifesto de uma restauração.
+  - Evento `effects.recorded`: esse registro e o seu hash (SHA-256 da forma canônica do registro), gravados pelo núcleo uma vez só (`seq` 1) no stream `effects/<action_id>`. Família de stream nova `effects`, amarrada a `action_id`.
+  - Evento `effects.refused`: o código da recusa do ensaio, no mesmo stream e no lugar de `effects.recorded`.
+- Versões novas, convivendo com a `:1`:
+  - `answer.recorded:2`: acrescenta `effects_hash` obrigatório (`null` quando a ação não tem efeitos gravados). O núcleo passa a gravar a `:2`.
+  - `approval.list.response:2`: cada aprovação traz `effects`, `effects_hash` e `effects_error` (ou `null`), os motivos novos `effects_refused`, `effects_unreadable` e `effects_not_listed`, e o `result` traz `more`. O núcleo passa a responder a `:2`.
+- Versão nova, convivendo com a `:1` à `:4`: `local-api.server-message:5`, com a resposta de `approval.list` na `:2`. O núcleo passa a escrever a `:5`; para quem envia `approval.list`, a resposta muda de forma, sem negociação.
+
+Aprovações do portão de ações pela API local.
+
+- Contratos novos (`:1`):
+  - Comandos `approval.list` (só `_meta`, só lê) e `approval.answer` (`action_id`, `approval_id`, `plan_hash` e `decision`, `approve` ou `deny`).
+  - Resposta `approval.list.response`: `result` fechado com `approvals`, cada uma com a aprovação pedida, os motivos de não ser aprovável pela API (`not_approvable`) e o registro `record.action-plan:2`.
+  - Evento `answer.recorded`: a resposta do dono, com a chave de idempotência do comando, gravada no stream `answer/<approval_id>` antes de o portão agir. Família de stream nova `answer`, amarrada a `approval_id`.
+- Versão nova, convivendo com a `:1` à `:3`: `local-api.server-message:4`, que aceita também a resposta de `approval.list`. O núcleo passa a escrever a `:4`.
+- Versão nova, convivendo com a `:1` e a `:2`: `local-api.error-code:3`, com os códigos da `:2` mais `APPROVAL_NOT_CONFIGURED` (`-32017`), `APPROVAL_NOT_FOUND` (`-32018`), `APPROVAL_ALREADY_ANSWERED` (`-32019`), `APPROVAL_STALE` (`-32020`), `APPROVAL_POLICY_CHANGED` (`-32021`), `APPROVAL_OUT_OF_ORDER` (`-32022`) e `APPROVAL_NOT_APPROVABLE` (`-32023`). O núcleo passa a emitir a `:3`.
+
+- `queue.created:2` exige a política inicial completa. A `:1` continua legível.
+- `common.queue-policy:1` define os limites usados na criação da fila e em `queue.policy_changed:1`, que mantém o formato aceito.
+
+Controle da fila pela API local.
+
+- Contratos novos (`:1`):
+  - Comandos `queue.get`, `queue.start` e `queue.stop`: estendem `command.request:1` com `params` fechado em `queue_id` e `_meta`. `queue.get` só lê.
+  - Resposta `queue.get.response`: `result` fechado com `queue_id` e `state` (`stopped` ou `enabled`).
+- Versão nova, convivendo com a `:1` e a `:2`: `local-api.server-message:3`, que aceita também a resposta de `queue.get`. O núcleo passa a escrever a `:3`.
+- Versão nova, convivendo com a `:1`: `local-api.error-code:2`, com os códigos da `:1` mais `QUEUE_NOT_CONFIGURED` (`-32015`) e `QUEUE_ALREADY_ENABLED` (`-32016`). O núcleo passa a emitir a `:2`; a `:1`, fechada, continua recusando os dois números.
+- `queue.stop` não passa pela cache de idempotência: expressa o estado desejado, e `replayed` diz se a fila já estava parada.
+
+## 2026-11-20
+
+- Tipo comum novo `common.queue-task-title:1`: o título da tarefa da fila, com as mesmas regras que os registros `:1` e `:2` repetem por extenso.
+- `queue.task_created:4` registra também o título e a ferramenta da tarefa, obrigatórios, e nunca é `public`. As versões 1 a 3 continuam legíveis.
+- `record.queue-task:3` (`version` 3) é o registro que o replay reconstrói do log: `title` e `tool` são obrigatórios e `null` quando a criação é anterior à `queue.task_created:4`. Os registros `:1` e `:2` continuam legíveis.
+- `session.refusal_detected:1` registra, só com metadados, a recusa de um pedido ou a interrupção por filtro de segurança, com ferramenta, provedor, modelo e tipo. O modelo é um identificador curto do catálogo, nunca texto livre.
+- `session.handoff:3` acrescenta `alternative_id`, a alternativa do catálogo que o aparelho aceitou numa oferta após recusa de modelo. A `:2` continua valendo para os demais gatilhos.
+- `record.session-handoff:1` registra a passagem autorizada e `session.handoff:1` registra proposta, aceite ou recusa.
+- `session.handoff:2` exige um aparelho como autor de aceite e recusa. `record.session-handoff:2` referencia o evento de aceite em `consent.event_id`.
+- `queue.policy_changed:1` registra a política completa aprovada por um aparelho do dono para as admissões posteriores da fila.
+- `queue.task_state_changed:2` exige canal para aparelhos, recusa canal para os demais atores e registra o abandono por sessão sem confirmação como cancelamento terminal. O replay continua lendo a `:1` com as regras originais.
+- Tipos comuns novos: `common.workdir-alias:1` (apelido da pasta de trabalho) e `common.queue-task-origin:1` (origem da tarefa da fila), com as mesmas regras que o registro e a criação de tarefa repetiam.
+- Versões novas que referem esses tipos, sem mudar o que aceitam: `queue.task_created:3` e `record.queue-task:2` (`version` 2). Mudam os tipos gerados; a `:1` e a `:2` da criação e a `:1` do registro continuam legíveis.
+- `queue.task_created:2` exige ator do tipo aparelho em pedidos manuais e convive com a `:1`.
+- `queue.clock_reanchored:1` registra a reancoragem do relógio de admissão pelo dono da fila.
+- `local-api.error-code:1` define os códigos de erro emitidos pela API local.
+- Eventos de roteamento `proposed`, `decided` e `fallback` ganham a versão
+  `:2` com `account_alias` (nulo quando não há perfil). As versões `:1` convivem com as novas.
+- `account.switched:1` registra a seleção de perfil para a próxima sessão.
+- `account.status_observed:1` registra metadados permitidos pelo status da
+  ferramenta em evento privado.
+
 ## 2026-11-19
 
 Lista de ferramentas na API local. Nenhum contrato existente foi alterado.

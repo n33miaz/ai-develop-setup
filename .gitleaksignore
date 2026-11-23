@@ -1,0 +1,6 @@
+# Valores sintéticos de teste em commits já publicados; o código atual monta esses valores em execução.
+2f994364516d313ef3571f8f369f46931c022e7f:crates/storage/src/migrate.rs:generic-api-key:238
+7c1f2ad15c0dcdb7bf856a68aa0cf495246d19ac:crates/storage/tests/event_log.rs:generic-api-key:1413
+7c1f2ad15c0dcdb7bf856a68aa0cf495246d19ac:crates/storage/src/migrate.rs:generic-api-key:348
+33fe2bc689254705b841d65ab59fec55316b6220:crates/storage/src/event_log_tests.rs:generic-api-key:93
+3cad9d95791258358c6eff3f34629da1db7a6a4f:crates/storage/src/event_log_tests.rs:generic-api-key:250

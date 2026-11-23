@@ -5,6 +5,8 @@ Status: aceita em 14/11/2026
 ## Contexto
 Três mecanismos diferentes estavam em jogo: a linha DCO, a assinatura criptográfica do commit e a assinatura do instalador. A assinatura do commit exige chave configurada e disponível para os agentes, e a junção por rebase pela interface recria os commits sem o selo.
 
+A [ADR 0024](0024-agent-authored-commits.md) passou a usar merge commit no fluxo de autoria de agente e preserva os commits originais. A decisão continua valendo porque a assinatura ainda depende de chave configurada.
+
 ## Decisão
 "(a) DCO e formato bloqueiam já; assinatura só avisa até a chave existir".
 

@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createAjv, loadSchemas } from "./lib.mjs";
-import { actionPlanErrors, canonicalPlan, compareTargets, crossRuleErrors, planHash, STREAM_ID_FIELD, streamBindingError, targetText } from "./rules.mjs";
+import { actionPlanErrors, canonicalJson, canonicalPlan, compareTargets, crossRuleErrors, effectsHash, planHash, STREAM_ID_FIELD, streamBindingError, targetText } from "./rules.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -49,10 +49,28 @@ test("stream: aceita o stream da entidade de data e recusa o de outra", () => {
   assert.match(streamBindingError({ ...queued, stream: "queue/task-01" }), /data\.queue_id/);
 });
 
+test("stream: a passagem identifica a mesma entidade no stream e em data", () => {
+  const [, event] = goldenValid("event.session.handoff.v2")[0];
+  assert.equal(streamBindingError(event), null);
+  assert.match(streamBindingError({ ...event, stream: "handoff/other" }), /data\.handoff_id/);
+});
+
+test("passagem: cada registro aponta para o aceite da própria sessão de origem", () => {
+  const events = new Map(goldenValid("event.session.handoff.v2").map(([, event]) => [event.id, event]));
+  for (const [, record] of goldenValid("record.session-handoff.v2")) {
+    const event = events.get(record.consent.event_id);
+    assert.ok(event);
+    assert.equal(event.actor.kind, "device");
+    assert.equal(event.data.status, "accepted");
+    assert.equal(event.data.handoff_id, record.id);
+    assert.equal(event.data.source_session_id, record.source_session_id);
+  }
+});
+
 test("stream: família fora da tabela não tem regra", () => {
   assert.equal(streamBindingError({ stream: "host/host-01", data: { event_id: "x" } }), null);
   assert.equal(streamBindingError({ stream: "usage/task-01", data: {} }), null);
-  assert.deepEqual(Object.keys(STREAM_ID_FIELD).sort(), ["action", "approval", "queue", "review", "routing", "session", "task"]);
+  assert.deepEqual(Object.keys(STREAM_ID_FIELD).sort(), ["action", "answer", "approval", "closure", "effects", "handoff", "queue", "review", "routing", "session", "task"]);
 });
 
 test("stream: a regra vale para os dourados de evento e só para eles", () => {
@@ -181,4 +199,13 @@ test("queue task cross rules compare attempt ceilings and UTC fractions", () => 
   ]) {
     assert.deepEqual(crossRuleErrors(key, { ...base, ...changes }), errors);
   }
+});
+
+test("o effects_hash é o da forma canônica, com as chaves em ordem e sem espaços", () => {
+  assert.equal(canonicalJson({ b: [1, null], a: "é" }), '{"a":"é","b":[1,null]}');
+  const effects = { version: 1, action_id: "act-1", plan_hash: "sha256:00", manifest: null, steps: [] };
+  const event = { type: "x", stream: "effects/act-1", data: { action_id: "act-1", plan_hash: "sha256:00", effects, effects_hash: effectsHash(effects) } };
+  assert.deepEqual(crossRuleErrors("event.effects.recorded.v1", event), []);
+  const wrong = { ...event, data: { ...event.data, effects_hash: `sha256:${"0".repeat(64)}` } };
+  assert.equal(crossRuleErrors("event.effects.recorded.v1", wrong).length, 1);
 });

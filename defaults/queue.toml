@@ -1,8 +1,10 @@
+# Padrão embutido para a política inicial de filas novas.
+
 # Tentativas por tarefa, incluindo a primeira. O contrato aceita de 1 a 10.
 attempt_limit = 2
 
 # Total de origens admitidas por fila, inclusive as tarefas encerradas. Ao atingi-lo, a fila só
-# volta a admitir se este valor subir.
+# volta a admitir se o dono gravar uma política com um limite maior.
 admission_limit = 1000
 
 # Janela móvel, em segundos, dos três limites abaixo. Eles se liberam sozinhos com o tempo.
@@ -26,3 +28,10 @@ clock_skew_seconds = 5
 # um relógio do núcleo corrigido para trás não travar a fila. Um salto maior pede que o dono
 # reancore o relógio da fila.
 clock_rewind_seconds = 300
+
+# Depois de o núcleo reiniciar, quanto tempo, em segundos, uma tarefa em `running` espera o host de
+# terminal confirmar a sessão dela. Enquanto espera, a tarefa fica parada em `running`; vencido o
+# prazo, passa para `cancelled` sem gastar tentativa, com o motivo `host_unconfirmed`. O
+# cancelamento é terminal, inclusive após replay e nova ativação da fila, e a sessão anterior pode
+# continuar viva.
+host_confirm_seconds = 60

@@ -5,7 +5,7 @@
 mod common;
 
 use ads_core::gate::{
-    Action, ActionPlan, Actor, ActorKind, DataClass, Decision, Estimate, Event, EventMeta,
+    AbsPath, Action, ActionPlan, Actor, ActorKind, DataClass, Decision, Estimate, Event, EventMeta,
     GatePolicy, HostFacts, Id, Operation, OperationRequest, PlanRequest, State, TargetRequest,
     Timestamp, Ulid, classify,
 };
@@ -369,6 +369,7 @@ fn generate(rng: &mut Rng) -> Case {
         }),
     };
     let work_root_text = work_root.spell(rng, None);
+    let policy = policy.with_work_roots(vec![AbsPath::parse(&work_root_text).unwrap()]);
     Case {
         request: PlanRequest {
             operation,
@@ -408,7 +409,7 @@ fn no_plan_with_a_target_outside_the_allowed_roots_gets_past_denied() {
         let case = generate(&mut rng);
         let plan = ActionPlan::normalize(&case.request)
             .unwrap_or_else(|err| panic!("case {index}: {:?}: {err}", case.request));
-        let verdict = classify(&plan, &case.policy);
+        let verdict = classify(&plan, &case.policy).unwrap();
 
         // Whatever the verdict, the plan has a record, and the hash of the plan in force is
         // the one of the canonical text rebuilt here from the record alone.
@@ -428,7 +429,7 @@ fn no_plan_with_a_target_outside_the_allowed_roots_gets_past_denied() {
         rewritten_with_approval += usize::from(
             verdict.is_quarantined() && verdict.decision() == Decision::RequiresApproval,
         );
-        let again = classify(verdict.plan(), &case.policy);
+        let again = classify(verdict.plan(), &case.policy).unwrap();
         assert!(
             again.decision() >= verdict.decision(),
             "case {index}: {:?} became {:?}: {:?}",
@@ -529,7 +530,7 @@ fn what_gets_past_the_gate_stays_inside_the_allowed_roots() {
     for index in 0..CASES {
         let case = generate(&mut rng);
         let plan = ActionPlan::normalize(&case.request).unwrap();
-        let verdict = classify(&plan, &case.policy);
+        let verdict = classify(&plan, &case.policy).unwrap();
         if verdict.decision() == Decision::Denied {
             continue;
         }
@@ -558,7 +559,7 @@ fn what_gets_past_the_gate_stays_inside_the_allowed_roots() {
             ));
         }
         // The rewritten plan is still not a way around the gate.
-        let again = classify(verdict.plan(), &case.policy);
+        let again = classify(verdict.plan(), &case.policy).unwrap();
         assert_ne!(again.decision(), Decision::Denied, "case {index}");
         assert!(!again.is_quarantined(), "case {index}");
     }
@@ -573,7 +574,7 @@ fn adding_a_target_outside_denies_a_plan_that_passed() {
     for index in 0..CASES {
         let case = generate(&mut rng);
         let plan = ActionPlan::normalize(&case.request).unwrap();
-        if classify(&plan, &case.policy).decision() == Decision::Denied {
+        if classify(&plan, &case.policy).unwrap().decision() == Decision::Denied {
             continue;
         }
         let outsider = if case.work_root.windows {
@@ -594,7 +595,7 @@ fn adding_a_target_outside_denies_a_plan_that_passed() {
         let widened = ActionPlan::normalize(&request).unwrap();
         assert_ne!(widened.hash(), plan.hash(), "case {index}");
         assert_eq!(
-            classify(&widened, &case.policy).decision(),
+            classify(&widened, &case.policy).unwrap().decision(),
             Decision::Denied,
             "case {index}: {request:?}"
         );

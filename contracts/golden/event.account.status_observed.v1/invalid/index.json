@@ -1,0 +1,31 @@
+{
+  "email.json": {
+    "rule": "O campo não pertence à lista permitida.",
+    "keyword": "additionalProperties",
+    "instancePath": "/data",
+    "params": {
+      "additionalProperty": "email"
+    }
+  },
+  "organization.json": {
+    "rule": "O campo não pertence à lista permitida.",
+    "keyword": "additionalProperties",
+    "instancePath": "/data",
+    "params": {
+      "additionalProperty": "organization"
+    }
+  },
+  "account-id.json": {
+    "rule": "O campo não pertence à lista permitida.",
+    "keyword": "additionalProperties",
+    "instancePath": "/data",
+    "params": {
+      "additionalProperty": "account_id"
+    }
+  },
+  "public-status.json": {
+    "rule": "O status observado é privado.",
+    "keyword": "const",
+    "instancePath": "/data_class"
+  }
+}

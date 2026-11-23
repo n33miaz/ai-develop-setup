@@ -1,7 +1,7 @@
 name: Weekly
 
-# Varreduras pesadas, agendadas e só de aviso: os resultados aparecem na aba Security; nada aqui bloqueia a junção
-# e nenhum desses jobs entra no ci-ok. Passam a obrigatórios ao sair do modo expresso (parâmetro profile em defaults/devflow.toml).
+# Verificações agendadas fora do ci-ok. CodeQL e Scorecard publicam na aba Security.
+# Consulte os jobs de dependências para ver os avisos do RustSec e do registro npm.
 on:
   schedule:
     - cron: "17 5 * * 1"
@@ -15,6 +15,45 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  rust-advisories:
+    name: rust-advisories
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Instalar a versão fixada em rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
+        with:
+          tool: cargo-deny@0.20.2
+      - name: Avisos para o alvo Windows
+        run: cargo deny --locked check advisories
+      - name: Avisos para o alvo Linux sem a casca
+        if: ${{ !cancelled() }}
+        run: cargo deny --locked --target x86_64-unknown-linux-gnu --exclude ads-shell check advisories
+
+  npm-advisories:
+    name: npm-advisories (${{ matrix.package }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [ui, contracts]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - name: Verificar dependências do npm
+        working-directory: ${{ matrix.package }}
+        run: npm audit --audit-level=high
+
   codeql:
     name: codeql (${{ matrix.language }})
     runs-on: ubuntu-latest

@@ -1,0 +1,7 @@
+{
+  "jsonrpc": "2.0",
+  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAF",
+  "result": {
+    "queue_id": "local:queue.main"
+  }
+}

@@ -2,9 +2,10 @@
 //! nothing else, and an execution starts with it.
 
 use ads_core::gate::{
-    AbsPath, ActionPlan, Decision, Estimate, ExecutionPermit, GatePolicy, Operation,
-    OperationRequest, PlanRequest, Rule, TargetRequest, classify,
+    AbsPath, ActionPlan, Decision, Estimate, ExecutionPermit, GatePolicy, Id, Operation,
+    OperationRequest, PlanHash, PlanRequest, Rule, TargetRequest, classify, may_name,
 };
+use sha2::{Digest, Sha256};
 
 use crate::fence::{Fence, Kind};
 use crate::limits::{DefinitiveDelete, Limits};
@@ -13,7 +14,9 @@ use crate::manifest::{
 };
 use crate::reason::{Reason, Stop};
 use crate::report::{Effect, Laid, Report, Scaffold, Staged, Status, Step};
-use crate::survey::{Facts, Seen, survey, total};
+use crate::survey::{
+    Facts, Seen, charge_entries, list_with_budget, open_listed, survey, survey_with_budget, total,
+};
 use crate::sys;
 
 /// One mutation of the plan, on names below the fence.
@@ -40,6 +43,35 @@ pub(crate) enum Act {
     Remove { place: Option<Vec<String>> },
 }
 
+/// What the checks need of a permit: the plan, its action and hash, and whether an approval
+/// stands behind it. A rehearsal before the approval assumes the one it asks for.
+pub(crate) struct Grant<'a> {
+    pub plan: &'a ActionPlan,
+    pub action_id: &'a Id,
+    pub plan_hash: PlanHash,
+    pub approved: bool,
+}
+
+impl<'a> Grant<'a> {
+    pub(crate) fn of(permit: &'a ExecutionPermit) -> Self {
+        Self {
+            plan: permit.plan(),
+            action_id: permit.action_id(),
+            plan_hash: permit.plan_hash().clone(),
+            approved: permit.approval_id().is_some(),
+        }
+    }
+
+    pub(crate) fn assumed(action_id: &'a Id, plan: &'a ActionPlan) -> Self {
+        Self {
+            plan,
+            action_id,
+            plan_hash: plan.hash(),
+            approved: true,
+        }
+    }
+}
+
 /// A plan that passed every check, ready to run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Job {
@@ -57,6 +89,8 @@ pub(crate) struct Job {
     pub report: Report,
     /// The mutation of each step; `None` for a step with nothing to do.
     pub ops: Vec<Option<Op>>,
+    /// The digest of the manifest a restore read its items from.
+    pub read_manifest: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,6 +124,7 @@ impl Job {
                 steps,
             },
             ops,
+            read_manifest: None,
         }
     }
 
@@ -131,7 +166,6 @@ struct Target {
     rel: Vec<String>,
     seen: Seen,
     facts: Facts,
-    declared_repo_root: bool,
 }
 
 fn join(base: &[String], more: &[String]) -> Vec<String> {
@@ -184,16 +218,19 @@ fn missing_folders(
     Ok(Vec::new())
 }
 
+/// `budget` caps the entries the targets may hold, as in planning; an execution has none.
 pub(crate) fn prepare(
     fence: &Fence,
     policy: &GatePolicy,
     limits: &Limits,
-    permit: &ExecutionPermit,
+    permit: &Grant<'_>,
+    budget: Option<usize>,
 ) -> Result<Job, Stop> {
-    let plan = permit.plan();
+    let plan = permit.plan;
 
     // The permit proves the plan passed a gate; this is the gate of the trusted policy again.
-    let declared = classify(plan, policy);
+    let declared =
+        classify(plan, policy).map_err(|error| Stop::caused_by(Reason::PolicyDenies, error))?;
     if declared.decision() == Decision::Denied {
         let codes: Vec<String> = declared
             .findings()
@@ -208,7 +245,7 @@ pub(crate) fn prepare(
             "the policy rewrites this delete as a move to quarantine",
         ));
     }
-    if declared.decision() == Decision::RequiresApproval && permit.approval_id().is_none() {
+    if declared.decision() == Decision::RequiresApproval && !permit.approved {
         return Err(Stop::new(
             Reason::ApprovalMissing,
             "the policy asks for an approval",
@@ -220,35 +257,19 @@ pub(crate) fn prepare(
     // Every name down to the work root has to be a folder; a link is refused.
     fence.open_dir(&work)?;
 
-    let mut targets = Vec::new();
-    for target in plan.targets() {
-        let scope = target.path().scope();
-        if target.path().pattern().is_some() {
-            return Err(Stop::new(
-                Reason::Unsupported,
-                format!("{} is a wildcard target", target.path()),
-            ));
-        }
-        let rel = fence.relative(scope)?;
-        if !scope.is_strictly_within(work_root)
-            || rel.len() <= work.len()
-            || !starts_with(&rel, &work)
-        {
-            return Err(Stop::new(
-                Reason::OutsideWorkRoot,
-                format!("{scope} is not strictly inside the work root"),
-            ));
-        }
-        let (_, entry) = fence.existing(&rel)?;
-        let (seen, facts) = survey(fence, &entry, &rel, limits.max_depth)?;
-        targets.push(Target {
-            text: scope.to_string(),
-            rel,
-            seen,
-            facts,
-            declared_repo_root: target.is_repo_root(),
-        });
+    let targets = inspect_targets(fence, limits, plan, &work, budget)?;
+    check_facts(fence, policy, permit, declared.decision(), &targets)?;
+    if let Some(wildcard) = plan
+        .targets()
+        .iter()
+        .find(|target| target.path().pattern().is_some())
+    {
+        return Err(Stop::new(
+            Reason::Unsupported,
+            format!("{} is a wildcard target", wildcard.path()),
+        ));
     }
+
     for (at, one) in targets.iter().enumerate() {
         for other in &targets[at + 1..] {
             if starts_with(&one.rel, &other.rel) || starts_with(&other.rel, &one.rel) {
@@ -259,8 +280,6 @@ pub(crate) fn prepare(
             }
         }
     }
-
-    check_facts(policy, permit, declared.decision(), &targets)?;
 
     let quarantine = policy.quarantine_root(work_root);
     let job = build_job(fence, policy, limits, permit, work, &targets, &quarantine)?;
@@ -276,7 +295,7 @@ pub(crate) fn prepare(
         };
         let text = fence.text_of(to);
         let landing =
-            AbsPath::parse(&text).map_err(|error| Stop::new(Reason::NotPhysical, error))?;
+            AbsPath::parse(&text).map_err(|error| Stop::caused_by(Reason::NotPhysical, error))?;
         if !landing.is_strictly_within(work_root) {
             return Err(Stop::new(
                 Reason::OutsideWorkRoot,
@@ -297,14 +316,15 @@ fn build_job(
     fence: &Fence,
     policy: &GatePolicy,
     limits: &Limits,
-    permit: &ExecutionPermit,
+    permit: &Grant<'_>,
     work: Vec<String>,
     targets: &[Target],
     quarantine: &AbsPath,
 ) -> Result<Job, Stop> {
-    let plan = permit.plan();
+    let plan = permit.plan;
     let work_root = plan.work_root();
-    let declared = classify(plan, policy);
+    let declared =
+        classify(plan, policy).map_err(|error| Stop::caused_by(Reason::PolicyDenies, error))?;
     match plan.operation() {
         Operation::Overwrite | Operation::CleanUntracked => Err(Stop::new(
             Reason::Unsupported,
@@ -315,7 +335,7 @@ fn build_job(
             // rule fired and approved, and a policy that turned the quarantine off.
             if policy.quarantine_enabled() {
                 let purge = declared.has(Rule::QuarantinePurge)
-                    && permit.approval_id().is_some()
+                    && permit.approved
                     && plan
                         .targets()
                         .iter()
@@ -363,17 +383,115 @@ fn build_job(
     }
 }
 
-/// Judges the plan again with what is on disk in place of what was declared. A stricter
-/// answer, or more than what an approval was given for, refuses the execution.
-fn check_facts(
-    policy: &GatePolicy,
-    permit: &ExecutionPermit,
-    declared: Decision,
-    targets: &[Target],
-) -> Result<(), Stop> {
-    let plan = permit.plan();
-    let (items, bytes) = total(targets.iter().map(|target| &target.facts))?;
-    let real = Estimate { items, bytes };
+fn inspect_targets(
+    fence: &Fence,
+    limits: &Limits,
+    plan: &ActionPlan,
+    work: &[String],
+    mut budget: Option<usize>,
+) -> Result<Vec<Target>, Stop> {
+    let mut targets = Vec::new();
+    if budget.is_some() {
+        fence.open_dir_with_budget(work, &mut budget)?;
+    }
+    for target in plan.targets() {
+        let scope = target.path().scope();
+        let rel = fence.relative(scope)?;
+        if !scope.is_strictly_within(plan.work_root())
+            || rel.len() <= work.len()
+            || !starts_with(&rel, work)
+        {
+            return Err(Stop::new(
+                Reason::OutsideWorkRoot,
+                format!("{scope} is not strictly inside the work root"),
+            ));
+        }
+        charge_entries(&mut budget, 1)?;
+        if budget.is_some() && rel.len() - work.len() > limits.max_depth as usize {
+            return Err(Stop::new(
+                Reason::TooDeep,
+                format!("{scope} exceeds max_depth"),
+            ));
+        }
+        let mut inspect = |rel: Vec<String>,
+                           entry: crate::fence::Entry,
+                           budget: &mut Option<usize>| {
+            let (seen, facts) = survey_with_budget(fence, &entry, &rel, limits.max_depth, budget)?;
+            targets.push(Target {
+                text: fence.text_of(&rel),
+                rel,
+                seen,
+                facts,
+            });
+            Ok::<_, Stop>(())
+        };
+        if let Some(pattern) = target.path().pattern() {
+            let dir = fence.open_dir_with_budget(&rel, &mut budget)?;
+            for name in list_with_budget(fence, &dir, &rel, &mut budget)? {
+                if may_name(pattern, &name) {
+                    let path = child(&rel, &name);
+                    let entry = open_listed(fence, &dir, &path, &name)?;
+                    inspect(path, entry, &mut budget)?;
+                }
+            }
+        } else {
+            let (_, entry) = fence.existing_with_budget(&rel, &mut budget)?;
+            inspect(rel, entry, &mut budget)?;
+        }
+    }
+    Ok(targets)
+}
+
+fn repository_targets(
+    fence: &Fence,
+    rel: &mut Vec<String>,
+    seen: &Seen,
+    targets: &mut Vec<TargetRequest>,
+) {
+    let metadata = |name: &str| name.eq_ignore_ascii_case(".git");
+    let repo_root = seen.children.keys().any(|name| metadata(name));
+    let is_metadata = rel.last().is_some_and(|name| metadata(name));
+    if repo_root || is_metadata {
+        targets.push(TargetRequest {
+            path: fence.text_of(rel),
+            repo_root,
+        });
+    }
+    // The repository marker itself is protected as a whole.
+    if !is_metadata {
+        for (name, entry) in &seen.children {
+            rel.push(name.clone());
+            repository_targets(fence, rel, entry, targets);
+            rel.pop();
+        }
+    }
+}
+
+fn with_repository_targets(
+    fence: &Fence,
+    plan: &ActionPlan,
+    inspected: &[Target],
+    estimate: Option<Estimate>,
+) -> Result<ActionPlan, Stop> {
+    let mut targets = plan
+        .targets()
+        .iter()
+        .map(|target| TargetRequest {
+            path: target.path().to_string(),
+            repo_root: target.is_repo_root(),
+        })
+        .collect::<Vec<_>>();
+    for target in inspected {
+        if target.facts.repo_root
+            || target.facts.nested_repo
+            || target
+                .rel
+                .last()
+                .is_some_and(|name| name.eq_ignore_ascii_case(".git"))
+        {
+            repository_targets(fence, &mut target.rel.clone(), &target.seen, &mut targets);
+        }
+    }
     let request = PlanRequest {
         operation: match plan.operation() {
             Operation::Delete => OperationRequest::Delete,
@@ -384,19 +502,52 @@ fn check_facts(
                 destination: destination.to_string(),
             },
         },
-        targets: targets
-            .iter()
-            .map(|target| TargetRequest {
-                path: target.text.clone(),
-                repo_root: target.declared_repo_root || target.facts.repo_root,
-            })
-            .collect(),
+        targets,
         work_root: plan.work_root().to_string(),
-        estimate: Some(real),
+        estimate,
     };
-    let real_plan = ActionPlan::normalize(&request)
-        .map_err(|error| Stop::new(Reason::FactsContradictPlan, error))?;
-    let judged = classify(&real_plan, policy);
+    ActionPlan::normalize(&request)
+        .map_err(|error| Stop::caused_by(Reason::FactsContradictPlan, error))
+}
+
+/// Supplies facts for the plan that will be saved to the journal. Execution checks again.
+pub(crate) fn observe_plan(
+    fence: &Fence,
+    policy: &GatePolicy,
+    limits: &Limits,
+    plan: &ActionPlan,
+) -> Result<ActionPlan, Stop> {
+    if classify(plan, policy)
+        .map_err(|error| Stop::caused_by(Reason::PolicyDenies, error))?
+        .decision()
+        == Decision::Denied
+    {
+        return Ok(plan.clone());
+    }
+    let work = fence.relative(plan.work_root())?;
+    let targets = inspect_targets(fence, limits, plan, &work, Some(limits.max_plan_entries))?;
+    with_repository_targets(fence, plan, &targets, plan.estimate())
+}
+
+/// Judges the plan again with the facts on disk.
+fn check_facts(
+    fence: &Fence,
+    policy: &GatePolicy,
+    permit: &Grant<'_>,
+    declared: Decision,
+    targets: &[Target],
+) -> Result<(), Stop> {
+    let plan = permit.plan;
+    let (items, bytes) = total(targets.iter().map(|target| &target.facts))?;
+    let real = Estimate { items, bytes };
+    let real_plan = with_repository_targets(fence, plan, targets, Some(real))?;
+    let judged = classify(&real_plan, policy).map_err(|error| {
+        Stop::new(
+            Reason::FactsClassificationBudget,
+            "repository facts on disk exceed the gate classification work budget",
+        )
+        .with_cause(error)
+    })?;
     if judged.decision() > declared {
         let codes: Vec<String> = judged
             .findings()
@@ -413,7 +564,7 @@ fn check_facts(
             ),
         ));
     }
-    if let (Some(_), Some(estimate)) = (permit.approval_id(), plan.estimate())
+    if let (true, Some(estimate)) = (permit.approved, plan.estimate())
         && (real.items > estimate.items || real.bytes > estimate.bytes)
     {
         return Err(Stop::new(
@@ -442,7 +593,7 @@ fn refuse_nested_repositories(targets: &[Target]) -> Result<(), Stop> {
 fn delete_job(
     fence: &Fence,
     limits: &Limits,
-    permit: &ExecutionPermit,
+    permit: &Grant<'_>,
     work: &[String],
     floor: Vec<String>,
     targets: &[Target],
@@ -468,6 +619,7 @@ fn delete_job(
         }
         DefinitiveDelete::Contained | DefinitiveDelete::Isolated => {}
     }
+    fence.stable_identity("a definitive delete")?;
 
     // A tree is not emptied where it is: it goes, whole, to a folder made for this
     // execution, and is removed there.
@@ -476,7 +628,7 @@ fn delete_job(
     };
     let private = join(work, &limits.private_dir);
     let holding = match targets.iter().any(tree) {
-        true => Some(child(&private, &folder_name(permit.action_id())?)),
+        true => Some(child(&private, &folder_name(permit.action_id)?)),
         false => None,
     };
     for target in targets {
@@ -568,9 +720,11 @@ fn judge_restore_place(
         work_root: work_root.to_string(),
         estimate: Some(Estimate { items: 1, bytes: 0 }),
     };
-    let plan = ActionPlan::normalize(&request)
-        .map_err(|error| Stop::new(Reason::PolicyDenies, format!("{place}: {error}")))?;
-    let verdict = classify(&plan, policy);
+    let plan = ActionPlan::normalize(&request).map_err(|error| {
+        Stop::new(Reason::PolicyDenies, format!("{place}: {error}")).with_cause(error)
+    })?;
+    let verdict =
+        classify(&plan, policy).map_err(|error| Stop::caused_by(Reason::PolicyDenies, error))?;
     if verdict.decision() == Decision::Denied {
         let codes: Vec<String> = verdict
             .findings()
@@ -589,13 +743,13 @@ fn judge_restore_place(
 fn quarantine_job(
     fence: &Fence,
     limits: &Limits,
-    permit: &ExecutionPermit,
+    permit: &Grant<'_>,
     work: Vec<String>,
     targets: &[Target],
     destination: &AbsPath,
     quarantine: &AbsPath,
 ) -> Result<Job, Stop> {
-    let plan = permit.plan();
+    let plan = permit.plan;
     if let Some(inside) = plan
         .targets()
         .iter()
@@ -607,7 +761,7 @@ fn quarantine_job(
         ));
     }
     refuse_nested_repositories(targets)?;
-    let name = folder_name(permit.action_id())?;
+    let name = folder_name(permit.action_id)?;
     let dest = fence.relative(destination)?;
     if dest.len() <= work.len() || !starts_with(&dest, &work) {
         return Err(Stop::new(
@@ -660,7 +814,7 @@ fn quarantine_job(
     let manifest = Manifest {
         version: MANIFEST_VERSION,
         action_id: name,
-        plan_hash: permit.plan_hash().to_string(),
+        plan_hash: permit.plan_hash.to_string(),
         started_at: String::new(),
         work_root: plan.work_root().to_string(),
         items: listed,
@@ -689,12 +843,12 @@ fn restore_job(
     fence: &Fence,
     policy: &GatePolicy,
     limits: &Limits,
-    permit: &ExecutionPermit,
+    permit: &Grant<'_>,
     work: Vec<String>,
     targets: &[Target],
     quarantine: &AbsPath,
 ) -> Result<Job, Stop> {
-    let plan = permit.plan();
+    let plan = permit.plan;
     let [batch] = targets else {
         return Err(Stop::new(
             Reason::Unsupported,
@@ -711,6 +865,7 @@ fn restore_job(
             format!("{} is not a quarantine batch", batch.text),
         ));
     }
+    fence.stable_identity("a restore")?;
 
     let invalid =
         |what: &str| Stop::new(Reason::ManifestInvalid, format!("{}: {what}", batch.text));
@@ -719,13 +874,16 @@ fn restore_job(
     let folder = fence.open_dir(&batch.rel)?;
     let bytes = match folder.read_file(MANIFEST_NAME, limits.max_manifest_bytes) {
         Ok(bytes) => bytes,
-        Err(sys::Error::Missing) => return Err(invalid("no manifest")),
+        Err(error @ sys::Error::Missing(_)) => return Err(invalid("no manifest").with_cause(error)),
         Err(sys::Error::Io(error)) if error.kind() == std::io::ErrorKind::FileTooLarge => {
-            return Err(invalid("the manifest is too large"));
+            return Err(invalid("the manifest is too large").with_cause(error));
         }
-        Err(error) => return Err(invalid(&format!("the manifest is not a file ({error})"))),
+        Err(error) => {
+            return Err(invalid(&format!("the manifest is not a file ({error})")).with_cause(error));
+        }
     };
     let manifest = Manifest::from_bytes(&bytes)?;
+    let read_manifest = format!("sha256:{:x}", Sha256::digest(&bytes));
     if batch.rel.last() != Some(&manifest.action_id) {
         return Err(invalid("the manifest is of another action"));
     }
@@ -812,5 +970,7 @@ fn restore_job(
             format!("{} holds none of its items", batch.text),
         ));
     }
-    Ok(Job::new(work, steps, ops))
+    let mut job = Job::new(work, steps, ops);
+    job.read_manifest = Some(read_manifest);
+    Ok(job)
 }

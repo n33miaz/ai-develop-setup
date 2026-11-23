@@ -9,11 +9,20 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[[test]]
+name = "controls_binary"
+path = "tests/controls_binary/main.rs"
+harness = false
+
 [dependencies]
+ads-private-dir.workspace = true
 ads-adapter-claude = { path = "../adapters/claude" }
 ads-adapter-codex = { path = "../adapters/codex" }
+ads-adapter-vault = { path = "../adapters/vault" }
+ads-adapter-fs = { path = "../adapters/fs" }
 ads-core = { workspace = true }
-ads-contracts = { workspace = true }
+ads-storage = { workspace = true }
+ads-contracts = { workspace = true, features = ["desktop-proof"] }
 base64 = { workspace = true }
 futures-util = { workspace = true }
 getrandom = { workspace = true }
@@ -30,5 +39,8 @@ ads-ptyhost = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 
 [dev-dependencies]
+ads-adapter-vault = { path = "../adapters/vault", features = ["test-support"] }
+rusqlite = { workspace = true }
+ads-private-dir = { workspace = true, features = ["test-support"] }
 ads-testkit = { workspace = true }
 tokio = { workspace = true, features = ["test-util", "time"] }

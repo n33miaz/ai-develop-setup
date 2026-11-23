@@ -1,6 +1,7 @@
 import type { CoreClient } from './client'
+import { desktopSocketFactory, type DesktopBridge } from './desktop'
 import { createFakeCoreClient } from './fake'
-import { createWsCoreClient, type WsClientOptions } from './ws'
+import { createCoreClient, createWsCoreClient, type WsClientOptions } from './ws'
 
 const STORAGE_KEY = 'ads.local-api'
 
@@ -62,4 +63,32 @@ export function selectCoreClient(
   }
   if (credentials) return { client: createReal({ ...credentials, ...replay }), live: true }
   return { client: createFakeCoreClient(), live: false }
+}
+
+export function desktopBridge(browser: Window): DesktopBridge | undefined {
+  return (browser as Window & { __TAURI__?: DesktopBridge }).__TAURI__
+}
+
+export function selectDesktopClient(
+  { core }: DesktopBridge,
+  replay: ReplaySettings,
+  retryInitial?: unknown,
+  retryMax?: unknown,
+  retryStable?: unknown,
+  retryAttempts?: unknown,
+): { client: CoreClient; live: true } {
+  const delay = (value: unknown) => {
+    const parsed = positive(value)
+    return parsed !== undefined && parsed <= 2_147_483_647 ? parsed : undefined
+  }
+  const socketFactory = desktopSocketFactory(core, {
+    initialMs: delay(retryInitial),
+    maxMs: delay(retryMax),
+    stableMs: delay(retryStable),
+    maxAttempts: positive(retryAttempts),
+  })
+  return {
+    client: createCoreClient(socketFactory, { ...replay, reconnectOnDrop: true }),
+    live: true,
+  }
 }

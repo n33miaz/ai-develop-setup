@@ -11,7 +11,7 @@ use std::{
 };
 
 pub const APPLICATION_ID: i64 = 0x41445331;
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 6;
 
 /// Owns the connection; raw SQL remains private to storage.
 pub struct AuditStore {
@@ -32,18 +32,7 @@ fn preflight(c: &Connection, config: &StorageConfig) -> Result<(), StorageError>
     harden(c, config)?;
     let id = integer(c, "application_id")?;
     let version = integer(c, "user_version")?;
-    if id != APPLICATION_ID && id != 0 {
-        return Err(StorageError::ForeignApplication);
-    }
-    if version > SCHEMA_VERSION {
-        return Err(StorageError::SchemaTooNew);
-    }
-    if version < 0 || (id == 0 && version != 0) || (id == APPLICATION_ID && version < 1) {
-        return Err(StorageError::UnsupportedSchema);
-    }
-    if id == APPLICATION_ID {
-        migrate::readable(version)?;
-    }
+    check_identity(id, version)?;
     let count: i64 = c.query_row("SELECT count(*) FROM sqlite_schema", [], |r| r.get(0))?;
     if id == 0 && count != 0 {
         return Err(StorageError::ForeignApplication);
@@ -56,6 +45,22 @@ fn preflight(c: &Connection, config: &StorageConfig) -> Result<(), StorageError>
         if result != "ok" {
             return Err(StorageError::Corrupt);
         }
+    }
+    Ok(())
+}
+
+fn check_identity(id: i64, version: i64) -> Result<(), StorageError> {
+    if id != APPLICATION_ID && id != 0 {
+        return Err(StorageError::ForeignApplication);
+    }
+    if version > SCHEMA_VERSION {
+        return Err(StorageError::SchemaTooNew);
+    }
+    if version < 0 || (id == 0 && version != 0) || (id == APPLICATION_ID && version < 1) {
+        return Err(StorageError::UnsupportedSchema);
+    }
+    if id == APPLICATION_ID {
+        migrate::readable(version)?;
     }
     Ok(())
 }
@@ -103,20 +108,13 @@ fn header(path: &Path) -> Result<Header, StorageError> {
     {
         return Err(StorageError::Corrupt);
     }
+    let pages = u32::from_be_bytes(bytes[28..32].try_into().unwrap());
+    if pages != 0 && bytes[92..96] == bytes[24..28] && u64::from(pages) * page != meta.len() {
+        return Err(StorageError::Corrupt);
+    }
     let version = i32::from_be_bytes(bytes[60..64].try_into().unwrap()) as i64;
     let id = i32::from_be_bytes(bytes[68..72].try_into().unwrap()) as i64;
-    if id != 0 && id != APPLICATION_ID {
-        return Err(StorageError::ForeignApplication);
-    }
-    if version > SCHEMA_VERSION {
-        return Err(StorageError::SchemaTooNew);
-    }
-    if version < 0 || (id == 0 && version != 0) || (id == APPLICATION_ID && version < 1) {
-        return Err(StorageError::UnsupportedSchema);
-    }
-    if id == APPLICATION_ID {
-        migrate::readable(version)?;
-    }
+    check_identity(id, version)?;
     Ok(if id == APPLICATION_ID {
         Header::Product {
             page: page as usize,
@@ -176,8 +174,13 @@ fn inspect(path: &Path, config: &StorageConfig) -> Result<bool, StorageError> {
                 return Err(StorageError::CantOpen);
             }
             let kind = header(path)?;
-            if let Header::Product { page } = kind {
-                crate::snapshot::check_product_wal(path, page)?;
+            if let Header::Product { page } = kind
+                && let Some((id, version)) = crate::snapshot::check_product_wal(path, page)?
+            {
+                if i64::from(id) != APPLICATION_ID {
+                    return Err(StorageError::ForeignApplication);
+                }
+                check_identity(i64::from(id), i64::from(version))?;
             }
             if kind == Header::Unmarked {
                 let image = crate::snapshot::image(path, config.inspection_max_bytes)?;
@@ -239,9 +242,12 @@ fn settle(path: &Path, config: &StorageConfig) -> Result<bool, StorageError> {
 }
 
 /// Functions the product's statements, `CHECK`s and triggers call.
-const FUNCTIONS: [&str; 5] = ["coalesce", "length", "max", "substr", "zeroblob"];
-/// Pragmas the product reads back after migration (`verify_pragmas`).
-const PRAGMAS: [&str; 8] = [
+const FUNCTIONS: [&str; 6] = ["coalesce", "count", "length", "max", "substr", "zeroblob"];
+/// Pragmas the product reads back after migration (`verify_pragmas`), plus
+/// `data_version` and `shrink_memory` for the check before an anchored append.
+const PRAGMAS: [&str; 10] = [
+    "data_version",
+    "shrink_memory",
     "user_version",
     "journal_mode",
     "synchronous",
@@ -259,10 +265,12 @@ const PRAGMAS: [&str; 8] = [
 fn allowed(context: AuthContext<'_>) -> Authorization {
     let listed = |list: &[&str], name: &str| list.iter().any(|n| n.eq_ignore_ascii_case(name));
     match context.action {
-        AuthAction::Select
-        | AuthAction::Read { .. }
-        | AuthAction::Insert { .. }
-        | AuthAction::Transaction { .. } => Authorization::Allow,
+        AuthAction::Select | AuthAction::Read { .. } | AuthAction::Transaction { .. } => {
+            Authorization::Allow
+        }
+        AuthAction::Insert { table_name } if !table_name.eq_ignore_ascii_case("log_genesis") => {
+            Authorization::Allow
+        }
         AuthAction::Function { function_name } if listed(&FUNCTIONS, function_name) => {
             Authorization::Allow
         }
@@ -281,20 +289,27 @@ fn existing_flags() -> OpenFlags {
 impl AuditStore {
     /// Validates the header before SQLite can access the file.
     pub fn open(path: &Path, config: &StorageConfig) -> Result<Self, StorageError> {
-        Self::open_after_inspection(path, config, || {})
+        Self::open_after_inspection(path, config, true, || {})
+    }
+
+    pub(crate) fn open_existing(path: &Path, config: &StorageConfig) -> Result<Self, StorageError> {
+        Self::open_after_inspection(path, config, false, || {})
     }
 
     fn open_after_inspection(
         path: &Path,
         config: &StorageConfig,
+        create: bool,
         after: impl FnOnce(),
     ) -> Result<Self, StorageError> {
         let exists = settle(path, config)?;
         after();
         let flags = if exists {
             existing_flags()
-        } else {
+        } else if create {
             existing_flags() | OpenFlags::SQLITE_OPEN_CREATE
+        } else {
+            return Err(StorageError::AnchorMismatch);
         };
         let mut connection = Connection::open_with_flags(path, flags)?;
         // A refusal must neither checkpoint the frames it refused nor delete the WAL,
@@ -352,10 +367,10 @@ impl AuditStore {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    fn test_directory() -> std::path::PathBuf {
+    pub(crate) fn test_directory() -> std::path::PathBuf {
         let executable = std::env::current_exe().unwrap();
         let root = executable
             .parent()
@@ -381,7 +396,7 @@ mod tests {
         let moved = root.join(format!("disappeared-{}.saved", std::process::id()));
         let config = StorageConfig::defaults();
         drop(AuditStore::open(&path, &config).unwrap());
-        let result = AuditStore::open_after_inspection(&path, &config, || {
+        let result = AuditStore::open_after_inspection(&path, &config, true, || {
             std::fs::rename(&path, &moved).unwrap()
         });
         assert_eq!(result.unwrap_err(), StorageError::CantOpen);
@@ -440,6 +455,7 @@ mod tests {
             "PRAGMA journal_mode = DELETE",
             "UPDATE meta SET value = value",
             "DELETE FROM meta",
+            "INSERT OR REPLACE INTO log_genesis VALUES (1, zeroblob(32))",
             "REINDEX",
             "ANALYZE",
             "VACUUM",
@@ -475,7 +491,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(triggers, 6);
+        assert_eq!(triggers, 11);
     }
 
     #[test]

@@ -4,15 +4,25 @@ use crate::api::{ApiError, HarnessCatalog, Launcher};
 use ads_adapter_claude as claude;
 use ads_adapter_codex as codex;
 use ads_contracts::CommandSessionOpenV1Params;
-use ads_core::child_env::NameCase;
+use ads_core::child_env::EnvPolicy;
+use ads_core::gate::{AbsPath, GatePolicy};
+use ads_core::tool_launch::{HostRules, process_env};
 use ads_ptyhost::wire::OpenParams;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+
+/// A validated work folder and its availability at startup.
+pub struct Workdir {
+    pub(crate) path: PathBuf,
+    pub(crate) unavailable: bool,
+}
 
 pub struct ToolLauncher<C, X> {
     claude: claude::ClaudeConfig,
     codex: codex::CodexConfig,
     /// The parent environment after the `[env]` policy: credentials are never kept.
     child_env: BTreeMap<String, String>,
+    missing_workdir_aliases: BTreeSet<String>,
     claude_probe: C,
     codex_probe: X,
 }
@@ -27,9 +37,53 @@ fn describe(tool: &str, shared: bool, error: impl std::fmt::Display) -> String {
 }
 
 impl<C, X> ToolLauncher<C, X> {
-    /// Filters `parent_env` once; only the result is kept.
+    /// Work roots to pass to the audit log when opening or recovering it.
+    pub fn workdirs(&self) -> Vec<PathBuf> {
+        self.claude
+            .workdirs()
+            .map(|dir| dir.as_str().into())
+            .collect()
+    }
+
+    /// Records unavailable folders for the catalog and session openings until the next startup.
+    pub fn check_workdirs(&mut self, mut warn: impl FnMut(&str)) -> Vec<Workdir> {
+        self.missing_workdir_aliases.clear();
+        // Both iterators follow the same ordered configuration map.
+        self.claude
+            .workdir_aliases()
+            .zip(self.claude.workdirs())
+            .map(|(alias, dir)| {
+                let path = PathBuf::from(dir.as_str());
+                let unavailable = !std::fs::canonicalize(&path)
+                    .and_then(std::fs::metadata)
+                    .is_ok_and(|metadata| metadata.is_dir());
+                if unavailable {
+                    self.missing_workdir_aliases.insert(alias.to_owned());
+                    warn(&format!(
+                        "ads-daemon: work folder unavailable at startup: {alias}"
+                    ));
+                }
+                Workdir { path, unavailable }
+            })
+            .collect()
+    }
+
+    pub fn from_process_env(
+        overrides: &str,
+        host: HostRules,
+        claude_probe: C,
+        codex_probe: X,
+    ) -> Result<Self, String> {
+        Self::with_env(overrides, host, claude_probe, codex_probe, |policy| {
+            policy.child_env(process_env(policy))
+        })
+    }
+
+    /// Filters `parent_env` once; only the result is kept. Paths and names are judged by the
+    /// rules of `host`, [`HostRules::host`] outside tests.
     pub fn from_toml_str<I, K, V>(
         overrides: &str,
+        host: HostRules,
         parent_env: I,
         claude_probe: C,
         codex_probe: X,
@@ -39,12 +93,23 @@ impl<C, X> ToolLauncher<C, X> {
         K: Into<String>,
         V: Into<String>,
     {
+        Self::with_env(overrides, host, claude_probe, codex_probe, |policy| {
+            policy.child_env(parent_env)
+        })
+    }
+
+    fn with_env(
+        overrides: &str,
+        host: HostRules,
+        claude_probe: C,
+        codex_probe: X,
+        child_env: impl FnOnce(&EnvPolicy) -> BTreeMap<String, String>,
+    ) -> Result<Self, String> {
         use claude::ConfigError as A;
         use codex::ConfigError as B;
-        let case = NameCase::host();
         // The daemon passes a rebuilt subset of the user's file: line numbers would point to
         // the wrong place, so they are dropped.
-        let claude = claude::ClaudeConfig::from_toml_str(overrides, case).map_err(|error| {
+        let claude = claude::ClaudeConfig::from_toml_str(overrides, host).map_err(|error| {
             let shared = matches!(
                 error,
                 A::Env(_)
@@ -52,6 +117,7 @@ impl<C, X> ToolLauncher<C, X> {
                     | A::Workdir { .. }
                     | A::WorkdirTooLong(_)
                     | A::WorkdirIsRoot(_)
+                    | A::WorkdirOtherSystem(_)
             );
             let error = match error {
                 A::Toml { .. } => A::Toml { line: None },
@@ -59,7 +125,7 @@ impl<C, X> ToolLauncher<C, X> {
             };
             describe(claude::HARNESS_ID, shared, error)
         })?;
-        let codex = codex::CodexConfig::from_toml_str(overrides, case).map_err(|error| {
+        let codex = codex::CodexConfig::from_toml_str(overrides, host).map_err(|error| {
             let shared = matches!(
                 error,
                 B::Env(_)
@@ -67,6 +133,7 @@ impl<C, X> ToolLauncher<C, X> {
                     | B::Workdir { .. }
                     | B::WorkdirTooLong(_)
                     | B::WorkdirIsRoot(_)
+                    | B::WorkdirOtherSystem(_)
             );
             let error = match error {
                 B::Toml { .. } => B::Toml { line: None },
@@ -77,11 +144,17 @@ impl<C, X> ToolLauncher<C, X> {
         if claude.env() != codex.env() {
             return Err("invalid user configuration: tools disagree on `[env]`".into());
         }
-        let child_env = claude.env().child_env(parent_env);
+        if claude.has_overlapping_profiles(&codex) {
+            return Err(
+                "invalid user configuration: account profile folders overlap across tools".into(),
+            );
+        }
+        let child_env = child_env(claude.env());
         Ok(Self {
             claude,
             codex,
             child_env,
+            missing_workdir_aliases: BTreeSet::new(),
             claude_probe,
             codex_probe,
         })
@@ -99,7 +172,7 @@ where
             .child_env
             .iter()
             .map(|(name, value)| (name.as_str(), value.as_str()));
-        match request.harness.as_str() {
+        let opened = match request.harness.as_str() {
             claude::HARNESS_ID => {
                 claude::open_params(&self.claude, request, env, &self.claude_probe).map_err(
                     |error| match error {
@@ -114,7 +187,14 @@ where
                     _ => ApiError::Invalid,
                 }),
             _ => Err(ApiError::Invalid),
+        }?;
+        if self
+            .missing_workdir_aliases
+            .contains(request.workdir_alias.as_str())
+        {
+            return Err(ApiError::Invalid);
         }
+        Ok(opened)
     }
 
     fn catalog(&self) -> HarnessCatalog {
@@ -129,8 +209,54 @@ where
         // `[workdirs]` is shared, so both adapters hold the same aliases.
         HarnessCatalog {
             harnesses,
-            workdir_aliases: self.claude.workdir_aliases().map(str::to_owned).collect(),
+            workdir_aliases: self
+                .claude
+                .workdir_aliases()
+                .filter(|alias| !self.missing_workdir_aliases.contains(*alias))
+                .map(str::to_owned)
+                .collect(),
+            missing_workdir_aliases: self.missing_workdir_aliases.iter().cloned().collect(),
         }
+    }
+}
+
+impl<C, X> ToolLauncher<C, X>
+where
+    C: claude::Probe,
+    X: codex::Probe,
+{
+    /// Binds actions to the working folder used to open this session on the host. The state of
+    /// the product is denied as a target whatever `policy` says.
+    pub fn session_gate(
+        &self,
+        opened: &OpenParams,
+        policy: GatePolicy,
+        product: &crate::audit::ProductLog,
+        fence: &Path,
+    ) -> Result<crate::gate::SessionGate, String> {
+        let cwd = opened
+            .cwd
+            .as_ref()
+            .ok_or("session has no configured working folder")?;
+        let root = AbsPath::parse(cwd.as_str()).map_err(|error| error.to_string())?;
+        // A configured path may be an alias on disk as well. Protect both spellings.
+        let mut roots = Vec::new();
+        for dir in self.claude.workdirs() {
+            for path in [
+                Some(dir.as_str().to_owned()),
+                self.claude_probe.resolve_workdir(dir.as_str()),
+                self.codex_probe.resolve_workdir(dir.as_str()),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                let path = AbsPath::parse(&path).map_err(|error| error.to_string())?;
+                if !roots.contains(&path) {
+                    roots.push(path);
+                }
+            }
+        }
+        crate::gate::SessionGate::new(root, roots, policy, product, fence)
     }
 }
 
@@ -139,9 +265,58 @@ mod tests {
     use super::*;
 
     #[test]
+    fn launcher_configuration_refuses_credentials_before_a_session_exists() {
+        let drive = if cfg!(windows) { "C:" } else { "" };
+        for (setting, key) in [
+            ("allow = ['AWS_PROFILE']", "env.allow"),
+            ("set = { AWS_PROFILE = 'fixture' }", "env.set"),
+        ] {
+            let error = ToolLauncher::from_toml_str(
+                &format!("[env]\n{setting}\n[accounts.claude.primary]\nprofile_dir = '{drive}/profiles/primary'"),
+                HostRules::host(),
+                [("AWS_PROFILE", "fixture")],
+                claude::DiskProbe,
+                codex::DiskProbe,
+            )
+            .err();
+            assert_eq!(
+                error.as_deref(),
+                Some(
+                    format!("invalid user configuration: denied variable name at `{key}` entry 0")
+                        .as_str()
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn tools_reject_overlapping_profile_folders() {
+        let drive = if cfg!(windows) { "C:" } else { "" };
+        for second in ["profiles/./main", "profiles/main/nested"] {
+            let overrides = format!(
+                "[accounts.claude.a]\nprofile_dir = '{drive}/profiles/main'\n[accounts.codex.b]\nprofile_dir = '{drive}/{second}'"
+            );
+            let error = ToolLauncher::from_toml_str(
+                &overrides,
+                HostRules::host(),
+                Vec::<(String, String)>::new(),
+                claude::DiskProbe,
+                codex::DiskProbe,
+            )
+            .err()
+            .unwrap();
+            assert_eq!(
+                error, "invalid user configuration: account profile folders overlap across tools",
+                "{second}"
+            );
+        }
+    }
+
+    #[test]
     fn a_root_folder_is_reported_as_a_shared_error() {
         let error = ToolLauncher::from_toml_str(
             "[workdirs]\nscratch = '/'\n",
+            HostRules::POSIX,
             Vec::<(String, String)>::new(),
             claude::DiskProbe,
             codex::DiskProbe,
@@ -155,9 +330,48 @@ mod tests {
     }
 
     #[test]
+    fn a_path_written_for_another_system_is_refused_at_load() {
+        for (host, profile, folder, program) in [
+            (
+                HostRules::WINDOWS,
+                "C:/profiles/primary",
+                "/work",
+                "/usr/bin/tool",
+            ),
+            (
+                HostRules::POSIX,
+                "/profiles/primary",
+                r"C:\work",
+                r"C:\tools\tool.exe",
+            ),
+        ] {
+            let error = |text: String| {
+                ToolLauncher::from_toml_str(
+                    &format!("{text}[accounts.codex.primary]\nprofile_dir = '{profile}'"),
+                    host,
+                    Vec::<(String, String)>::new(),
+                    claude::DiskProbe,
+                    codex::DiskProbe,
+                )
+                .err()
+                .unwrap()
+            };
+            assert_eq!(
+                error(format!("[workdirs]\nscratch = '{folder}'\n")),
+                "invalid user configuration: folder at entry 0 is written for another operating system"
+            );
+            assert_eq!(
+                error(format!("[tools.codex]\nprogram = '{program}'\n")),
+                "invalid codex configuration: program path is written for another operating system"
+            );
+        }
+    }
+
+    #[test]
     fn only_the_filtered_environment_is_kept() {
         let launcher = ToolLauncher::from_toml_str(
             "",
+            HostRules::host(),
             [
                 ("PATH", "p"),
                 ("ANTHROPIC_API_KEY", "sentinel"),

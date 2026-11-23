@@ -5,6 +5,8 @@ import type { HarnessListError } from './client'
 import { newCommand } from './command'
 import { createFakeCoreClient } from './fake'
 import type { CommandRequestV1 } from './contracts'
+import { HARNESS_NOT_CONFIGURED } from '../../../contracts/generated/ts/contract.local-api.error-code.v4.constants'
+import { queueApprovals } from './queueApprovals'
 import { createWsCoreClient } from './ws'
 
 const schemas = import.meta.glob<AnySchema>('../../../contracts/schemas/*.schema.json', {
@@ -31,7 +33,7 @@ class FakeSocket extends EventTarget {
     this.dispatchEvent(new Event('close'))
   }
   receive(message: unknown) {
-    valid('urn:ads:contract:local-api.server-message:2', message)
+    valid('urn:ads:contract:local-api.server-message:10', message)
     this.receiveRaw(message)
   }
   /** Entrega sem conferir: simula um núcleo que manda o que o contrato não aceita. */
@@ -47,6 +49,17 @@ class FakeSocket extends EventTarget {
   }
 }
 const token = 'a'.repeat(43)
+const policy = {
+  attempt_limit: 2,
+  admission_limit: 1000,
+  window_seconds: 3600,
+  window_admissions: 10,
+  manual_window_admissions: 10,
+  bug_rule_window_admissions: 3,
+  clock_skew_seconds: 5,
+  clock_rewind_seconds: 300,
+  host_confirm_seconds: 60,
+}
 function setup(listTimeoutMs?: number) {
   const socket = new FakeSocket()
   const urls: string[] = []
@@ -89,6 +102,62 @@ function event(seq: number, stream = 'session/session-a') {
 }
 
 describe('local WebSocket client', () => {
+  it('sends the queue and approval commands and validates their replies', async () => {
+    const { client, socket } = await connected()
+    const api = queueApprovals(client)
+    const queue = api.get('queue-01')
+    socket.receive({
+      jsonrpc: '2.0',
+      id: socket.sent.at(-1)?.id,
+      result: { queue_id: 'queue-01', state: 'stopped', policy },
+    })
+    await expect(queue).resolves.toEqual({ queue_id: 'queue-01', state: 'stopped', policy })
+
+    const configured = api.configured()
+    expect(socket.sent.at(-1)).toMatchObject({ method: 'queue.configured', params: {} })
+    socket.receive({ jsonrpc: '2.0', id: socket.sent.at(-1)?.id, result: { queue_id: 'queue-01' } })
+    await expect(configured).resolves.toBe('queue-01')
+
+    for (const action of ['create', 'start', 'stop'] as const) {
+      const result = api[action]('queue-01')
+      expect(socket.sent.at(-1)).toMatchObject({
+        method: 'queue.' + action,
+        params: { queue_id: 'queue-01' },
+      })
+      socket.answer(socket.sent.length - 1)
+      await expect(result).resolves.toMatchObject({ result: { accepted: true } })
+    }
+
+    const list = api.list()
+    expect(socket.sent.at(-1)?.method).toBe('approval.list')
+    socket.receive({
+      jsonrpc: '2.0',
+      id: socket.sent.at(-1)?.id,
+      result: { approvals: [], more: true, unreadable: 2 },
+    })
+    await expect(list).resolves.toEqual({ approvals: [], more: true, unreadable: 2 })
+
+    const params = {
+      action_id: 'action-01',
+      approval_id: 'approval-01',
+      plan_hash: 'sha256:' + 'a'.repeat(64),
+      decision: 'deny',
+    } as const
+    const answer = api.answer(params)
+    expect(socket.sent.at(-1)).toMatchObject({ method: 'approval.answer', params })
+    socket.answer(socket.sent.length - 1)
+    await expect(answer).resolves.toMatchObject({ result: { accepted: true } })
+
+    const refused = api.start('queue-01')
+    socket.receive({
+      jsonrpc: '2.0',
+      id: socket.sent.at(-1)?.id,
+      error: { code: HARNESS_NOT_CONFIGURED, message: 'unconfigured' },
+    })
+    await expect(refused).rejects.toMatchObject({ code: HARNESS_NOT_CONFIGURED })
+    expect(client.getState()).toBe('connected')
+  })
+
   it('accepts the oldest retained event when replay starts from zero', async () => {
     const { client, socket } = await connected()
     const seen: number[] = []
@@ -358,6 +427,17 @@ describe('local WebSocket client', () => {
     await expect(listed).rejects.toThrow('command rejected')
     expect(client.getState()).toBe('connected')
   })
+  it('passes missing workdir aliases through the catalog response', async () => {
+    const { client, socket } = await connected()
+    const listed = client.listHarnesses()
+    const result = {
+      harnesses: ['claude'],
+      workdir_aliases: ['online'],
+      missing_workdir_aliases: ['offline'],
+    }
+    socket.receive({ jsonrpc: '2.0', id: socket.sent[1]?.id, result })
+    await expect(listed).resolves.toEqual(result)
+  })
   it('disconnects when a reply does not have the shape of its request', async () => {
     const list = await connected()
     const listed = list.client.listHarnesses()
@@ -377,6 +457,10 @@ describe('local WebSocket client', () => {
     ['an extra field', { harnesses: ['claude'], workdir_aliases: ['default'], program: 'x' }],
     ['a POSIX path as alias', { harnesses: ['claude'], workdir_aliases: ['/srv/work'] }],
     ['a Windows path as alias', { harnesses: ['claude'], workdir_aliases: ['C:\\work'] }],
+    [
+      'a path as a missing alias',
+      { harnesses: ['claude'], workdir_aliases: [], missing_workdir_aliases: ['/srv/work'] },
+    ],
     ['a repeated tool', { harnesses: ['claude', 'claude'], workdir_aliases: [] }],
     ['no alias list', { harnesses: ['claude'] }],
   ])('drops the connection on a tool list with %s', async (_, result) => {

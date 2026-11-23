@@ -1,0 +1,22 @@
+{
+  "01-empty.json": {
+    "rule": "O título tem pelo menos um caractere.",
+    "keyword": "minLength",
+    "instancePath": ""
+  },
+  "02-leading-space.json": {
+    "rule": "O título não começa com espaço.",
+    "keyword": "not",
+    "instancePath": ""
+  },
+  "03-zwj.json": {
+    "rule": "O título recusa o ZWJ.",
+    "keyword": "pattern",
+    "instancePath": ""
+  },
+  "04-long.json": {
+    "rule": "O título tem no máximo 120 caracteres.",
+    "keyword": "maxLength",
+    "instancePath": ""
+  }
+}

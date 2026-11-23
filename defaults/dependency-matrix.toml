@@ -38,7 +38,7 @@ forbid_external = [
 
 [crates.ads-storage]
 path = "crates/storage"
-allow = ["ads-contracts"]
+allow = ["ads-contracts", "ads-core"]
 
 # Processo estavel das sessoes: so contratos.
 
@@ -58,11 +58,15 @@ allow = []
 path = "crates/e2e"
 allow = ["ads-contracts"]
 
-# Supervisor estavel: so contratos, para quase nunca precisar mudar.
+# Pastas e arquivos privados do usuário.
+[crates.ads-private-dir]
+path = "crates/private-dir"
+allow = []
 
+# Supervisor estável: contratos e política de ambiente dos filhos.
 [crates.ads-launcher]
 path = "crates/launcher"
-allow = ["ads-contracts"]
+allow = ["ads-contracts", "ads-core", "ads-private-dir"]
 
 # Casca fina: so contratos e a sessao cifrada. Nada de politica, banco ou PTY.
 
@@ -94,7 +98,7 @@ allow = ["ads-contracts", "ads-core"]
 
 [crates.ads-adapter-vault]
 path = "crates/adapters/vault"
-allow = ["ads-contracts", "ads-core"]
+allow = ["ads-core"]
 
 
 [crates.ads-adapter-collectors]
@@ -116,4 +120,4 @@ allow = ["ads-contracts", "ads-core"]
 
 [crates.ads-daemon]
 path = "crates/daemon"
-allow = ["ads-contracts", "ads-core", "ads-storage", "ads-ptyhost", "ads-e2e", "ads-adapter-claude", "ads-adapter-codex", "ads-adapter-antigravity", "ads-adapter-api", "ads-adapter-vault", "ads-adapter-collectors", "ads-adapter-relay", "ads-adapter-fs", "ads-testkit"]
+allow = ["ads-contracts", "ads-core", "ads-storage", "ads-private-dir", "ads-ptyhost", "ads-e2e", "ads-adapter-claude", "ads-adapter-codex", "ads-adapter-antigravity", "ads-adapter-api", "ads-adapter-vault", "ads-adapter-collectors", "ads-adapter-relay", "ads-adapter-fs", "ads-testkit"]

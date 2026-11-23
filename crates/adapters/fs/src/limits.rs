@@ -22,19 +22,54 @@ pub enum DefinitiveDelete {
 pub struct Limits {
     /// How many folders deep a tree may go before the executor refuses it.
     pub max_depth: u32,
+    /// The maximum entries examined across one plan inspection.
+    pub max_plan_entries: usize,
     /// The largest manifest the executor writes or reads back, in bytes.
     pub max_manifest_bytes: u64,
+    /// The largest record of concrete effects a rehearsal hands out, in bytes.
+    pub max_effects_bytes: u64,
     pub definitive_delete: DefinitiveDelete,
     /// The names, below the work root, of the folder where a tree is held while it is
     /// removed for good.
     pub private_dir: Vec<String>,
 }
 
+#[derive(Debug)]
+pub enum LimitsError {
+    Toml(toml::de::Error),
+    MissingKey(&'static str),
+    InvalidName { name: String, error: std::io::Error },
+}
+
+impl std::fmt::Display for LimitsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Toml(error) => error.fmt(f),
+            Self::MissingKey(key) => write!(f, "missing key `{key}`"),
+            Self::InvalidName { name, .. } => {
+                write!(f, "`private_dir` has a name that is not plain: `{name}`")
+            }
+        }
+    }
+}
+
+impl std::error::Error for LimitsError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Toml(error) => Some(error),
+            Self::InvalidName { error, .. } => Some(error),
+            Self::MissingKey(_) => None,
+        }
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Layer {
     max_depth: Option<u32>,
+    max_plan_entries: Option<usize>,
     max_manifest_bytes: Option<u64>,
+    max_effects_bytes: Option<u64>,
     definitive_delete: Option<DefinitiveDelete>,
     private_dir: Option<String>,
 }
@@ -45,38 +80,43 @@ impl Limits {
     }
 
     /// The shipped defaults with the keys of `overrides` applied.
-    pub fn from_toml_str(overrides: &str) -> Result<Self, String> {
-        let parse = |text: &str| toml::from_str::<Layer>(text).map_err(|error| error.to_string());
+    pub fn from_toml_str(overrides: &str) -> Result<Self, LimitsError> {
+        let parse = |text: &str| toml::from_str::<Layer>(text).map_err(LimitsError::Toml);
         let base = parse(DEFAULTS_TOML)?;
         let over = parse(overrides)?;
-        let missing = |key: &str| format!("missing key `{key}`");
         let private_dir = over
             .private_dir
             .or(base.private_dir)
-            .ok_or_else(|| missing("private_dir"))?;
+            .ok_or(LimitsError::MissingKey("private_dir"))?;
         let private_dir: Vec<String> = private_dir.split('/').map(str::to_owned).collect();
-        if let Some(bad) = private_dir
-            .iter()
-            .find(|name| crate::sys::plain(name).is_err())
-        {
-            return Err(format!(
-                "`private_dir` has a name that is not plain: `{bad}`"
-            ));
+        for name in &private_dir {
+            crate::sys::plain(name).map_err(|error| LimitsError::InvalidName {
+                name: name.clone(),
+                error,
+            })?;
         }
         Ok(Self {
             private_dir,
             definitive_delete: over
                 .definitive_delete
                 .or(base.definitive_delete)
-                .ok_or_else(|| missing("definitive_delete"))?,
+                .ok_or(LimitsError::MissingKey("definitive_delete"))?,
             max_depth: over
                 .max_depth
                 .or(base.max_depth)
-                .ok_or_else(|| missing("max_depth"))?,
+                .ok_or(LimitsError::MissingKey("max_depth"))?,
+            max_plan_entries: over
+                .max_plan_entries
+                .or(base.max_plan_entries)
+                .ok_or(LimitsError::MissingKey("max_plan_entries"))?,
             max_manifest_bytes: over
                 .max_manifest_bytes
                 .or(base.max_manifest_bytes)
-                .ok_or_else(|| missing("max_manifest_bytes"))?,
+                .ok_or(LimitsError::MissingKey("max_manifest_bytes"))?,
+            max_effects_bytes: over
+                .max_effects_bytes
+                .or(base.max_effects_bytes)
+                .ok_or(LimitsError::MissingKey("max_effects_bytes"))?,
         })
     }
 }
@@ -89,6 +129,9 @@ mod tests {
     fn defaults_load_and_a_layer_replaces_one_key() {
         let defaults = Limits::defaults();
         assert!(defaults.max_depth > 0 && defaults.max_manifest_bytes > 0);
+        assert!(defaults.max_effects_bytes > 0);
+        let layered = Limits::from_toml_str("max_effects_bytes = 10").unwrap();
+        assert_eq!(layered.max_effects_bytes, 10);
         let layered = Limits::from_toml_str("max_depth = 3").unwrap();
         assert_eq!(layered.max_depth, 3);
         assert_eq!(layered.max_manifest_bytes, defaults.max_manifest_bytes);

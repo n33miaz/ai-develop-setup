@@ -9,6 +9,7 @@ use std::collections::BTreeSet;
 use ads_core::gate::{
     Action, ActionPlan, ActionSnapshot, Command, Decision, ErrorCode, Event, ExecutionPermit,
     OperationRequest as Op, ReplayError, ShortText, State, Verdict, Via, classify, replay,
+    replay_with_clock_rewind,
 };
 use common::{WIN_HOME, WIN_ROOT, at, id, meta, policy, request, win};
 use serde_json::Value;
@@ -36,7 +37,8 @@ fn approval_needed(targets: &[&str]) -> Verdict {
     let verdict = classify(
         &ActionPlan::normalize(&request).unwrap(),
         &policy(WIN_HOME, ""),
-    );
+    )
+    .unwrap();
     assert_eq!(verdict.decision(), Decision::RequiresApproval);
     verdict
 }
@@ -716,4 +718,43 @@ fn generated_legacy_grant_cannot_enter_replay() {
     json["data"].as_object_mut().unwrap().remove("action_id");
     let _: ads_contracts::EventApprovalGrantedV1 = serde_json::from_value(json.clone()).unwrap();
     assert!(Event::from_json(json).is_err());
+}
+
+#[test]
+fn replay_refuses_a_request_before_the_plan() {
+    let (_, log) = approved_run("act-01", "appr-01", &approval_needed(&[BUILD]));
+    let log = rewritten(&log, 1, &|event| {
+        event["ts"] = "2030-01-02T03:04:04.999999Z".into()
+    });
+    assert_eq!(replay(&log[..2]), Err(ReplayError::OutOfOrder));
+}
+
+#[test]
+fn replay_refuses_success_before_start() {
+    let (_, log) = approved_run("act-01", "appr-01", &approval_needed(&[BUILD]));
+    let log = rewritten(&log, 4, &|event| event["ts"] = T0.into());
+    assert_eq!(replay(&log), Err(ReplayError::OutOfOrder));
+}
+
+#[test]
+fn replay_tolerates_rewind_within_a_transition_without_extending_validity() {
+    let (_, log) = approved_run("act-01", "appr-01", &approval_needed(&[BUILD]));
+    let grant = &log[..3];
+    let early = rewritten(grant, 2, &|event| {
+        event["ts"] = "2030-01-02T03:04:02Z".into();
+    });
+    assert_eq!(replay(&early), Err(ReplayError::OutOfOrder));
+    assert_eq!(
+        replay_with_clock_rewind(&early, 2),
+        Err(ReplayError::OutOfOrder)
+    );
+    let approved = replay_with_clock_rewind(&early, 5).unwrap();
+    assert!(matches!(approved.state, State::Approved { granted_at, .. }
+        if granted_at == at("2030-01-02T03:04:02Z")));
+
+    let expired = rewritten(grant, 2, &|event| event["ts"] = EXPIRES.into());
+    assert_eq!(
+        replay_with_clock_rewind(&expired, 5),
+        Err(ReplayError::OutsideValidity)
+    );
 }

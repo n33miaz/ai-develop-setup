@@ -1,5 +1,8 @@
 #![cfg(windows)]
 
+#[path = "common/temp.rs"]
+mod temp;
+
 use ads_ptyhost::{HostConfig, channel::Listener, wire};
 use std::io::{BufRead, BufReader, Read};
 use std::process::{Command, Stdio};
@@ -18,14 +21,18 @@ impl Drop for Child {
 async fn binary_stdout_contains_only_the_launch_url() {
     let endpoint = format!(r"\\.\pipe\ads-daemon-stdout-{}", std::process::id());
     let overrides = format!("channel_path = '{endpoint}'\n");
-    let path = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
-        .join(format!("daemon-stdout-{}.toml", std::process::id()));
+    let path = temp::directory().join(format!("daemon-stdout-{}.toml", std::process::id()));
     std::fs::write(&path, &overrides).unwrap();
     let host = HostConfig::from_toml_str(&overrides).unwrap();
     let mut listener = Listener::bind(&channel_endpoint(&host)).unwrap();
+    let lock = path.with_extension("lock");
     let mut child = Child(
         Command::new(env!("CARGO_BIN_EXE_ads-daemon"))
-            .args(["--host-config", path.to_str().unwrap()])
+            .arg("--instance-lock")
+            .arg(&lock)
+            .arg("--host-config")
+            .arg(&path)
+            .env("LOCALAPPDATA", path.with_extension("missing-profile"))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -81,6 +88,20 @@ async fn binary_stdout_contains_only_the_launch_url() {
             > 0
     );
     assert_eq!(token.len(), 43);
+    let duplicate = Command::new(env!("CARGO_BIN_EXE_ads-daemon"))
+        .arg("--instance-lock")
+        .arg(&lock)
+        .arg("--host-config")
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(!duplicate.status.success());
+    assert!(duplicate.stdout.is_empty());
+    assert!(
+        String::from_utf8(duplicate.stderr)
+            .unwrap()
+            .contains("another daemon")
+    );
     drop(stream);
     tokio::time::timeout(Duration::from_secs(5), async {
         while child.0.try_wait().unwrap().is_none() {

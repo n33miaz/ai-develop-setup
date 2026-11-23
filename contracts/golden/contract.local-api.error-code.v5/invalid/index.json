@@ -1,0 +1,17 @@
+{
+  "01-unknown-code.json": {
+    "rule": "O número precisa constar no catálogo.",
+    "keyword": "anyOf",
+    "instancePath": ""
+  },
+  "02-string.json": {
+    "rule": "O código precisa ser número.",
+    "keyword": "anyOf",
+    "instancePath": ""
+  },
+  "03-fraction.json": {
+    "rule": "O código precisa ser inteiro.",
+    "keyword": "anyOf",
+    "instancePath": ""
+  }
+}

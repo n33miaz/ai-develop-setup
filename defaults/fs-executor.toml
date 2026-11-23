@@ -10,6 +10,12 @@
 # recusada antes de qualquer alteracao.
 max_depth = 128
 
+# Entradas examinadas no planejamento de uma acao, somadas entre todos os alvos.
+# Conta alvos e todos os nomes listados, inclusive os que um curinga nao seleciona. No Windows,
+# conta tambem os nomes listados para conferir a grafia exata de cada componente do caminho.
+# Ao exceder o teto, a inspecao para e recusa o plano. max_depth tambem vale nessa inspecao.
+max_plan_entries = 10000
+
 # Quando uma entrada pode ser apagada de verdade (e nao movida para a quarentena): a purga da quarentena e
 # o apagar com `quarantine_enabled = false` na politica. Apagar age sobre um nome dentro de uma pasta aberta;
 # se outro processo tira essa pasta de dentro da cerca entre a ultima conferencia e a chamada, a exclusao
@@ -17,6 +23,9 @@ max_depth = 128
 #   "contained" (padrao): so apaga onde o sistema segura a pasta no lugar (Windows). No Linux TODO apagar
 #                definitivo e recusado (E_FS_DELETE_UNCONTAINED): la o executor so faz quarentena e
 #                restauracao, e a quarentena nao e esvaziada por ele.
+# Em qualquer modo, apagar de verdade e restaurar so rodam em volume com identidade estavel (NTFS/ReFS
+# locais; no Linux ext4, xfs, btrfs, tmpfs, f2fs e zfs com instante de criacao); FAT, exFAT, rede e
+# sistema nao classificado recusam (E_FS_IDENTITY_UNSTABLE).
 #   "isolated":  apaga nos dois sistemas. No Linux fica o risco acima, contra um processo do mesmo usuario
 #                que mova pastas durante a exclusao; o executor reconfere o caminho antes de cada remocao,
 #                o que estreita a janela e nao a fecha. Use so onde nenhum outro processo mexe na arvore.
@@ -34,3 +43,10 @@ private_dir = ".ads/tmp"
 # Maior manifesto de quarentena, em bytes. Vale nos dois sentidos: uma leva cujo manifesto passaria disso e
 # recusada antes de qualquer alteracao, e na restauracao a leitura para neste tamanho.
 max_manifest_bytes = 16777216
+
+# Maior registro de efeitos concretos que um ensaio entrega, em bytes (a lista de cada entrada que uma acao vai
+# mover ou apagar, com tamanho e identidade, e o resumo do manifesto de uma restauracao). E o que a aprovacao
+# cobre: o daemon grava o registro no log de auditoria, e a execucao recusa antes de tocar o disco se o ensaio
+# dela achar outro. Ensaio maior que isto e recusado e nada e gravado: a acao continua sem poder ser aprovada
+# pela API. Fica abaixo de `max_event_bytes` do armazenamento (1 MiB), com folga para o envelope do evento.
+max_effects_bytes = 524288

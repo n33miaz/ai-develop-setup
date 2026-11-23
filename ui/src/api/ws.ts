@@ -4,18 +4,27 @@ import {
   isSubscriptionEndCode,
   type ConnectionState,
   type CoreClient,
+  type LocalCommandReply,
   type SubscriptionEndCode,
 } from './client'
 import { newCommand } from './command'
-import type {
-  CommandHarnessListResponseV1,
-  CommandRequestV1,
-  CommandResponseV2,
-  EventEnvelopeV1,
+import {
+  METHOD_NOT_FOUND,
+  SUBSCRIPTION_REPLAY_UNAVAILABLE,
+  type CommandHarnessListResponseV2,
+  type CommandRequestV1,
+  type EventEnvelopeV1,
 } from './contracts'
-import { isHarnessList, isLocalCommand, isServerMessage } from './wire'
+import {
+  isApprovalList,
+  isHarnessList,
+  isLocalCommand,
+  isQueueConfigured,
+  isQueueGet,
+  isServerMessage,
+} from './wire'
 
-type Reply = CommandResponseV2 | CommandHarnessListResponseV1
+type Reply = LocalCommandReply | CommandHarnessListResponseV2
 
 export type CoreSocket = Pick<WebSocket, 'send' | 'close' | 'addEventListener'>
 
@@ -39,7 +48,7 @@ export interface WsClientOptions {
 }
 
 function accepted(response: Reply): boolean {
-  return !isHarnessList(response) && 'result' in response
+  return response.result !== undefined && 'accepted' in response.result
 }
 
 /** Quantos ids de `harness.list` vencidos são lembrados para descartar a resposta tardia. */
@@ -57,14 +66,8 @@ export function createWsCoreClient({
   url,
   token,
   socketFactory = (url) => new WebSocket(url),
-  listTimeoutMs = 10000,
-  replayEvents: configuredEvents,
-  replayBytes: configuredBytes,
+  ...settings
 }: WsClientOptions): CoreClient {
-  // Com 0 nada ficaria guardado: um terminal remontado ficaria vazio e uma nova assinatura depois de
-  // reconectar daria por encerrada uma sessão viva.
-  const replayEvents = replayLimit(configuredEvents, DEFAULT_REPLAY_EVENTS)
-  const replayBytes = replayLimit(configuredBytes, DEFAULT_REPLAY_BYTES)
   let endpoint: URL
   try {
     endpoint = new URL(url)
@@ -81,6 +84,23 @@ export function createWsCoreClient({
   ) {
     throw new Error('invalid local endpoint')
   }
+  return createCoreClient(() => socketFactory(endpoint.href), settings, token)
+}
+
+export function createCoreClient(
+  socketFactory: (reconnecting: boolean) => CoreSocket,
+  {
+    listTimeoutMs = 10000,
+    replayEvents: configuredEvents,
+    replayBytes: configuredBytes,
+    reconnectOnDrop = false,
+  }: Omit<WsClientOptions, 'url' | 'token' | 'socketFactory'> & { reconnectOnDrop?: boolean },
+  token?: string,
+): CoreClient {
+  // Com 0 nada ficaria guardado: um terminal remontado ficaria vazio e uma nova assinatura depois de
+  // reconectar daria por encerrada uma sessão viva.
+  const replayEvents = replayLimit(configuredEvents, DEFAULT_REPLAY_EVENTS)
+  const replayBytes = replayLimit(configuredBytes, DEFAULT_REPLAY_BYTES)
   let state: ConnectionState = 'disconnected'
   let socket: CoreSocket | null = null
   let connecting: Promise<void> | null = null
@@ -120,7 +140,7 @@ export function createWsCoreClient({
     state = next
     for (const listener of [...listeners]) listener(next)
   }
-  function disconnect() {
+  function disconnect(next: ConnectionState = 'disconnected') {
     const previous = socket
     socket = null
     connecting = null
@@ -131,7 +151,7 @@ export function createWsCoreClient({
     expired.clear()
     for (const request of pending.values()) request.reject(unavailable())
     pending.clear()
-    setState('disconnected')
+    setState(next)
     previous?.close()
   }
   /** Encerra o stream inteiro: o núcleo termina juntas as assinaturas da mesma encarnação. */
@@ -185,14 +205,14 @@ export function createWsCoreClient({
       }
     })
   }
-  return {
+  const client = {
     getState: () => state,
     getGeneration: () => generation,
     onStateChange(listener) {
       listeners.add(listener)
       return () => listeners.delete(listener)
     },
-    connect() {
+    connect(reconnecting = false): Promise<void> {
       if (state === 'connected') return Promise.resolve()
       if (connecting) return connecting
       setState('connecting')
@@ -200,34 +220,51 @@ export function createWsCoreClient({
         rejectConnection = reject
         let current: CoreSocket
         try {
-          current = socketFactory(endpoint.href)
+          current = socketFactory(reconnecting)
           socket = current
         } catch {
           disconnect()
           reject(unavailable())
           return
         }
-        const fail = () => {
+        const fail = (closed = false) => {
           if (socket !== current) return
+          const retry = reconnectOnDrop && (closed || state === 'connected')
           disconnect()
-          reject(unavailable())
+          if (retry) void client.connect(true).catch(() => undefined)
         }
-        current.addEventListener('close', fail)
-        current.addEventListener('error', fail)
+        current.addEventListener('close', () => {
+          fail(true)
+        })
+        current.addEventListener('error', (event) => {
+          if (socket !== current) return
+          const reason: unknown = event instanceof CustomEvent ? event.detail : undefined
+          if (
+            reason === 'relaunch_required' ||
+            reason === 'proof_missing' ||
+            reason === 'retry_exhausted'
+          ) {
+            disconnect(reason)
+          } else fail()
+        })
         current.addEventListener('open', () => {
           if (socket !== current) return
+          const connected = () => {
+            if (socket !== current) return
+            connecting = null
+            rejectConnection = null
+            generation += 1
+            setState('connected')
+            resolve()
+          }
+          if (token === undefined) {
+            connected()
+            return
+          }
           void transmit(newCommand('auth.hello', { token })).then(
             (response) => {
-              if (socket !== current) return
-              if (!accepted(response)) {
-                fail()
-                return
-              }
-              connecting = null
-              rejectConnection = null
-              generation += 1
-              setState('connected')
-              resolve()
+              if (accepted(response)) connected()
+              else fail()
             },
             () => {
               fail()
@@ -240,7 +277,7 @@ export function createWsCoreClient({
           try {
             value = JSON.parse(String(message.data))
           } catch {
-            fail()
+            fail(true)
             return
           }
           // A resposta a um pedido vencido não tem mais quem a espere: some sem derrubar a conexão.
@@ -262,13 +299,18 @@ export function createWsCoreClient({
             const request = pending.get(response.id)
             if ('error' in response) {
               response.error = { code: response.error.code, message: 'command rejected' }
-            } else if (request && isHarnessList(response) !== (request.method === 'harness.list')) {
-              // Cada resposta tem a forma do pedido: a lista só responde a harness.list.
+            } else if (
+              request &&
+              (isHarnessList(response) !== (request.method === 'harness.list') ||
+                isQueueGet(response) !== (request.method === 'queue.get') ||
+                isQueueConfigured(response) !== (request.method === 'queue.configured') ||
+                isApprovalList(response) !== (request.method === 'approval.list'))
+            ) {
               fail()
               return
             }
             pending.delete(response.id)
-            // Resposta de assinatura, inicial ou tardia: -32004 e -32013 encerram só o stream dela;
+            // Uma resposta que encerra a assinatura, inicial ou tardia, afeta só o stream dela;
             // outro erro não tem explicação e derruba a conexão, a menos que ninguém mais ouça o stream.
             const shared = subscriptionRequests.get(response.id)
             if (shared && 'error' in response) {
@@ -313,11 +355,13 @@ export function createWsCoreClient({
       })
       return attempt
     },
-    disconnect,
+    disconnect: () => {
+      disconnect()
+    },
     send(command) {
       if (state !== 'connected') return Promise.reject(unavailable())
       if (command.method === 'harness.list') return Promise.reject(new Error('use listHarnesses'))
-      return transmit(command) as Promise<CommandResponseV2>
+      return transmit(command) as ReturnType<CoreClient['send']>
     },
     listHarnesses() {
       if (state !== 'connected') return Promise.reject(unavailable())
@@ -341,8 +385,9 @@ export function createWsCoreClient({
       return Promise.race([transmit(command), deadline])
         .then((response) => {
           if (isHarnessList(response)) return response.result
-          // -32601: núcleo anterior ao método.
-          throw new HarnessListError(response.error?.code === -32601 ? 'unsupported' : 'refused')
+          throw new HarnessListError(
+            response.error?.code === METHOD_NOT_FOUND ? 'unsupported' : 'refused',
+          )
         })
         .finally(() => {
           clearTimeout(timer)
@@ -373,7 +418,8 @@ export function createWsCoreClient({
         // antigo aumenta `replayEvents`/`replayBytes` até `events_per_stream` do daemon.
         let cancelled = false
         queueMicrotask(() => {
-          if (!cancelled && streams.get(stream) === existing) listener.onEnd?.(-32004)
+          if (!cancelled && streams.get(stream) === existing)
+            listener.onEnd?.(SUBSCRIPTION_REPLAY_UNAVAILABLE)
         })
         return () => {
           cancelled = true
@@ -395,5 +441,6 @@ export function createWsCoreClient({
       // Sair só desliga este ouvinte; a assinatura no núcleo segue para os demais e para quem vier.
       return () => shared.listeners.delete(listener)
     },
-  }
+  } satisfies CoreClient
+  return client
 }

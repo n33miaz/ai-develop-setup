@@ -24,13 +24,13 @@ Implementar o agendador, a autenticação, a persistência e a execução fica p
 
 | No Schema | No Rust |
 |---|---|
-| texto com `pattern`, tamanho, `format` ou `not` | tipo próprio sobre `String`: `new`, `TryFrom<String>` e a leitura validam; `as_str` lê |
+| texto com `pattern`, tamanho, `format` ou `not` | tipo próprio sobre `String`: `new`, `TryFrom<String>` e a leitura validam; `as_str` lê; com `maxLength`, a constante pública `MAX_CHARS` (em caracteres, como o Schema conta) |
 | texto sem restrição, booleano | `String`, `bool` |
 | `integer` | `i64`; com `minimum: 0`, `u64`; com `minimum: 1`, `NonZeroU64`; com outros limites, tipo próprio que valida |
 | `number` | `serde_json::Number` (nunca é NaN e volta ao JSON como veio); com limites, tipo próprio que valida |
 | `enum` de textos ou de inteiros | `enum` com a marca do Schema em cada variante |
 | `const` | tipo sem dados que só lê e só escreve aquele valor |
-| lista | `Vec`; com `minItems`, `maxItems` ou `uniqueItems`, tipo próprio que valida |
+| lista | `Vec`; com `minItems`, `maxItems` ou `uniqueItems`, tipo próprio que valida; com `maxItems`, a constante pública `MAX_ITEMS` |
 | objeto fechado | `struct` com `deny_unknown_fields` |
 | objeto aberto com propriedades | `struct` com o campo `extra` para o que o Schema não nomeia |
 | objeto sem propriedades | `serde_json::Map`, ou `BTreeMap<String, T>` quando o Schema dá o tipo dos valores |

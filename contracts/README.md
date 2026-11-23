@@ -10,7 +10,7 @@ Fonte única de toda mensagem e todo registro do produto: JSON Schema 2020-12, u
 | `golden/<tipo>.<nome>.v<versão>/valid/` | Exemplos que têm de passar (pelo menos 2) |
 | `golden/<tipo>.<nome>.v<versão>/invalid/` | Exemplos que têm de falhar (pelo menos 3), mais `index.json` |
 | `corpus/` | Casos comuns a dois validadores: o Schema e o código que lê o mesmo dado. Hoje, `abspath.json` ([caminho absoluto](#caminho-absoluto-o-schema-e-o-núcleo)) e `title-chars.json` ([título da tarefa](#fila-contínua)) |
-| `generated/ts/` | Tipos TypeScript gerados, versionados; o CI reprova se estiverem desatualizados. A interface os importa por `ui/src/api/contracts.ts` |
+| `generated/ts/` | Tipos e constantes TypeScript gerados, versionados; o CI reprova se estiverem desatualizados. A interface os importa por `ui/src/api/contracts.ts` |
 | `../crates/contracts/src/generated/` | Tipos Rust gerados (crate `ads-contracts`), versionados; o CI reprova se estiverem desatualizados. Como cada parte do Schema vira tipo está no [README do crate](../crates/contracts/README.md) |
 | `tools/` | Validador, geradores (`gen-ts.mjs`, `gen-rust.mjs`), regras entre campos (`rules.mjs`) e os testes deles |
 
@@ -20,11 +20,19 @@ Fonte única de toda mensagem e todo registro do produto: JSON Schema 2020-12, u
 cd contracts
 npm ci
 npm run validate   # Schemas válidos, referências resolvidas, URNs únicas, dourados no lugar
-npm run gen:ts     # regera generated/ts
+npm run gen:ts     # regera tipos e constantes em generated/ts
 npm run gen:rust   # regera ../crates/contracts/src/generated
-npm run gen:check  # reprova se os tipos gerados (TypeScript e Rust) não forem o que os geradores produzem agora
+npm run gen:check  # confere os tipos e constantes gerados em TypeScript e Rust
 npm test           # testes do próprio validador e dos geradores
 ```
+
+Cada Schema gera um `.d.ts`. Um catálogo com `anyOf` composto apenas de
+referências locais a `$defs` do tipo `integer` gera também um `.constants.ts`.
+Cada definição referenciada precisa de um `const` inteiro seguro em JavaScript
+e um nome em minúsculas, com letras, dígitos e sublinhados e começando por uma
+letra. O gerador exporta o nome em maiúsculas com seu valor literal.
+O catálogo de erros da API local segue esse formato, e a interface acessa as
+constantes pelo mesmo módulo dos tipos, `ui/src/api/contracts.ts`.
 
 O gerador de Rust passa a saída pelo `rustfmt` da versão fixada em `rust-toolchain.toml`, então `gen:rust`, `gen:check` e `npm test` precisam do Rust instalado. Ele para com erro diante de palavra-chave ou expressão regular que não sabe traduzir, em vez de gerar um tipo mais frouxo que o Schema, e nunca apaga arquivo: módulo que sobrou de um Schema removido é acusado e sai pelo nome. Cada dourado é conferido também contra os tipos Rust (`cargo test -p ads-contracts`): o válido tem de ir e voltar igual, o inválido tem de ser recusado.
 
@@ -111,8 +119,26 @@ O `stream` de um evento é `<família>/<id>`, e o `<id>` é o da entidade que o 
 | `review` | `review_id` |
 | `routing` | `task_id` |
 | `queue` | `queue_id` |
+| `handoff` | `handoff_id` |
+| `answer` | `approval_id` |
+| `effects` | `action_id` |
+| `closure` | `action_id` |
 
 `host` e `usage` ficam fora da regra: o stream deles agrupa por máquina ou por tarefa, e nem todo evento dessas famílias leva esse identificador em `data`.
+
+## Passagem entre sessões
+
+| Contrato | Uso |
+|---|---|
+| `urn:ads:record:session-handoff:1` | Passagem autorizada com origem, destino, gatilho, linhagem, sequência da sessão nova, instante UTC, referências aos dois artefatos e identificação opaca do consentimento. |
+| `urn:ads:event:session.handoff:1` | Evento privado de proposta, aceite ou recusa no stream `handoff/<id>`. |
+| `urn:ads:event:session.handoff:2` | Aceite e recusa exigem ator do tipo aparelho. |
+| `urn:ads:record:session-handoff:2` | O registro exige o ULID do evento de aceite em `consent.event_id`. |
+| `urn:ads:event:session.handoff:3` | Como a `:2`, com `alternative_id` opcional: a alternativa do catálogo aceita pelo aparelho. Obrigatório para seguir uma oferta após recusa de modelo. |
+
+Na versão 2, quem registra a passagem deve verificar se `consent.event_id` aponta para um evento `accepted` da mesma passagem e sessão de origem, emitido por um aparelho do usuário identificado em `consent.user_id`. A mesma conferência vale para um aceite na versão 3. Numa passagem com gatilho `model_refusal`, o aceite tem de ser da versão 3 e nomear a alternativa; o núcleo só devolve a rota dessa alternativa.
+
+A primeira passagem cria `n2` e usa `previous_handoff_id: null`. As demais apontam para a passagem que criou a sessão de origem. As referências aos artefatos são identificadores internos do produto.
 
 ## Comandos e respostas
 
@@ -164,11 +190,11 @@ Campos:
 - `quarantined` e `destination`: quando `quarantined` é `true`, o apagar pedido foi reescrito como mover para a pasta de quarentena, e `destination` é essa pasta (o destino reescrito). Em `fs.move`, `destination` é o destino pedido. Nos demais casos é `null`.
 - `plan_hash` cobre o plano **em vigor**: o reescrito, quando há quarentena. É o mesmo hash de `action.planned`, das aprovações e de `action.started`, `action.executed` e `action.failed`. O nome da pasta de quarentena sai do hash do plano como pedido, o que este registro não reconfere.
 
-Códigos de regra em uso (código novo não muda a versão do Schema). Onde há `<proteção>`, ela é uma de `filesystem_root`, `user_home`, `user_home_ancestor`, `user_profile`, `system_dir`, `other_path_style`.
+Códigos de regra em uso (código novo não muda a versão do Schema). Onde há `<proteção>`, ela é uma de `filesystem_root`, `user_home`, `user_home_ancestor`, `user_profile`, `system_dir`, `other_path_style`, `product_data`.
 
 | Veredito | Códigos |
 |---|---|
-| `denied` | `protected.<proteção>`, `work_root_protected.<proteção>`, `work_root_itself`, `allowed_root_itself`, `outside_allowed_roots`, `repository_root`, `quarantine_itself`, `destination_protected.<proteção>`, `destination_outside_allowed_roots`, `destination_inside_target`, `destination_entry_reserved` |
+| `denied` | `protected.<proteção>`, `work_root_protected.<proteção>`, `work_root_itself`, `allowed_root_itself`, `outside_allowed_roots`, `repository_root`, `repository_metadata`, `work_root_unknown`, `quarantine_of_other_root`, `quarantine_itself`, `destination_protected.<proteção>`, `destination_outside_allowed_roots`, `destination_inside_target`, `destination_entry_reserved` |
 | `requires_approval` | `outside_work_root`, `destination_outside_work_root`, `estimate_unknown`, `item_limit_exceeded`, `byte_limit_exceeded`, `quarantine_purge` |
 
 ### Serialização canônica do plan_hash
@@ -193,7 +219,7 @@ target:<repo_root>:<n>:<texto do alvo>
 Normalização, feita antes de gravar o registro (o Schema a exige nos caminhos):
 
 - Caminhos na forma de `urn:ads:common:abspath:1`: unidade em maiúscula, um separador só, sem separador no fim, sem `.`; nada é reparado além disso (`..`, variável e til recusam o plano inteiro).
-- Alvos repetidos viram um só; se um dos repetidos é raiz de repositório, fica `repo_root` verdadeiro.
+- Alvos repetidos viram um só; se um dos repetidos é raiz de repositório, fica `repo_root` verdadeiro. No estilo Windows, o portão também trata como repetidos os alvos que só diferem na caixa de letras ASCII (no caminho e no curinga) e grava a primeira grafia na ordem abaixo ([identidade de caminho no núcleo](../crates/core/README.md#identidade-de-um-alvo-no-windows)). Isso não muda o que este contrato aceita.
 - Ordem dos alvos: primeiro os de estilo Windows, depois os POSIX; depois pela letra da unidade; depois componente a componente, comparando os bytes UTF-8 de cada nome (o caminho mais curto vem antes do que o estende; maiúscula e minúscula são diferentes); por fim, alvo sem curinga antes do mesmo `path` com curinga, e curingas pelos bytes. É comparação por componente, não do texto inteiro: `/a/b` vem antes de `/a-b`.
 
 Exemplo (o primeiro dourado válido do registro; o mesmo vetor do teste do núcleo):
@@ -212,6 +238,14 @@ target:0:12:/work/proj/b
 resulta em `sha256:c7b870d89ef435eb431fcdf8e99f82f2b10c9b05a25eb86eb2ed603fa366eb94`.
 
 O validador recalcula o hash e confere a ordem dos alvos em todo dourado válido do registro, nas duas versões (`planHash` e `actionPlanErrors` em `tools/rules.mjs`).
+
+### Efeitos concretos e effects_hash
+
+`record.action-effects:1` guarda o que o ensaio de uma ação achou no disco. O executor compara, de cada entrada, o nome, o tipo, a identidade do objeto no volume e, de arquivo, o tamanho: entrada nova ou que sumiu, objeto preexistente movido ou ligado para o nome, link ou junção trocados e manifesto mudado contam como diferença. Objeto apagado e recriado com o mesmo nome e tamanho conta como diferença onde a identidade do volume é estável: NTFS e ReFS locais no Windows e, no Linux, ext2/3/4, xfs, btrfs, tmpfs, f2fs e zfs que informam o instante de criação (a identidade leva o inode e esse instante). Em FAT, exFAT, rede e qualquer sistema de arquivos não classificado isso não é garantido, e por isso o executor recusa ali apagar de verdade e restaurar (`E_FS_IDENTITY_UNSTABLE`, gravado em `effects.refused:1` quando o ensaio é recusado); a tabela por sistema e o que fica sem detecção estão no [executor de arquivos](../crates/adapters/fs/README.md#identidade-por-sistema-de-arquivos). Conteúdo reescrito no mesmo objeto, com o mesmo tamanho, e datas não entram.
+
+`effects_hash` é `sha256:` mais o SHA-256, em hexadecimais minúsculos, da forma canônica do registro: JSON compacto, sem espaço nenhum, com as chaves de cada objeto em ordem de bytes UTF-8 e textos escritos como o JSON padrão os escreve (sem escapar o que não é caractere de controle). O registro só tem textos, inteiros, nulos e listas, então não há número fracionário a normalizar. O validador recalcula o hash de todo dourado válido de `effects.recorded` e de `approval.list.response:2` (`effectsHash` em `tools/rules.mjs`); o núcleo usa a mesma forma ao gravar, ao comparar a resposta do dono e ao medir o teto `max_effects_bytes`.
+
+O stream `effects/<action_id>` tem um evento só, em `seq` 1: `effects.recorded:1` quando o ensaio gerou registro, ou `effects.refused:1` com o código da recusa (por exemplo `E_FS_EFFECTS_TOO_LARGE`, ou `E_EFFECTS_UNRECORDABLE` quando o núcleo não conseguiu gravar o registro).
 
 ## Contrato pty-host/1
 
@@ -277,26 +311,38 @@ Além dos cinco do JSON-RPC 2.0 (`-32700`, `-32600`, `-32601`, `-32602`, `-32603
 WebSocket em loopback entre a interface (navegador ou casca) e o núcleo. Como a conexão é autenticada está na [ADR 0020](../docs/adr/0020-local-api-authentication.md). Cada mensagem é um texto JSON.
 
 - Da interface ao núcleo: comandos `command.request:1`, cada método com Schema próprio que fixa `method` e fecha `params` (tabela [API local](#api-local-1)). O primeiro comando de toda conexão é `auth.hello`; antes dele o núcleo não aceita outro.
-- Do núcleo à interface: `urn:ads:contract:local-api.server-message:2`, que é a resposta `command.response:2` a um comando, a resposta `command.harness.list.response:1` a `harness.list` ou um evento `event.envelope:1` de um stream assinado por `events.subscribe`. A saída do terminal chega como evento `session.output:1`. A `:1` (sem a resposta de `harness.list`) continua no repositório, sem alteração.
-- `harness.list` só lê: devolve os identificadores das ferramentas ligadas e os apelidos de pasta de trabalho da configuração do usuário, para a interface saber o que pode abrir. O `params` é um objeto só com o `_meta` obrigatório do envelope. O `result` é fechado e só leva nomes; programa, argumentos, ambiente e caminho nunca saem do núcleo. Comando recusado volta como `command.response:2` com `error`.
-- A `:2` é uma extensão aditiva, acionada pelo pedido: não há negociação de versão no `auth.hello` nem marcador na mensagem. O núcleo só manda a resposta de `harness.list` a quem enviou `harness.list`; para um cliente que nunca o envia, toda mensagem continua cabendo na `:1`. Um núcleo anterior ao comando o recusa com `-32601` (método desconhecido); a interface mostra, sem botões de abertura, que o núcleo precisa ser atualizado.
+- Do núcleo à interface pela `urn:ads:contract:local-api.server-message:10`, que é a resposta `command.response:2` a um comando, a resposta `command.harness.list.response:2` a `harness.list`, a resposta `command.queue.get.response:2` a `queue.get`, a resposta `command.queue.configured.response:1` a `queue.configured`, a resposta `command.approval.list.response:4` a `approval.list` ou um evento `event.envelope:1` de um stream assinado por `events.subscribe`. A saída do terminal chega como evento `session.output:1`. As versões anteriores continuam no repositório, sem alteração, e estão descritas na [tabela da API local](#api-local-1).
+- `queue.get`, `queue.start` e `queue.stop` nomeiam a fila em `params.queue_id` e não levam mais nada: o dono e o aparelho vêm do núcleo, nunca do pedido. `queue.get` só lê e, como `harness.list`, fica fora da cache de idempotência. `queue.start` recusa a fila já ligada com `QUEUE_ALREADY_ENABLED`. `queue.stop` expressa o estado desejado: parar uma fila já parada é aceito e responde `replayed: true` sem gravar nada, e o comando não consulta a cache de idempotência (repetir uma parada antiga depois de religar a fila a para de novo). A fila ligada para antes de o evento ser gravado; se a gravação no log de auditoria falhar, a resposta ainda é `INTERNAL_ERROR`, embora a fila tenha parado (detalhes no [README do daemon](../crates/daemon/README.md)). Sem controles de fila (o log de auditoria não abriu, por exemplo), todo comando de fila volta `QUEUE_NOT_CONFIGURED`; um id que não é o da fila configurada volta `QUEUE_NOT_FOUND`; a fila configurada ainda não criada volta `QUEUE_NOT_CREATED` em `queue.get`, `queue.start` e `queue.stop`. `queue.configured` informa o id da fila configurada, criada ou não, e também fica fora da cache de idempotência. O campo obrigatório `policy` da resposta `:2` inclui os limites e janelas da última política gravada no histórico da fila. Uma fila sem política gravada retorna `null` nesse campo. Clientes que validam a resposta `:1` fechada precisam aceitar a `:2` para continuar consultando a fila.
+- `approval.list` e `approval.answer` servem as aprovações do [portão de ações](#portão-de-ações). `approval.list` só lê, fica fora da cache de idempotência e devolve, da mais antiga à mais nova, as ações que aguardam o dono, cada uma com a aprovação pedida (`approval_id`, `risk`, `summary`, `requested_at`, `expires_at`), o registro `record.action-plan:2` tal como o portão o julgou, os efeitos concretos `record.action-effects:1` com o seu `effects_hash` (ou os dois `null`), o código da recusa do ensaio em `effects_error` (ou `null`) e `not_approvable`. As ações entram da mais antiga à mais nova enquanto couberem em `approval_list_max_bytes` da configuração do daemon. A mais antiga sempre entra, mesmo acima desse teto. `more: true` indica que o limite de itens ou de bytes deixou outra ação listável para depois. O núcleo omite pedidos com histórico ilegível e registra o `action_id` no log; o dono os fecha por `approval.close` (abaixo). `unreadable` conta essas ações deixadas de fora até onde a listagem chegou, de qualquer pasta de sessão: com `more: false`, são todas as pendentes; com `more: true`, pode haver outras depois. Uma ação cujos efeitos sozinhos não cabem vem sem eles e com `effects_not_listed`. O registro do plano fixa a operação, os alvos como foram pedidos (caminho e curinga), o destino, se há quarentena, a estimativa e as regras que dispararam; os efeitos concretos fixam o que o executor vai fazer no disco: cada entrada da árvore de cada alvo, com tipo, tamanho e identidade, e, numa restauração, cada par de origem e destino e o resumo do manifesto de onde vieram. O núcleo ensaia a ação logo depois de registrar o plano e grava os efeitos em `effects.recorded:1`, uma vez só, no stream `effects/<action_id>`; ensaio recusado (inclusive maior que `max_effects_bytes` do executor) grava `effects.refused:1` com o código ([efeitos concretos](#efeitos-concretos-e-effects_hash)). Com estimativa, o executor recusa antes de mudar qualquer coisa se o disco tiver mais itens ou bytes do que o aprovado. A API só deixa aprovar a ação cujo efeito concreto está fixado: `not_approvable` lista o motivo de cada exceção, `estimate_unknown` (sem estimativa e sem efeitos gravados), `wildcard_target` (alvo com curinga, que o executor não executa), `definitive_recursive_delete` (limpar arquivos não versionados, ou apagar uma árvore sem quarentena e sem efeitos gravados) `restore_from_manifest` (restauração sem efeitos gravados), `effects_refused` (o ensaio foi recusado; o código está em `effects_error`), `effects_unreadable` (o registro gravado não passa na leitura: versão, campo ou hash que o núcleo não reconhece), `effects_not_listed` (os efeitos não couberam na resposta) e `policy_changed` (a política vigente impede aprovar o plano pendente). Lista vazia quer dizer aprovável. Negar continua disponível. `approval.answer` aprova ou nega uma ação por `action_id`, `approval_id` e o `plan_hash` que o dono viu; o dono e o aparelho vêm do núcleo, nunca do pedido. Antes de o portão agir, o núcleo grava `answer.recorded:2` (aparelho em `actor`, dono, instante, decisão, o `effects_hash` dos efeitos gravados da ação, ou `null`, e a chave de idempotência do comando) no stream `answer/<approval_id>`; a decisão do portão vem depois, com `cause` apontando para esse registro. A execução de uma ação aprovada com efeitos refaz o ensaio antes de pedir a licença ao portão e de novo antes da primeira alteração no disco; se achar outro registro (arquivo novo, removido ou trocado, manifesto mudado), não toca o disco, registra `action.failed` com `E_FS_EFFECTS_CHANGED` e a ação precisa de um plano novo e de uma aprovação nova. A mesma chave com o mesmo conteúdo nunca grava outra resposta: o núcleo devolve o resultado da primeira, lido do log, e retoma a decisão quando só a resposta ficou gravada; a mesma chave com outro conteúdo recebe `CONFLICT`. Ao receber uma tentativa de aprovação no prazo, com o hash do plano em espera e sem impedimentos de plano ou de efeitos, o portão reconfere a política e a ordem no tempo. Se a classificação pela política vigente mudar o registro do plano ou se o limite vigente de recuo do relógio tornar o histórico fora de ordem, o portão grava `approval.denied:2`, fecha o pedido e devolve `APPROVAL_POLICY_CHANGED`. O pedido sai de `approval.list`. Se a normalização do plano falhar ou a classificação exceder seu orçamento, a tentativa também recebe `APPROVAL_POLICY_CHANGED` e o pedido continua em aberto. Aprovar não executa nada: a licença de execução só sai depois, quando o portão confere tudo de novo. Recusas: `APPROVAL_NOT_FOUND` (ação desconhecida ou aprovação que não é a dela) e `APPROVAL_ALREADY_ANSWERED` (a ação não aguarda mais) não gravam nada; `APPROVAL_NOT_APPROVABLE` (aprovar ação com impedimento de plano ou de efeitos listado em `not_approvable`) grava a resposta e deixa a ação aguardando; `APPROVAL_STALE` grava a resposta e recusa quando o hash não é o do plano em espera e, com a validade vencida, grava a resposta e a expiração (`approval.expired:2`); `APPROVAL_OUT_OF_ORDER` (relógio antes do último passo) grava a resposta sem decisão; `APPROVAL_NOT_CONFIGURED` (núcleo sem portão). `approval.close` é a recuperação de um pedido que `approval.list` omite: fecha, pelo `action_id` registrado no log, todos os pedidos ainda sem decisão dessa ação (até 64 por comando), negando (`deny`) ou expirando (`expire`). Só vale quando o histórico da ação não passa na leitura do portão; um histórico legível recebe `APPROVAL_READABLE` sem gravar nada e continua sendo respondido só por `approval.answer`. Ação sem pedido do portão recebe `APPROVAL_NOT_FOUND` e ação sem pedido em aberto recebe `APPROVAL_ALREADY_ANSWERED`, também sem gravar. `expire` antes do `expires_at` de qualquer pedido em aberto recebe `INVALID_PARAMS` sem gravar nada, porque registraria uma expiração que não aconteceu; `deny` vale a qualquer momento. Antes de qualquer efeito, o núcleo grava `closure.recorded:1` (aparelho em `actor`, dono, instante, decisão, os pedidos fechados e a chave de idempotência) no stream `closure/<action_id>`; depois grava, para cada pedido, `approval.denied:2` (motivo `E_HISTORY_UNREADABLE`) ou `approval.expired:2` com o `plan_hash` lido da própria linha do pedido e `cause` apontando para o registro. O armazenamento confere de novo, na mesma transação da escrita, que o histórico continua ilegível, que o pedido é da ação e ainda não tem decisão e que o evento é uma negação ou uma expiração a partir do prazo do pedido; nunca grava `approval.granted` e nunca emite licença. A mesma chave não grava outro fechamento: o núcleo procura a chave no stream `closure/<action_id>` e devolve `replayed`. Se a própria linha do pedido não decifra, o fechamento é recusado com `INTERNAL_ERROR`. A `:4` segue a regra aditiva: só quem envia `approval.list` recebe a resposta nova. A `:5` não é aditiva para quem já usa `approval.list`: ela troca a resposta da `:4` pela `approval.list.response:2`, com `effects`, `effects_hash`, `effects_error` e `more` obrigatórios, e não há negociação de versão; um cliente que valida a `:4` fechada recusa a resposta nova e precisa ser atualizado junto com o núcleo. A `:7` exige `unreadable` por meio de `approval.list.response:3`. A `:9` inclui `approval.list.response:4`, cujo motivo `policy_changed` exige a atualização dos clientes que validam a lista fechada de motivos. A `:10` acrescenta a resposta de `queue.configured` e segue a regra aditiva: só quem envia `queue.configured` a recebe.
+- `harness.list` só lê: devolve os identificadores das ferramentas ligadas e os apelidos das pastas disponíveis para abrir sessões. Desde a resposta `:2`, o campo opcional `missing_workdir_aliases` informa os apelidos indisponíveis na partida, inclusive os que apontam para arquivos. O núcleo omite esse campo quando todos os apelidos estão disponíveis. O `params` é um objeto só com o `_meta` obrigatório do envelope. O `result` é fechado e só leva nomes; programa, argumentos, ambiente e caminho nunca saem do núcleo. Comando recusado volta como `command.response:2` com `error`.
+- A `:2` é uma extensão aditiva, acionada pelo pedido: não há negociação de versão no `auth.hello` nem marcador na mensagem. O núcleo só manda a resposta de `harness.list` a quem enviou `harness.list`; para um cliente que nunca o envia, toda mensagem continua cabendo na `:1`. Um núcleo anterior ao comando o recusa com `METHOD_NOT_FOUND`; a interface mostra, sem botões de abertura, que o núcleo precisa ser atualizado.
 - A interface escolhe a ferramenta pelo identificador do adaptador (`harness`) e a pasta pelo apelido (`workdir_alias`). `session.open` recusa `program`, `args`, `env` e `cwd`: o que roda, com que argumentos, em que ambiente e em que pasta sai só da configuração do usuário no núcleo.
 - Limites: colunas e linhas de 1 a 1000 (os mesmos do `pty-host/1`); `session.write` leva de 1 a 65536 bytes (87384 caracteres em base64), o que cabe com folga no quadro padrão do `pty-host/1` (`max_frame_bytes` de 1 MiB). Texto maior vai em vários comandos, na ordem.
 - O Schema aceita `origin: "remote"` no `_meta`, como o envelope de comando. Quem recusa comando remoto na API local é o núcleo (ADR 0020), não o Schema: o mesmo comando pode chegar, assinado, pelo transporte remoto.
 
-`server-message` é `anyOf`, não `oneOf`: as duas alternativas são objetos fechados e cada uma exige um campo que a outra recusa (`jsonrpc` na resposta; `type` no evento), então nenhum documento cabe nas duas e `anyOf` aceita exatamente o mesmo que `oneOf` aceitaria. Na `:2` vale o mesmo para a terceira alternativa: o `result` de `command.response:2` é fechado e exige `accepted`, que o de `harness.list.response:1`, também fechado, recusa; e a resposta de `harness.list` exige `result`, que a recusa (`error`) não tem. O gerador de Rust só traduz `oneOf` com um campo de valor fixo que distinga as alternativas.
+`server-message` é `anyOf`, não `oneOf`: as duas alternativas são objetos fechados e cada uma exige um campo que a outra recusa (`jsonrpc` na resposta; `type` no evento), então nenhum documento cabe nas duas e `anyOf` aceita exatamente o mesmo que `oneOf` aceitaria. Na `:2` vale o mesmo para a terceira alternativa: o `result` de `command.response:2` é fechado e exige `accepted`, que o de `harness.list.response:1`, também fechado, recusa; e a resposta de `harness.list` exige `result`, que a recusa (`error`) não tem. Na `:3`, o `result` fechado de `queue.get.response:1` exige `queue_id` e `state`, que os de `harness.list.response:1` e de `command.response:2` recusam, e vice-versa. Na `:4`, o `result` fechado de `approval.list.response:1` exige `approvals`, que os outros três recusam, e recusa os campos que cada um deles exige. Na `:5` vale o mesmo, com `approval.list.response:2` no lugar da `:1`. Na `:6`, `queue.get.response:2` também exige `policy` no resultado. Na `:7`, `approval.list.response:3` também exige `unreadable`. Na `:10`, o `result` fechado de `queue.configured.response:1` aceita só `queue_id` e recusa o `state` e a `policy` que o de `queue.get.response:2` exige. O gerador de Rust só traduz `oneOf` com um campo de valor fixo que distinga as alternativas.
+
+#### Prova do daemon no desktop
+
+No upgrade WebSocket do listener desktop, o daemon envia no cabeçalho
+`ads-desktop-proof` o HMAC-SHA-256 codificado em base64url sem preenchimento.
+A chave é o token da execução na forma textual recebida pelo pipe. A
+mensagem concatena `urn:ads:handshake:desktop-proof:1`, o endereço do
+cliente, o endereço do servidor (IPv4 e porta em decimal, separados por
+`:`) e o valor de `Sec-WebSocket-Key`, separados por LF. A casca verifica
+essa prova antes de enviar `auth.hello` na mesma conexão.
 
 ## Fila contínua
 
-A criação fica registrada em `queue.created`, sempre em `stopped`. Na partida, o núcleo restaura toda fila em `stopped`, inclusive se o retrato persistido ou o último evento de estado da fila indicar `enabled`. Se qualquer um dos dois indicar `enabled`, ele anexa `queue.stopped` com `reason: restart`. Assim, uma queda entre anexar `queue.enabled` e gravar o retrato também fica registrada. Uma nova ativação precisa de `queue.enabled` após a partida.
+A criação fica registrada em `queue.created:2`, sempre em `stopped`, com a política inicial obrigatória. A `:1` continua legível e registra apenas a criação parada. A criação na `:2` e as mudanças em `queue.policy_changed:1` usam o mesmo tipo `common.queue-policy:1`. Na partida, o núcleo restaura toda fila em `stopped`, inclusive se o retrato persistido ou o último evento de estado da fila indicar `enabled`. Se qualquer um dos dois indicar `enabled`, ele anexa `queue.stopped` com `reason: restart`. Assim, uma queda entre anexar `queue.enabled` e gravar o retrato também fica registrada. Uma nova ativação precisa de `queue.enabled` após a partida.
 
-`owner_id` identifica a pessoa dona da fila, e `actor.id` identifica o aparelho que agiu. O cadastro de aparelhos autenticados liga cada aparelho a um dono. Por isso o PC e o celular do mesmo dono são aceitos, e o aparelho de outro dono é recusado. Essa ligação é dado de cadastro, conferido pelo núcleo e não pelo Schema. Em `queue.created`, `queue.enabled` e na parada pelo dono, o ator é um `device` e `data.owner_id` repete o dono cadastrado da fila. A ativação aceita só `local_ui` e `tray`. Criação, parada e aceite de tarefa também aceitam `remote_device`, reservado para um futuro transporte autenticado e assinado.
+`owner_id` identifica a pessoa dona da fila, e `actor.id` identifica o aparelho que agiu. O cadastro de aparelhos autenticados liga cada aparelho a um dono. Por isso o PC e o celular do mesmo dono são aceitos, e o aparelho de outro dono é recusado. Essa ligação é dado de cadastro, conferido pelo núcleo e não pelo Schema. Em `queue.created`, `queue.enabled` e na parada pelo dono, o ator é um `device` e `data.owner_id` repete o dono cadastrado da fila. A ativação e a mudança de política (`queue.policy_changed:1`) aceitam só `local_ui` e `tray`: o núcleo recusa `remote_device` nas duas, porque uma política nova pode subir os tetos de admissão. O valor `remote_device` continua no Schema de `queue.policy_changed:1`, e um evento já gravado com ele segue legível. Criação, parada, aceite de tarefa e reancoragem do relógio (`queue.clock_reanchored:1`) também aceitam `remote_device`, reservado para um futuro transporte autenticado e assinado.
 
-`queue.stopped` informa o motivo da parada. Com `owner`, o ator é o aparelho do dono e o evento leva `owner_id` e `via`. Com `restart` (partida do núcleo), `budget` (teto de custo) ou `resources` (falta de recursos da máquina), o ator é o `daemon`, sem `owner_id` nem `via`. Parar a fila só impede novos inícios, qualquer que seja o motivo, inclusive `budget` e `resources`. A tarefa em `running` continua até terminar a tentativa atual e segue para `review`, `failed` ou `cancelled`. Para interromper uma tentativa em curso, o dono ou o daemon cancela a tarefa. Na partida, a tarefa que estava em `running` e cujo processo o host não manteve passa para `failed` sem consumir tentativa nova, porque a tentativa interrompida já foi contada ao entrar em `running`. Se o host manteve o processo, a tarefa continua em `running` e termina a tentativa normalmente. O enum de motivos é fechado na versão 1. Um motivo novo, como política ou falhas em série, exige `queue.stopped:2`.
+`queue.stopped` informa o motivo da parada. Com `owner`, o ator é o aparelho do dono e o evento leva `owner_id` e `via`. Com `restart` (partida do núcleo), `budget` (teto de custo) ou `resources` (falta de recursos da máquina), o ator é o `daemon`, sem `owner_id` nem `via`. Parar a fila só impede novos inícios, qualquer que seja o motivo, inclusive `budget` e `resources`. A tarefa em `running` continua até terminar a tentativa atual e segue para `review`, `failed` ou `cancelled`. Para interromper uma tentativa em curso, o dono ou o daemon cancela a tarefa. Na partida, a tarefa que estava em `running` e cujo processo o host não manteve passa para `failed` sem consumir tentativa nova, porque a tentativa interrompida já foi contada ao entrar em `running`. Se o host manteve o processo, a tarefa continua em `running` e termina a tentativa normalmente. Enquanto o host não confirma a sessão, a tarefa fica em `running` sem evento novo; se ele não responde no prazo configurado, o núcleo decide pelo cancelamento terminal com o motivo `host_unconfirmed`. A tarefa permanece cancelada no replay, mesmo com tentativas disponíveis. A integração para consultar o host, aplicar o prazo e solicitar o encerramento da sessão quando ela reaparecer ainda cabe ao daemon. As regras estão no [README do `ads-core`](../crates/core/README.md#fila-contínua). O enum de motivos é fechado na versão 1. Um motivo novo, como política ou falhas em série, exige `queue.stopped:2`.
 
-`queue.task_created` registra o estado inicial `queued`, zero tentativas e o teto imutável de 1 a 10, incluindo a primeira. O teto e a origem são recuperados do evento de criação. A chave de deduplicação combina fila, apelido e origem. A origem manual usa um identificador estável do pedido, a issue usa seu número no repositório do apelido e a regra de bug usa o par regra e alvo estável. O produtor reserva a chave e aplica os limites da fila ao anexar a criação, em uma operação, preservando chaves de tarefas encerradas e no replay. Os limites (total, por janela de tempo, para pedidos manuais e por regra de bug) são política do núcleo, descrita no [README do `ads-core`](../crates/core/README.md#fila-contínua).
+`queue.task_created` registra o estado inicial `queued`, zero tentativas e o teto imutável de 1 a 10, incluindo a primeira. O teto e a origem são recuperados do evento de criação. A `:4` registra também o título e a ferramenta da tarefa, e por isso nunca é `public`. O registro `record.queue-task:3` é o que o replay reconstrói do log: o título e a ferramenta vêm da criação `:4`; para uma tarefa criada pelas versões 1 a 3, que não os registravam, os dois ficam `null`, sem valor inventado, e a interface mostra que não foram registrados. `branch` e `pull_request` não aparecem no registro reconstruído, porque nenhum evento da fila os registra. A chave de deduplicação combina fila, apelido e origem. A origem manual usa um identificador estável do pedido, a issue usa seu número no repositório do apelido e a regra de bug usa o par regra e alvo estável. O produtor reserva a chave e aplica os limites da fila ao anexar a criação, em uma operação, preservando chaves de tarefas encerradas e no replay. Os limites (total, por janela de tempo, para pedidos manuais e por regra de bug) são política do núcleo, descrita no [README do `ads-core`](../crates/core/README.md#fila-contínua).
 
-O apelido é um identificador de cadastro e a resolução da pasta usa esse cadastro. Branch opcional segue a forma ASCII `feature/...` ou `fix/...`, em minúsculas, sem componente terminado em ponto nem nome de dispositivo do Windows. Referências opcionais de pull request são números positivos do repositório cadastrado. O executor passa `--` antes da referência em comandos Git que aceitam esse separador. O título aceita letras, marcas, números, pontuação, símbolos e o espaço comum, sempre com ao menos uma letra ou um número. Ele não começa nem termina com espaço, não repete espaço e não tem mais de três marcas combinantes seguidas. Recusa caracteres de formatação e de uso privado, caracteres de tag, seletores de variação, preenchedores e símbolos invisíveis. Também recusa o seletor de emoji U+FE0F e o ZWJ U+200D. Emoji isolados, como ⚠ ou 💻, passam como símbolo. Seletores e sequências unidas por ZWJ, como ⚠️, 👨‍💻 ou bandeiras, são recusados. Quem cria a tarefa remove esses caracteres do título da issue antes de gravar. A validação não detecta homógrafos: letras parecidas de outros alfabetos, como o `а` cirílico no lugar do `a` latino, passam. Marcas combinantes também passam sobre espaço, sobre pontuação ou símbolo e no início do título: `=` seguido de U+0338 aparece como `≠`. Por isso a aparência do título nunca serve de prova de identidade ou de autorização. O padrão do título é avaliado mesmo depois de o texto passar de 120 caracteres, então quem recebe a mensagem limita o tamanho dela antes de validar o Schema. Exigir letra ou número como base de toda marca, e extrair o apelido e a origem para tipos `common`, mudam o que a versão 1 aceita ou os tipos gerados. Por isso entram juntos na versão 2 de `record.queue-task` e de `queue.task_created`, antes do primeiro produtor gravar tarefas. Até lá, `tools/corpus.test.mjs` reprova se o apelido ou a origem divergirem entre os dois Schemas.
+O apelido é um identificador de cadastro e a resolução da pasta usa esse cadastro. Branch opcional segue a forma ASCII `feature/...` ou `fix/...`, em minúsculas, sem componente terminado em ponto nem nome de dispositivo do Windows. Referências opcionais de pull request são números positivos do repositório cadastrado. O executor passa `--` antes da referência em comandos Git que aceitam esse separador. O título aceita letras, marcas, números, pontuação, símbolos e o espaço comum, sempre com ao menos uma letra ou um número. Ele não começa nem termina com espaço, não repete espaço e não tem mais de três marcas combinantes seguidas. Recusa caracteres de formatação e de uso privado, caracteres de tag, seletores de variação, preenchedores e símbolos invisíveis. Também recusa o seletor de emoji U+FE0F e o ZWJ U+200D. Emoji isolados, como ⚠ ou 💻, passam como símbolo. Seletores e sequências unidas por ZWJ, como ⚠️, 👨‍💻 ou bandeiras, são recusados. Quem cria a tarefa remove esses caracteres do título da issue antes de gravar. A validação não detecta homógrafos: letras parecidas de outros alfabetos, como o `а` cirílico no lugar do `a` latino, passam. Marcas combinantes também passam sobre espaço, sobre pontuação ou símbolo e no início do título: `=` seguido de U+0338 aparece como `≠`. Por isso a aparência do título nunca serve de prova de identidade ou de autorização. O padrão do título é avaliado mesmo depois de o texto passar de 120 caracteres, então quem recebe a mensagem limita o tamanho dela antes de validar o Schema. O apelido e a origem são os tipos comuns `workdir-alias:1` e `queue-task-origin:1`, que `queue.task_created:3` e `:4` e `record.queue-task:2` e `:3` referem; o título é o tipo comum `queue-task-title:1`, que `queue.task_created:4` e `record.queue-task:3` referem. As versões anteriores repetem as mesmas regras por extenso, e `tools/corpus.test.mjs` confere que elas continuam iguais aos tipos comuns. Exigir letra ou número como base de toda marca muda o que o título aceita e fica para uma versão futura. O tipo comum e os registros `:1` e `:2` têm o mesmo título: `tools/title-alphabet.mjs --write` regrava os três.
 
 O alfabeto é fixo no Unicode 16. `corpus/title-chars.json` guarda as faixas explícitas do alfabeto, das letras e números e das marcas, e `tools/title-alphabet.mjs` monta com elas os padrões do Schema. Por isso nem o Ajv nem o regex do Rust consultam a sua própria tabela Unicode, e o resultado não muda com a versão do Node ou do crate. Os padrões usam só classes de caracteres, sem quantificador aninhado, e a verificação é linear no tamanho do texto. O mesmo arquivo lista, para cada posição testada (isolado, início, fim e meio), os pontos de código aceitos. `tools/corpus.test.mjs` confere o Schema e `crates/contracts/tests/title_corpus.rs` confere o tipo Rust contra essas listas. Para mudar o alfabeto, edite as classes, rode `node tools/title-alphabet.mjs --write` e atualize as listas por posição.
 
@@ -333,6 +379,10 @@ O manifesto (`urn:ads:record:update-manifest:1`) é assinado no CI. A assinatura
 | `urn:ads:common:action-rule:1` | Código estável de uma regra do portão de ações que disparou num plano. |
 | `urn:ads:common:actor:1` | Quem causou um evento ou uma decisão: um aparelho, um agente de IA ou o próprio daemon. |
 | `urn:ads:common:queue-task-state:1` | Estado de uma tarefa da fila. |
+| `urn:ads:common:queue-task-origin:1` | Origem de uma tarefa da fila: pedido manual, issue ou regra de bug com alvo. |
+| `urn:ads:common:queue-policy:1` | Limites de admissão e prazo de confirmação do host da fila. |
+| `urn:ads:common:queue-task-title:1` | Título de uma tarefa da fila, no alfabeto fixo descrito em [fila contínua](#fila-contínua). |
+| `urn:ads:common:workdir-alias:1` | Apelido cadastrado de uma pasta de trabalho, no lugar do caminho. |
 
 ### Envelopes
 
@@ -350,7 +400,7 @@ O manifesto (`urn:ads:record:update-manifest:1`) é assinado no CI. A assinatura
 
 ### API local
 
-Os sete comandos estendem `urn:ads:command:request:1` com `allOf`, fixam `method` e fecham `params` (o `_meta` continua o do envelope).
+Os comandos estendem `urn:ads:command:request:1` com `allOf`, fixam `method` e fecham `params` (o `_meta` continua o do envelope).
 
 | Schema | O que descreve |
 |---|---|
@@ -360,10 +410,40 @@ Os sete comandos estendem `urn:ads:command:request:1` com `allOf`, fixam `method
 | `urn:ads:command:session.resize:1` | Novo tamanho do terminal, de 1 a 1000 colunas e linhas. |
 | `urn:ads:command:session.close:1` | Encerra a sessão de terminal e o processo dela. |
 | `urn:ads:command:events.subscribe:1` | Assina os eventos de um stream a partir de um seq (0: tudo o que o núcleo guarda). |
-| `urn:ads:contract:local-api.server-message:1` | O que o núcleo manda à interface pelo WebSocket: resposta `command.response:2` ou evento `event.envelope:1`. |
+| `urn:ads:contract:local-api.server-message:1` | Versão inicial das mensagens do núcleo à interface pelo WebSocket. Aceita a resposta `command.response:2` ou o evento `event.envelope:1`. |
 | `urn:ads:command:harness.list:1` | Pede, só para leitura, as ferramentas ligadas na configuração do usuário e os apelidos de pasta de trabalho. |
 | `urn:ads:command:harness.list.response:1` | Resposta aceita de `harness.list`: identificadores das ferramentas e apelidos de pasta, só nomes, nunca programa, argumentos, ambiente ou caminho. |
-| `urn:ads:contract:local-api.server-message:2` | A `:1` mais a resposta de `harness.list`. É a que o núcleo escreve; a `:1` não é alterada. |
+| `urn:ads:command:harness.list.response:2` | Acrescenta os apelidos das pastas indisponíveis na partida, quando houver. |
+| `urn:ads:contract:local-api.server-message:2` | A `:1` mais a resposta de `harness.list`. Versão anterior à `:3`, sem alteração. |
+| `urn:ads:command:queue.get:1` | Pede, só para leitura, o estado de uma fila de tarefas (`stopped` ou `enabled`). |
+| `urn:ads:command:queue.get.response:1` | Resposta anterior de `queue.get`: o id da fila e o estado. |
+| `urn:ads:command:queue.get.response:2` | Resposta de `queue.get` com a política gravada vigente ou `null` se nunca foi gravada. |
+| `urn:ads:command:queue.configured:1` | Pede, só para leitura, o id da fila que o núcleo serve, criada ou não. |
+| `urn:ads:command:queue.configured.response:1` | Resposta aceita de `queue.configured`: só o id da fila. |
+| `urn:ads:command:queue.create:1` | O dono cria a fila parada com a política padrão pela interface local. A resposta usa `command.response:2`. Um novo pedido para uma fila existente recebe `QUEUE_ALREADY_CREATED`. |
+| `urn:ads:command:queue.start:1` | O dono liga a fila pela interface local; o núcleo registra `queue.enabled` antes de admitir tarefas. |
+| `urn:ads:command:queue.stop:1` | O dono para a fila; parar a fila já parada é aceito sem evento novo, e falha na gravação da auditoria ainda volta `INTERNAL_ERROR`. |
+| `urn:ads:contract:local-api.server-message:3` | A `:2` mais a resposta de `queue.get`. Versão anterior à `:4`, sem alteração. |
+| `urn:ads:contract:local-api.error-code:1` | [Códigos da API local](schemas/contract.local-api.error-code.v1.schema.json) até `SESSION_SETUP_FAILED`, com nomes e significados. Recusas encaminhadas do host seguem o contrato [pty-host/1](#contrato-pty-host1). |
+| `urn:ads:contract:local-api.error-code:2` | [Códigos da API local](schemas/contract.local-api.error-code.v2.schema.json): os da `:1` mais `QUEUE_NOT_CONFIGURED` e `QUEUE_ALREADY_ENABLED`. Versão anterior à `:3`, sem alteração. |
+| `urn:ads:command:approval.list:1` | Pede, só para leitura, as ações do portão que aguardam a resposta do dono. |
+| `urn:ads:command:approval.list.response:1` | Resposta aceita de `approval.list`: cada aprovação pendente com o registro do plano (`record.action-plan:2`) e os motivos de não ser aprovável pela API. |
+| `urn:ads:command:approval.list.response:2` | A mesma resposta com os efeitos concretos de cada ação (`record.action-effects:1`), o seu hash e o código da recusa do ensaio, os motivos novos de não aprovável e `more`, quando o limite de itens ou de bytes deixou outra ação listável para depois. Versão anterior à `:3`. |
+| `urn:ads:command:approval.list.response:3` | A `:2` com `unreadable`, a contagem dos pedidos com histórico ilegível que a listagem deixou de fora. |
+| `urn:ads:command:approval.list.response:4` | A `:3` com o motivo `policy_changed`. É a que o núcleo escreve. |
+| `urn:ads:command:approval.answer:1` | O dono aprova ou nega uma ação pendente pelo id da ação e da aprovação e pelo hash do plano que viu. |
+| `urn:ads:command:approval.close:1` | Recuperação: o dono fecha, negando (`deny`) ou expirando (`expire`), os pedidos pendentes de uma ação cujo histórico o núcleo não lê, pelo `action_id` que o log do daemon registra. Uma chave nova só pode expirar pedidos a partir do prazo de cada um. A mesma chave retoma as decisões pendentes no instante da intenção gravada e devolve `replayed: true`. Se uma intenção legada de expiração foi gravada antes do prazo de algum pedido ainda pendente, o núcleo usa o relógio atual para as decisões faltantes. Se algum desses prazos ainda não chegou, devolve `INVALID_PARAMS` sem gravar nada. Nunca aprova; pedido com histórico legível recebe `APPROVAL_READABLE`. A resposta usa `command.response:2`. |
+| `urn:ads:contract:local-api.server-message:4` | A `:3` mais a resposta de `approval.list`. Versão anterior à `:5`, sem alteração. |
+| `urn:ads:contract:local-api.server-message:5` | A `:4` com a resposta de `approval.list` na `:2`. Versão anterior à `:6`. |
+| `urn:ads:contract:local-api.server-message:6` | A `:5` com a resposta de `queue.get` que inclui a política gravada. Versão anterior à `:7`. |
+| `urn:ads:contract:local-api.server-message:7` | A `:6` com a resposta de `approval.list` na `:3`. |
+| `urn:ads:contract:local-api.server-message:8` | A `:7` com a resposta de `harness.list` na `:2`. |
+| `urn:ads:contract:local-api.server-message:9` | A `:8` com a resposta de `approval.list` na `:4`. |
+| `urn:ads:contract:local-api.server-message:10` | A `:9` mais a resposta de `queue.configured`. É a versão que o núcleo escreve. |
+| `urn:ads:contract:local-api.error-code:3` | [Catálogo anterior](schemas/contract.local-api.error-code.v3.schema.json). Acrescenta à `:2` os códigos das aprovações, de `APPROVAL_NOT_CONFIGURED` a `APPROVAL_NOT_APPROVABLE`. |
+| `urn:ads:contract:local-api.error-code:4` | [Catálogo anterior](schemas/contract.local-api.error-code.v4.schema.json). Acrescenta `QUEUE_ALREADY_CREATED` à `:3`. |
+| `urn:ads:contract:local-api.error-code:5` | [Catálogo anterior](schemas/contract.local-api.error-code.v5.schema.json). Acrescenta `APPROVAL_READABLE` à `:4`. |
+| `urn:ads:contract:local-api.error-code:6` | [Códigos emitidos pela API local](schemas/contract.local-api.error-code.v6.schema.json). Acrescenta `QUEUE_NOT_FOUND` e `QUEUE_NOT_CREATED` à `:5` e restringe `QUEUE_NOT_CONFIGURED` aos controles da fila que não subiram. |
 
 ### Eventos de sessão
 
@@ -375,6 +455,7 @@ Os sete comandos estendem `urn:ads:command:request:1` com `allOf`, fixam `method
 | `urn:ads:event:session.resized:1` | O terminal da sessão mudou de tamanho. |
 | `urn:ads:event:session.ended:1` | A sessão terminou: o processo saiu, foi morto, o host de PTY reiniciou ou houve erro. Saída normal traz o código de saída. |
 | `urn:ads:event:session.permission_asked:1` | O CLI de IA pediu permissão para algo (comando, escrita, rede). O resumo pode conter texto do usuário, então a classe é private ou secret. |
+| `urn:ads:event:session.refusal_detected:1` | A ferramenta recusou um pedido (`refusal`) ou um filtro de segurança interrompeu a sessão (`safety_filter`). Leva só ferramenta, provedor e modelo; o texto do pedido e o da resposta não cabem. É a entrada da oferta de outro modelo, que segue a [passagem entre sessões](#passagem-entre-sessões). Evento privado. |
 
 ### Eventos de tarefa
 
@@ -391,8 +472,15 @@ Os sete comandos estendem `urn:ads:command:request:1` com `allOf`, fixam `method
 | URN | Significado |
 |---|---|
 | `urn:ads:event:queue.task_created:1` | Uma tarefa entrou na fila. |
-| `urn:ads:event:queue.task_state_changed:1` | Uma tarefa mudou de estado. |
+| `urn:ads:event:queue.policy_changed:1` | Um aparelho do dono aprovou a política completa da fila para as admissões posteriores no stream. |
+| `urn:ads:event:queue.clock_reanchored:1` | O aparelho do dono reancorou o relógio de admissão em `ts` para as criações até `seq - 1`. |
+| `urn:ads:event:queue.task_created:2` | Uma tarefa entrou na fila. A origem manual exige ator do tipo aparelho. O núcleo confere se ele pertence ao dono da fila. A versão 1 continua legível. |
+| `urn:ads:event:queue.task_created:3` | O mesmo que a `:2`, com o apelido e a origem nos tipos comuns. As versões 1 e 2 continuam legíveis. |
+| `urn:ads:event:queue.task_created:4` | O mesmo que a `:3`, com o título e a ferramenta da tarefa obrigatórios; nunca `public`. As versões 1 a 3 continuam legíveis. |
+| `urn:ads:event:queue.task_state_changed:1` | Histórico de mudanças de estado, com as regras originais de canal. |
+| `urn:ads:event:queue.task_state_changed:2` | As novas mudanças exigem `via` para ator aparelho e recusam o campo para os demais. O daemon pode registrar `reason: host_unconfirmed` em `running → cancelled` após vencer o prazo de recuperação. |
 | `urn:ads:event:queue.created:1` | A fila foi criada parada. |
+| `urn:ads:event:queue.created:2` | A fila foi criada parada com a política inicial completa. |
 | `urn:ads:event:queue.enabled:1` | O dono ligou a fila. |
 | `urn:ads:event:queue.stopped:1` | A fila parou, pelo dono ou pelo daemon, com o motivo. |
 
@@ -408,6 +496,11 @@ Os sete comandos estendem `urn:ads:command:request:1` com `allOf`, fixam `method
 | `urn:ads:event:approval.denied:2` | A mesma negação com action_id obrigatório. Convive com a `:1`. |
 | `urn:ads:event:approval.expired:1` | O prazo da aprovação passou sem decisão; o plano precisa ser refeito. Não diz de qual ação. |
 | `urn:ads:event:approval.expired:2` | A mesma expiração com action_id obrigatório. Convive com a `:1`. |
+| `urn:ads:event:answer.recorded:1` | A resposta do dono a uma aprovação (aparelho, dono, instante, decisão, hash do plano e chave de idempotência), gravada no stream `answer/<approval_id>` antes de o portão agir. |
+| `urn:ads:event:answer.recorded:2` | A mesma resposta com o `effects_hash` dos efeitos concretos que a listagem mostrou, ou `null`. Convive com a `:1`; é a que o núcleo grava. |
+| `urn:ads:event:closure.recorded:1` | O dono fechou por `approval.close` os pedidos pendentes de uma ação com histórico ilegível: aparelho, dono, instante, decisão (`deny` ou `expire`), os pedidos fechados e a chave de idempotência, gravados no stream `closure/<action_id>` antes de qualquer efeito. |
+| `urn:ads:event:effects.refused:1` | O ensaio de uma ação que pede aprovação não gerou registro de efeitos: o código da recusa, gravado pelo núcleo uma vez só no stream `effects/<action_id>`, no lugar de `effects.recorded:1`. |
+| `urn:ads:event:effects.recorded:1` | Os efeitos concretos que o ensaio de uma ação achou (`record.action-effects:1`) e o seu hash, gravados pelo núcleo uma vez só no stream `effects/<action_id>`, logo depois do plano. |
 
 ### Eventos de uso
 
@@ -430,7 +523,32 @@ Os sete comandos estendem `urn:ads:command:request:1` com `allOf`, fixam `method
 |---|---|
 | `urn:ads:event:routing.proposed:1` | O roteador propôs, para uma tarefa, a faixa, a ferramenta, o provedor e o modelo, citando a regra que usou. Proposta não é decisão: nada roda por causa deste evento. |
 | `urn:ads:event:routing.decided:1` | A rota em vigor de uma tarefa foi fixada: pelo dono (modo manual, ou aceite de uma proposta) ou por regra (modo auto). O autor do evento diz quem decidiu. |
-| `urn:ads:event:routing.fallback:1` | A rota de uma tarefa caiu para o plano B depois de uma falha: registra de onde saiu, para onde foi e o código do erro que causou a troca. Nunca troca de conta. |
+| `urn:ads:event:routing.fallback:1` | A rota de uma tarefa caiu para o plano B depois de uma falha: registra de onde saiu, para onde foi e o código do erro que causou a troca. Não tem campo de conta e não registra troca de perfil; o plano B que muda de perfil usa a `:2`. |
+| `urn:ads:event:routing.proposed:2` | Proposta com `account_alias`, nulo na ausência de um perfil. |
+| `urn:ads:event:routing.decided:2` | Decisão com `account_alias`, nulo na ausência de um perfil. |
+| `urn:ads:event:routing.fallback:2` | Plano B com o `account_alias` de cada rota, nulo na ausência de um perfil. Os apelidos de `from` e `to` podem diferir: o plano B pode mudar de perfil, só entre perfis configurados e só para a próxima sessão, aberta no perfil de destino (nunca no meio de uma sessão). Quando o perfil da ferramenta de destino muda, a seleção também é registrada por `account.switched:1`, com o modo da política de troca da ferramenta. |
+
+### Eventos de conta
+
+Usam o stream `account/<ferramenta>`. O apelido identifica o perfil
+configurado no produto.
+
+Regra da troca de perfil, conforme a
+[ADR 0022](../docs/adr/0022-account-profile-folders-and-automatic-switching.md):
+a troca, inclusive a de um plano B (`routing.fallback:2`), vale só para a
+próxima sessão; uma sessão aberta fica no perfil em que abriu. A política
+`switch` de cada ferramenta (`manual`, `propose` ou `auto`) decide se a troca
+espera o dono, e o Antigravity fica sempre em `manual`. O modo `auto` só liga
+depois do teste de isolamento dos perfis na máquina do mantenedor. Nenhuma
+regra do validador confere isso nos eventos, e o núcleo ainda não emite a
+`routing.fallback:2` nem `account.switched:1`: o roteador produz a
+`routing.fallback:1` e a abertura de sessões ainda não usa perfil
+([README do núcleo](../crates/core/README.md#perfis-de-conta)).
+
+| Schema | O que descreve |
+|---|---|
+| `urn:ads:event:account.switched:1` | Seleção do perfil para a próxima sessão, com o modo da decisão e o apelido anterior (nulo na primeira seleção). |
+| `urn:ads:event:account.status_observed:1` | Estado do login, método, provedor, tipo de plano e caminho absoluto da configuração usada, quando disponíveis. Evento privado. E-mail, organização e identificadores de conta são recusados. |
 
 ### Eventos de revisão
 
@@ -458,6 +576,7 @@ Os sete comandos estendem `urn:ads:command:request:1` com `allOf`, fixam `method
 | `urn:ads:record:usage_event:1` | Uma linha do livro-caixa: uma chamada ou turno de IA medido, com tokens, duração, custo de lista, custo faturável (só chave de API), janela de cota, fonte e chave de deduplicação. Só-anexo; alias de conta nunca é credencial nem e-mail. |
 | `urn:ads:record:action-plan:1` | O plano de uma ação destrutiva sobre arquivos, como o portão o julgou: operação, alvos, raiz de trabalho, estimativa, veredito com as regras que dispararam, marca de quarentena e destino. O plan_hash é reconferível pela [serialização canônica](#serialização-canônica-do-plan_hash). Caminhos `abspath:1` e estimativa sem máximo. |
 | `urn:ads:record:action-plan:2` | O mesmo registro com os caminhos em `abspath:2` e a estimativa limitada a 2^53 − 1. Convive com a `:1`; é a que o portão escreve. |
+| `urn:ads:record:action-effects:1` | Os efeitos concretos de uma ação como o ensaio os achou: cada alvo com o efeito, o lugar na quarentena e cada entrada da árvore (nomes, tipo, tamanho e identidade no volume) e, numa restauração, o resumo do manifesto. É o que a aprovação cobre; a execução recusa antes de tocar o disco se achar outro. |
 | `urn:ads:record:approval:1` | Estado de uma aprovação: vale para o hash de um plano e expira. Pendente e expirada não têm decisor; concedida e negada têm autor e instante da decisão. |
 | `urn:ads:record:host_sample:1` | Uma observação de um sinal da máquina (disco, memória, etc.) feita por um coletor só leitura. Amostra ausente nunca vira zero; corrigir é gravar outra amostra com outro sample_id. |
 | `urn:ads:record:host_event:1` | Um alerta derivado de amostras: cita a regra, a gravidade e os sample_id que o justificam. Confirmar é um evento posterior; o alerta original não muda. |
@@ -465,6 +584,8 @@ Os sete comandos estendem `urn:ads:command:request:1` com `allOf`, fixam `method
 | `urn:ads:record:update-status:1` | Estado visível da auto-atualização, escrito pelo lançador: o que está rodando, a versão anterior guardada, a candidata em andamento, a prova depois da troca, as quedas contadas e as versões bloqueadas. Baixando, conferindo e trocando têm candidata; em prova há prazo; falha traz código de erro. |
 | `urn:ads:record:parameter:1` | Um parâmetro do produto como o núcleo o apresenta: a chave, o tipo, o padrão recomendado, o valor em vigor e a explicação. Todo comportamento com mais de uma escolha razoável é um registro destes. Parâmetro nunca guarda segredo: segredo fica no cofre. |
 | `urn:ads:record:queue-task:1` | Registro de uma tarefa da fila. |
+| `urn:ads:record:queue-task:2` | O mesmo registro, com o apelido e a origem nos tipos comuns e `version` 2. |
+| `urn:ads:record:queue-task:3` | O registro que o replay reconstrói do log, com `version` 3: `title` e `tool` são `null` quando a criação é anterior à `queue.task_created:4`. |
 | `urn:ads:record:task-queue:1` | Identidade, dono e estado da fila. |
 
 ### Contratos entre processos

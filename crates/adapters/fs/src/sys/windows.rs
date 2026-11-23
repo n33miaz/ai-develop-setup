@@ -19,9 +19,10 @@ use windows::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows::Wdk::Storage::FileSystem::{
     FILE_CREATE, FILE_DIRECTORY_FILE, FILE_INFORMATION_CLASS, FILE_NON_DIRECTORY_FILE, FILE_OPEN,
     FILE_OPEN_FOR_BACKUP_INTENT, FILE_OPEN_REPARSE_POINT, FILE_RENAME_INFORMATION,
-    FILE_SYNCHRONOUS_IO_NONALERT, FileDispositionInformationEx, FileRenameInformation,
+    FILE_SYNCHRONOUS_IO_NONALERT, FS_INFORMATION_CLASS, FileDispositionInformationEx,
+    FileFsAttributeInformation, FileFsDeviceInformation, FileRenameInformation,
     NTCREATEFILE_CREATE_DISPOSITION, NTCREATEFILE_CREATE_OPTIONS, NtCreateFile,
-    NtSetInformationFile,
+    NtQueryVolumeInformationFile, NtSetInformationFile,
 };
 use windows::Win32::Foundation::{
     HANDLE, NTSTATUS, OBJECT_ATTRIBUTE_FLAGS, STATUS_DIRECTORY_NOT_EMPTY, STATUS_NOT_A_DIRECTORY,
@@ -38,13 +39,17 @@ use windows::Win32::Storage::FileSystem::{
 use windows::Win32::System::IO::IO_STATUS_BLOCK;
 use windows::core::PWSTR;
 
-use super::{Error, Identity, Kind, Meta, Mount, plain};
+use super::{Error, Identity, Kind, Meta, Mount, VolumeFacts, plain};
 
 const ATTRIBUTE_DIRECTORY: u32 = 0x10;
 const ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
 const FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
 const FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
 const ERROR_NO_MORE_FILES: i32 = 18;
+const SUPPORTS_OPEN_BY_FILE_ID: u32 = 0x0100_0000;
+const REMOTE_DEVICE: u32 = 0x10;
+const DEVICE_NETWORK: u32 = 0x12;
+const DEVICE_NETWORK_FILE_SYSTEM: u32 = 0x14;
 
 /// Delete now (not when the last handle closes), read-only or not.
 const DISPOSITION_DELETE: u32 = 0x1 | 0x2 | 0x10;
@@ -91,20 +96,43 @@ fn raw(file: &File) -> HANDLE {
     HANDLE(file.as_raw_handle())
 }
 
+#[derive(Debug)]
 enum Refusal {
-    Missing,
-    Exists,
-    NotADirectory,
+    Missing(io::Error),
+    Exists(io::Error),
+    NotADirectory(io::Error),
     Other(io::Error),
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Missing(_) => f.write_str("it does not exist"),
+            Self::Exists(_) => f.write_str("the name is taken"),
+            Self::NotADirectory(_) => f.write_str("not a folder"),
+            Self::Other(error) => error.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for Refusal {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Missing(error)
+            | Self::Exists(error)
+            | Self::NotADirectory(error)
+            | Self::Other(error) => Some(error),
+        }
+    }
 }
 
 impl From<Refusal> for Error {
     fn from(refusal: Refusal) -> Self {
         match refusal {
-            Refusal::Missing => Self::Missing,
-            Refusal::Exists => Self::Exists,
-            Refusal::NotADirectory => {
-                Self::Io(io::Error::new(io::ErrorKind::NotADirectory, "not a folder"))
+            Refusal::Missing(error) => Self::Missing(error),
+            Refusal::Exists(error) => Self::Exists(error),
+            refusal @ Refusal::NotADirectory(_) => {
+                Self::Io(io::Error::new(io::ErrorKind::NotADirectory, refusal))
             }
             Refusal::Other(error) => Self::Io(error),
         }
@@ -167,9 +195,11 @@ fn open_at(
         }));
     }
     Err(match status {
-        STATUS_OBJECT_NAME_NOT_FOUND | STATUS_OBJECT_PATH_NOT_FOUND => Refusal::Missing,
-        STATUS_OBJECT_NAME_COLLISION => Refusal::Exists,
-        STATUS_NOT_A_DIRECTORY => Refusal::NotADirectory,
+        status @ (STATUS_OBJECT_NAME_NOT_FOUND | STATUS_OBJECT_PATH_NOT_FOUND) => {
+            Refusal::Missing(refused(status))
+        }
+        status @ STATUS_OBJECT_NAME_COLLISION => Refusal::Exists(refused(status)),
+        status @ STATUS_NOT_A_DIRECTORY => Refusal::NotADirectory(refused(status)),
         other => Refusal::Other(refused(other)),
     })
 }
@@ -190,6 +220,27 @@ fn query(file: &File, class: FILE_INFO_BY_HANDLE_CLASS, words: &mut [u64]) -> io
     // SAFETY: the buffer is `size` writable bytes, aligned for every structure asked for here.
     unsafe { GetFileInformationByHandleEx(raw(file), class, words.as_mut_ptr().cast(), size) }
         .map_err(system_error)
+}
+
+/// Fills `words` with the answer of the system about the volume of the open `file`.
+fn query_volume(file: &File, class: FS_INFORMATION_CLASS, words: &mut [u64]) -> io::Result<()> {
+    let size = u32::try_from(size_of_val(words)).map_err(io::Error::other)?;
+    let mut block = IO_STATUS_BLOCK::default();
+    // SAFETY: the buffer is `size` writable bytes, aligned for every structure asked for here,
+    // and `block` is a valid place to write to.
+    let status = unsafe {
+        NtQueryVolumeInformationFile(
+            raw(file),
+            &mut block,
+            words.as_mut_ptr().cast::<c_void>(),
+            size,
+            class,
+        )
+    };
+    match status.is_ok() {
+        true => Ok(()),
+        false => Err(refused(status)),
+    }
 }
 
 /// Applies `words` (the first `size` bytes) to the open `file`.
@@ -214,7 +265,7 @@ fn apply(
     };
     match status {
         status if status.is_ok() => Ok(()),
-        STATUS_OBJECT_NAME_COLLISION => Err(Error::Exists),
+        status @ STATUS_OBJECT_NAME_COLLISION => Err(Error::Exists(refused(status))),
         STATUS_DIRECTORY_NOT_EMPTY => Err(Error::Io(io::Error::new(
             io::ErrorKind::DirectoryNotEmpty,
             "the folder is not empty",
@@ -223,8 +274,20 @@ fn apply(
     }
 }
 
+/// A native Windows operation failed with this NTSTATUS.
+#[derive(Debug)]
+pub struct NtStatusError(pub i32);
+
+impl std::fmt::Display for NtStatusError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "the system answered {:#010x}", self.0)
+    }
+}
+
+impl std::error::Error for NtStatusError {}
+
 fn refused(status: NTSTATUS) -> io::Error {
-    io::Error::other(format!("the system answered {:#010x}", status.0))
+    io::Error::other(NtStatusError(status.0))
 }
 
 // The answers are little-endian structures read out of 64-bit words.
@@ -236,6 +299,43 @@ fn u32_at(words: &[u64], offset: usize) -> Option<u32> {
 fn u16_at(words: &[u64], offset: usize) -> Option<u16> {
     let word = words.get(offset / 8)?;
     Some((word >> ((offset % 8) * 8)) as u16)
+}
+
+fn file_of(low: u64, high: u64) -> u128 {
+    (u128::from(high) << 64) | u128::from(low)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{NTSTATUS, NtStatusError, file_of, refused};
+
+    #[test]
+    fn native_error_preserves_the_status() {
+        for status in [-1, -2] {
+            let error = refused(NTSTATUS(status));
+            let native = error
+                .get_ref()
+                .unwrap()
+                .downcast_ref::<NtStatusError>()
+                .unwrap();
+            assert_eq!(native.0, status);
+        }
+    }
+
+    #[test]
+    fn ntfs_sequence_distinguishes_objects_with_the_same_record_number() {
+        let record = 42;
+        assert_ne!(
+            file_of((1 << 48) | record, 0),
+            file_of((2 << 48) | record, 0)
+        );
+    }
+
+    #[test]
+    fn the_high_word_is_part_of_the_file_id() {
+        assert_eq!(file_of(42, 1), (1 << 64) | 42);
+        assert_ne!(file_of(42, 1), file_of(42, 2));
+    }
 }
 
 fn meta_of(file: &File) -> io::Result<Meta> {
@@ -260,7 +360,7 @@ fn meta_of(file: &File) -> io::Result<Meta> {
         kind: Some(kind),
         id: Identity {
             volume: id[0],
-            file: (u128::from(id[2]) << 64) | u128::from(id[1]),
+            file: file_of(id[1], id[2]),
         },
         size: standard[1],
         // A volume mounted in a folder is a reparse point here: seen as a link, never entered.
@@ -293,6 +393,31 @@ impl Node {
         meta_of(&self.file)
     }
 
+    /// What the file system of this entry says about itself.
+    pub fn volume(&self) -> io::Result<VolumeFacts> {
+        let broken = || io::Error::new(io::ErrorKind::InvalidData, "an answer that does not fit");
+        // FILE_FS_DEVICE_INFORMATION: device type, characteristics.
+        let mut device = [0u64; 1];
+        query_volume(&self.file, FileFsDeviceInformation, &mut device)?;
+        let device_type = device[0] as u32;
+        let characteristics = (device[0] >> 32) as u32;
+        // FILE_FS_ATTRIBUTE_INFORMATION: attributes at 0, name length at 8, name from 12.
+        let mut attribute = [0u64; 64];
+        query_volume(&self.file, FileFsAttributeInformation, &mut attribute)?;
+        let attributes = u32_at(&attribute, 0).ok_or_else(broken)?;
+        let length = u32_at(&attribute, 8).ok_or_else(broken)? as usize;
+        let units = (0..length / 2)
+            .map(|unit| u16_at(&attribute, 12 + unit * 2))
+            .collect::<Option<Vec<u16>>>()
+            .ok_or_else(broken)?;
+        Ok(VolumeFacts::Windows {
+            file_system: String::from_utf16(&units).map_err(|_| broken())?,
+            remote: characteristics & REMOTE_DEVICE != 0
+                || matches!(device_type, DEVICE_NETWORK | DEVICE_NETWORK_FILE_SYSTEM),
+            open_by_id: attributes & SUPPORTS_OPEN_BY_FILE_ID != 0,
+        })
+    }
+
     /// Opens this folder again in a way that keeps it where it is: until the handle that
     /// comes back is dropped, the system refuses to rename or delete the folder, and to
     /// rename any folder above it. Refused when someone already has it open to do that.
@@ -302,7 +427,7 @@ impl Node {
             open_at(&self.file, "", BROWSE, HELD, FILE_OPEN, options).map_err(|refusal| {
                 match Error::from(refusal) {
                     Error::Io(error) => error,
-                    other => io::Error::other(other.to_string()),
+                    other => io::Error::other(other),
                 }
             })?;
         Ok(Self { file })
@@ -313,7 +438,7 @@ impl Node {
         plain(name)?;
         match open_at(&self.file, name, LOOK, SHARED, FILE_OPEN, ITSELF) {
             Ok(file) => Ok(meta_of(&file)?.id == expected),
-            Err(Refusal::Missing) => Ok(false),
+            Err(Refusal::Missing(_)) => Ok(false),
             Err(refusal) => Err(refusal.into()),
         }
     }
@@ -332,7 +457,10 @@ impl Node {
         let node = self.listed(name)?;
         let wanted: Vec<u16> = name.encode_utf16().collect();
         let mut found = false;
-        self.scan(|units| found |= units == wanted)?;
+        self.scan(|units| {
+            found = units == wanted;
+            !found
+        })?;
         if !found {
             return Err(Error::Alias);
         }
@@ -344,7 +472,7 @@ impl Node {
         plain(name)?;
         let folder = NTCREATEFILE_CREATE_OPTIONS(ITSELF.0 | FILE_DIRECTORY_FILE.0);
         let file = match open_at(&self.file, name, BROWSE, SHARED, FILE_OPEN, folder) {
-            Err(Refusal::NotADirectory) => {
+            Err(Refusal::NotADirectory(_)) => {
                 open_at(&self.file, name, LOOK, SHARED, FILE_OPEN, ITSELF)
             }
             other => other,
@@ -354,11 +482,18 @@ impl Node {
 
     /// The names in this folder, sorted.
     pub fn names(&self) -> io::Result<Vec<String>> {
+        self.names_limited(usize::MAX)
+    }
+
+    pub fn names_limited(&self, limit: usize) -> io::Result<Vec<String>> {
         let mut names = Vec::new();
         let mut not_text = false;
-        self.scan(|units| match String::from_utf16(units) {
-            Ok(name) => names.push(name),
-            Err(_) => not_text = true,
+        self.scan(|units| {
+            match String::from_utf16(units) {
+                Ok(name) => names.push(name),
+                Err(_) => not_text = true,
+            }
+            !not_text && names.len() <= limit
         })?;
         if not_text {
             return Err(io::Error::new(
@@ -371,7 +506,7 @@ impl Node {
     }
 
     /// Hands every name of this folder to `each`, as the folder lists it.
-    fn scan(&self, mut each: impl FnMut(&[u16])) -> io::Result<()> {
+    fn scan(&self, mut each: impl FnMut(&[u16]) -> bool) -> io::Result<()> {
         let broken = || io::Error::new(io::ErrorKind::InvalidData, "a listing that does not fit");
         let mut words = vec![0u64; 8192];
         let mut class = FileFullDirectoryRestartInfo;
@@ -392,8 +527,8 @@ impl Node {
                     .collect::<Option<Vec<u16>>>()
                     .ok_or_else(broken)?;
                 const DOT: u16 = b'.' as u16;
-                if units != [DOT] && units != [DOT, DOT] {
-                    each(&units);
+                if units != [DOT] && units != [DOT, DOT] && !each(&units) {
+                    return Ok(());
                 }
                 if next == 0 {
                     break;
@@ -482,7 +617,7 @@ impl Node {
             open_at(&self.file, "", access, SHARED, FILE_OPEN, options).map_err(|refusal| {
                 match Error::from(refusal) {
                     Error::Io(error) => error,
-                    other => io::Error::other(other.to_string()),
+                    other => io::Error::other(other),
                 }
             })?;
         writable.sync_all()

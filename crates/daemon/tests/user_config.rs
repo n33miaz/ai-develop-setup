@@ -3,8 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn user_file(name: &str, contents: &[u8]) -> PathBuf {
-    let path =
-        Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{name}-{}.toml", std::process::id()));
+    let path = temp::directory().join(format!("{name}-{}.toml", std::process::id()));
     std::fs::write(&path, contents).unwrap();
     path
 }
@@ -37,18 +36,103 @@ fn arguments_are_closed() {
 }
 
 #[test]
+fn empty_configuration_files_preserve_defaults() {
+    let paths = {
+        let (_scratch, paths) = empty_configuration_files();
+        let [user_path, host_path] = &paths;
+        assert_empty_configuration_defaults(user_path, host_path);
+        paths
+    };
+    assert_empty_configuration_files_removed(&paths);
+}
+
+#[test]
+fn empty_configuration_files_are_removed_on_panic() {
+    let (scratch, paths) = empty_configuration_files();
+    let result = std::panic::catch_unwind(move || {
+        let _scratch = scratch;
+        panic!("unwind with empty configuration files");
+    });
+    assert!(result.is_err());
+    assert_empty_configuration_files_removed(&paths);
+}
+
+fn empty_configuration_files() -> (temp::Scratch, [PathBuf; 2]) {
+    const FILES: [&str; 2] = ["user.toml", "host.toml"];
+    let run = ads_daemon::events::new_id().unwrap();
+    let scratch = temp::Scratch::with_files(&format!("daemon-empty-config-{run}"), &FILES);
+    let paths = FILES.map(|name| {
+        let path = scratch.path().join(name);
+        std::fs::write(&path, b"").unwrap();
+        path
+    });
+    (scratch, paths)
+}
+
+fn assert_empty_configuration_files_removed(paths: &[PathBuf; 2]) {
+    let directory = paths[0].parent().unwrap();
+    for path in paths.iter().map(PathBuf::as_path).chain([directory]) {
+        assert!(!path.try_exists().unwrap(), "fixture remains: {path:?}");
+    }
+}
+
+fn assert_empty_configuration_defaults(user_path: &Path, host_path: &Path) {
+    let (default_api, default_host, default_tools, default_storage) =
+        load_config(std::iter::empty()).unwrap();
+    let default_storage = default_storage.unwrap();
+
+    let user = ["--config", user_path.to_str().unwrap()];
+    let host = ["--host-config", host_path.to_str().unwrap()];
+    let cases = [
+        ("--config", load("--config", user_path)),
+        ("--host-config", load("--host-config", host_path)),
+        (
+            "--config and --host-config",
+            load_config(user.into_iter().chain(host).map(str::to_owned)),
+        ),
+    ];
+
+    for (flags, result) in cases {
+        let (api, host, tools, storage) = result.expect(flags);
+        assert_eq!(api, default_api, "{flags}");
+        assert_eq!(host, default_host, "{flags}");
+        assert_eq!(tools, default_tools, "{flags}");
+        assert_eq!(storage.expect(flags), default_storage, "{flags}");
+    }
+}
+
+#[test]
 fn user_file_is_split_between_api_and_tools() {
     let path = user_file(
         "daemon-split",
-        b"max_sessions = 3\n[workdirs]\ndefault = 'C:/w'\n[tools.codex]\nargs = ['x']\n",
+        b"max_sessions = 3\n[workdirs]\ndefault = 'C:/w'\n[tools.codex]\nargs = ['x']\n[storage]\nbusy_timeout_ms = 42\n",
     );
-    let (api, _, tools) = load("--config", path).unwrap();
+    let (api, _, tools, storage) = load("--config", path).unwrap();
     assert_eq!(api.max_sessions, 3);
+    assert_eq!(storage.unwrap().busy_timeout_ms(), 42);
     let tools: toml::Table = toml::from_str(&tools).unwrap();
     assert_eq!(
         tools.keys().collect::<Vec<_>>(),
         ["tools", "workdirs"].iter().collect::<Vec<_>>()
     );
+}
+
+#[test]
+fn loads_user_and_host_configuration_in_either_order() {
+    let user_path = user_file("daemon-both-user", b"max_sessions = 7\n");
+    let host_path = user_file("daemon-both-host", b"replay_capacity_bytes = 16384\n");
+    let user = ["--config", user_path.to_str().unwrap()];
+    let host = ["--host-config", host_path.to_str().unwrap()];
+    let (default_api, default_host, ..) = load_config(std::iter::empty()).unwrap();
+    assert_ne!(default_api.max_sessions, 7);
+    assert_ne!(default_host.replay_capacity_bytes, 16_384);
+
+    for [first, second] in [[user, host], [host, user]] {
+        let args = first.into_iter().chain(second).map(str::to_owned);
+        let (api, host, ..) = load_config(args).expect(first[0]);
+        assert_eq!(api.max_sessions, 7, "{} first", first[0]);
+        assert_eq!(host.replay_capacity_bytes, 16_384, "{} first", first[0]);
+    }
 }
 
 #[test]
@@ -70,7 +154,7 @@ fn configuration_paths_must_be_literal_absolute_regular_small_files() {
             assert!(!error.contains("sentinel"), "{error}");
         }
         assert_eq!(
-            load(flag, env!("CARGO_TARGET_TMPDIR")).unwrap_err(),
+            load(flag, temp::directory()).unwrap_err(),
             format!("{flag} must name a regular file")
         );
         let large = user_file("daemon-large", &vec![b'#'; MAX_CONFIG_BYTES as usize + 1]);
@@ -78,14 +162,29 @@ fn configuration_paths_must_be_literal_absolute_regular_small_files() {
             load(flag, large).unwrap_err(),
             format!("{flag} file exceeds {MAX_CONFIG_BYTES} bytes")
         );
-        let missing = Path::new(env!("CARGO_TARGET_TMPDIR")).join("daemon-missing.toml");
+        let missing = temp::directory().join("daemon-missing.toml");
         assert_eq!(
             load(flag, missing).unwrap_err(),
             format!("cannot read {flag} file")
         );
     }
     let limit = user_file("daemon-limit", &vec![b'#'; MAX_CONFIG_BYTES as usize]);
-    assert!(load("--config", limit).is_ok());
+    for flag in ["--config", "--host-config"] {
+        let _ = load(flag, &limit).unwrap();
+    }
+}
+
+#[test]
+fn invalid_utf8_is_refused_without_quoting_the_file() {
+    let path = user_file("daemon-invalid-utf8", b"# sentinel \xff\n");
+    let results = ["--config", "--host-config"].map(|flag| load(flag, &path).map(|_| ()));
+    assert_eq!(
+        results,
+        [
+            Err("--config file is not UTF-8".into()),
+            Err("--host-config file is not UTF-8".into()),
+        ]
+    );
 }
 
 #[test]
@@ -150,3 +249,40 @@ fn relative_configuration_path_is_refused_by_the_binary() {
     assert!(error.contains("--config path refused"), "{error}");
     assert!(!error.contains("sentinel"));
 }
+
+#[test]
+fn refuses_an_installation_with_a_live_daemon_lock() {
+    let path = user_file("daemon-instance", b"");
+    let lock = std::fs::File::options()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .unwrap();
+    lock.try_lock().unwrap();
+    let start = || {
+        Command::new(env!("CARGO_BIN_EXE_ads-daemon"))
+            .arg("--instance-lock")
+            .arg(&path)
+            .arg("--config")
+            .output()
+            .unwrap()
+    };
+    let blocked = start();
+    assert!(!blocked.status.success());
+    assert!(blocked.stdout.is_empty());
+    let error = String::from_utf8(blocked.stderr).unwrap();
+    assert!(error.contains("another daemon"), "{error}");
+    // A child spawned meanwhile by another test keeps a copy of the descriptor until it
+    // execs, so closing ours does not free the lock; the copy here stands for that child.
+    let copy_held_by_a_child = lock.try_clone().unwrap();
+    lock.unlock().unwrap();
+    drop(lock);
+    let available = start();
+    drop(copy_held_by_a_child);
+    assert!(!available.status.success());
+    let error = String::from_utf8(available.stderr).unwrap();
+    assert!(!error.contains("another daemon"), "{error}");
+    assert!(error.contains("invalid daemon arguments"), "{error}");
+}
+#[path = "common/temp.rs"]
+mod temp;

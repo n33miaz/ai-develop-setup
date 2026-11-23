@@ -29,6 +29,8 @@ static COMMON_ABSPATH_V2_EXCLUDED_7: Pattern =
 pub struct CommonAbspathV2(String);
 
 impl CommonAbspathV2 {
+    pub const MAX_CHARS: usize = 4096;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -40,7 +42,7 @@ impl CommonAbspathV2 {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        (1..=4096).contains(&length)
+        (1..=Self::MAX_CHARS).contains(&length)
             && COMMON_ABSPATH_V2_PATTERN.matches(text)
             && !COMMON_ABSPATH_V2_EXCLUDED_1.matches(text)
             && !COMMON_ABSPATH_V2_EXCLUDED_2.matches(text)

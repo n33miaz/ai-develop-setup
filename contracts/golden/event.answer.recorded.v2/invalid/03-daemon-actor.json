@@ -1,0 +1,23 @@
+{
+  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+  "type": "urn:ads:event:answer.recorded:2",
+  "ts": "2030-01-02T03:05:00Z",
+  "stream": "answer/appr-03",
+  "seq": 1,
+  "actor": {
+    "kind": "daemon",
+    "id": "core"
+  },
+  "cause": "01ARZ3NDEKTSV4RRFFQ69G5FAD",
+  "data_class": "internal",
+  "data": {
+    "approval_id": "appr-03",
+    "action_id": "act-03",
+    "plan_hash": "sha256:5486cc58827bffeb2204a994db3d77fe6c8f2c863eb73de6e2a60802784293cb",
+    "effects_hash": "sha256:9f2b1c4e8a7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c5b4a3928170605f4e3",
+    "decision": "approve",
+    "owner_id": "owner-01",
+    "via": "local_ui",
+    "idempotency_key": "01ARZ3NDEKTSV4RRFFQ69G5FAE"
+  }
+}

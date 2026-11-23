@@ -5,8 +5,8 @@ mod common;
 
 use ads_core::gate::{
     Action, ActionPlan, Command, Decision, ErrorCode, Estimate, Event, ExecutionPermit,
-    OperationRequest as Op, PlanHash, Refused, ShortText, State, TransitionError, Verdict, Via,
-    classify,
+    OperationRequest as Op, PathError, PlanError, PlanHash, Refused, ShortText, State,
+    TransitionError, Verdict, Via, classify,
 };
 use common::{WIN_HOME, WIN_ROOT, at, id, meta, plan, policy, request, win};
 
@@ -31,7 +31,8 @@ fn approval_needed(targets: &[&str]) -> Verdict {
     let verdict = classify(
         &ActionPlan::normalize(&request).unwrap(),
         &policy(WIN_HOME, ""),
-    );
+    )
+    .unwrap();
     assert_eq!(verdict.decision(), Decision::RequiresApproval);
     verdict
 }
@@ -253,7 +254,8 @@ fn denied_event_lists_each_denying_rule_once_and_no_approval_rule() {
     let verdict = classify(
         &ActionPlan::normalize(&request).unwrap(),
         &policy(WIN_HOME, ""),
-    );
+    )
+    .unwrap();
     let fired: Vec<String> = verdict
         .findings()
         .iter()
@@ -280,9 +282,27 @@ fn denied_event_lists_each_denying_rule_once_and_no_approval_rule() {
 
 #[test]
 fn plan_that_does_not_fit_the_record_starts_nothing() {
-    let long = format!("{WIN_ROOT}\\{}", "a".repeat(4096));
+    // The path at the limit of the contract is recorded; one more is refused before the plan.
+    let max = ads_contracts::CommonAbspathV2::MAX_CHARS;
+    let long = format!("{WIN_ROOT}\\{}", "a".repeat(max - WIN_ROOT.len() - 1));
     let verdict = win(Op::Overwrite, &[&long]);
     assert_eq!(verdict.decision(), Decision::Allowed);
+    assert!(Action::plan(id("act-01"), &verdict, meta(T0, 1)).is_ok());
+    let over = format!("{long}a");
+    assert!(matches!(
+        ActionPlan::normalize(&request(Op::Overwrite, WIN_ROOT, &[&over])),
+        Err(PlanError::Target {
+            index: 0,
+            error: PathError::TooLong
+        })
+    ));
+
+    // More rules fired than the record holds: still no record, so no action.
+    let max = ads_contracts::RecordActionPlanV2VerdictReasons::MAX_ITEMS;
+    let outside: Vec<String> = (0..=max).map(|n| format!("D:\\other\\{n}")).collect();
+    let outside: Vec<&str> = outside.iter().map(String::as_str).collect();
+    let verdict = win(Op::Overwrite, &outside);
+    assert_eq!(verdict.decision(), Decision::Denied);
     assert!(matches!(
         Action::plan(id("act-01"), &verdict, meta(T0, 1)),
         Err(TransitionError::Unrecordable(_))
@@ -642,7 +662,8 @@ fn estimate_is_part_of_what_was_approved() {
     let measured = classify(
         &ActionPlan::normalize(&measured).unwrap(),
         &policy(WIN_HOME, ""),
-    );
+    )
+    .unwrap();
     refused(
         action.authorize(measured.plan(), meta(T1, 2)),
         TransitionError::PlanHashMismatch,
@@ -753,4 +774,90 @@ fn approval_decided_and_used_before_it_was_asked_yields_no_permit() {
         .authorize(verdict.plan(), meta(LONG_BEFORE, 2))
         .unwrap_err();
     assert_eq!(refusal.error, TransitionError::ApprovalRequired);
+    let cause = std::error::Error::source(&*refusal).unwrap();
+    assert_eq!(
+        cause.downcast_ref::<TransitionError>(),
+        Some(&refusal.error)
+    );
+}
+
+#[test]
+fn request_cannot_precede_plan() {
+    let verdict = approval_needed(&[BUILD]);
+    let action = planned(&verdict);
+    let snapshot = action.snapshot();
+    let action = refused(
+        action.apply(ask("appr-01"), meta("2030-01-02T03:04:04.999999Z", 1)),
+        TransitionError::OutOfOrder,
+    );
+    assert_eq!(action.snapshot(), snapshot);
+    assert!(action.apply(ask("appr-01"), meta(T0, 1)).is_ok());
+}
+
+#[test]
+fn execution_without_approval_cannot_precede_plan() {
+    let verdict = allowed();
+    let action = planned(&verdict);
+    let snapshot = action.snapshot();
+    let action = refused(
+        action.authorize(verdict.plan(), meta("2030-01-02T03:04:04.999999Z", 2)),
+        TransitionError::OutOfOrder,
+    );
+    assert_eq!(action.snapshot(), snapshot);
+    assert!(action.authorize(verdict.plan(), meta(T0, 2)).is_ok());
+}
+
+#[test]
+fn success_cannot_precede_start() {
+    let (action, permit) = executing(&approval_needed(&[BUILD]));
+    let snapshot = action.snapshot();
+    let refusal = action
+        .apply(Command::Executed { permit }, meta(T0, 3))
+        .unwrap_err();
+    assert_eq!(refusal.error, TransitionError::OutOfOrder);
+    assert_eq!(refusal.action.snapshot(), snapshot);
+}
+
+#[test]
+fn failure_cannot_precede_previous_event() {
+    let verdict = approval_needed(&[BUILD]);
+    for action in [approved(&verdict), executing(&verdict).0] {
+        let snapshot = action.snapshot();
+        let action = refused(
+            action.apply(fail(), meta(T0, 3)),
+            TransitionError::OutOfOrder,
+        );
+        assert_eq!(action.snapshot(), snapshot);
+        assert!(action.apply(fail(), meta(T1, 3)).is_ok());
+    }
+}
+
+#[test]
+fn rewind_at_exact_limit_is_accepted() {
+    let plan = plan(Op::Delete, WIN_ROOT, &[BUILD]);
+    let verdict = classify(&plan, &policy(WIN_HOME, "gate_clock_rewind_seconds = 5")).unwrap();
+    let action = Action::plan(id("act-01"), &verdict, meta("2030-01-02T00:00:02.1Z", 1))
+        .unwrap()
+        .0;
+    assert!(
+        action
+            .authorize(verdict.plan(), meta("2030-01-01T23:59:57.100000Z", 2))
+            .is_ok()
+    );
+}
+
+#[test]
+fn rewind_one_microsecond_over_limit_is_refused() {
+    let plan = plan(Op::Delete, WIN_ROOT, &[BUILD]);
+    let verdict = classify(&plan, &policy(WIN_HOME, "gate_clock_rewind_seconds = 5")).unwrap();
+    let action = Action::plan(id("act-01"), &verdict, meta("2030-01-02T00:00:02.1Z", 1))
+        .unwrap()
+        .0;
+    assert_eq!(
+        action
+            .authorize(verdict.plan(), meta("2030-01-01T23:59:57.099999Z", 2))
+            .unwrap_err()
+            .error,
+        TransitionError::OutOfOrder
+    );
 }

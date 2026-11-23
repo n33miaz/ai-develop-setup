@@ -5,6 +5,7 @@ mod common;
 
 use std::path::Path;
 
+use ads_adapter_fs::Executor;
 use ads_adapter_fs::{Reason, Status};
 use ads_core::gate::{AbsPath, Decision, OperationRequest, PlanRequest, TargetRequest, classify};
 
@@ -36,24 +37,19 @@ fn folder_link(link: &Path, target: &Path) -> bool {
 #[test]
 fn the_sandbox_is_under_the_temporary_folder_of_the_target_directory() {
     let sandbox = Sandbox::new("sandbox");
-    println!("sandbox: {}", sandbox.root.display());
-    let names: Vec<String> = sandbox
-        .root
-        .components()
-        .map(|component| component.as_os_str().to_string_lossy().into_owned())
-        .collect();
-    let tmp = names.iter().rposition(|name| name == "tmp").unwrap();
-    assert_eq!(names[tmp - 1], "target");
-    assert_eq!(names[tmp + 1], "ads-fs");
-    assert!(sandbox.fence.starts_with(env!("CARGO_TARGET_TMPDIR")));
-    assert!(sandbox.outside.starts_with(env!("CARGO_TARGET_TMPDIR")));
+    let tmp = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    assert_eq!(sandbox.root.parent().unwrap(), tmp.join("ads-fs"));
+    assert!(sandbox.fence.starts_with(tmp));
+    assert!(sandbox.outside.starts_with(tmp));
     assert!(sandbox.sentinel_is_intact());
 }
 
 #[test]
 fn a_target_outside_the_fence_is_refused() {
     let sandbox = Sandbox::new("outside");
-    let policy = sandbox.policy("");
+    let policy = sandbox
+        .policy("")
+        .with_work_roots(vec![AbsPath::parse(&sandbox.outside_text(".")).unwrap()]);
     // The gate allows it: the work root declared is the sibling folder, and the text agrees.
     let flow = through_gate(
         &policy,
@@ -66,7 +62,10 @@ fn a_target_outside_the_fence_is_refused() {
         },
     );
     let before = tree(&sandbox.root);
-    let failure = sandbox.executor("").rehearse(&flow.permit).unwrap_err();
+    let failure = Executor::new(&sandbox.fence, policy)
+        .unwrap()
+        .rehearse(&flow.permit)
+        .unwrap_err();
     assert_eq!(failure.reason, Reason::OutsideFence);
     assert_eq!(tree(&sandbox.root), before);
 }
@@ -98,7 +97,7 @@ fn the_fence_and_the_work_root_are_never_targets() {
     })
     .unwrap();
     assert_eq!(
-        classify(&plan, &sandbox.policy("")).decision(),
+        classify(&plan, &sandbox.policy("")).unwrap().decision(),
         Decision::Denied
     );
 }
@@ -174,8 +173,11 @@ fn a_work_root_that_is_a_link_is_refused() {
     if !folder_link(&sandbox.path("linked"), &sandbox.outside) {
         return;
     }
+    let policy = sandbox
+        .policy("")
+        .with_work_roots(vec![AbsPath::parse(&sandbox.text("linked")).unwrap()]);
     let flow = through_gate(
-        &sandbox.policy(""),
+        &policy,
         Request {
             action_id: "act-1",
             operation: OperationRequest::DeleteRecursive,
@@ -184,7 +186,10 @@ fn a_work_root_that_is_a_link_is_refused() {
             estimate: estimate(1, 12),
         },
     );
-    let failure = sandbox.executor("").rehearse(&flow.permit).unwrap_err();
+    let failure = Executor::new(&sandbox.fence, policy)
+        .unwrap()
+        .rehearse(&flow.permit)
+        .unwrap_err();
     assert_eq!(failure.reason, Reason::LinkInPath);
     assert!(sandbox.sentinel_is_intact());
 }

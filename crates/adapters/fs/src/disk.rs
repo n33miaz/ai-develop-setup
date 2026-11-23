@@ -95,7 +95,7 @@ enum Reached {
 }
 
 pub(crate) struct Disk<'a> {
-    pub fence: &'a Fence,
+    pub fence: &'a Fence<'a>,
     /// The work root: every mutation is strictly below it.
     pub floor: &'a [String],
     /// The holding folder of this execution, when it has one: mutations go there too, and
@@ -142,6 +142,7 @@ impl Disk<'_> {
         match &mut self.probe {
             Some(probe) => probe.before(mutation).map_err(|error| {
                 Stop::new(Reason::Io, format!("stopped before {mutation:?}: {error}"))
+                    .with_cause(error)
             }),
             None => Ok(()),
         }
@@ -150,7 +151,7 @@ impl Disk<'_> {
     fn opened(&mut self, mutation: &Mutation) -> Result<(), Stop> {
         match &mut self.probe {
             Some(probe) => probe.opened(mutation).map_err(|error| {
-                Stop::new(Reason::Io, format!("stopped at {mutation:?}: {error}"))
+                Stop::new(Reason::Io, format!("stopped at {mutation:?}: {error}")).with_cause(error)
             }),
             None => Ok(()),
         }
@@ -172,6 +173,7 @@ impl Disk<'_> {
                 Reason::Unconfirmed,
                 format!("{text} is not confirmed on disk: {error}"),
             )
+            .with_cause(error)
         };
         let mutation = Mutation::Sync(self.fence.path_of(rel));
         if let Some(probe) = &mut self.probe {
@@ -207,7 +209,9 @@ impl Disk<'_> {
                     self.holding = id;
                 }
             }
-            Err(sys::Error::Exists) => return Err(self.taken(rel, Reason::DestinationTaken)),
+            Err(error @ sys::Error::Exists(_)) => {
+                return Err(self.taken(rel, Reason::DestinationTaken).with_cause(error));
+            }
             Err(error) => return Err(Stop::io("creating", self.fence.text_of(rel), error)),
         }
         // From here the folder exists, whatever comes next.
@@ -230,6 +234,7 @@ impl Disk<'_> {
             Reason::Unconfirmed,
             format!("{text} was created, but {what}: {error}; {folder}"),
         )
+        .with_cause(error)
     }
 
     /// Makes the folder `rel` when it is missing, and says whether it did; anything there
@@ -264,7 +269,9 @@ impl Disk<'_> {
         self.opened(&mutation)?;
         let mut file = match spot.parent.create_file(&spot.name) {
             Ok(file) => file,
-            Err(sys::Error::Exists) => return Err(self.taken(rel, Reason::DestinationTaken)),
+            Err(error @ sys::Error::Exists(_)) => {
+                return Err(self.taken(rel, Reason::DestinationTaken).with_cause(error));
+            }
             Err(error) => return Err(Stop::io("creating", self.fence.text_of(rel), error)),
         };
         // From here the file exists, whatever comes next: every way out confirms its folder.
@@ -308,8 +315,10 @@ impl Disk<'_> {
         };
         let claim = match claimed {
             Ok(claim) => claim,
-            Err(sys::Error::Missing | sys::Error::Changed) => {
-                return Err(self.not_approved(rel, "is not the entry that was approved"));
+            Err(error @ (sys::Error::Missing(_) | sys::Error::Changed)) => {
+                return Err(self
+                    .not_approved(rel, "is not the entry that was approved")
+                    .with_cause(error));
             }
             Err(error) => return Err(Stop::io("opening", self.fence.text_of(rel), error)),
         };
@@ -358,33 +367,37 @@ impl Disk<'_> {
         self.opened(&mutation)?;
         match claim.move_to(&dest.parent, &dest.name) {
             Ok(()) => {}
-            Err(sys::Error::Exists) => return Err(self.taken(to, taken)),
+            Err(error @ sys::Error::Exists(_)) => {
+                return Err(self.taken(to, taken).with_cause(error));
+            }
             Err(error) => return Err(Stop::io("moving", self.fence.text_of(from), error)),
         }
 
         // From here the system made the move, whatever comes next. What arrived is checked,
         // the two folders are confirmed either way, and a check that fails is told as what
         // it is: a move that happened and was not verified.
-        let verified = self
-            .midway(&mutation, Midway::Moved)
-            .map_err(|error| error.to_string())
-            .and_then(|()| match dest.parent.arrived(&dest.name, seen.id) {
-                Ok(true) => Ok(()),
-                Ok(false) => Err("the approved entry is not under the name".to_owned()),
-                Err(error) => Err(error.to_string()),
-            });
-        let synced = self.sync(&dest.parent, parent_of(to));
-        let synced = synced.and(self.sync(&source.parent, parent_of(from)));
-        if let Err(why) = verified {
-            return Err(Stop::new(
+        let fence = self.fence;
+        let unverified = |why: &dyn std::fmt::Display| {
+            Stop::new(
                 Reason::MoveUnverified,
                 format!(
                     "the system moved {} to {}, but the check after the move failed: {why}",
-                    self.fence.text_of(from),
-                    self.fence.text_of(to)
+                    fence.text_of(from),
+                    fence.text_of(to)
                 ),
-            ));
-        }
+            )
+        };
+        let verified = self
+            .midway(&mutation, Midway::Moved)
+            .map_err(|error| unverified(&error).with_cause(error))
+            .and_then(|()| match dest.parent.arrived(&dest.name, seen.id) {
+                Ok(true) => Ok(()),
+                Ok(false) => Err(unverified(&"the approved entry is not under the name")),
+                Err(error) => Err(unverified(&error).with_cause(error)),
+            });
+        let synced = self.sync(&dest.parent, parent_of(to));
+        let synced = synced.and(self.sync(&source.parent, parent_of(from)));
+        verified?;
         synced
     }
 
@@ -446,9 +459,9 @@ impl Disk<'_> {
             Err(error) => return Err(Stop::io("looking at", self.fence.text_of(rel), error)),
         }
         claim.remove().map_err(|error| match error {
-            sys::Error::Io(error) if error.kind() == io::ErrorKind::DirectoryNotEmpty => {
-                self.not_approved(rel, "is no longer empty")
-            }
+            sys::Error::Io(error) if error.kind() == io::ErrorKind::DirectoryNotEmpty => self
+                .not_approved(rel, "is no longer empty")
+                .with_cause(error),
             error => Stop::io("removing", self.fence.text_of(rel), error),
         })
     }

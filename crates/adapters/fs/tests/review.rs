@@ -5,18 +5,20 @@
 
 mod common;
 
-use std::cell::Cell;
+use common::shared::Cell;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::sync::Arc;
 
 use ads_adapter_fs::{
     Completed, Executor, Failure, ITEMS_DIR, Laid, MANIFEST_NAME, Manifest, Midway, Mutation,
     Probe, Reason, Scaffold, Stage, Status,
 };
-use ads_core::gate::OperationRequest;
+use ads_core::gate::{
+    AbsPath, ActionPlan, Decision, OperationRequest, PlanRequest, Rule, TargetRequest, classify,
+};
 
 use common::{
     Flow, MemoryJournal, Request, SEPARATOR, Sandbox, estimate, meta, through_gate, tree,
@@ -108,7 +110,7 @@ impl<F: FnMut(Moment, &Mutation) -> io::Result<()>> Probe for Hook<F> {
 
 fn hook(
     executor: Executor,
-    probe: impl FnMut(Moment, &Mutation) -> io::Result<()> + 'static,
+    probe: impl FnMut(Moment, &Mutation) -> io::Result<()> + Send + 'static,
 ) -> Executor {
     executor.with_probe(Box::new(Hook(probe)))
 }
@@ -153,8 +155,8 @@ fn swap_after_the_last_check(name: &str, overrides: &'static str, swapped_folder
             sandbox.path(&format!("{swapped_folder}-real")),
         )
     };
-    let swapped = Rc::new(Cell::new(false));
-    let tried = Rc::new(Cell::new(false));
+    let swapped = Arc::new(Cell::new(false));
+    let tried = Arc::new(Cell::new(false));
     let executor = hook(sandbox.executor(overrides), {
         let (swapped, tried) = (swapped.clone(), tried.clone());
         let (folder, aside, outside) = (folder.clone(), aside.clone(), sandbox.outside.clone());
@@ -293,7 +295,7 @@ fn a_destination_created_at_the_last_instant_is_not_replaced() {
 
         // Another process takes the place after the last check found it vacant.
         let place = sandbox.path("work/notes.txt");
-        let created = Rc::new(Cell::new(false));
+        let created = Arc::new(Cell::new(false));
         let mut executor = hook(sandbox.executor(""), {
             let (place, created) = (place.clone(), created.clone());
             move |moment, mutation| {
@@ -371,7 +373,7 @@ fn another_file_under_the_approved_name_is_not_touched() {
             &sandbox.policy(overrides),
             delete(&sandbox, "act-1", &["work/a/report.txt"]),
         );
-        let done = Rc::new(Cell::new(false));
+        let done = Arc::new(Cell::new(false));
         let mut executor = hook(sandbox.executor(overrides), {
             let done = done.clone();
             let name = sandbox.path("work/a/report.txt");
@@ -419,7 +421,7 @@ fn entries_added_after_the_survey_are_not_deleted_nor_moved() {
             &sandbox.policy(overrides),
             delete(&sandbox, "act-1", &["work/tree"]),
         );
-        let done = Rc::new(Cell::new(false));
+        let done = Arc::new(Cell::new(false));
         let mut executor = hook(sandbox.executor(overrides), {
             let done = done.clone();
             let folder = sandbox.path("work/tree");
@@ -463,7 +465,7 @@ fn an_entry_added_while_a_tree_is_being_deleted_survives() {
         &sandbox.policy(QUARANTINE_OFF),
         delete(&sandbox, "act-1", &["work/tree"]),
     );
-    let done = Rc::new(Cell::new(false));
+    let done = Arc::new(Cell::new(false));
     let mut executor = hook(sandbox.executor(QUARANTINE_OFF), {
         let done = done.clone();
         move |moment, mutation| {
@@ -519,10 +521,11 @@ fn a_repository_deeper_in_the_target_refuses() {
             let mut executor = sandbox.executor(overrides);
             assert_eq!(
                 executor.rehearse(&flow.permit).unwrap_err().reason,
-                Reason::NestedRepository
+                Reason::FactsContradictPlan
             );
             let failure = execute(&mut executor, flow).unwrap_err();
-            assert_eq!(failure.reason, Reason::NestedRepository, "{target}");
+            assert_eq!(failure.reason, Reason::FactsContradictPlan, "{target}");
+            assert!(failure.detail.contains("repository_root"), "{failure:?}");
             assert_eq!(failure.stage, Stage::Checks);
             assert!(failure.report.untouched());
             assert_eq!(tree(&sandbox.root), before);
@@ -542,6 +545,158 @@ fn a_repository_deeper_in_the_target_refuses() {
         delete(&sandbox, "act-e", &["work/plain"]),
     );
     execute(&mut sandbox.executor(""), flow).unwrap();
+}
+
+#[test]
+fn repository_facts_can_exhaust_classification_before_any_mutation() {
+    let sandbox = Sandbox::new("repo-budget");
+    sandbox.file("work/pack/project/.git/HEAD", "fixture");
+    sandbox.file("work/pack/plain.txt", "unchanged");
+    let destination = sandbox.text("work/out");
+    let target = sandbox.text("work/pack");
+    let target_depth = AbsPath::parse(&target).unwrap().depth();
+    // Fund the declared move of "pack", with up to two extra bytes for a Windows drive prefix.
+    let budget = 2 + target_depth + destination.len() + 1 + "pack".len();
+    let overrides = format!("quarantine_enabled = false\nclassification_match_steps = {budget}");
+    let flow = through_gate(
+        &sandbox.policy(&overrides),
+        Request {
+            action_id: "act-repo-budget",
+            operation: OperationRequest::Move { destination },
+            work_root: sandbox.work_root(),
+            targets: vec![target],
+            estimate: estimate(50, 4096),
+        },
+    );
+    let before = tree(&sandbox.root);
+    let mut executor = sandbox.executor(&overrides);
+    let rehearsal = executor.rehearse(&flow.permit).unwrap_err();
+    let failure = execute(&mut executor, flow).unwrap_err();
+
+    assert_eq!(rehearsal.reason, Reason::FactsClassificationBudget);
+    assert_eq!(failure.reason, rehearsal.reason);
+    assert_eq!(failure.stage, Stage::Checks);
+    assert!(failure.report.untouched());
+    assert_eq!(tree(&sandbox.root), before);
+}
+
+#[test]
+fn wildcard_observation_protects_metadata_and_child_repositories() {
+    let sandbox = Sandbox::new("wildcard-repository");
+    sandbox.file("work/pack/.git/HEAD", "fixture");
+    sandbox.file("work/pack/project/.git", "gitdir: elsewhere");
+    let policy = sandbox.policy("");
+    let executor = sandbox.executor("");
+    let target = sandbox.text("work/pack/*");
+    let plan = ActionPlan::normalize(&PlanRequest {
+        operation: OperationRequest::DeleteRecursive,
+        targets: vec![TargetRequest {
+            path: target.clone(),
+            repo_root: false,
+        }],
+        work_root: sandbox.work_root(),
+        estimate: estimate(50, 4096),
+    })
+    .unwrap();
+    let observed = executor.observe_plan(&plan).unwrap();
+    let verdict = classify(&observed, &policy).unwrap();
+    assert_eq!(verdict.decision(), Decision::Denied);
+    assert!(verdict.has(Rule::RepositoryMetadata));
+    assert!(verdict.has(Rule::RepositoryRoot));
+    assert!(observed.targets().iter().any(|target| {
+        target.is_repo_root() && target.path().to_string() == sandbox.text("work/pack/project")
+    }));
+
+    let flow = through_gate(&policy, delete(&sandbox, "act-wildcard", &["work/pack/*"]));
+    let failure = executor.rehearse(&flow.permit).unwrap_err();
+    assert_eq!(failure.reason, Reason::FactsContradictPlan);
+    assert!(
+        failure.detail.contains("repository_metadata"),
+        "{failure:?}"
+    );
+    assert!(failure.report.untouched());
+}
+
+#[test]
+fn planning_caps_entries_across_targets_and_limits_tree_depth() {
+    let sandbox = Sandbox::new("plan-budget");
+    for i in 0..12 {
+        sandbox.file(&format!("work/a/{i}.txt"), "a");
+        sandbox.file(&format!("work/b/{i}.txt"), "b");
+    }
+    sandbox.dir("work/deep/child/grandchild");
+    let plan = |targets: &[&str]| {
+        ActionPlan::normalize(&PlanRequest {
+            operation: OperationRequest::DeleteRecursive,
+            targets: targets
+                .iter()
+                .map(|path| TargetRequest {
+                    path: sandbox.text(path),
+                    repo_root: false,
+                })
+                .collect(),
+            work_root: sandbox.work_root(),
+            estimate: None,
+        })
+        .unwrap()
+    };
+    let executor = sandbox
+        .executor("")
+        .with_limits(common::limits("max_plan_entries = 24\nmax_depth = 2"));
+    assert!(executor.observe_plan(&plan(&["work/a"])).is_ok());
+    assert_eq!(
+        executor
+            .observe_plan(&plan(&["work/a", "work/b"]))
+            .unwrap_err()
+            .reason,
+        Reason::PlanEntryLimit
+    );
+    assert_eq!(
+        executor
+            .observe_plan(&plan(&["work/a/*.log", "work/b/*.log"]))
+            .unwrap_err()
+            .reason,
+        Reason::PlanEntryLimit
+    );
+    assert_eq!(
+        executor
+            .observe_plan(&plan(&["work/deep"]))
+            .unwrap_err()
+            .reason,
+        Reason::TooDeep
+    );
+}
+
+#[test]
+fn executor_refuses_a_permit_with_a_forged_work_root() {
+    let sandbox = Sandbox::new("foreign-quarantine");
+    sandbox.file("work/.ads/quarantine/batch/file", "fixture");
+    let expected_root = AbsPath::parse(&sandbox.work_root()).unwrap();
+    let policy = sandbox.policy("").with_work_roots(vec![expected_root]);
+    let executor = Executor::new(&sandbox.fence, policy).unwrap();
+    let mut request = delete(&sandbox, "act-forged", &["work/.ads/quarantine/batch/file"]);
+    request.work_root = sandbox.text("work/.ads");
+    let declaring = sandbox
+        .policy("")
+        .with_work_roots(vec![AbsPath::parse(&request.work_root).unwrap()]);
+    let flow = through_gate(&declaring, request);
+    let unbound = common::policy_for(&sandbox.text("fake-home"), "");
+    let failure = Executor::new(&sandbox.fence, unbound)
+        .unwrap()
+        .rehearse(&flow.permit)
+        .unwrap_err();
+    assert_eq!(failure.reason, Reason::PolicyDenies);
+    assert!(failure.detail.contains("work_root_unknown"), "{failure:?}");
+    assert!(failure.report.untouched());
+
+    let failure = executor.rehearse(&flow.permit).unwrap_err();
+    assert_eq!(failure.reason, Reason::PolicyDenies);
+    assert!(failure.detail.contains("work_root_unknown"), "{failure:?}");
+    assert!(
+        failure.detail.contains("quarantine_of_other_root"),
+        "{failure:?}"
+    );
+    assert!(failure.report.untouched());
 }
 
 // ---- the manifest ------------------------------------------------------------------------------
@@ -862,7 +1017,7 @@ fn a_move_that_the_system_does_not_confirm_is_not_reported_as_done() {
         delete(&sandbox, "act-1", &["work/build"]),
     );
     let (batch, _) = batch_of(&sandbox, &flow, "act-1");
-    let moved = Rc::new(Cell::new(false));
+    let moved = Arc::new(Cell::new(false));
     let mut executor = hook(sandbox.executor(""), {
         let moved = moved.clone();
         move |moment, mutation| match mutation {

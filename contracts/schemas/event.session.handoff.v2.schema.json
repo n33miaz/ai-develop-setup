@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:event:session.handoff:2",
+  "title": "Decisão de passagem entre sessões",
+  "description": "Registra a proposta ou a decisão sobre uma passagem. Aceite e recusa exigem um aparelho como autor.",
+  "allOf": [
+    {
+      "$ref": "urn:ads:event:envelope:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "type",
+        "stream",
+        "data"
+      ],
+      "properties": {
+        "type": {
+          "const": "urn:ads:event:session.handoff:2"
+        },
+        "stream": {
+          "type": "string",
+          "pattern": "^handoff/"
+        },
+        "data_class": {
+          "const": "private"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "handoff_id",
+            "source_session_id",
+            "status"
+          ],
+          "properties": {
+            "handoff_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "source_session_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "status": {
+              "enum": [
+                "proposed",
+                "accepted",
+                "declined"
+              ]
+            }
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "enum": [
+                  "accepted",
+                  "declined"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "actor": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "device"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+      "type": "urn:ads:event:session.handoff:2",
+      "ts": "2030-01-02T03:04:05Z",
+      "stream": "handoff/handoff-1",
+      "seq": 1,
+      "actor": {
+        "kind": "daemon",
+        "id": "core-01"
+      },
+      "cause": null,
+      "data_class": "private",
+      "data": {
+        "handoff_id": "handoff-1",
+        "source_session_id": "session-1",
+        "status": "proposed"
+      }
+    }
+  ]
+}

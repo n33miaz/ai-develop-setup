@@ -1,6 +1,6 @@
 # 0017. Date-and-commit versioning during the express period
 
-Status: aceita em 14/11/2026
+Status: substituída pela [0025](0025-semver-dev-prereleases-until-first-installer.md) em 20/11/2026 (aceita em 14/11/2026)
 
 ## Contexto
 O release clássico acontece na branch principal, que fica parada durante o período expresso. O programa ainda precisa dizer qual versão é, para a conferência depois de cada atualização.

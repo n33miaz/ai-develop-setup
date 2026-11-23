@@ -317,6 +317,8 @@ static EVENT_SESSION_CREATED_V1_DATA_DISPLAY_NAME_PATTERN: Pattern =
 pub struct EventSessionCreatedV1DataDisplayName(String);
 
 impl EventSessionCreatedV1DataDisplayName {
+    pub const MAX_CHARS: usize = 80;
+
     pub fn new(text: impl Into<String>) -> Result<Self, ContractError> {
         let text = text.into();
         if Self::accepts(&text) {
@@ -331,7 +333,7 @@ impl EventSessionCreatedV1DataDisplayName {
 
     fn accepts(text: &str) -> bool {
         let length = text.chars().count();
-        (1..=80).contains(&length)
+        (1..=Self::MAX_CHARS).contains(&length)
             && EVENT_SESSION_CREATED_V1_DATA_DISPLAY_NAME_PATTERN.matches(text)
     }
 

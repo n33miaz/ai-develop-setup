@@ -1,6 +1,12 @@
-// Ponto único de importação dos tipos das mensagens trocadas com o núcleo.
-// Todos vêm dos tipos gerados dos JSON Schemas (`contracts/generated/ts`); nenhum é escrito à mão.
-// O resto da UI importa daqui, nunca direto de `contracts/`. Só tipos: nada disto entra no bundle.
+// Ponto único de acesso aos tipos e constantes gerados dos JSON Schemas.
+export {
+  INVALID_PARAMS,
+  METHOD_NOT_FOUND,
+  SESSION_CLOSE_PENDING,
+  SESSION_SETUP_FAILED,
+  SUBSCRIPTION_REPLAY_UNAVAILABLE,
+} from '../../../contracts/generated/ts/contract.local-api.error-code.v1.constants'
+
 import type { EventApprovalDeniedV2 } from '../../../contracts/generated/ts/event.approval.denied.v2'
 import type { EventApprovalExpiredV2 } from '../../../contracts/generated/ts/event.approval.expired.v2'
 import type { EventApprovalGrantedV2 } from '../../../contracts/generated/ts/event.approval.granted.v2'
@@ -23,11 +29,18 @@ import type { EventTaskStartedV1 } from '../../../contracts/generated/ts/event.t
 import type { EventUsageReconciledV1 } from '../../../contracts/generated/ts/event.usage.reconciled.v1'
 import type { EventUsageRecordedV1 } from '../../../contracts/generated/ts/event.usage.recorded.v1'
 
-import type { CommandHarnessListResponseV1 } from '../../../contracts/generated/ts/command.harness.list.response.v1'
+import type { CommandHarnessListResponseV2 } from '../../../contracts/generated/ts/command.harness.list.response.v2'
+
+export type { EventRoutingProposedV2 } from '../../../contracts/generated/ts/event.routing.proposed.v2'
+export type { RecordUsageEventV1 } from '../../../contracts/generated/ts/record.usage_event.v1'
 
 export type { CommandRequestV1 } from '../../../contracts/generated/ts/command.request.v1'
 export type { CommandResponseV2 } from '../../../contracts/generated/ts/command.response.v2'
-export type { CommandHarnessListResponseV1 }
+export type { CommandHarnessListResponseV2 }
+export type { ContractLocalApiServerMessageV10 } from '../../../contracts/generated/ts/contract.local-api.server-message.v10'
+export type { CommandQueueGetResponseV2 } from '../../../contracts/generated/ts/command.queue.get.response.v2'
+export type { CommandQueueConfiguredResponseV1 } from '../../../contracts/generated/ts/command.queue.configured.response.v1'
+export type { CommandApprovalListResponseV4 } from '../../../contracts/generated/ts/command.approval.list.response.v4'
 export type { ContractLocalApiServerMessageV2 } from '../../../contracts/generated/ts/contract.local-api.server-message.v2'
 export type {
   CommonActorV1,
@@ -87,7 +100,7 @@ export type UsageEvent = EventUsageReconciledV1 | EventUsageRecordedV1
 export type HostEvent = EventHostAlertAckedV1 | EventHostAlertRaisedV1 | EventHostSampleRecordedV1
 
 /** O que o núcleo sabe abrir: só nomes de ferramenta e apelidos de pasta. */
-export type HarnessCatalog = CommandHarnessListResponseV1['result']
+export type HarnessCatalog = CommandHarnessListResponseV2['result']
 
 /** Os eventos que a interface conhece hoje; os demais chegam só como envelope. */
 export type KnownEvent = SessionEvent | TaskEvent | ApprovalEvent | UsageEvent | HostEvent

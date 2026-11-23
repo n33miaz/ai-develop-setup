@@ -1,6 +1,8 @@
 //! Why the executor refused or stopped, with the stable code that goes into `action.failed`.
 
-use std::fmt;
+use std::{error::Error, fmt, sync::Arc};
+
+pub(crate) type Cause = Arc<dyn Error + Send + Sync>;
 
 use ads_core::gate::ErrorCode;
 
@@ -46,6 +48,8 @@ pub enum Reason {
     QuarantineBypassed,
     /// What is on disk contradicts what the plan declared, in a way that changes the verdict.
     FactsContradictPlan,
+    /// Repository facts on disk make the plan exceed the classification budget.
+    FactsClassificationBudget,
     /// The tree of a target holds a repository of its own.
     NestedRepository,
     /// A count of items or bytes does not fit in 64 bits.
@@ -77,12 +81,21 @@ pub enum Reason {
     Unconfirmed,
     /// The tree is deeper than the limit.
     TooDeep,
+    /// Planning exceeded its entry budget.
+    PlanEntryLimit,
+    /// What a rehearsal finds now is not the record of effects that was approved.
+    EffectsChanged,
+    /// The record of effects of a rehearsal would be larger than `max_effects_bytes`.
+    EffectsTooLarge,
+    /// A definitive delete or a restore on a volume whose identities do not tell a recreated
+    /// object from the one it replaced (FAT, exFAT, a network share, or a kind not known).
+    IdentityUnstable,
     /// The operating system refused the operation.
     Io,
 }
 
 impl Reason {
-    pub const ALL: [Reason; 35] = [
+    pub const ALL: [Reason; 40] = [
         Self::StartedMismatch,
         Self::JournalRefused,
         Self::PermitReused,
@@ -102,6 +115,7 @@ impl Reason {
         Self::ApprovalMissing,
         Self::QuarantineBypassed,
         Self::FactsContradictPlan,
+        Self::FactsClassificationBudget,
         Self::NestedRepository,
         Self::Overflow,
         Self::ActionIdUnusable,
@@ -117,6 +131,10 @@ impl Reason {
         Self::Displaced,
         Self::Unconfirmed,
         Self::TooDeep,
+        Self::PlanEntryLimit,
+        Self::EffectsChanged,
+        Self::EffectsTooLarge,
+        Self::IdentityUnstable,
         Self::Io,
     ];
 
@@ -141,6 +159,7 @@ impl Reason {
             Self::ApprovalMissing => "E_FS_APPROVAL_MISSING",
             Self::QuarantineBypassed => "E_FS_QUARANTINE_BYPASSED",
             Self::FactsContradictPlan => "E_FS_FACTS_CONTRADICT_PLAN",
+            Self::FactsClassificationBudget => "E_FS_FACTS_CLASSIFICATION_BUDGET",
             Self::NestedRepository => "E_FS_NESTED_REPOSITORY",
             Self::Overflow => "E_FS_OVERFLOW",
             Self::ActionIdUnusable => "E_FS_ACTION_ID_UNUSABLE",
@@ -156,6 +175,10 @@ impl Reason {
             Self::Displaced => "E_FS_DISPLACED",
             Self::Unconfirmed => "E_FS_UNCONFIRMED",
             Self::TooDeep => "E_FS_TOO_DEEP",
+            Self::PlanEntryLimit => "E_FS_PLAN_ENTRY_LIMIT",
+            Self::EffectsChanged => "E_FS_EFFECTS_CHANGED",
+            Self::EffectsTooLarge => "E_FS_EFFECTS_TOO_LARGE",
+            Self::IdentityUnstable => "E_FS_IDENTITY_UNSTABLE",
             Self::Io => "E_FS_IO",
         }
     }
@@ -167,23 +190,52 @@ impl Reason {
 }
 
 /// A refusal or a stop, before it is tied to a report.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct Stop {
     pub reason: Reason,
     /// For people: which path, which system error. Never parsed.
     pub detail: String,
+    pub(crate) cause: Option<Cause>,
 }
 
 impl Stop {
-    pub(crate) fn new(reason: Reason, detail: impl fmt::Display) -> Self {
+    pub fn new(reason: Reason, detail: impl fmt::Display) -> Self {
         Self {
             reason,
             detail: detail.to_string(),
+            cause: None,
         }
     }
 
-    pub(crate) fn io(what: &str, at: impl fmt::Display, error: impl fmt::Display) -> Self {
-        Self::new(Reason::Io, format!("{what} {at}: {error}"))
+    pub(crate) fn with_cause(mut self, error: impl Error + Send + Sync + 'static) -> Self {
+        self.cause = Some(Arc::new(error));
+        self
+    }
+
+    pub(crate) fn caused_by(reason: Reason, error: impl Error + Send + Sync + 'static) -> Self {
+        Self::new(reason, &error).with_cause(error)
+    }
+
+    pub(crate) fn io(
+        what: &str,
+        at: impl fmt::Display,
+        error: impl Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::new(Reason::Io, format!("{what} {at}: {error}")).with_cause(error)
+    }
+}
+
+impl PartialEq for Stop {
+    fn eq(&self, other: &Self) -> bool {
+        self.reason == other.reason && self.detail == other.detail
+    }
+}
+
+impl Eq for Stop {}
+
+impl Error for Stop {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        self.cause.as_deref().map(|error| error as &dyn Error)
     }
 }
 
