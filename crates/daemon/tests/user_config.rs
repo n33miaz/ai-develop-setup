@@ -36,6 +36,73 @@ fn arguments_are_closed() {
 }
 
 #[test]
+fn empty_configuration_files_preserve_defaults() {
+    let user_path = user_file("daemon-empty-user", b"");
+    let host_path = user_file("daemon-empty-host", b"");
+    let (default_api, default_host, default_tools, default_storage) =
+        load_config(std::iter::empty()).unwrap();
+    let default_storage = default_storage.unwrap();
+
+    let user = ["--config", user_path.to_str().unwrap()];
+    let host = ["--host-config", host_path.to_str().unwrap()];
+    let cases = [
+        ("--config", load("--config", &user_path)),
+        ("--host-config", load("--host-config", &host_path)),
+        (
+            "--config and --host-config",
+            load_config(user.into_iter().chain(host).map(str::to_owned)),
+        ),
+    ];
+
+    for (flags, result) in cases {
+        let (api, host, tools, storage) = result.expect(flags);
+        assert_eq!(api.ui_base_url, default_api.ui_base_url, "{flags}");
+        assert_eq!(api.allowed_origins, default_api.allowed_origins, "{flags}");
+        assert_eq!(api.auth_timeout_ms, default_api.auth_timeout_ms, "{flags}");
+        assert_eq!(api.max_sessions, default_api.max_sessions, "{flags}");
+        assert_eq!(api.max_write_bytes, default_api.max_write_bytes, "{flags}");
+        assert_eq!(
+            api.events_per_stream, default_api.events_per_stream,
+            "{flags}"
+        );
+        assert_eq!(
+            api.idempotency_keys, default_api.idempotency_keys,
+            "{flags}"
+        );
+        assert_eq!(api.command_queue, default_api.command_queue, "{flags}");
+        assert_eq!(api.max_connections, default_api.max_connections, "{flags}");
+        assert_eq!(
+            api.max_pending_auth, default_api.max_pending_auth,
+            "{flags}"
+        );
+        assert_eq!(api.accept_retry_ms, default_api.accept_retry_ms, "{flags}");
+        assert_eq!(
+            api.max_message_bytes, default_api.max_message_bytes,
+            "{flags}"
+        );
+        assert_eq!(api.send_timeout_ms, default_api.send_timeout_ms, "{flags}");
+        assert_eq!(api.host_timeout_ms, default_api.host_timeout_ms, "{flags}");
+        assert_eq!(
+            api.retired_sessions, default_api.retired_sessions,
+            "{flags}"
+        );
+        assert_eq!(
+            api.subscription_ids_per_stream, default_api.subscription_ids_per_stream,
+            "{flags}"
+        );
+        assert_eq!(api.close_retries, default_api.close_retries, "{flags}");
+        assert_eq!(api.close_retry_ms, default_api.close_retry_ms, "{flags}");
+        assert_eq!(
+            api.approval_list_max_bytes, default_api.approval_list_max_bytes,
+            "{flags}"
+        );
+        assert_eq!(host, default_host, "{flags}");
+        assert_eq!(tools, default_tools, "{flags}");
+        assert_eq!(storage.expect(flags), default_storage, "{flags}");
+    }
+}
+
+#[test]
 fn user_file_is_split_between_api_and_tools() {
     let path = user_file(
         "daemon-split",
