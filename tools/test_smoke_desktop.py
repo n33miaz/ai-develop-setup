@@ -2,6 +2,7 @@
 
 import io
 import unittest
+from pathlib import Path
 from subprocess import TimeoutExpired
 from threading import Event, Timer
 from unittest.mock import Mock, call, patch
@@ -38,6 +39,26 @@ class HostBannerTests(unittest.TestCase):
 
 
 class DesktopSmokeTests(unittest.TestCase):
+    def test_host_banner_failure_propagates_and_cleans_up_host(self):
+        host = Mock(stdout=io.BytesIO())
+        host.poll.return_value = None
+        failure = SystemExit("terminal host startup timed out")
+        host_path = Path("target/debug").resolve() / "ads-ptyhost.exe"
+
+        with (
+            patch.object(smoke_desktop, "Popen", return_value=host) as popen,
+            patch.object(smoke_desktop, "wait_for_host_banner", side_effect=failure) as wait,
+        ):
+            with self.assertRaises(SystemExit) as raised:
+                smoke_desktop.main()
+
+        self.assertIs(raised.exception, failure)
+        popen.assert_called_once_with([host_path], stdout=smoke_desktop.PIPE)
+        wait.assert_called_once_with(host.stdout)
+        host.terminate.assert_called_once_with()
+        host.wait.assert_called_once_with(timeout=10)
+        self.assertTrue(host.stdout.closed)
+
     def test_rejects_background_process_exit_after_successful_window_reply(self):
         for exited in ("daemon", "host"):
             with self.subTest(exited=exited):
