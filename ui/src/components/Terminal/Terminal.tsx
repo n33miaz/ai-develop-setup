@@ -88,7 +88,15 @@ export function Terminal({
           event.shiftKey
         )
           return true
-        const key = event.key.toLowerCase()
+        let key = event.key.toLowerCase()
+        if (/^\p{L}$/u.test(key) && !/^\p{Script=Latin}$/u.test(key)) {
+          // eslint-disable-next-line @typescript-eslint/no-deprecated -- O xterm usa esse código virtual para gerar o byte de Ctrl+letra.
+          const virtualKey = event.keyCode
+          key =
+            virtualKey >= 65 && virtualKey <= 90
+              ? String.fromCharCode(virtualKey).toLowerCase()
+              : event.code.replace(/^Key/, '').toLowerCase()
+        }
         // Deixa o navegador disparar os eventos de clipboard que o xterm já trata.
         return key !== 'v' && (key !== 'c' || !xterm.hasSelection())
       })

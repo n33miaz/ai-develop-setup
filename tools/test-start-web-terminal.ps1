@@ -47,3 +47,26 @@ Write-Output 'Occupied port refused before pull or build.'
 Assert-StartRefused '*git pull failed. Resolve the Git error*'
 if ($pullCalls -ne 1) { throw 'Expected exactly one pull attempt.' }
 Write-Output 'Failed pull stopped startup before build.'
+
+$fixture = Join-Path (Split-Path -Parent $PSScriptRoot) '.test-tmp'
+$null = [IO.Directory]::CreateDirectory($fixture)
+$configPath = Join-Path $fixture ("web-terminal-" + [Guid]::NewGuid() + ".toml")
+function Assert-ConfigOutcome {
+    param([string] $Toml, [string] $Message)
+    [IO.File]::WriteAllText($configPath, $Toml)
+    try {
+        Start-WebTerminal -Config $configPath
+    } catch {
+        if ($_.Exception.Message -like $Message) { return }
+        throw
+    }
+    throw "Expected startup to stop with: $Message"
+}
+
+foreach ($origin in 'http://127.0.0.1:5174', 'http://localhost:5173', 'http://[::1]:5173') {
+    Assert-ConfigOutcome "'ui_base_url' = '$origin'" '*ui_base_url*http://127.0.0.1:5173*'
+}
+foreach ($toml in '', "ui_base_url = 'http://127.0.0.1:5173/'", "[env]`nui_base_url = 'other'") {
+    Assert-ConfigOutcome $toml 'Startup must stop before compilation.'
+}
+Write-Output 'Only the effective Vite origin reaches the build step.'

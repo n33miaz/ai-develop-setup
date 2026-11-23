@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
 import { access, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
+import { cdpRequests, stop, withTestProcesses } from './web-terminal-harness.mjs'
 
 const root = fileURLToPath(new URL('../..', import.meta.url))
 const target = resolve(root, process.env.CARGO_TARGET_DIR ?? 'target', 'debug')
@@ -18,18 +18,7 @@ for (const name of ['ads-ptyhost', 'ads-daemon']) {
   })
 }
 const scratch = await mkdtemp(join(tmpdir(), 'ads-web-test-'))
-const children = []
 const origin = 'http://127.0.0.1:5173'
-
-function start(program, args, options = {}) {
-  const child = spawn(program, args, { stdio: ['ignore', 'pipe', 'pipe'], ...options })
-  children.push(child)
-  let output = ''
-  child.stdout.on('data', (chunk) => (output += chunk))
-  child.stderr.resume()
-  child.on('error', () => {})
-  return { child, output: () => output }
-}
 
 async function until(check, message) {
   for (let attempt = 0; attempt < 150; attempt++) {
@@ -38,14 +27,6 @@ async function until(check, message) {
     await delay(100)
   }
   throw new Error(message)
-}
-
-async function stop(child) {
-  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return
-  await new Promise((done) => {
-    child.once('exit', done)
-    child.kill()
-  })
 }
 
 async function control(socket, key, modifiers = 2) {
@@ -63,7 +44,7 @@ async function control(socket, key, modifiers = 2) {
 }
 
 let ws
-try {
+await withTestProcesses(async (start) => {
   const hostConfig = join(scratch, 'host.toml')
   const daemonConfig = join(scratch, 'daemon.toml')
   const workdir = join(scratch, 'work')
@@ -127,22 +108,7 @@ args = ['${fileURLToPath(new URL('terminal-byte-echo.cjs', import.meta.url))}']
     ws.addEventListener('open', ready, { once: true })
     ws.addEventListener('error', reject, { once: true })
   })
-  let nextId = 0
-  const pending = new Map()
-  ws.addEventListener('message', ({ data }) => {
-    const result = JSON.parse(data)
-    pending.get(result.id)?.(result)
-    pending.delete(result.id)
-  })
-  async function send(method, params) {
-    const id = ++nextId
-    const result = await new Promise((done) => {
-      pending.set(id, done)
-      ws.send(JSON.stringify({ id, method, params }))
-    })
-    assert.ok(!result.error, `${method} failed`)
-    return result.result
-  }
+  const send = cdpRequests(ws)
   async function evaluate(expression) {
     const result = await send('Runtime.evaluate', {
       expression,
@@ -234,7 +200,4 @@ args = ['${fileURLToPath(new URL('terminal-byte-echo.cjs', import.meta.url))}']
   await hasText('Sample data only')
   await state('disconnected')
   console.log('Browser without a launch link shows sample guidance')
-} finally {
-  ws?.close()
-  for (const { child } of children.reverse()) await stop(child)
-}
+}).finally(() => ws?.close())

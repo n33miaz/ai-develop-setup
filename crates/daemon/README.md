@@ -661,8 +661,10 @@ Passe `-Pull` para atualizar a branch atual com `git pull --ff-only` antes de
 compilar. Por padrão, o script usa a revisão local. Ele usa `CARGO_TARGET_DIR`
 quando definido, ou `target` na raiz. `-ReadyTimeoutSeconds` muda a espera
 por serviço, cujo padrão é 15 segundos. O iniciador usa a configuração padrão
-do canal do host e espera que o processo do Vite iniciado por ele ocupe a porta
-5173 antes de chamar o daemon.
+do canal do host. Antes de compilar, usa Python 3.11 ou superior para conferir
+que o `ui_base_url` efetivo do daemon é `http://127.0.0.1:5173` (aceita a barra
+final). Antes de chamar o daemon, verifica que o processo do Vite iniciado por
+ele ocupa essa porta em IPv4.
 
 Abra manualmente o link completo impresso pelo daemon. Mantenha abertas as
 janelas do host, do Vite e do daemon enquanto usar a interface. Para iniciar
@@ -672,7 +674,9 @@ atualização falhar, resolva o erro do Git antes de repetir.
 
 Os testes dos bloqueios de partida usam processos simulados e um ouvinte TCP
 temporário. Rode `powershell -NoProfile -File tools/test-start-web-terminal.ps1`
-sem elevação, com a porta 5173 livre. Para validar a colagem com teclado real
+sem elevação, com a porta 5173 livre. Rode `node --test ui/tests/web-terminal-harness.test.mjs`
+para testar a limpeza de processos após falha de partida e os prazos e a
+desconexão das chamadas ao navegador. Para validar a colagem com teclado real
 em Chromium ou Edge, compile `ads-ptyhost` e `ads-daemon` em modo debug, defina
 `CHROMIUM_BIN` com o caminho do navegador e rode
 `node ui/tests/web-terminal-browser.mjs` na raiz. O teste usa uma configuração

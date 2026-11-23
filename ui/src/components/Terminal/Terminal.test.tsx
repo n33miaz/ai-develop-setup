@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { Terminal as XTerm } from '@xterm/xterm'
 import { createRef } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import { eventByteSource, staticByteSource, type ByteSource } from './byteSource'
@@ -105,6 +106,32 @@ describe('Terminal', () => {
 })
 
 describe('terminal input and replay', () => {
+  it.each([
+    { key: 'м', code: 'KeyV', keyCode: 86, selection: false, bytes: [] },
+    { key: 'м', code: '', keyCode: 86, selection: false, bytes: [] },
+    { key: 'с', code: 'KeyC', keyCode: 0, selection: true, bytes: [] },
+    { key: 'с', code: 'KeyC', keyCode: 67, selection: true, bytes: [] },
+    { key: 'с', code: 'KeyC', keyCode: 67, selection: false, bytes: [3] },
+    { key: 'j', code: 'KeyC', keyCode: 74, selection: true, bytes: [10] },
+    { key: 'k', code: 'KeyV', keyCode: 75, selection: true, bytes: [11] },
+  ])('handles Ctrl+$key with selection=$selection', ({ key, code, keyCode, selection, bytes }) => {
+    const input = vi.fn<(bytes: Uint8Array) => void>()
+    const { container } = render(
+      <Terminal source={staticByteSource('')} label="t" onInput={input} />,
+    )
+    const textarea = container.querySelector('textarea')
+    if (!textarea) throw new Error('missing terminal input')
+    const hasSelection = vi.spyOn(XTerm.prototype, 'hasSelection').mockReturnValue(selection)
+    try {
+      expect(fireEvent.keyDown(textarea, { key, code, keyCode, ctrlKey: true })).toBe(
+        bytes.length === 0,
+      )
+      expect(input.mock.calls.flatMap(([value]) => [...value])).toEqual(bytes)
+    } finally {
+      hasSelection.mockRestore()
+    }
+  })
+
   it.each([true, false])('leaves Ctrl+V to the browser when enabled (%s)', (browserClipboard) => {
     const input = vi.fn<(bytes: Uint8Array) => void>()
     const { container } = render(

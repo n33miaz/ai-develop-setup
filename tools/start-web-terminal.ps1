@@ -87,6 +87,12 @@ function Start-WebTerminal {
                 if ($LASTEXITCODE -ne 0) { throw 'git pull failed. Resolve the Git error before retrying.' }
             }
 
+            $origin = "http://127.0.0.1:$port"
+            python -I (Join-Path $PSScriptRoot 'check_web_terminal_origin.py') $configFile.FullName $origin
+            if ($LASTEXITCODE -ne 0) {
+                throw "Check the daemon TOML and set ui_base_url to $origin before retrying."
+            }
+
             $ui = Join-Path $root 'ui'
             $vite = 'node_modules/vite/bin/vite.js'
             if (!(Test-Path -LiteralPath (Join-Path $ui $vite) -PathType Leaf)) {
