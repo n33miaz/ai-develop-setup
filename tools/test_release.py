@@ -2,8 +2,12 @@ import contextlib
 import hashlib
 import io
 import json
+import os
+import shutil
+import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -18,6 +22,8 @@ CONFIG = {
     "tag_prefix": "v",
     "keep": 3,
     "prune": "apply",
+    "wait_attempts": 6,
+    "wait_interval_seconds": 5,
 }
 SHA = "abc1234def5678abc1234def5678abc1234def56"
 
@@ -62,6 +68,10 @@ class ValidateConfigTest(unittest.TestCase):
         self.bad(keep=True)
         self.bad(keep="10")
         self.bad(prune="yes")
+        for invalid in (0, 11, True, "3"):
+            self.bad(wait_attempts=invalid)
+        for invalid in (0, 16, False, 1.5):
+            self.bad(wait_interval_seconds=invalid)
 
     def test_rejects_unknown_and_missing_keys(self):
         with self.assertRaises(release.ConfigError):
@@ -303,6 +313,7 @@ class WorkflowContractTest(unittest.TestCase):
         self.assertLess(publish.index('-f "ref=refs/tags/$TAG"'), publish.index("gh release create"))
 
     def test_deletions_only_run_from_a_non_empty_applied_plan(self):
+        self.assertIn("needs.prune-plan.result == 'success'", self.jobs["prune"])
         self.assertIn("needs.prune-plan.outputs.targets != ''", self.jobs["prune"])
         plan = self.jobs["prune-plan"]
         self.assertIn("needs.plan.outputs.prune != 'off'", plan)
@@ -310,6 +321,104 @@ class WorkflowContractTest(unittest.TestCase):
         self.assertIn(": > targets.txt", plan[plan.index('if [ "$MODE" != "apply" ]; then') :])
         for name in ("plan", "publish", "prune-plan"):
             self.assertNotIn("-X DELETE", self.jobs[name], name)
+
+
+class PruneWorkflowTest(unittest.TestCase):
+    tag = "v0.1.0-dev.20261120.11"
+
+    def run_step(self, tag_after, list_after, new=True, sha=SHA, listed_id=11):
+        _, jobs = workflow_jobs()
+        step = textwrap.dedent(jobs["prune-plan"].split("        run: |\n", 1)[1])
+        doubles = r'''
+gh() {
+    case "$*" in
+        "api repos/example/project/releases/tags/$NEW_TAG --jq .id")
+            echo tag >> calls
+            if (( $(grep -c '^tag$' calls) >= TAG_AFTER )); then echo 11; return; fi
+            echo 'gh: Not Found (HTTP 404)' >&2
+            return 1 ;;
+        "api --paginate repos/example/project/releases?per_page=100 --jq "*)
+            echo list >> calls
+            cat previous.jsonl
+            if (( $(grep -c '^list$' calls) >= LIST_AFTER )); then cat new.jsonl; fi ;;
+        "api --paginate repos/example/project/git/matching-refs/tags/ --jq "*)
+            echo refs >> calls
+            if [[ -n "$NEW_TAG" ]]; then echo "$NEW_TAG $REF_SHA"; fi ;;
+        *) echo "unexpected gh call: $*" >&2; return 1 ;;
+    esac
+}
+sleep() { echo "sleep $1" >> calls; }
+python3() { "$TEST_PYTHON" "$@"; }
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            (folder / "tools").mkdir()
+            (folder / "defaults").mkdir()
+            shutil.copy(release.__file__, folder / "tools")
+            config = dict(CONFIG, keep=10)
+            (folder / "defaults" / "release.toml").write_text(
+                "\n".join(f"{key} = {json.dumps(value)}" for key, value in config.items())
+            )
+            previous = [pre(f"v0.1.0-dev.20261120.{n}", release_id=n) for n in range(1, 11)]
+            (folder / "previous.jsonl").write_text("".join(json.dumps(row) + "\n" for row in previous))
+            (folder / "new.jsonl").write_text(json.dumps(pre(self.tag, release_id=listed_id)) + "\n")
+            output = folder / "output"
+            output.touch()
+            env = dict(
+                os.environ, REPO="example/project", NEW_TAG=self.tag if new else "", HEAD_SHA=SHA,
+                REF_SHA=sha, KEEP="10", MODE="apply", WAIT_ATTEMPTS="3", WAIT_INTERVAL_SECONDS="2",
+                TAG_AFTER=str(tag_after), LIST_AFTER=str(list_after), GITHUB_OUTPUT="output",
+                GITHUB_STEP_SUMMARY="summary", TEST_PYTHON=Path(sys.executable).as_posix(),
+                PYTHONIOENCODING="utf-8",
+            )
+            bash = shutil.which("bash")
+            if os.name == "nt":
+                git_bash = Path(shutil.which("git")).resolve().parents[1] / "bin" / "bash.exe"
+                if git_bash.is_file():
+                    bash = str(git_bash)
+            result = subprocess.run(
+                [bash, "-c", doubles + step], cwd=folder, env=env, capture_output=True, encoding="utf-8",
+            )
+            self.assertTrue((folder / "calls").exists(), result.stderr)
+            return result, (folder / "calls").read_text().splitlines(), output.read_text()
+
+    def test_waits_for_tag_then_for_the_planners_listing(self):
+        result, calls, output = self.run_step(tag_after=2, list_after=2)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls, ["tag", "sleep 2", "tag", "list", "sleep 2", "tag", "list", "refs"])
+        self.assertIn("delete 1 v0.1.0-dev.20261120.1 -", output)
+
+    def test_exhaustion_blocks_pruning(self):
+        for tag_after, list_after, expected_calls in (
+            (4, 1, ["tag", "sleep 2", "tag", "sleep 2", "tag"]),
+            (1, 4, ["tag", "list", "sleep 2", "tag", "list", "sleep 2", "tag", "list"]),
+        ):
+            with self.subTest(tag_after=tag_after, list_after=list_after):
+                result, calls, output = self.run_step(tag_after, list_after)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("poda bloqueada", result.stdout)
+                self.assertEqual(calls, expected_calls)
+                self.assertEqual(output, "")
+
+    def test_same_tag_with_different_release_ids_exhausts_wait(self):
+        result, calls, output = self.run_step(tag_after=1, list_after=1, listed_id=12)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("poda bloqueada", result.stdout)
+        self.assertEqual(calls, ["tag", "list", "sleep 2", "tag", "list", "sleep 2", "tag", "list"])
+        self.assertEqual(output, "")
+
+    def test_visible_release_on_wrong_commit_blocks_pruning(self):
+        with mock.patch.dict(os.environ, PYTHONUTF8="0", PYTHONIOENCODING="cp1252"):
+            result, _, output = self.run_step(1, 1, sha="f" * 40)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(f"não aponta para {SHA}", result.stderr)
+        self.assertEqual(output, "")
+
+    def test_without_new_tag_lists_once_and_plans(self):
+        result, calls, output = self.run_step(4, 1, new=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls, ["list", "refs"])
+        self.assertIn("delete 1 v0.1.0-dev.20261120.1 -", output)
 
 
 class CommandLineTest(unittest.TestCase):

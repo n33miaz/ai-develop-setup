@@ -25,7 +25,7 @@ CONFIG = Path(__file__).resolve().parent.parent / "defaults" / "release.toml"
 SEMVER_CORE = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 CHANNEL = re.compile(r"^[a-z][a-z0-9]*$")
 SHA = re.compile(r"^[0-9a-f]{7,40}$")
-KEYS = {"enabled", "base_version", "channel", "tag_prefix", "keep", "prune"}
+KEYS = {"enabled", "base_version", "channel", "tag_prefix", "keep", "prune", "wait_attempts", "wait_interval_seconds"}
 
 
 class ConfigError(Exception):
@@ -56,9 +56,10 @@ def validate_config(raw):
         raise ConfigError("channel deve ter só letras minúsculas e dígitos, começando por letra")
     if raw["tag_prefix"] not in ("", "v"):
         raise ConfigError('tag_prefix deve ser "" ou "v"')
-    keep = raw["keep"]
-    if isinstance(keep, bool) or not isinstance(keep, int) or not 1 <= keep <= 100:
-        raise ConfigError("keep deve ser um inteiro de 1 a 100")
+    for key, maximum in (("keep", 100), ("wait_attempts", 10), ("wait_interval_seconds", 15)):
+        value = raw[key]
+        if type(value) is not int or not 1 <= value <= maximum:
+            raise ConfigError(f"{key} deve ser um inteiro de 1 a {maximum}")
     if raw["prune"] not in ("apply", "dry-run", "off"):
         raise ConfigError('prune deve ser "apply", "dry-run" ou "off"')
     return dict(raw)
@@ -231,7 +232,7 @@ def main(argv=None):
 
     try:
         if args.command == "config":
-            for key in ("enabled", "keep", "prune"):
+            for key in ("enabled", "keep", "prune", "wait_attempts", "wait_interval_seconds"):
                 print("%s=%s" % (key, config[key]))
         elif args.command == "next":
             result = next_release(
