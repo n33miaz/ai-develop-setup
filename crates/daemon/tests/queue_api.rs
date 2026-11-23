@@ -738,7 +738,10 @@ async fn queue_discovery_answers_while_a_start_holds_the_write() {
         true
     );
 
-    // Start holds the queue mutex through the anchor write, which waits for the release below.
+    // The anchor write hook signals `entered` only after `queue.start` has acquired the queue
+    // write lock (the queue mutex) and called into anchor storage. Awaiting the `writing`
+    // oneshot via `bounded(writing).await` guarantees that the write lock is already held
+    // through `hold_write` in the anchor before `queue.configured` executes.
     let (entered, writing) = tokio::sync::oneshot::channel();
     let (release, held) = std::sync::mpsc::channel();
     *bench.anchor.hold_write.lock().unwrap() = Some(HeldWrite {
@@ -751,6 +754,8 @@ async fn queue_discovery_answers_while_a_start_holds_the_write() {
 
     let reply = bounded(exchange(&mut ws, &command("queue.configured", json!({})))).await;
     assert_eq!(reply["result"], json!({"queue_id": bench.queue}), "{reply}");
+    // The `!start.is_finished()` assertion confirms that the write operation remained held
+    // throughout the queue discovery response, proving discovery does not block on write locks.
     assert!(!start.is_finished(), "the start must still hold the write");
     release.send(()).unwrap();
     let reply = bounded(start).await.unwrap();
