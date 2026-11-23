@@ -767,12 +767,12 @@ impl QueueControl for BlockingDiscovery {
         if let Some(entered) = self.entered.lock().unwrap().take() {
             entered.send(()).unwrap();
         }
-        // The timeout frees the runtime thread if discovery ever runs on it, so the test fails.
+        // The timeout matches the bounded deadline to free the thread if discovery runs on the runtime.
         let released = self
             .release
             .lock()
             .unwrap()
-            .recv_timeout(Duration::from_secs(15));
+            .recv_timeout(Duration::from_secs(5));
         released.map_err(|_| ApiError::Storage)?;
         Ok(id("queue-blocked"))
     }
