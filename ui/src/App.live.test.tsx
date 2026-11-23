@@ -29,7 +29,7 @@ describe('live interface', () => {
       expect(client.getState()).toBe('connected')
     })
     expect(screen.getByText('No sessions.')).toBeInTheDocument()
-    expect(screen.queryByText(t('notice.wip'))).not.toBeInTheDocument()
+    expect(screen.queryByText(t('notice.sample'))).not.toBeInTheDocument()
     act(() => {
       for (const draft of sampleSessionEvents(t)) {
         if (draft.stream === 'session/session-a') client.emit(draft)

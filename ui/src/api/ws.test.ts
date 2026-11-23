@@ -197,13 +197,13 @@ describe('local WebSocket client', () => {
     ).rejects.toThrow('core disconnected')
     socket.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ token }) }))
     await rejected
-    expect(client.getState()).toBe('disconnected')
+    expect(client.getState()).toBe('link_unavailable')
   })
   it('disconnects on an invalid session payload even when its envelope is valid', async () => {
     const { client, socket } = await connected()
     const invalid = { ...event(1), data: { payload: token } }
     socket.receive(invalid)
-    expect(client.getState()).toBe('disconnected')
+    expect(client.getState()).toBe('link_unavailable')
   })
   it('does not deliver an event across a sequence gap', async () => {
     const { client, socket } = await connected()
@@ -213,7 +213,7 @@ describe('local WebSocket client', () => {
     socket.receive(event(1))
     socket.receive(event(3))
     expect(seen).toEqual([1])
-    expect(client.getState()).toBe('disconnected')
+    expect(client.getState()).toBe('link_unavailable')
   })
   it('ignores an old socket after a new connection starts', async () => {
     const first = new FakeSocket()
@@ -369,7 +369,7 @@ describe('local WebSocket client', () => {
       id: socket.sent[1]?.id,
       error: { code: -32603, message: 'service unavailable' },
     })
-    expect(client.getState()).toBe('disconnected')
+    expect(client.getState()).toBe('link_unavailable')
   })
   it('still disconnects when a subscription is refused for another reason', async () => {
     const { client, socket } = await connected()
@@ -380,7 +380,7 @@ describe('local WebSocket client', () => {
       error: { code: -32602, message: 'invalid command' },
     })
     await Promise.resolve()
-    expect(client.getState()).toBe('disconnected')
+    expect(client.getState()).toBe('link_unavailable')
   })
   it('rejects pending requests and announces disconnection on transport failure', async () => {
     const { client, socket } = await connected()
@@ -392,14 +392,15 @@ describe('local WebSocket client', () => {
     const rejected = expect(pending).rejects.toThrow('core disconnected')
     socket.close()
     await rejected
-    expect(client.getState()).toBe('disconnected')
-    expect(states).toEqual(['disconnected'])
+    expect(client.getState()).toBe('link_unavailable')
+    expect(states).toEqual(['link_unavailable'])
   })
   it('settles a connection cancelled before the socket opens', async () => {
     const { client } = setup()
     const rejected = expect(client.connect()).rejects.toThrow('core disconnected')
     client.disconnect()
     await rejected
+    expect(client.getState()).toBe('disconnected')
   })
   it('does not expose server authentication errors', async () => {
     const { client, socket } = setup()
@@ -443,7 +444,7 @@ describe('local WebSocket client', () => {
     const listed = list.client.listHarnesses()
     list.socket.answer(1)
     await expect(listed).rejects.toThrow('core disconnected')
-    expect(list.client.getState()).toBe('disconnected')
+    expect(list.client.getState()).toBe('link_unavailable')
     const other = await connected()
     const closing = other.client.send(newCommand('session.close', { session_id: 'session-a' }))
     other.socket.receive({
@@ -468,7 +469,7 @@ describe('local WebSocket client', () => {
     const listed = client.listHarnesses()
     socket.receiveRaw({ jsonrpc: '2.0', id: socket.sent[1]?.id, result })
     await expect(listed).rejects.toThrow('core disconnected')
-    expect(client.getState()).toBe('disconnected')
+    expect(client.getState()).toBe('link_unavailable')
   })
   it('rejects the list when an older core does not know the method', async () => {
     const { client, socket } = await connected()
@@ -625,7 +626,7 @@ describe('expired tool list ids', () => {
       id: expiredId,
       result: { harnesses: ['claude'], workdir_aliases: ['/srv/work'] },
     })
-    expect(client.getState()).toBe('disconnected')
+    expect(client.getState()).toBe('link_unavailable')
   })
   it('keeps only the newest 32 expired ids', async () => {
     vi.useFakeTimers()
@@ -641,7 +642,7 @@ describe('expired tool list ids', () => {
     socket.receiveRaw(malformed(socket.sent[33]?.id))
     expect(client.getState()).toBe('connected')
     socket.receiveRaw(malformed(socket.sent[1]?.id))
-    expect(client.getState()).toBe('disconnected')
+    expect(client.getState()).toBe('link_unavailable')
   })
 })
 

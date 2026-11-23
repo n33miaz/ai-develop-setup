@@ -649,6 +649,36 @@ de erro e a saída do comando real são as evidências de funcionamento nos test
 
 ## Porta da interface em desenvolvimento
 
+No Windows, o iniciador opcional reúne a compilação e a abertura do host,
+do Vite e do daemon. Depois de rodar `npm ci` em `ui`, use um PowerShell
+sem elevação na raiz do repositório e passe o TOML do daemon descrito acima.
+
+```powershell
+.\tools\start-web-terminal.ps1 -Config 'C:\caminho\harnesses.toml'
+```
+
+Passe `-Pull` para atualizar a branch atual com `git pull --ff-only` antes de
+compilar. Por padrão, o script usa a revisão local. Ele usa `CARGO_TARGET_DIR`
+quando definido, ou `target` na raiz. `-ReadyTimeoutSeconds` muda a espera
+por serviço, cujo padrão é 15 segundos. O iniciador usa a configuração padrão
+do canal do host e espera que o processo do Vite iniciado por ele ocupe a porta
+5173 antes de chamar o daemon.
+
+Abra manualmente o link completo impresso pelo daemon. Mantenha abertas as
+janelas do host, do Vite e do daemon enquanto usar a interface. Para iniciar
+de novo, feche essas janelas. Se houver um host ou daemon em execução ou outro
+programa na porta, o iniciador indica o que precisa ser fechado e para. Se a
+atualização falhar, resolva o erro do Git antes de repetir.
+
+Os testes dos bloqueios de partida usam processos simulados e um ouvinte TCP
+temporário. Rode `powershell -NoProfile -File tools/test-start-web-terminal.ps1`
+sem elevação, com a porta 5173 livre. Para validar a colagem com teclado real
+em Chromium ou Edge, compile `ads-ptyhost` e `ads-daemon` em modo debug, defina
+`CHROMIUM_BIN` com o caminho do navegador e rode
+`node ui/tests/web-terminal-browser.mjs` na raiz. O teste usa uma configuração
+isolada e um processo de eco em modo raw. Mantenha a porta 5173 livre também
+para esse teste.
+
 Antes de abrir a URL, confira que a porta de `ui_base_url` pertence ao próprio
 usuário. `npm run dev` na pasta `ui` já fixa a porta 5173 com `strictPort`
 (`ui/vite.config.ts`).

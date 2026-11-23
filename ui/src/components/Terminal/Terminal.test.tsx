@@ -105,6 +105,23 @@ describe('Terminal', () => {
 })
 
 describe('terminal input and replay', () => {
+  it.each([true, false])('leaves Ctrl+V to the browser when enabled (%s)', (browserClipboard) => {
+    const input = vi.fn<(bytes: Uint8Array) => void>()
+    const { container } = render(
+      <Terminal
+        source={staticByteSource('')}
+        label="t"
+        onInput={input}
+        browserClipboard={browserClipboard}
+      />,
+    )
+    const textarea = container.querySelector('textarea')
+    if (!textarea) throw new Error('missing terminal input')
+    const allowsDefault = fireEvent.keyDown(textarea, { key: 'v', keyCode: 86, ctrlKey: true })
+    expect(allowsDefault).toBe(browserClipboard)
+    expect(input.mock.calls.map(([bytes]) => [...bytes])).toEqual(browserClipboard ? [] : [[0x16]])
+  })
+
   it('keeps the terminal read only without an input callback', () => {
     const { container } = render(<Terminal source={staticByteSource('')} label="t" />)
     expect(container.querySelector('textarea')).toHaveAttribute('readonly')

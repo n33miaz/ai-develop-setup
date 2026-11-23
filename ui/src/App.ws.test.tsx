@@ -1,8 +1,8 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import { createWsCoreClient, type CommandRequestV1 } from './api'
 import { App } from './App'
-import { createTranslator, I18nContext } from './i18n'
+import { createTranslator, I18nContext, type Locale } from './i18n'
 
 class Socket extends EventTarget {
   sent: CommandRequestV1[] = []
@@ -17,7 +17,7 @@ class Socket extends EventTarget {
   }
 }
 
-async function mount(listTimeoutMs: number) {
+function renderSocket(listTimeoutMs: number, locale: Locale = 'en') {
   const socket = new Socket()
   const client = createWsCoreClient({
     url: 'ws://127.0.0.1:12345',
@@ -25,13 +25,18 @@ async function mount(listTimeoutMs: number) {
     listTimeoutMs,
     socketFactory: () => socket,
   })
-  const t = createTranslator('en')
+  const t = createTranslator(locale)
   render(
     <I18nContext value={t}>
       <App client={client} live harnesses={['claude']} />
     </I18nContext>,
   )
   socket.dispatchEvent(new Event('open'))
+  return { socket, t }
+}
+
+async function mount(listTimeoutMs: number) {
+  const { socket, t } = renderSocket(listTimeoutMs)
   socket.reply({
     jsonrpc: '2.0',
     id: socket.sent[0]?.id,
@@ -42,6 +47,36 @@ async function mount(listTimeoutMs: number) {
   })
   return { socket, t }
 }
+
+describe('browser connection guidance', () => {
+  it.each<Locale>(['en', 'pt-BR'])('explains a rejected launch link in %s', async (locale) => {
+    const { socket, t } = renderSocket(10000, locale)
+    socket.reply({
+      jsonrpc: '2.0',
+      id: socket.sent[0]?.id,
+      error: { code: -32600, message: 'rejected' },
+    })
+    const guidance = locale === 'en' ? /Open the new full link/ : /Abra o novo link completo/
+    expect(await screen.findByRole('status', { name: guidance })).toHaveAttribute(
+      'data-state',
+      'link_unavailable',
+    )
+    expect(screen.queryByText(t('notice.live'))).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: t('session.open', { harness: 'claude' }) }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('replaces the connected notice when the web connection drops', async () => {
+    const { socket, t } = await mount(10000)
+    expect(screen.getByText(t('notice.live'))).toBeInTheDocument()
+    act(() => {
+      socket.close()
+    })
+    expect(screen.getByRole('status', { name: /Open the new full link/ })).toBeInTheDocument()
+    expect(screen.queryByText(t('notice.live'))).not.toBeInTheDocument()
+  })
+})
 
 describe('tool list over the local socket', () => {
   it('leaves the loading state with a timeout notice when the core stays silent', async () => {

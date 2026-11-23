@@ -20,6 +20,7 @@ interface TerminalProps {
   onResize?: ((cols: number, rows: number) => void) | undefined
 
   resizeDebounceMs?: number
+  browserClipboard?: boolean
 
   ref?: Ref<TerminalHandle>
 }
@@ -33,6 +34,7 @@ export function Terminal({
   onInput,
   onResize,
   resizeDebounceMs = 150,
+  browserClipboard = true,
 }: TerminalProps) {
   const container = useRef<HTMLDivElement>(null)
   const term = useRef<XTerm | null>(null)
@@ -75,6 +77,22 @@ export function Terminal({
     xterm.loadAddon(fit)
     xterm.open(element)
     term.current = xterm
+
+    if (browserClipboard && !navigator.platform.startsWith('Mac')) {
+      xterm.attachCustomKeyEventHandler((event) => {
+        if (
+          event.type !== 'keydown' ||
+          !event.ctrlKey ||
+          event.altKey ||
+          event.metaKey ||
+          event.shiftKey
+        )
+          return true
+        const key = event.key.toLowerCase()
+        // Deixa o navegador disparar os eventos de clipboard que o xterm já trata.
+        return key !== 'v' && (key !== 'c' || !xterm.hasSelection())
+      })
+    }
 
     const refit = (): void => {
       try {
@@ -164,7 +182,7 @@ export function Terminal({
       term.current = null
       xterm.dispose()
     }
-  }, [source, resizeDebounceMs])
+  }, [source, resizeDebounceMs, browserClipboard])
 
   return (
     <div className={styles.terminal} role="region" aria-label={label}>

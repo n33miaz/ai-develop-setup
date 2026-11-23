@@ -135,12 +135,13 @@ export function createCoreClient(
   // depois de ela ter sido aceita; por isso o id continua ligado ao stream enquanto ele vive.
   const subscriptionRequests = new Map<string, Shared>()
   const unavailable = () => new CoreClientError('not_connected', 'core disconnected')
+  const failureState = token === undefined ? 'disconnected' : 'link_unavailable'
   const setState = (next: ConnectionState) => {
     if (state === next) return
     state = next
     for (const listener of [...listeners]) listener(next)
   }
-  function disconnect(next: ConnectionState = 'disconnected') {
+  function disconnect(next: ConnectionState = failureState) {
     const previous = socket
     socket = null
     connecting = null
@@ -356,7 +357,7 @@ export function createCoreClient(
       return attempt
     },
     disconnect: () => {
-      disconnect()
+      disconnect('disconnected')
     },
     send(command) {
       if (state !== 'connected') return Promise.reject(unavailable())
