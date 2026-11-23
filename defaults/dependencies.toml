@@ -1,0 +1,5 @@
+# Atualizações automáticas de dependências (.github/dependabot.yml).
+
+# Coautor acrescentado aos commits dos PRs do Dependabot depois do CI verde (workflow dependabot-coauthor.yml).
+# "owner": o mantenedor, com a identidade de `coauthor.owner` em defaults/devflow.toml. "none": não mexe nos commits.
+coauthor = "owner"
