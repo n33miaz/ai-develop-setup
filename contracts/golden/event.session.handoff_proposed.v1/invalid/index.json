@@ -1,0 +1,32 @@
+{
+  "threshold.json": {
+    "rule": "O limiar é um percentual inteiro de 1 a 100.",
+    "keyword": "maximum",
+    "instancePath": "/data/threshold_pct"
+  },
+  "context.json": {
+    "rule": "O percentual de contexto é um inteiro de 1 a 100.",
+    "keyword": "minimum",
+    "instancePath": "/data/context_pct"
+  },
+  "number.json": {
+    "rule": "O número da sessão na cadeia começa em 1.",
+    "keyword": "minimum",
+    "instancePath": "/data/number"
+  },
+  "stream.json": {
+    "rule": "O evento pertence à família session.",
+    "keyword": "pattern",
+    "instancePath": "/stream"
+  },
+  "class.json": {
+    "rule": "O evento tem classificação privada.",
+    "keyword": "const",
+    "instancePath": "/data_class"
+  },
+  "content.json": {
+    "rule": "O evento não leva conteúdo da conversa nem campo extra.",
+    "keyword": "additionalProperties",
+    "instancePath": "/data"
+  }
+}

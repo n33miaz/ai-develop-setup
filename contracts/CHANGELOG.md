@@ -4,6 +4,7 @@ Formato: uma seção por data. Contrato novo, campo opcional acrescentado, vers�
 
 ## 2026-11-24
 
+- Contrato novo `session.handoff_proposed:1`: proposta de passagem por limiar de contexto, só com metadados (sessão, limiar, percentual medido, número N da cadeia e documento anterior).
 - Contrato novo (`:1`): registro `api_usage`, o uso de uma chamada direta de API (alias do provedor, modelo, tokens, custo estimado em micro-dólares e base do custo), fechado e sem conteúdo de pedido ou resposta.
 
 ## 2026-11-21
