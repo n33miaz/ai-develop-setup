@@ -42,7 +42,32 @@ impl Vault for MemoryVault {
 #[tokio::main(flavor = "current_thread")]
 pub(crate) async fn daemon_serves_queue_and_approvals() {
     let run = new_id().unwrap();
-    let scratch = crate::temp::Scratch::new(&format!("controls-binary-{run}"));
+    let scratch = crate::temp::Scratch::with_files(
+        &format!("controls-binary-{run}"),
+        &["daemon.toml", "host.toml"],
+    )
+    .with_subdirs(&[
+        (
+            "profile/ads",
+            &[
+                "local-identities.toml",
+                "audit-binding.lock",
+                "local-runtime.lock",
+            ],
+        ),
+        ("profile", &[]),
+        ("control", &["daemon.lock"]),
+        ("workspace", &[]),
+        (
+            "audit",
+            &[
+                "audit.db",
+                "audit.db-journal",
+                "audit.db-wal",
+                "audit.db-shm",
+            ],
+        ),
+    ]);
     let root = scratch.path().to_path_buf();
     let profile = root.join("profile");
     let control = root.join("control");
