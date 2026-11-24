@@ -160,6 +160,50 @@ class RealRepository(unittest.TestCase):
                 self.assertIn(dep, crates, "%s allows unknown crate %s" % (name, dep))
             self.assertNotIn(name, rule.get("allow", []))
 
+    def test_launcher_paths_covers_all_internal_deps(self):
+        """LAUNCHER_PATHS in ci.yml must cover every internal dep of ads-launcher.
+
+        ads-launcher allows ads-contracts, ads-child-env and ads-private-dir
+        (defaults/dependency-matrix.toml). The CI trigger pattern must include the
+        source tree for each of those crates plus the top-level contracts/ folder
+        (JSON Schemas used by ads-contracts). Without crates/contracts/ and
+        contracts/ in LAUNCHER_PATHS the launcher-windows job is not triggered when
+        only contracts change, violating the dependency contract.
+        """
+        import re
+        import tomllib
+
+        ci_path = check_deps.ROOT / ".github" / "workflows" / "ci.yml"
+        ci_text = ci_path.read_text(encoding="utf-8")
+
+        # Extract the value of LAUNCHER_PATHS from the workflow file.
+        m = re.search(r"LAUNCHER_PATHS:\s*'([^']+)'", ci_text)
+        self.assertIsNotNone(m, "LAUNCHER_PATHS not found in %s" % ci_path)
+        launcher_pattern = m.group(1)
+
+        _, crates = check_deps.load_matrix(check_deps.MATRIX)
+        launcher_allow = crates.get("ads-launcher", {}).get("allow", [])
+
+        # Build the set of source paths that must be covered: crate folder + contracts/.
+        required_paths = []
+        for dep in launcher_allow:
+            dep_path = crates[dep]["path"]  # e.g. "crates/contracts"
+            required_paths.append(dep_path + "/")
+        # The top-level contracts/ folder holds the JSON Schemas consumed by ads-contracts.
+        required_paths.append("contracts/")
+
+        missing = []
+        for path in required_paths:
+            if not re.search(launcher_pattern, path):
+                missing.append(path)
+
+        self.assertEqual(
+            missing,
+            [],
+            "LAUNCHER_PATHS does not cover these dependency paths: %s\n"
+            "Add them to LAUNCHER_PATHS in .github/workflows/ci.yml." % missing,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
