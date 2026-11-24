@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { access, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { access, constants, mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -8,15 +8,42 @@ import { cdpRequests, stop, withTestProcesses } from './web-terminal-harness.mjs
 
 const root = fileURLToPath(new URL('../..', import.meta.url))
 const target = resolve(root, process.env.CARGO_TARGET_DIR ?? 'target', 'debug')
-const chromium = process.env.CHROMIUM_BIN
-if (!chromium) throw new Error('Set CHROMIUM_BIN to a Chromium or Edge executable')
 const windows = process.platform === 'win32'
 const binary = (name) => join(target, name + (windows ? '.exe' : ''))
-for (const name of ['ads-ptyhost', 'ads-daemon']) {
-  await access(binary(name)).catch(() => {
-    throw new Error(`Missing debug binary: ${name}`)
-  })
+const chromium = process.env.CHROMIUM_BIN && resolve(process.env.CHROMIUM_BIN)
+
+async function isExecutable(path) {
+  try {
+    await access(path, constants.X_OK)
+    return (await stat(path)).isFile()
+  } catch {
+    return false
+  }
 }
+
+const problems = []
+if (!chromium || !(await isExecutable(chromium))) {
+  const example = windows
+    ? String.raw`$env:CHROMIUM_BIN = 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'`
+    : 'export CHROMIUM_BIN=/usr/bin/chromium'
+  problems.push(
+    chromium ? `Browser executable unavailable: ${chromium}` : 'CHROMIUM_BIN is unset.',
+    `Set CHROMIUM_BIN to the path of your Chrome, Edge or Chromium executable, e.g.\n  ${example}`,
+  )
+}
+const missing = []
+for (const name of ['ads-ptyhost', 'ads-daemon']) {
+  const path = binary(name)
+  if (!(await isExecutable(path))) missing.push(path)
+}
+if (missing.length) {
+  problems.push(
+    `Debug executables unavailable:\n  ${missing.join('\n  ')}`,
+    'From the repository root, run: cargo build -p ads-ptyhost -p ads-daemon',
+  )
+}
+if (problems.length) throw new Error(problems.join('\n'))
+
 const scratch = await mkdtemp(join(tmpdir(), 'ads-web-test-'))
 const origin = 'http://127.0.0.1:5173'
 

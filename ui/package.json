@@ -16,6 +16,7 @@
     "format": "prettier --write .",
     "typecheck": "tsc -p tsconfig.app.json --noEmit && tsc -p tsconfig.node.json --noEmit",
     "test": "node --test tests/web-terminal-harness.test.mjs && vitest run",
+    "test:browser": "node tests/web-terminal-browser.mjs",
     "licenses": "node scripts/check-licenses.mjs"
   },
   "dependencies": {
