@@ -74,7 +74,7 @@ fn the_guard_stops_at_the_cap_and_reserves_the_worst_case() {
         guard.authorize(month(1), 600_000).unwrap_err(),
         Refusal::WouldExceedCap
     );
-    guard.settle(first, 1_000_000);
+    guard.settle(first, 1_000_000).expect("own");
     assert_eq!(guard.spent_micro_usd(), 1_000_000);
     assert_eq!(
         guard.authorize(month(1), 0).unwrap_err(),
@@ -87,10 +87,10 @@ fn an_overrun_still_counts_and_a_release_charges_nothing() {
     let cfg = config("enabled = true\nmonthly_cap_usd = 1.0");
     let mut guard = SpendGuard::new(&cfg, month(1), 0);
     let held = guard.authorize(month(1), 500_000).expect("fits");
-    guard.release(held);
+    guard.release(held).expect("own");
     assert_eq!(guard.spent_micro_usd(), 0);
     let held = guard.authorize(month(1), 500_000).expect("fits");
-    guard.settle(held, 900_000);
+    guard.settle(held, 900_000).expect("own");
     assert_eq!(guard.spent_micro_usd(), 900_000);
 }
 
@@ -339,4 +339,37 @@ fn debug_output_hides_prompt_text_response_text_and_the_key_reference() {
     ] {
         assert!(!shown.contains(hidden), "{hidden}");
     }
+}
+
+#[test]
+fn a_reservation_from_another_guard_is_refused_and_changes_nothing() {
+    let cfg = config(
+        "enabled = true
+monthly_cap_usd = 0.0001",
+    );
+    let mut a = SpendGuard::new(&cfg, month(1), 0);
+    let mut b = SpendGuard::new(&cfg, month(1), 0);
+    let held_a = a.authorize(month(1), 100).expect("fits");
+    let held_b = b.authorize(month(1), 100).expect("fits");
+    assert_eq!(b.release(held_a).unwrap_err(), Refusal::ForeignReservation);
+    // B still holds its own 100: its counters were not reduced by A's reservation.
+    assert_eq!(b.authorize(month(1), 1).unwrap_err(), Refusal::CapReached);
+    b.settle(held_b, 100).expect("own");
+    assert_eq!(b.spent_micro_usd(), 100);
+}
+
+#[test]
+fn a_tiny_positive_price_is_not_rounded_to_free() {
+    let toml = PROVIDER.replace("input_usd_per_mtok = 2.0", "input_usd_per_mtok = 0.0000004");
+    let cfg = ApiConfig::from_toml(&toml).expect("valid");
+    assert_eq!(
+        cfg.provider("provider-a").unwrap().input_micro_usd_per_mtok,
+        1
+    );
+    let zero = PROVIDER.replace("input_usd_per_mtok = 2.0", "input_usd_per_mtok = 0.0");
+    let cfg = ApiConfig::from_toml(&zero).expect("zero is valid");
+    assert_eq!(
+        cfg.provider("provider-a").unwrap().input_micro_usd_per_mtok,
+        0
+    );
 }

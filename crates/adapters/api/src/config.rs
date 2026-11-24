@@ -198,7 +198,13 @@ fn price(field: &str, usd_per_mtok: f64) -> Result<u64, ConfigError> {
     if !usd_per_mtok.is_finite() || !(0.0..=MAX_USD).contains(&usd_per_mtok) {
         return Err(invalid(field, "must be a finite, non-negative price"));
     }
-    Ok((usd_per_mtok * MICRO).round() as u64)
+    let micro = (usd_per_mtok * MICRO).round() as u64;
+    // A positive price below the precision must not become free; zero stays an explicit choice.
+    Ok(if usd_per_mtok > 0.0 {
+        micro.max(1)
+    } else {
+        micro
+    })
 }
 
 fn check_max_tokens(field: &str, value: u32) -> Result<(), ConfigError> {

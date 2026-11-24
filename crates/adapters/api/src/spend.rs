@@ -4,6 +4,7 @@
 //! persists nothing through this type.
 
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::config::ApiConfig;
 
@@ -25,6 +26,7 @@ pub enum Refusal {
     NoCap,
     CapReached,
     WouldExceedCap,
+    ForeignReservation,
 }
 
 impl fmt::Display for Refusal {
@@ -34,6 +36,7 @@ impl fmt::Display for Refusal {
             Self::NoCap => "no monthly cap is configured",
             Self::CapReached => "the monthly cap is reached",
             Self::WouldExceedCap => "the worst case of this call does not fit in the monthly cap",
+            Self::ForeignReservation => "the reservation was issued by another spend guard",
         })
     }
 }
@@ -44,6 +47,7 @@ impl std::error::Error for Refusal {}
 #[derive(Debug)]
 #[must_use = "settle or release the reservation"]
 pub struct Reservation {
+    guard_id: u64,
     micro_usd: u64,
 }
 
@@ -55,6 +59,7 @@ impl Reservation {
 
 #[derive(Debug)]
 pub struct SpendGuard {
+    id: u64,
     enabled: bool,
     cap: Option<u64>,
     month: Month,
@@ -64,7 +69,9 @@ pub struct SpendGuard {
 
 impl SpendGuard {
     pub fn new(config: &ApiConfig, month: Month, spent_micro_usd: u64) -> Self {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
         Self {
+            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             enabled: config.enabled,
             cap: config.monthly_cap_micro_usd,
             month,
@@ -101,18 +108,36 @@ impl SpendGuard {
         }
         self.reserved += worst_case_micro_usd;
         Ok(Reservation {
+            guard_id: self.id,
             micro_usd: worst_case_micro_usd,
         })
     }
 
-    /// Replace the reservation with what the call actually cost.
-    pub fn settle(&mut self, reservation: Reservation, actual_micro_usd: u64) {
+    /// Replace the reservation with what the call actually cost. A reservation from another
+    /// guard is refused before any counter changes.
+    pub fn settle(
+        &mut self,
+        reservation: Reservation,
+        actual_micro_usd: u64,
+    ) -> Result<(), Refusal> {
+        self.check_owner(&reservation)?;
         self.reserved = self.reserved.saturating_sub(reservation.micro_usd);
         self.spent = self.spent.saturating_add(actual_micro_usd);
+        Ok(())
     }
 
     /// The call never reached the provider: nothing is charged.
-    pub fn release(&mut self, reservation: Reservation) {
+    pub fn release(&mut self, reservation: Reservation) -> Result<(), Refusal> {
+        self.check_owner(&reservation)?;
         self.reserved = self.reserved.saturating_sub(reservation.micro_usd);
+        Ok(())
+    }
+
+    fn check_owner(&self, reservation: &Reservation) -> Result<(), Refusal> {
+        if reservation.guard_id == self.id {
+            Ok(())
+        } else {
+            Err(Refusal::ForeignReservation)
+        }
     }
 }
