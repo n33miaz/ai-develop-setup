@@ -2,10 +2,55 @@ use ads_daemon::startup::{MAX_CONFIG_BYTES, load_config};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn user_file(name: &str, contents: &[u8]) -> PathBuf {
-    let path = temp::directory().join(format!("{name}-{}.toml", std::process::id()));
-    std::fs::write(&path, contents).unwrap();
-    path
+/// A temporary configuration file created in [`temp::directory`], removed on drop.
+struct UserFile {
+    path: PathBuf,
+}
+
+impl UserFile {
+    fn new(name: &str, contents: &[u8]) -> Self {
+        let path = temp::directory().join(format!("{name}-{}.toml", std::process::id()));
+        std::fs::write(&path, contents).unwrap();
+        Self { path }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl AsRef<Path> for UserFile {
+    fn as_ref(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl AsRef<std::ffi::OsStr> for UserFile {
+    fn as_ref(&self) -> &std::ffi::OsStr {
+        self.path.as_ref()
+    }
+}
+
+impl std::ops::Deref for UserFile {
+    type Target = Path;
+
+    fn deref(&self) -> &Self::Target {
+        &self.path
+    }
+}
+
+impl Drop for UserFile {
+    fn drop(&mut self) {
+        if let Err(error) = std::fs::remove_file(&self.path) {
+            if error.kind() != std::io::ErrorKind::NotFound && !std::thread::panicking() {
+                panic!("failed to remove temporary user file {:?}: {error}", self.path);
+            }
+        }
+    }
+}
+
+fn user_file(name: &str, contents: &[u8]) -> UserFile {
+    UserFile::new(name, contents)
 }
 
 fn load(flag: &str, path: impl AsRef<Path>) -> Result<ads_daemon::startup::StartupConfig, String> {
@@ -15,9 +60,10 @@ fn load(flag: &str, path: impl AsRef<Path>) -> Result<ads_daemon::startup::Start
 
 /// Runs the daemon with a user file it must refuse before contacting the terminal host.
 fn refused(name: &str, contents: &str) -> String {
+    let file = user_file(name, contents.as_bytes());
     let output = Command::new(env!("CARGO_BIN_EXE_ads-daemon"))
         .arg("--config")
-        .arg(user_file(name, contents.as_bytes()))
+        .arg(file.path())
         .output()
         .unwrap();
     assert!(!output.status.success());
@@ -107,7 +153,7 @@ fn user_file_is_split_between_api_and_tools() {
         "daemon-split",
         b"max_sessions = 3\n[workdirs]\ndefault = 'C:/w'\n[tools.codex]\nargs = ['x']\n[storage]\nbusy_timeout_ms = 42\n",
     );
-    let (api, _, tools, storage) = load("--config", path).unwrap();
+    let (api, _, tools, storage) = load("--config", &path).unwrap();
     assert_eq!(api.max_sessions, 3);
     assert_eq!(storage.unwrap().busy_timeout_ms(), 42);
     let tools: toml::Table = toml::from_str(&tools).unwrap();
@@ -159,7 +205,7 @@ fn configuration_paths_must_be_literal_absolute_regular_small_files() {
         );
         let large = user_file("daemon-large", &vec![b'#'; MAX_CONFIG_BYTES as usize + 1]);
         assert_eq!(
-            load(flag, large).unwrap_err(),
+            load(flag, &large).unwrap_err(),
             format!("{flag} file exceeds {MAX_CONFIG_BYTES} bytes")
         );
         let missing = temp::directory().join("daemon-missing.toml");
@@ -191,12 +237,12 @@ fn invalid_utf8_is_refused_without_quoting_the_file() {
 fn unknown_tool_and_bad_toml_are_refused_without_quoting_the_file() {
     let path = user_file("daemon-unknown", b"[tools.sentinel-tool]\nprogram = ''\n");
     assert_eq!(
-        load("--config", path).unwrap_err(),
+        load("--config", &path).unwrap_err(),
         "unknown tool in user configuration"
     );
     let path = user_file("daemon-bad", b"max_sessions = 1\nsentinel = = 'x'\n");
     assert_eq!(
-        load("--config", path).unwrap_err(),
+        load("--config", &path).unwrap_err(),
         "invalid user configuration TOML at line 2"
     );
 }
@@ -284,5 +330,31 @@ fn refuses_an_installation_with_a_live_daemon_lock() {
     assert!(!error.contains("another daemon"), "{error}");
     assert!(error.contains("invalid daemon arguments"), "{error}");
 }
+
+#[test]
+fn user_file_is_removed_on_drop() {
+    let path = {
+        let file = user_file("daemon-drop-test", b"# drop test\n");
+        let path = file.path().to_path_buf();
+        assert!(path.try_exists().unwrap(), "file should exist while guard is held");
+        path
+    };
+    assert!(!path.try_exists().unwrap(), "file should be removed after guard is dropped: {path:?}");
+}
+
+#[test]
+fn user_file_is_removed_on_panic() {
+    let mut file_path = None;
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let file = user_file("daemon-drop-panic-test", b"# drop panic\n");
+        assert!(file.path().try_exists().unwrap());
+        file_path = Some(file.path().to_path_buf());
+        panic!("unwind with user file guard");
+    }));
+    assert!(result.is_err());
+    let path = file_path.expect("path should be captured");
+    assert!(!path.try_exists().unwrap(), "file should be removed even on panic: {path:?}");
+}
+
 #[path = "common/temp.rs"]
 mod temp;
