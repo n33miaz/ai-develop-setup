@@ -1,0 +1,257 @@
+//! Adapter configuration: the documented defaults plus per-provider settings, validated.
+
+use std::collections::BTreeMap;
+use std::fmt;
+
+use ads_contracts::CommonIdV1;
+use serde::Deserialize;
+
+/// Documented defaults, embedded so a missing key always has a value.
+pub const DEFAULT_POLICY: &str = include_str!("../../../../defaults/api-adapter.toml");
+
+const MAX_MODEL_CHARS: usize = 128;
+const MAX_PRICE_VERSION_CHARS: usize = 96;
+const MICRO: f64 = 1_000_000.0;
+const MAX_USD: f64 = 1_000_000_000.0;
+const HEADER_TOKEN_SYMBOLS: &str = "!#$%&'*+-.^_`|~";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigError {
+    pub field: String,
+    pub reason: String,
+}
+
+impl fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.field, self.reason)
+    }
+}
+
+impl std::error::Error for ConfigError {}
+
+fn invalid(field: impl Into<String>, reason: impl Into<String>) -> ConfigError {
+    ConfigError {
+        field: field.into(),
+        reason: reason.into(),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Raw {
+    enabled: bool,
+    monthly_cap_usd: Option<f64>,
+    chat_path: String,
+    key_header: String,
+    key_prefix: String,
+    max_output_tokens: u32,
+    #[serde(default)]
+    providers: BTreeMap<String, RawProvider>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawProvider {
+    base_url: String,
+    model: String,
+    input_usd_per_mtok: f64,
+    output_usd_per_mtok: f64,
+    price_version: String,
+    chat_path: Option<String>,
+    key_header: Option<String>,
+    key_prefix: Option<String>,
+    max_output_tokens: Option<u32>,
+}
+
+/// Settings of one provider that speaks the Chat Completions format.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderConfig {
+    pub alias: CommonIdV1,
+    pub url: String,
+    pub model: String,
+    pub key_header: String,
+    pub key_prefix: String,
+    pub max_output_tokens: u32,
+    pub input_micro_usd_per_mtok: u64,
+    pub output_micro_usd_per_mtok: u64,
+    pub price_version: String,
+}
+
+impl ProviderConfig {
+    /// Cost in micro-dollars, rounded up so an estimate never undercounts.
+    pub fn cost_micro_usd(&self, tokens_in: u64, tokens_out: u64) -> u64 {
+        let total = u128::from(tokens_in) * u128::from(self.input_micro_usd_per_mtok)
+            + u128::from(tokens_out) * u128::from(self.output_micro_usd_per_mtok);
+        u64::try_from(total.div_ceil(1_000_000)).unwrap_or(u64::MAX)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApiConfig {
+    pub enabled: bool,
+    pub monthly_cap_micro_usd: Option<u64>,
+    providers: BTreeMap<String, ProviderConfig>,
+}
+
+impl ApiConfig {
+    /// The documented defaults alone: off, no cap, no provider.
+    pub fn defaults() -> Self {
+        Self::from_toml("").expect("embedded defaults are valid")
+    }
+
+    /// Layer the user's top-level keys over the defaults, then validate everything.
+    pub fn from_toml(user: &str) -> Result<Self, ConfigError> {
+        let mut table: toml::Table = DEFAULT_POLICY
+            .parse()
+            .map_err(|_| invalid("defaults", "embedded defaults do not parse"))?;
+        let user: toml::Table = user
+            .parse()
+            .map_err(|err: toml::de::Error| invalid("config", err.message()))?;
+        table.extend(user);
+        let raw: Raw = table
+            .try_into()
+            .map_err(|err: toml::de::Error| invalid("config", err.message()))?;
+        Self::validate(raw)
+    }
+
+    fn validate(raw: Raw) -> Result<Self, ConfigError> {
+        let cap = match raw.monthly_cap_usd {
+            None => None,
+            Some(usd) => {
+                if !usd.is_finite() || usd <= 0.0 || usd > MAX_USD {
+                    return Err(invalid("monthly_cap_usd", "must be greater than zero"));
+                }
+                let micro = (usd * MICRO).floor() as u64;
+                if micro == 0 {
+                    return Err(invalid("monthly_cap_usd", "below one micro-dollar"));
+                }
+                Some(micro)
+            }
+        };
+        check_path("chat_path", &raw.chat_path)?;
+        check_header_name("key_header", &raw.key_header)?;
+        check_prefix("key_prefix", &raw.key_prefix)?;
+        check_max_tokens("max_output_tokens", raw.max_output_tokens)?;
+
+        let mut providers = BTreeMap::new();
+        for (name, p) in raw.providers {
+            let at = |key: &str| format!("providers.{name}.{key}");
+            let alias = CommonIdV1::new(name.clone())
+                .map_err(|_| invalid(format!("providers.{name}"), "alias is not a valid id"))?;
+            let chat_path = p.chat_path.unwrap_or_else(|| raw.chat_path.clone());
+            let key_header = p.key_header.unwrap_or_else(|| raw.key_header.clone());
+            let key_prefix = p.key_prefix.unwrap_or_else(|| raw.key_prefix.clone());
+            let max_output_tokens = p.max_output_tokens.unwrap_or(raw.max_output_tokens);
+            check_path(&at("chat_path"), &chat_path)?;
+            check_header_name(&at("key_header"), &key_header)?;
+            check_prefix(&at("key_prefix"), &key_prefix)?;
+            check_max_tokens(&at("max_output_tokens"), max_output_tokens)?;
+            if p.model.is_empty()
+                || p.model.chars().count() > MAX_MODEL_CHARS
+                || p.model.chars().any(char::is_control)
+            {
+                return Err(invalid(
+                    at("model"),
+                    "empty, too long or has control characters",
+                ));
+            }
+            if p.price_version.is_empty()
+                || p.price_version.chars().count() > MAX_PRICE_VERSION_CHARS
+            {
+                return Err(invalid(at("price_version"), "empty or too long"));
+            }
+            let base = check_base_url(&at("base_url"), &p.base_url)?;
+            let input = price(&at("input_usd_per_mtok"), p.input_usd_per_mtok)?;
+            let output = price(&at("output_usd_per_mtok"), p.output_usd_per_mtok)?;
+            providers.insert(
+                name,
+                ProviderConfig {
+                    alias,
+                    url: format!("{base}{chat_path}"),
+                    model: p.model,
+                    key_header,
+                    key_prefix,
+                    max_output_tokens,
+                    input_micro_usd_per_mtok: input,
+                    output_micro_usd_per_mtok: output,
+                    price_version: p.price_version,
+                },
+            );
+        }
+        Ok(Self {
+            enabled: raw.enabled,
+            monthly_cap_micro_usd: cap,
+            providers,
+        })
+    }
+
+    pub fn provider(&self, alias: &str) -> Option<&ProviderConfig> {
+        self.providers.get(alias)
+    }
+
+    pub fn providers(&self) -> impl Iterator<Item = &ProviderConfig> {
+        self.providers.values()
+    }
+}
+
+fn price(field: &str, usd_per_mtok: f64) -> Result<u64, ConfigError> {
+    if !usd_per_mtok.is_finite() || !(0.0..=MAX_USD).contains(&usd_per_mtok) {
+        return Err(invalid(field, "must be a finite, non-negative price"));
+    }
+    let micro = (usd_per_mtok * MICRO).round() as u64;
+    // A positive price below the precision must not become free; zero stays an explicit choice.
+    Ok(if usd_per_mtok > 0.0 {
+        micro.max(1)
+    } else {
+        micro
+    })
+}
+
+fn check_max_tokens(field: &str, value: u32) -> Result<(), ConfigError> {
+    if value == 0 {
+        return Err(invalid(field, "must be at least 1"));
+    }
+    Ok(())
+}
+
+fn check_path(field: &str, path: &str) -> Result<(), ConfigError> {
+    let bad = |c: char| c.is_whitespace() || c.is_control() || matches!(c, '?' | '#');
+    if !path.starts_with('/') || path.chars().any(bad) {
+        return Err(invalid(
+            field,
+            "must start with / and have no query, fragment or spaces",
+        ));
+    }
+    Ok(())
+}
+
+fn check_header_name(field: &str, name: &str) -> Result<(), ConfigError> {
+    let token = |c: char| c.is_ascii_alphanumeric() || HEADER_TOKEN_SYMBOLS.contains(c);
+    if name.is_empty() || !name.chars().all(token) {
+        return Err(invalid(field, "not a valid header name"));
+    }
+    Ok(())
+}
+
+fn check_prefix(field: &str, prefix: &str) -> Result<(), ConfigError> {
+    if prefix.chars().any(char::is_control) {
+        return Err(invalid(field, "has control characters"));
+    }
+    Ok(())
+}
+
+/// HTTPS only, no embedded credentials, query or fragment; returns it without a trailing slash.
+fn check_base_url(field: &str, url: &str) -> Result<String, ConfigError> {
+    let rest = url
+        .strip_prefix("https://")
+        .ok_or_else(|| invalid(field, "must start with https://"))?;
+    let authority = rest.split('/').next().unwrap_or_default();
+    let bad = |c: char| c.is_whitespace() || c.is_control() || matches!(c, '?' | '#' | '\\');
+    if authority.is_empty() || authority.contains('@') || url.chars().any(bad) {
+        return Err(invalid(
+            field,
+            "needs a host and no credentials, query, fragment or spaces",
+        ));
+    }
+    Ok(url.trim_end_matches('/').to_owned())
+}

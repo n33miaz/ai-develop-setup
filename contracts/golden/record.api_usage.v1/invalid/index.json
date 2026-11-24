@@ -1,0 +1,30 @@
+{
+  "01-negative-tokens.json": {
+    "rule": "Contagem de tokens não é negativa.",
+    "keyword": "minimum",
+    "instancePath": "/tokens_in"
+  },
+  "02-email-as-alias.json": {
+    "rule": "O alias do provedor não pode ser e-mail.",
+    "keyword": "pattern",
+    "instancePath": "/provider_alias"
+  },
+  "03-unknown-basis.json": {
+    "rule": "A base do custo é reported ou reserved.",
+    "keyword": "enum",
+    "instancePath": "/cost_basis"
+  },
+  "04-content-field.json": {
+    "rule": "O registro é fechado: nenhum campo de conteúdo do pedido ou da resposta.",
+    "keyword": "additionalProperties",
+    "instancePath": "",
+    "params": {
+      "additionalProperty": "content"
+    }
+  },
+  "05-negative-cost.json": {
+    "rule": "Custo não é negativo.",
+    "keyword": "minimum",
+    "instancePath": "/cost_estimate_micro_usd"
+  }
+}

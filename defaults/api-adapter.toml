@@ -1,0 +1,34 @@
+# Padrão embutido do adaptador de API (chamadas diretas a provedores, formato Chat Completions).
+# Quem escreve o arquivo de configuração do usuário só precisa das chaves que quer mudar; as demais
+# valem como aqui. Nenhuma chave guarda segredo: a chave de API vem do cofre, por um apelido.
+
+# Desligado por padrão. Ligar não basta: sem `monthly_cap_usd` o adaptador recusa toda chamada.
+enabled = false
+
+# Teto mensal de gasto estimado, em dólares (maior que zero). Sem valor, o adaptador recusa tudo.
+# Ao atingir o teto, as chamadas seguintes são recusadas até o mês seguinte, e uma chamada só sai se o
+# pior caso dela (entrada limitada pelo tamanho do pedido, saída pelo teto de tokens) cabe no que sobra.
+# Exemplo, comentado de propósito: monthly_cap_usd = 20.0
+
+# Caminho acrescentado à URL base do provedor.
+chat_path = "/chat/completions"
+
+# Nome do cabeçalho que leva a chave e o texto que vem antes dela. Só nomes: o valor da chave nunca
+# passa por esta configuração.
+key_header = "Authorization"
+key_prefix = "Bearer "
+
+# Teto de tokens de saída por chamada, usado quando o pedido não traz o seu e como limite máximo.
+max_output_tokens = 1024
+
+# Um provedor por tabela; o apelido é o nome da tabela (letras, dígitos e . _ : -). Sem provedor
+# configurado não há chamada possível. Preços em dólares por milhão de tokens; `price_version`
+# identifica a tabela de preços usada, para o livro-caixa. `chat_path`, `key_header`, `key_prefix`
+# e `max_output_tokens` podem ser trocados por provedor. Exemplo, comentado de propósito:
+#
+# [providers.provider-a]
+# base_url = "https://api.example.com/v1"
+# model = "model-x"
+# input_usd_per_mtok = 2.5
+# output_usd_per_mtok = 10.0
+# price_version = "prices-2030-01-01"
