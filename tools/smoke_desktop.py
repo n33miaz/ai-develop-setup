@@ -9,7 +9,11 @@ from subprocess import DEVNULL, PIPE, Popen, TimeoutExpired
 def stop(process):
     if process.poll() is None:
         process.terminate()
-    process.wait(timeout=10)
+    try:
+        process.wait(timeout=10)
+    except TimeoutExpired:
+        process.kill()
+        process.wait(timeout=10)
 
 
 def wait_for_host_banner(stdout, timeout=10):
