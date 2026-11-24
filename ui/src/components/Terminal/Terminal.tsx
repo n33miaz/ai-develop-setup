@@ -3,6 +3,7 @@ import { Terminal as XTerm } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
 import { useEffect, useImperativeHandle, useRef, type Ref } from 'react'
 import type { ByteSource } from './byteSource'
+import { isMacPlatform } from './isMacPlatform'
 import styles from './Terminal.module.css'
 import { readTerminalTheme, watchTheme } from './terminalTheme'
 
@@ -78,7 +79,7 @@ export function Terminal({
     xterm.open(element)
     term.current = xterm
 
-    if (browserClipboard && !navigator.platform.startsWith('Mac')) {
+    if (browserClipboard && !isMacPlatform(globalThis.navigator)) {
       xterm.attachCustomKeyEventHandler((event) => {
         if (
           event.type !== 'keydown' ||
