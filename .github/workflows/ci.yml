@@ -195,7 +195,7 @@ jobs:
           # Cofre: o crate, as dependências dele no workspace, este workflow e as entradas da compilação.
           VAULT_PATHS: '^(crates/adapters/vault/|crates/(child-env|core)/|crates/contracts/|contracts/|defaults/(action-gate|budget|handoff|harnesses|queue|refusal|routing)\.toml$|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
           # Lançador: o crate, as dependências dele no workspace, os parâmetros dele, este workflow e as entradas da compilação.
-          LAUNCHER_PATHS: '^(crates/(launcher|child-env|private-dir)/|defaults/(harnesses|launcher)\.toml$|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
+          LAUNCHER_PATHS: '^(crates/(launcher|contracts|child-env|private-dir)/|contracts/|defaults/(harnesses|launcher)\.toml$|\.github/workflows/ci\.yml$|Cargo\.lock$|Cargo\.toml$|rust-toolchain\.toml$|\.cargo/)'
         run: |
           set -euo pipefail
           # Na dúvida (disparo manual, push sem base conhecida, diff impossível), roda.
