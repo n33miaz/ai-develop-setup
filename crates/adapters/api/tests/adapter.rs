@@ -1,0 +1,342 @@
+use ads_adapter_api::{
+    ApiConfig, ChatRequest, KeyHandle, MapError, Message, Month, Refusal, Role, SpendGuard,
+    TokenUsage, build_request, parse_request_body, parse_response, usage_record,
+};
+
+const PROVIDER: &str = r#"
+[providers.provider-a]
+base_url = "https://api.example.com/v1/"
+model = "model-x"
+input_usd_per_mtok = 2.0
+output_usd_per_mtok = 8.0
+price_version = "prices-2030-01-01"
+"#;
+
+fn config(extra: &str) -> ApiConfig {
+    ApiConfig::from_toml(&format!("{extra}\n{PROVIDER}")).expect("valid config")
+}
+
+fn month(m: u8) -> Month {
+    Month::new(2030, m).expect("month")
+}
+
+fn request(text: &str) -> ChatRequest {
+    ChatRequest {
+        messages: vec![
+            Message {
+                role: Role::System,
+                content: "be brief".to_owned(),
+            },
+            Message {
+                role: Role::User,
+                content: text.to_owned(),
+            },
+        ],
+        max_tokens: Some(100),
+        temperature: Some(0.5),
+    }
+}
+
+#[test]
+fn defaults_are_off_without_cap_or_provider() {
+    let defaults = ApiConfig::defaults();
+    assert!(!defaults.enabled);
+    assert_eq!(defaults.monthly_cap_micro_usd, None);
+    assert_eq!(defaults.providers().count(), 0);
+}
+
+#[test]
+fn a_provider_with_a_cap_is_still_refused_while_disabled() {
+    let cfg = config("monthly_cap_usd = 10.0");
+    assert!(!cfg.enabled);
+    let mut guard = SpendGuard::new(&cfg, month(1), 0);
+    assert_eq!(guard.authorize(month(1), 1).unwrap_err(), Refusal::Disabled);
+}
+
+#[test]
+fn enabled_without_a_cap_refuses_every_call() {
+    let cfg = config("enabled = true");
+    let mut guard = SpendGuard::new(&cfg, month(1), 0);
+    assert_eq!(guard.authorize(month(1), 0).unwrap_err(), Refusal::NoCap);
+}
+
+#[test]
+fn the_guard_stops_at_the_cap_and_reserves_the_worst_case() {
+    let cfg = config("enabled = true\nmonthly_cap_usd = 1.0");
+    let mut guard = SpendGuard::new(&cfg, month(1), 0);
+    assert_eq!(
+        guard.authorize(month(1), 1_000_001).unwrap_err(),
+        Refusal::WouldExceedCap
+    );
+    let first = guard.authorize(month(1), 600_000).expect("fits");
+    // 600k held: another 600k would pass the cap even though nothing is spent yet.
+    assert_eq!(
+        guard.authorize(month(1), 600_000).unwrap_err(),
+        Refusal::WouldExceedCap
+    );
+    guard.settle(first, 1_000_000);
+    assert_eq!(guard.spent_micro_usd(), 1_000_000);
+    assert_eq!(
+        guard.authorize(month(1), 0).unwrap_err(),
+        Refusal::CapReached
+    );
+}
+
+#[test]
+fn an_overrun_still_counts_and_a_release_charges_nothing() {
+    let cfg = config("enabled = true\nmonthly_cap_usd = 1.0");
+    let mut guard = SpendGuard::new(&cfg, month(1), 0);
+    let held = guard.authorize(month(1), 500_000).expect("fits");
+    guard.release(held);
+    assert_eq!(guard.spent_micro_usd(), 0);
+    let held = guard.authorize(month(1), 500_000).expect("fits");
+    guard.settle(held, 900_000);
+    assert_eq!(guard.spent_micro_usd(), 900_000);
+}
+
+#[test]
+fn a_new_month_resets_but_a_clock_set_back_does_not() {
+    let cfg = config("enabled = true\nmonthly_cap_usd = 1.0");
+    let mut guard = SpendGuard::new(&cfg, month(3), 1_000_000);
+    assert_eq!(
+        guard.authorize(month(3), 0).unwrap_err(),
+        Refusal::CapReached
+    );
+    assert_eq!(
+        guard.authorize(month(2), 0).unwrap_err(),
+        Refusal::CapReached
+    );
+    assert!(guard.authorize(month(4), 10).is_ok());
+}
+
+#[test]
+fn config_refuses_bad_values() {
+    for bad in [
+        "monthly_cap_usd = 0.0",
+        "monthly_cap_usd = -1.0",
+        "key_header = \"bad header\"",
+        "chat_path = \"no-slash\"",
+        "max_output_tokens = 0",
+        "unknown_key = 1",
+    ] {
+        assert!(ApiConfig::from_toml(bad).is_err(), "{bad}");
+    }
+    for bad_url in [
+        "http://api.example.com",
+        "https://user:pw@api.example.com",
+        "https://api.example.com/v1?x=1",
+        "https://",
+    ] {
+        let toml = PROVIDER.replace("https://api.example.com/v1/", bad_url);
+        assert!(ApiConfig::from_toml(&toml).is_err(), "{bad_url}");
+    }
+    let email_alias = PROVIDER.replace("provider-a", "user@example.com");
+    assert!(ApiConfig::from_toml(&email_alias).is_err());
+}
+
+#[test]
+fn provider_overrides_win_over_the_defaults() {
+    let toml = format!(
+        "{PROVIDER}\nkey_header = \"x-api-key\"\nkey_prefix = \"\"\n\n[providers.provider-b]\nbase_url = \"https://b.example.com\"\nmodel = \"model-y\"\ninput_usd_per_mtok = 1.0\noutput_usd_per_mtok = 1.0\nprice_version = \"p\"\nchat_path = \"/v2/chat\"\nkey_header = \"authorization\"\nmax_output_tokens = 50\n"
+    );
+    let cfg = ApiConfig::from_toml(&toml).expect("valid");
+    let a = cfg.provider("provider-a").expect("a");
+    let b = cfg.provider("provider-b").expect("b");
+    assert_eq!(a.key_header, "x-api-key");
+    assert_eq!(a.url, "https://api.example.com/v1/chat/completions");
+    assert_eq!(b.url, "https://b.example.com/v2/chat");
+    assert_eq!(
+        (b.key_header.as_str(), b.max_output_tokens),
+        ("authorization", 50)
+    );
+}
+
+#[test]
+fn the_request_maps_to_the_wire_format_and_back() {
+    let cfg = config("");
+    let provider = cfg.provider("provider-a").expect("provider");
+    let original = request("hello");
+    let prepared = build_request(provider, &original, KeyHandle::new("vault-entry-1")).expect("ok");
+
+    let wire: serde_json::Value = serde_json::from_str(&prepared.body).expect("json");
+    assert_eq!(wire["model"], "model-x");
+    assert_eq!(wire["stream"], false);
+    assert_eq!(wire["messages"][1]["role"], "user");
+    assert_eq!(prepared.url, "https://api.example.com/v1/chat/completions");
+    assert_eq!(prepared.key.header, "Authorization");
+    assert_eq!(prepared.key.prefix, "Bearer ");
+
+    let (model, parsed) = parse_request_body(&prepared.body).expect("round trip");
+    assert_eq!(model, "model-x");
+    assert_eq!(parsed, original);
+}
+
+#[test]
+fn defaults_fill_max_tokens_and_limits_are_enforced() {
+    let cfg = config("max_output_tokens = 64");
+    let provider = cfg.provider("provider-a").expect("provider");
+    let handle = || KeyHandle::new("k");
+    let mut req = request("hi");
+    req.max_tokens = None;
+    let prepared = build_request(provider, &req, handle()).expect("ok");
+    assert_eq!(
+        parse_request_body(&prepared.body).unwrap().1.max_tokens,
+        Some(64)
+    );
+
+    req.max_tokens = Some(65);
+    assert_eq!(
+        build_request(provider, &req, handle()).unwrap_err(),
+        MapError::MaxTokens
+    );
+    req.max_tokens = Some(0);
+    assert_eq!(
+        build_request(provider, &req, handle()).unwrap_err(),
+        MapError::MaxTokens
+    );
+    req.max_tokens = Some(10);
+    req.temperature = Some(3.0);
+    assert_eq!(
+        build_request(provider, &req, handle()).unwrap_err(),
+        MapError::Temperature
+    );
+    req.temperature = None;
+    req.messages.clear();
+    assert_eq!(
+        build_request(provider, &req, handle()).unwrap_err(),
+        MapError::EmptyMessages
+    );
+}
+
+#[test]
+fn worst_case_counts_body_bytes_as_input_and_max_tokens_as_output() {
+    let cfg = config("");
+    let provider = cfg.provider("provider-a").expect("provider");
+    let prepared = build_request(provider, &request("hello"), KeyHandle::new("k")).unwrap();
+    let expected = provider.cost_micro_usd(prepared.body.len() as u64, 100);
+    assert_eq!(prepared.worst_case_micro_usd, expected);
+    // 100 output tokens at 8 USD per million is 800 micro-dollars, plus the input bound.
+    assert!(prepared.worst_case_micro_usd >= 800);
+}
+
+#[test]
+fn the_response_maps_text_and_usage() {
+    let body = r#"{"model":"model-x","choices":[{"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}"#;
+    let response = parse_response(body).expect("ok");
+    assert_eq!(response.text, "hi");
+    assert_eq!(response.finish_reason.as_deref(), Some("stop"));
+    assert_eq!(
+        response.usage,
+        Some(TokenUsage {
+            tokens_in: 10,
+            tokens_out: 5
+        })
+    );
+}
+
+#[test]
+fn a_response_without_complete_usage_has_none_and_a_malformed_one_is_refused() {
+    let partial = r#"{"choices":[{"message":{"content":null}}],"usage":{"prompt_tokens":10}}"#;
+    let response = parse_response(partial).expect("ok");
+    assert_eq!((response.text.as_str(), response.usage), ("", None));
+    for bad in ["{}", r#"{"choices":[]}"#, "not json", r#"{"choices":[{}]}"#] {
+        assert_eq!(
+            parse_response(bad).unwrap_err(),
+            MapError::MalformedResponse,
+            "{bad}"
+        );
+    }
+}
+
+#[test]
+fn the_usage_record_is_sized_from_reported_tokens_or_the_reserve() {
+    let cfg = config("");
+    let provider = cfg.provider("provider-a").expect("provider");
+    let reported = usage_record(
+        provider,
+        "2030-01-02T03:04:05Z",
+        Some(TokenUsage {
+            tokens_in: 1_000_000,
+            tokens_out: 1_000_000,
+        }),
+        7,
+    )
+    .expect("record");
+    assert_eq!(reported.cost_estimate_micro_usd, 10_000_000);
+    assert_eq!(reported.provider_alias.as_str(), "provider-a");
+
+    let reserved = usage_record(provider, "2030-01-02T03:04:05Z", None, 1234).expect("record");
+    assert_eq!(reserved.cost_estimate_micro_usd, 1234);
+    assert_eq!((reserved.tokens_in, reserved.tokens_out), (0, 0));
+    assert!(usage_record(provider, "yesterday", None, 0).is_err());
+}
+
+#[test]
+fn the_usage_record_has_no_content_and_validates_against_the_contract_shape() {
+    let cfg = config("");
+    let provider = cfg.provider("provider-a").expect("provider");
+    let secret_text = "very-private-prompt-text";
+    let prepared = build_request(provider, &request(secret_text), KeyHandle::new("k")).unwrap();
+    let body = format!(
+        r#"{{"choices":[{{"message":{{"content":"{secret_text}"}}}}],"usage":{{"prompt_tokens":3,"completion_tokens":4}}}}"#
+    );
+    let response = parse_response(&body).unwrap();
+    let record = usage_record(
+        provider,
+        "2030-01-02T03:04:05Z",
+        response.usage,
+        prepared.worst_case_micro_usd,
+    )
+    .unwrap();
+
+    let json = serde_json::to_string(&record).expect("json");
+    assert!(!json.contains(secret_text));
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let mut keys: Vec<&str> = value
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        [
+            "cost_basis",
+            "cost_estimate_micro_usd",
+            "model",
+            "price_version",
+            "provider_alias",
+            "tokens_in",
+            "tokens_out",
+            "ts",
+            "version"
+        ]
+    );
+}
+
+#[test]
+fn debug_output_hides_prompt_text_response_text_and_the_key_reference() {
+    let cfg = config("");
+    let provider = cfg.provider("provider-a").expect("provider");
+    let prepared = build_request(
+        provider,
+        &request("very-private-prompt-text"),
+        KeyHandle::new("vault-entry-1"),
+    )
+    .unwrap();
+    let response =
+        parse_response(r#"{"choices":[{"message":{"content":"very-private-answer"}}]}"#).unwrap();
+    let shown = format!(
+        "{prepared:?} {:?} {response:?} {:?}",
+        request("very-private-prompt-text"),
+        prepared.key
+    );
+    for hidden in [
+        "very-private-prompt-text",
+        "very-private-answer",
+        "vault-entry-1",
+    ] {
+        assert!(!shown.contains(hidden), "{hidden}");
+    }
+}
