@@ -43,6 +43,9 @@ function Wait-WebTerminalService {
         if ((& $Ready) -and !$Process.HasExited) { return }
         Start-Sleep -Milliseconds 100
     }
+    if ($Process.HasExited) {
+        throw "$Name exited before becoming ready with exit code $($Process.ExitCode). Check its console before retrying."
+    }
     throw "$Name did not become ready. Check its console and close any remaining startup windows before retrying."
 }
 
