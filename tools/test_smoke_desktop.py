@@ -8,7 +8,30 @@ from threading import Event, Timer
 from unittest.mock import Mock, call, patch
 
 import smoke_desktop
-from smoke_desktop import wait_for_host_banner
+from smoke_desktop import stop, wait_for_host_banner
+
+
+class StopProcessTests(unittest.TestCase):
+    def test_terminates_and_waits_when_process_responds_normally(self):
+        process = Mock()
+        process.poll.return_value = None
+
+        stop(process)
+
+        process.terminate.assert_called_once_with()
+        process.wait.assert_called_once_with(timeout=10)
+        process.kill.assert_not_called()
+
+    def test_kills_and_waits_again_when_terminate_times_out(self):
+        process = Mock()
+        process.poll.return_value = None
+        process.wait.side_effect = [TimeoutExpired("ads-shell.exe", 10), 0]
+
+        stop(process)
+
+        process.terminate.assert_called_once_with()
+        process.kill.assert_called_once_with()
+        self.assertEqual(process.wait.call_args_list, [call(timeout=10), call(timeout=10)])
 
 
 class HostBannerTests(unittest.TestCase):
