@@ -1,6 +1,22 @@
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'start-web-terminal.ps1')
 
+$process = Start-Process -FilePath cmd.exe -ArgumentList '/d /c exit 23' -WindowStyle Hidden -PassThru
+try {
+    $process.WaitForExit()
+    $message = $null
+    try {
+        Wait-WebTerminalService $process 'Terminal host' 15 { $false }
+    } catch {
+        $message = $_.Exception.Message
+    }
+    if ($message -notlike '*Terminal host*exit code 23*') {
+        throw "Expected the service name and exit code 23, got '$message'."
+    }
+} finally {
+    $process.Dispose()
+}
+
 function Assert-StartRefused {
     param([string] $Message)
 
