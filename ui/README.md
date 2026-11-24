@@ -97,6 +97,46 @@ digitado durante a queda é descartado e precisa ser digitado novamente
 depois que o terminal voltar a aceitar entrada. O service worker fica
 desativado nessa janela. O bundle é o mesmo da interface web.
 
+## Teste de fumaça do terminal no navegador
+
+O teste manual `tests/web-terminal-browser.mjs` roda separadamente de `npm test`
+e do CI. Ele inicia o Vite na porta 5173, que precisa estar livre, e abre um
+navegador sem janela. A interface se autentica no daemon por WebSocket e abre
+um processo de teste no terminal xterm. Pelo Chrome DevTools Protocol (CDP), o
+teste simula a digitação de atalhos, confere os bytes recebidos pelo processo
+ao colar e verifica o texto copiado para a área de transferência do navegador.
+
+Na raiz do repositório, compile os executáveis de debug.
+
+```sh
+cargo build -p ads-ptyhost -p ads-daemon
+```
+
+O teste procura os dois em `target/debug`. Se usar `CARGO_TARGET_DIR`, mantenha
+o mesmo valor ao compilar e ao executar o teste.
+
+Defina `CHROMIUM_BIN` com o caminho do executável instalado. Por exemplo, para
+Edge no PowerShell, use o caminho de instalação do Edge.
+
+```powershell
+$env:CHROMIUM_BIN = 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'
+```
+
+No Linux, ajuste o caminho para a instalação do Chromium.
+
+```sh
+export CHROMIUM_BIN=/usr/bin/chromium
+```
+
+No mesmo terminal, entre em `ui/`, instale as dependências com Node.js 24 ou
+superior e execute o teste.
+
+```sh
+cd ui
+npm ci
+npm run test:browser
+```
+
 ## Fila de tarefas e aprovações
 
 Com a conexão autenticada, abra **Fila de tarefas**. O painel pede ao daemon o
