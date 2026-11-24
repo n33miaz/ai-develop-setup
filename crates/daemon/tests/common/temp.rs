@@ -86,21 +86,23 @@ impl Drop for Scratch {
         if let Some(files) = self.files {
             for file in files {
                 let file_path = path.join(file);
-                if let Err(error) = std::fs::remove_file(&file_path) {
-                    if error.kind() != std::io::ErrorKind::NotFound && cleanup_error.is_none() {
-                        cleanup_error = Some(error);
-                    }
-                }
-            }
-            if let Err(error) = std::fs::remove_dir(&path) {
-                if error.kind() != std::io::ErrorKind::NotFound && cleanup_error.is_none() {
+                if let Err(error) = std::fs::remove_file(&file_path)
+                    && error.kind() != std::io::ErrorKind::NotFound
+                    && cleanup_error.is_none()
+                {
                     cleanup_error = Some(error);
                 }
             }
-        } else if let Err(error) = std::fs::remove_dir_all(&path) {
-            if error.kind() != std::io::ErrorKind::NotFound {
+            if let Err(error) = std::fs::remove_dir(&path)
+                && error.kind() != std::io::ErrorKind::NotFound
+                && cleanup_error.is_none()
+            {
                 cleanup_error = Some(error);
             }
+        } else if let Err(error) = std::fs::remove_dir_all(&path)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            cleanup_error = Some(error);
         }
 
         if !std::thread::panicking() {

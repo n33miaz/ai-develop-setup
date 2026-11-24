@@ -41,13 +41,14 @@ impl std::ops::Deref for UserFile {
 
 impl Drop for UserFile {
     fn drop(&mut self) {
-        if let Err(error) = std::fs::remove_file(&self.path) {
-            if error.kind() != std::io::ErrorKind::NotFound && !std::thread::panicking() {
-                panic!(
-                    "failed to remove temporary user file {:?}: {error}",
-                    self.path
-                );
-            }
+        if let Err(error) = std::fs::remove_file(&self.path)
+            && error.kind() != std::io::ErrorKind::NotFound
+            && !std::thread::panicking()
+        {
+            panic!(
+                "failed to remove temporary user file {:?}: {error}",
+                self.path
+            );
         }
     }
 }
