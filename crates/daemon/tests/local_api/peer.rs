@@ -1,9 +1,13 @@
 use super::{Fixture, TestLauncher};
 use ads_daemon::api::{ApiConfig, LocalApi};
 use ads_daemon::pty_client::{ClientConfig, PtyClient};
-use ads_ptyhost::{FakeBackend, HostConfig, PtyHost, wire::Call};
-use std::sync::Arc;
+use ads_ptyhost::wire::{self, Call, ResultBody};
+use ads_ptyhost::{FakeBackend, HostConfig, PtyHost};
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio::io::{AsyncWriteExt, DuplexStream};
+use tokio::sync::Notify;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum PeerScenario {
@@ -29,6 +33,21 @@ pub(super) enum PeerScenario {
 }
 
 impl PeerScenario {
+    fn uses_host(self) -> bool {
+        matches!(
+            self,
+            Self::GapOutput
+                | Self::GapOutputDropClose
+                | Self::GapExit
+                | Self::GapClose
+                | Self::GapBeforeCloseResponse
+                | Self::HostHoldSubscribe
+                | Self::HostLostOnSubscribe
+                | Self::HostDropClose
+                | Self::Recover
+        )
+    }
+
     fn holds_close(self) -> bool {
         matches!(
             self,
@@ -65,13 +84,268 @@ impl From<&Call> for PeerCall {
     }
 }
 
+struct ScriptedPeer {
+    scenario: PeerScenario,
+    stream: DuplexStream,
+    host: Arc<PtyHost>,
+    release: Arc<Notify>,
+    calls: Arc<Mutex<Vec<PeerCall>>>,
+    budget: HashMap<PeerCall, usize>,
+    code: wire::ErrorCode,
+    error_text: Arc<Mutex<String>>,
+    burst: usize,
+}
+
+enum SubscribeAction {
+    Reply,
+    SkipReply,
+    Disconnect,
+}
+
+impl ScriptedPeer {
+    async fn run(mut self) {
+        let mut seen = HashSet::new();
+        while let Ok(Some(wire::Frame::Json(payload))) =
+            wire::read_frame(&mut self.stream, 131072).await
+        {
+            let request = wire::Request::parse(&payload).unwrap();
+            let method = PeerCall::from(&request.call);
+            self.calls.lock().unwrap().push(method);
+            let first = seen.insert(method);
+            let refuse = self.take_refusal(method, first);
+
+            if method == PeerCall::Subscribe {
+                match self.on_subscribe(first).await {
+                    SubscribeAction::Reply => (),
+                    SubscribeAction::SkipReply => continue,
+                    SubscribeAction::Disconnect => break,
+                }
+            }
+            if method == PeerCall::Close && first && self.drop_first_close().await {
+                continue;
+            }
+
+            let outcome = self.outcome(&request.call, refuse);
+            match &request.call {
+                Call::Open(params) => self.on_open(params, outcome.is_ok()).await,
+                Call::Close(params) => {
+                    self.on_close(&params.session_id, outcome.is_ok(), first)
+                        .await
+                }
+                Call::Write(params) => self.on_write(&params.session_id).await,
+                _ => (),
+            }
+            let response = wire::Response {
+                id: Some(request.id),
+                outcome,
+            };
+            if self
+                .stream
+                .write_all(&wire::encode_json(&response).unwrap())
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+    }
+
+    fn take_refusal(&mut self, method: PeerCall, first: bool) -> bool {
+        let key = match (self.scenario, method) {
+            (PeerScenario::Recover, PeerCall::Subscribe) if !first => PeerCall::Resubscribe,
+            _ => method,
+        };
+        self.budget.get_mut(&key).is_some_and(|left| {
+            let refuse = *left > 0;
+            *left = left.saturating_sub(1);
+            refuse
+        })
+    }
+
+    fn outcome(&self, call: &Call, refuse: bool) -> Result<ResultBody, wire::ErrorBody> {
+        if refuse {
+            return Err(wire::ErrorBody::new(
+                self.code,
+                &self.error_text.lock().unwrap(),
+                Some(wire::ErrorData {
+                    oldest_seq: Some(1.try_into().unwrap()),
+                    next_seq: Some(1.try_into().unwrap()),
+                    limit: None,
+                }),
+            ));
+        }
+        Ok(match call {
+            Call::Hello(_) => ResultBody::Hello(wire::HelloResult {
+                contract: Default::default(),
+            }),
+            Call::Subscribe(_) => ResultBody::ReplayBounds(wire::ReplayBounds {
+                oldest_seq: 1.try_into().unwrap(),
+                next_seq: 1.try_into().unwrap(),
+            }),
+            Call::Close(_) => ResultBody::Closed(wire::Closed { exit_code: None }),
+            _ => ResultBody::Empty(wire::Empty {}),
+        })
+    }
+
+    async fn on_subscribe(&mut self, first: bool) -> SubscribeAction {
+        match self.scenario {
+            PeerScenario::HostHoldSubscribe if first => SubscribeAction::SkipReply,
+            PeerScenario::HostLostOnSubscribe => SubscribeAction::Disconnect,
+            PeerScenario::FloodOnSubscribe => {
+                // Stop reading until resubscriptions fill the client's outgoing queue.
+                let notice = subscription_closed(
+                    &wire::SessionId::new("x").unwrap(),
+                    0,
+                    wire::CloseReason::SlowSubscriber,
+                );
+                while self.stream.write_all(&notice).await.is_ok() {}
+                SubscribeAction::Disconnect
+            }
+            PeerScenario::BusyOnOpen => SubscribeAction::SkipReply,
+            _ => SubscribeAction::Reply,
+        }
+    }
+
+    async fn on_open(&mut self, params: &wire::OpenParams, accepted: bool) {
+        if accepted && self.scenario.uses_host() {
+            self.host
+                .open(
+                    &params.session_id,
+                    &ads_ptyhost::SpawnSpec {
+                        program: params.program.clone().into(),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+        }
+        if self.scenario == PeerScenario::BusyOnOpen {
+            for name in ["x", "y"] {
+                self.send(&subscription_closed(
+                    &wire::SessionId::new(name).unwrap(),
+                    0,
+                    wire::CloseReason::SlowSubscriber,
+                ))
+                .await;
+            }
+        }
+    }
+
+    async fn drop_first_close(&mut self) -> bool {
+        if matches!(
+            self.scenario,
+            PeerScenario::ExitOtherThenHoldClose | PeerScenario::ExitOtherThenDropClose
+        ) {
+            self.send(&session_exited(&wire::SessionId::new("b").unwrap(), 0))
+                .await;
+        }
+        matches!(
+            self.scenario,
+            PeerScenario::GapOutputDropClose
+                | PeerScenario::HostDropClose
+                | PeerScenario::ExitOtherThenDropClose
+        )
+    }
+
+    async fn on_close(&mut self, id: &wire::SessionId, accepted: bool, first: bool) {
+        if accepted && self.scenario.uses_host() {
+            self.host.close(id).await.unwrap();
+        }
+        let notice = match self.scenario {
+            PeerScenario::ExitBeforeCloseResponse | PeerScenario::ExitThenHoldClose => {
+                Some(session_exited(id, 0))
+            }
+            PeerScenario::GapBeforeCloseResponse => Some(session_exited(id, 7)),
+            PeerScenario::ClosedBeforeCloseResponse { .. } => {
+                Some(subscription_closed(id, 0, wire::CloseReason::SessionClosed))
+            }
+            _ => None,
+        };
+        if let Some(notice) = notice {
+            self.send(&notice).await;
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        if first && self.scenario.holds_close() {
+            // Wait until the test has seen the terminal event processed.
+            self.release.notified().await;
+        }
+    }
+
+    async fn on_write(&mut self, id: &wire::SessionId) {
+        match self.scenario {
+            PeerScenario::Stall => std::future::pending::<()>().await,
+            PeerScenario::Recover => {
+                self.send(&subscription_closed(
+                    id,
+                    0,
+                    wire::CloseReason::SlowSubscriber,
+                ))
+                .await
+            }
+            PeerScenario::ExitOtherThenHoldClose | PeerScenario::ExitOtherThenDropClose
+                if id.as_str() == "a" =>
+            {
+                self.send(&session_exited(id, 0)).await
+            }
+            PeerScenario::GapOutput | PeerScenario::GapOutputDropClose => {
+                self.send_output(id, 2).await
+            }
+            PeerScenario::ExitOnWrite => self.send(&session_exited(id, 0)).await,
+            PeerScenario::GapExit => self.send(&session_exited(id, 1)).await,
+            PeerScenario::GapClose => {
+                self.send(&subscription_closed(
+                    id,
+                    1,
+                    wire::CloseReason::SessionClosed,
+                ))
+                .await
+            }
+            _ => (),
+        }
+        for seq in 1..=self.burst {
+            self.send_output(id, seq as u64).await;
+        }
+        if self.burst > 0 {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+    }
+
+    async fn send(&mut self, frame: &[u8]) {
+        self.stream.write_all(frame).await.unwrap();
+    }
+
+    async fn send_output(&mut self, id: &wire::SessionId, seq: u64) {
+        self.send(&wire::encode_output(id, seq, b"terminal-sentinel").unwrap())
+            .await;
+    }
+}
+
+fn session_exited(id: &wire::SessionId, last_seq: u64) -> Vec<u8> {
+    wire::encode_json(&wire::Notification::SessionExited(wire::SessionExited {
+        session_id: id.clone(),
+        last_seq,
+        exit_code: Some(0),
+    }))
+    .unwrap()
+}
+
+fn subscription_closed(id: &wire::SessionId, last_seq: u64, reason: wire::CloseReason) -> Vec<u8> {
+    wire::encode_json(&wire::Notification::SubscriptionClosed(
+        wire::SubscriptionClosed {
+            session_id: id.clone(),
+            last_seq,
+            reason,
+        },
+    ))
+    .unwrap()
+}
+
 // A peer implements the public codec and injects refusals independent of terminal timing.
 pub(super) async fn refusing_fixture(
     overrides: &str,
     method: PeerCall,
-    code: ads_ptyhost::wire::ErrorCode,
+    code: wire::ErrorCode,
     burst: usize,
-) -> (Fixture, Arc<std::sync::Mutex<Vec<PeerCall>>>) {
+) -> (Fixture, Arc<Mutex<Vec<PeerCall>>>) {
     scripted_fixture(overrides, PeerScenario::Plain, code, burst, &[(method, 1)]).await
 }
 
@@ -79,337 +353,28 @@ pub(super) async fn refusing_fixture(
 pub(super) async fn scripted_fixture(
     overrides: &str,
     scenario: PeerScenario,
-    code: ads_ptyhost::wire::ErrorCode,
+    code: wire::ErrorCode,
     burst: usize,
     refusals: &[(PeerCall, usize)],
-) -> (Fixture, Arc<std::sync::Mutex<Vec<PeerCall>>>) {
-    use ads_ptyhost::wire::{self, ResultBody};
-    use tokio::io::AsyncWriteExt;
+) -> (Fixture, Arc<Mutex<Vec<PeerCall>>>) {
     let backend = Arc::new(FakeBackend::new());
     let host = Arc::new(PtyHost::new(backend.clone(), HostConfig::defaults()).unwrap());
-    let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let observed = calls.clone();
-    let error_text = Arc::new(std::sync::Mutex::new(String::new()));
-    let peer_error = error_text.clone();
-    let (near, mut far) = tokio::io::duplex(4096);
-    let peer_host = host.clone();
-    let release: Arc<tokio::sync::Notify> = Arc::default();
-    let peer_release = release.clone();
-    let mut budget: std::collections::HashMap<PeerCall, usize> = refusals.iter().copied().collect();
-    let peer = tokio::spawn(async move {
-        let mut released = false;
-        let mut dropped = false;
-        let mut held = false;
-        let mut other_exited = false;
-        let mut subscriptions = 0;
-        while let Ok(Some(wire::Frame::Json(payload))) = wire::read_frame(&mut far, 131072).await {
-            let request = wire::Request::parse(&payload).unwrap();
-            let method = PeerCall::from(&request.call);
-            observed.lock().unwrap().push(method);
-            if method == PeerCall::Subscribe {
-                subscriptions += 1;
-            }
-            let key = if scenario == PeerScenario::Recover
-                && method == PeerCall::Subscribe
-                && subscriptions > 1
-            {
-                PeerCall::Resubscribe
-            } else {
-                method
-            };
-            let refuse = budget.get_mut(&key).is_some_and(|left| {
-                let refuse = *left > 0;
-                *left = left.saturating_sub(1);
-                refuse
-            });
-            if method == PeerCall::Subscribe && scenario == PeerScenario::HostHoldSubscribe && !held
-            {
-                // The host opened the terminal but never answers the subscription.
-                held = true;
-                continue;
-            }
-            if method == PeerCall::Subscribe && scenario == PeerScenario::HostLostOnSubscribe {
-                // The host goes away after opening the terminal, before answering the subscription.
-                break;
-            }
-            if method == PeerCall::Subscribe && scenario == PeerScenario::FloodOnSubscribe {
-                // The host stops reading and keeps asking for resubscriptions: the client's
-                // outgoing queue fills and the client stops.
-                let notice = wire::encode_json(&wire::Notification::SubscriptionClosed(
-                    wire::SubscriptionClosed {
-                        session_id: wire::SessionId::new("x").unwrap(),
-                        last_seq: 0,
-                        reason: wire::CloseReason::SlowSubscriber,
-                    },
-                ))
-                .unwrap();
-                while far.write_all(&notice).await.is_ok() {}
-                break;
-            }
-            if method == PeerCall::Subscribe && scenario == PeerScenario::BusyOnOpen {
-                // Resubscriptions stay unanswered and take every pending call of the client.
-                continue;
-            }
-            if method == PeerCall::Close
-                && matches!(
-                    scenario,
-                    PeerScenario::ExitOtherThenHoldClose | PeerScenario::ExitOtherThenDropClose
-                )
-                && !other_exited
-            {
-                // Another session ends while the daemon waits for this close.
-                other_exited = true;
-                far.write_all(
-                    &wire::encode_json(&wire::Notification::SessionExited(wire::SessionExited {
-                        session_id: wire::SessionId::new("b").unwrap(),
-                        last_seq: 0,
-                        exit_code: Some(0),
-                    }))
-                    .unwrap(),
-                )
-                .await
-                .unwrap();
-            }
-            if method == PeerCall::Close
-                && matches!(
-                    scenario,
-                    PeerScenario::GapOutputDropClose
-                        | PeerScenario::HostDropClose
-                        | PeerScenario::ExitOtherThenDropClose
-                )
-                && !dropped
-            {
-                // The first close never gets a reply, as if the host stalled on it.
-                dropped = true;
-                continue;
-            }
-            let outcome = if refuse {
-                Err(wire::ErrorBody::new(
-                    code,
-                    &peer_error.lock().unwrap(),
-                    Some(wire::ErrorData {
-                        oldest_seq: Some(1.try_into().unwrap()),
-                        next_seq: Some(1.try_into().unwrap()),
-                        limit: None,
-                    }),
-                ))
-            } else {
-                Ok(match &request.call {
-                    Call::Hello(_) => ResultBody::Hello(wire::HelloResult {
-                        contract: Default::default(),
-                    }),
-                    Call::Subscribe(_) => ResultBody::ReplayBounds(wire::ReplayBounds {
-                        oldest_seq: 1.try_into().unwrap(),
-                        next_seq: 1.try_into().unwrap(),
-                    }),
-                    Call::Close(_) => ResultBody::Closed(wire::Closed { exit_code: None }),
-                    _ => ResultBody::Empty(wire::Empty {}),
-                })
-            };
-            if outcome.is_ok()
-                && matches!(
-                    scenario,
-                    PeerScenario::GapOutput
-                        | PeerScenario::GapOutputDropClose
-                        | PeerScenario::GapExit
-                        | PeerScenario::GapClose
-                        | PeerScenario::GapBeforeCloseResponse
-                        | PeerScenario::HostHoldSubscribe
-                        | PeerScenario::HostLostOnSubscribe
-                        | PeerScenario::HostDropClose
-                        | PeerScenario::Recover
-                )
-            {
-                match &request.call {
-                    Call::Open(params) => {
-                        peer_host
-                            .open(
-                                &params.session_id,
-                                &ads_ptyhost::SpawnSpec {
-                                    program: params.program.clone().into(),
-                                    ..Default::default()
-                                },
-                            )
-                            .unwrap();
-                    }
-                    Call::Close(params) => {
-                        peer_host.close(&params.session_id).await.unwrap();
-                    }
-                    _ => (),
-                }
-            }
-            if let Call::Close(params) = &request.call
-                && matches!(
-                    scenario,
-                    PeerScenario::ExitBeforeCloseResponse
-                        | PeerScenario::GapBeforeCloseResponse
-                        | PeerScenario::ExitThenHoldClose
-                )
-            {
-                far.write_all(
-                    &wire::encode_json(&wire::Notification::SessionExited(wire::SessionExited {
-                        session_id: params.session_id.clone(),
-                        last_seq: if scenario == PeerScenario::GapBeforeCloseResponse {
-                            7
-                        } else {
-                            0
-                        },
-                        exit_code: Some(0),
-                    }))
-                    .unwrap(),
-                )
-                .await
-                .unwrap();
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-            if let Call::Close(params) = &request.call
-                && matches!(scenario, PeerScenario::ClosedBeforeCloseResponse { .. })
-            {
-                far.write_all(
-                    &wire::encode_json(&wire::Notification::SubscriptionClosed(
-                        wire::SubscriptionClosed {
-                            session_id: params.session_id.clone(),
-                            last_seq: 0,
-                            reason: wire::CloseReason::SessionClosed,
-                        },
-                    ))
-                    .unwrap(),
-                )
-                .await
-                .unwrap();
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-            if method == PeerCall::Close && scenario.holds_close() && !released {
-                // The first close reply waits until the test saw the terminal event processed.
-                released = true;
-                peer_release.notified().await;
-            }
-            if method == PeerCall::Open && scenario == PeerScenario::BusyOnOpen {
-                for name in ["x", "y"] {
-                    far.write_all(
-                        &wire::encode_json(&wire::Notification::SubscriptionClosed(
-                            wire::SubscriptionClosed {
-                                session_id: wire::SessionId::new(name).unwrap(),
-                                last_seq: 0,
-                                reason: wire::CloseReason::SlowSubscriber,
-                            },
-                        ))
-                        .unwrap(),
-                    )
-                    .await
-                    .unwrap();
-                }
-            }
-            if let Call::Write(params) = &request.call {
-                if scenario == PeerScenario::Stall {
-                    std::future::pending::<()>().await;
-                }
-                if scenario == PeerScenario::Recover {
-                    far.write_all(
-                        &wire::encode_json(&wire::Notification::SubscriptionClosed(
-                            wire::SubscriptionClosed {
-                                session_id: params.session_id.clone(),
-                                last_seq: 0,
-                                reason: wire::CloseReason::SlowSubscriber,
-                            },
-                        ))
-                        .unwrap(),
-                    )
-                    .await
-                    .unwrap();
-                }
-                match scenario {
-                    PeerScenario::ExitOtherThenHoldClose | PeerScenario::ExitOtherThenDropClose
-                        if params.session_id.as_str() == "a" =>
-                    {
-                        far.write_all(
-                            &wire::encode_json(&wire::Notification::SessionExited(
-                                wire::SessionExited {
-                                    session_id: params.session_id.clone(),
-                                    last_seq: 0,
-                                    exit_code: Some(0),
-                                },
-                            ))
-                            .unwrap(),
-                        )
-                        .await
-                        .unwrap()
-                    }
-                    PeerScenario::GapOutput | PeerScenario::GapOutputDropClose => far
-                        .write_all(
-                            &wire::encode_output(&params.session_id, 2, b"terminal-sentinel")
-                                .unwrap(),
-                        )
-                        .await
-                        .unwrap(),
-                    PeerScenario::ExitOnWrite => far
-                        .write_all(
-                            &wire::encode_json(&wire::Notification::SessionExited(
-                                wire::SessionExited {
-                                    session_id: params.session_id.clone(),
-                                    last_seq: 0,
-                                    exit_code: Some(0),
-                                },
-                            ))
-                            .unwrap(),
-                        )
-                        .await
-                        .unwrap(),
-                    PeerScenario::GapExit => far
-                        .write_all(
-                            &wire::encode_json(&wire::Notification::SessionExited(
-                                wire::SessionExited {
-                                    session_id: params.session_id.clone(),
-                                    last_seq: 1,
-                                    exit_code: Some(0),
-                                },
-                            ))
-                            .unwrap(),
-                        )
-                        .await
-                        .unwrap(),
-                    PeerScenario::GapClose => far
-                        .write_all(
-                            &wire::encode_json(&wire::Notification::SubscriptionClosed(
-                                wire::SubscriptionClosed {
-                                    session_id: params.session_id.clone(),
-                                    last_seq: 1,
-                                    reason: wire::CloseReason::SessionClosed,
-                                },
-                            ))
-                            .unwrap(),
-                        )
-                        .await
-                        .unwrap(),
-                    _ => (),
-                }
-                for seq in 1..=burst {
-                    far.write_all(
-                        &wire::encode_output(&params.session_id, seq as u64, b"terminal-sentinel")
-                            .unwrap(),
-                    )
-                    .await
-                    .unwrap();
-                }
-                if burst > 0 {
-                    tokio::time::sleep(Duration::from_millis(30)).await;
-                }
-            }
-            if far
-                .write_all(
-                    &wire::encode_json(&wire::Response {
-                        id: Some(request.id),
-                        outcome,
-                    })
-                    .unwrap(),
-                )
-                .await
-                .is_err()
-            {
-                break;
-            }
-        }
-    });
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let error_text = Arc::new(Mutex::new(String::new()));
+    let (near, far) = tokio::io::duplex(4096);
+    let release: Arc<Notify> = Arc::default();
+    let peer = ScriptedPeer {
+        scenario,
+        stream: far,
+        host: host.clone(),
+        release: release.clone(),
+        calls: calls.clone(),
+        budget: refusals.iter().copied().collect(),
+        code,
+        error_text: error_text.clone(),
+        burst,
+    };
+    let peer = tokio::spawn(peer.run());
     let client = PtyClient::over(
         near,
         ClientConfig {
