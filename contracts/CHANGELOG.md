@@ -2,6 +2,10 @@
 
 Formato: uma seção por data. Contrato novo, campo opcional acrescentado, versão nova de uma URN e contrato aposentado entram aqui. As regras de versão estão no [README](README.md).
 
+## 2026-11-24
+
+- Contrato novo `session.handoff_proposed:1`: proposta de passagem por limiar de contexto, só com metadados (sessão, limiar, percentual medido, número N da cadeia e documento anterior).
+
 ## 2026-11-21
 
 - `approval.list.response:4` e `local-api.server-message:9` informam `policy_changed` quando a política vigente impede aprovar um pedido pendente. O dono ainda pode negar o pedido.
