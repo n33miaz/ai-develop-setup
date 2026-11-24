@@ -43,7 +43,10 @@ impl Drop for UserFile {
     fn drop(&mut self) {
         if let Err(error) = std::fs::remove_file(&self.path) {
             if error.kind() != std::io::ErrorKind::NotFound && !std::thread::panicking() {
-                panic!("failed to remove temporary user file {:?}: {error}", self.path);
+                panic!(
+                    "failed to remove temporary user file {:?}: {error}",
+                    self.path
+                );
             }
         }
     }
@@ -336,10 +339,16 @@ fn user_file_is_removed_on_drop() {
     let path = {
         let file = user_file("daemon-drop-test", b"# drop test\n");
         let path = file.path().to_path_buf();
-        assert!(path.try_exists().unwrap(), "file should exist while guard is held");
+        assert!(
+            path.try_exists().unwrap(),
+            "file should exist while guard is held"
+        );
         path
     };
-    assert!(!path.try_exists().unwrap(), "file should be removed after guard is dropped: {path:?}");
+    assert!(
+        !path.try_exists().unwrap(),
+        "file should be removed after guard is dropped: {path:?}"
+    );
 }
 
 #[test]
@@ -353,7 +362,10 @@ fn user_file_is_removed_on_panic() {
     }));
     assert!(result.is_err());
     let path = file_path.expect("path should be captured");
-    assert!(!path.try_exists().unwrap(), "file should be removed even on panic: {path:?}");
+    assert!(
+        !path.try_exists().unwrap(),
+        "file should be removed even on panic: {path:?}"
+    );
 }
 
 #[path = "common/temp.rs"]
