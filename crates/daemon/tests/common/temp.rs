@@ -11,8 +11,13 @@ pub fn directory() -> PathBuf {
     root
 }
 
-/// A folder of one test inside [`directory`], removed with everything in it when dropped,
-/// also on a panic. Declare it before the processes that use it, so they stop first.
+/// A folder of one test inside [`directory`], removed when dropped, also on a panic.
+///
+/// In [`Scratch::new`], the folder and its entire contents are removed recursively on drop.
+/// In [`Scratch::with_files`], only the explicitly named files are removed individually
+/// before removing the empty folder, enforcing non-recursive cleanup.
+///
+/// Declare it before the processes that use it, so they stop first.
 #[allow(
     dead_code,
     reason = "not every test target that shares this module uses it"
@@ -63,18 +68,50 @@ impl Drop for Scratch {
     fn drop(&mut self) {
         // Only ever a folder strictly inside the test directory, resolved on disk.
         let (Ok(root), Ok(path)) = (directory().canonicalize(), self.path.canonicalize()) else {
+            if !std::thread::panicking() && self.path.try_exists().unwrap_or(false) {
+                panic!(
+                    "scratch folder {:?} exists but could not be canonicalized for cleanup",
+                    self.path
+                );
+            }
             return;
         };
         if path.parent() != Some(root.as_path()) {
+            if !std::thread::panicking() {
+                panic!("scratch folder {:?} is outside {:?}", path, root);
+            }
             return;
         }
+        let mut cleanup_error = None;
         if let Some(files) = self.files {
             for file in files {
-                let _ = std::fs::remove_file(path.join(file));
+                let file_path = path.join(file);
+                if let Err(error) = std::fs::remove_file(&file_path)
+                    && error.kind() != std::io::ErrorKind::NotFound
+                    && cleanup_error.is_none()
+                {
+                    cleanup_error = Some(error);
+                }
             }
-            let _ = std::fs::remove_dir(&path);
-        } else {
-            let _ = std::fs::remove_dir_all(&path);
+            if let Err(error) = std::fs::remove_dir(&path)
+                && error.kind() != std::io::ErrorKind::NotFound
+                && cleanup_error.is_none()
+            {
+                cleanup_error = Some(error);
+            }
+        } else if let Err(error) = std::fs::remove_dir_all(&path)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            cleanup_error = Some(error);
+        }
+
+        if !std::thread::panicking() {
+            if let Some(error) = cleanup_error {
+                panic!("failed to remove scratch folder {:?}: {error}", self.path);
+            }
+            if self.path.try_exists().unwrap_or(false) {
+                panic!("scratch folder unexpectedly remains: {:?}", self.path);
+            }
         }
     }
 }
