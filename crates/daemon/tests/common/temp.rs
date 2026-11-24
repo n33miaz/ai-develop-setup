@@ -1,3 +1,5 @@
+use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 pub fn directory() -> PathBuf {
@@ -13,10 +15,6 @@ pub fn directory() -> PathBuf {
 
 /// A folder of one test inside [`directory`], removed when dropped, also on a panic.
 ///
-/// In [`Scratch::new`], the folder and its entire contents are removed recursively on drop.
-/// In [`Scratch::with_files`], only the explicitly named files are removed individually
-/// before removing the empty folder, enforcing non-recursive cleanup.
-///
 /// Declare it before the processes that use it, so they stop first.
 #[allow(
     dead_code,
@@ -24,7 +22,9 @@ pub fn directory() -> PathBuf {
 )]
 pub struct Scratch {
     path: PathBuf,
-    files: Option<&'static [&'static str]>,
+    cleanup_path: PathBuf,
+    files: &'static [&'static str],
+    subdirs: &'static [(&'static str, &'static [&'static str])],
 }
 
 #[allow(
@@ -33,23 +33,35 @@ pub struct Scratch {
 )]
 impl Scratch {
     /// `name` must be unique to the run: one plain folder name, no separators.
-    pub fn new(name: &str) -> Self {
-        Self::create(name, None)
-    }
-
-    /// Remove only the named files and the empty folder on drop.
     pub fn with_files(name: &str, files: &'static [&'static str]) -> Self {
+        Self::assert_plain_name(name);
         for file in files {
             Self::assert_plain_name(file);
         }
-        Self::create(name, Some(files))
+        let root = directory();
+        let cleanup_path = root.canonicalize().unwrap().join(name);
+        let path = root.join(name);
+        fs::create_dir(&path).unwrap();
+        Self {
+            path,
+            cleanup_path,
+            files,
+            subdirs: &[],
+        }
     }
 
-    fn create(name: &str, files: Option<&'static [&'static str]>) -> Self {
-        Self::assert_plain_name(name);
-        let path = directory().join(name);
-        std::fs::create_dir(&path).unwrap();
-        Self { path, files }
+    /// List child folders before their parents so each is empty when removed.
+    pub fn with_subdirs(mut self, subdirs: &'static [(&str, &[&str])]) -> Self {
+        for &(relative, files) in subdirs {
+            for name in relative.split('/') {
+                Self::assert_plain_name(name);
+            }
+            for file in files {
+                Self::assert_plain_name(file);
+            }
+        }
+        self.subdirs = subdirs;
+        self
     }
 
     fn assert_plain_name(name: &str) {
@@ -62,55 +74,46 @@ impl Scratch {
     pub fn path(&self) -> &Path {
         &self.path
     }
+
+    fn cleanup(&self) -> Result<(), String> {
+        for &(relative, files) in self.subdirs {
+            remove_folder(&self.cleanup_path.join(relative), files)?;
+        }
+        remove_folder(&self.cleanup_path, self.files)
+    }
+}
+
+fn remove_folder(path: &Path, files: &[&str]) -> Result<(), String> {
+    if let Err(error) = fs::symlink_metadata(path) {
+        return match error.kind() {
+            ErrorKind::NotFound => Ok(()),
+            _ => Err(format!("cannot inspect scratch folder {path:?}: {error}")),
+        };
+    }
+    let resolved = path
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve scratch folder {path:?}: {error}"))?;
+    if resolved != path {
+        return Err(format!("scratch folder {path:?} resolves to {resolved:?}"));
+    }
+    for name in files {
+        let file = path.join(name);
+        if let Err(error) = fs::remove_file(&file)
+            && error.kind() != ErrorKind::NotFound
+        {
+            return Err(format!("cannot remove scratch file {file:?}: {error}"));
+        }
+    }
+    fs::remove_dir(path).map_err(|error| format!("cannot remove scratch folder {path:?}: {error}"))
 }
 
 impl Drop for Scratch {
     fn drop(&mut self) {
-        // Only ever a folder strictly inside the test directory, resolved on disk.
-        let (Ok(root), Ok(path)) = (directory().canonicalize(), self.path.canonicalize()) else {
-            if !std::thread::panicking() && self.path.try_exists().unwrap_or(false) {
-                panic!(
-                    "scratch folder {:?} exists but could not be canonicalized for cleanup",
-                    self.path
-                );
-            }
-            return;
-        };
-        if path.parent() != Some(root.as_path()) {
-            if !std::thread::panicking() {
-                panic!("scratch folder {:?} is outside {:?}", path, root);
-            }
-            return;
-        }
-        let mut cleanup_error = None;
-        if let Some(files) = self.files {
-            for file in files {
-                let file_path = path.join(file);
-                if let Err(error) = std::fs::remove_file(&file_path)
-                    && error.kind() != std::io::ErrorKind::NotFound
-                    && cleanup_error.is_none()
-                {
-                    cleanup_error = Some(error);
-                }
-            }
-            if let Err(error) = std::fs::remove_dir(&path)
-                && error.kind() != std::io::ErrorKind::NotFound
-                && cleanup_error.is_none()
-            {
-                cleanup_error = Some(error);
-            }
-        } else if let Err(error) = std::fs::remove_dir_all(&path)
-            && error.kind() != std::io::ErrorKind::NotFound
-        {
-            cleanup_error = Some(error);
-        }
-
-        if !std::thread::panicking() {
-            if let Some(error) = cleanup_error {
-                panic!("failed to remove scratch folder {:?}: {error}", self.path);
-            }
-            if self.path.try_exists().unwrap_or(false) {
-                panic!("scratch folder unexpectedly remains: {:?}", self.path);
+        if let Err(error) = self.cleanup() {
+            if std::thread::panicking() {
+                eprintln!("{error}");
+            } else {
+                panic!("{error}");
             }
         }
     }

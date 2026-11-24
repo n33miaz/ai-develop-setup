@@ -107,6 +107,30 @@ fn empty_configuration_files_are_removed_on_panic() {
     assert_empty_configuration_files_removed(&paths);
 }
 
+#[test]
+fn scratch_reports_and_preserves_unexpected_files_in_subdirectories() {
+    let run = ads_daemon::events::new_id().unwrap();
+    let scratch = temp::Scratch::with_files(&format!("daemon-cleanup-{run}"), &[])
+        .with_subdirs(&[("nested", &["expected"])]);
+    let root = scratch.path().to_owned();
+    let nested = root.join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    let expected = nested.join("expected");
+    let unexpected = nested.join("unexpected");
+    std::fs::write(&expected, []).unwrap();
+    std::fs::write(&unexpected, b"keep").unwrap();
+
+    let error = std::panic::catch_unwind(|| drop(scratch)).expect_err("cleanup should fail");
+    let message = error.downcast_ref::<String>().unwrap();
+    assert!(message.contains("cannot remove scratch folder") && message.contains("nested"));
+    assert!(!expected.try_exists().unwrap());
+    assert_eq!(std::fs::read(&unexpected).unwrap(), b"keep");
+
+    std::fs::remove_file(unexpected).unwrap();
+    std::fs::remove_dir(nested).unwrap();
+    std::fs::remove_dir(root).unwrap();
+}
+
 fn empty_configuration_files() -> (temp::Scratch, [PathBuf; 2]) {
     const FILES: [&str; 2] = ["user.toml", "host.toml"];
     let run = ads_daemon::events::new_id().unwrap();
