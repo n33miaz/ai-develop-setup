@@ -4,6 +4,7 @@ pub mod budget;
 pub use ads_child_env as child_env;
 pub mod gate;
 pub mod handoff;
+pub mod handoff_document;
 pub mod queue;
 pub mod refusal;
 pub mod routing;
