@@ -26,7 +26,6 @@ pub enum Refusal {
     NoCap,
     CapReached,
     WouldExceedCap,
-    ForeignReservation,
 }
 
 impl fmt::Display for Refusal {
@@ -36,12 +35,31 @@ impl fmt::Display for Refusal {
             Self::NoCap => "no monthly cap is configured",
             Self::CapReached => "the monthly cap is reached",
             Self::WouldExceedCap => "the worst case of this call does not fit in the monthly cap",
-            Self::ForeignReservation => "the reservation was issued by another spend guard",
         })
     }
 }
 
 impl std::error::Error for Refusal {}
+
+/// A reservation refused because another guard issued it. It carries the reservation back so
+/// the caller can finish it on the issuing guard; dropping it leaves that guard's hold in place.
+#[derive(Debug)]
+#[must_use = "settle or release the returned reservation on the guard that issued it"]
+pub struct ForeignReservation(Reservation);
+
+impl ForeignReservation {
+    pub fn into_reservation(self) -> Reservation {
+        self.0
+    }
+}
+
+impl fmt::Display for ForeignReservation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("the reservation was issued by another spend guard")
+    }
+}
+
+impl std::error::Error for ForeignReservation {}
 
 /// Amount held for one call until it settles or is released. Not `Clone`: settled once.
 #[derive(Debug)]
@@ -114,30 +132,30 @@ impl SpendGuard {
     }
 
     /// Replace the reservation with what the call actually cost. A reservation from another
-    /// guard is refused before any counter changes.
+    /// guard is returned in the error before any counter changes.
     pub fn settle(
         &mut self,
         reservation: Reservation,
         actual_micro_usd: u64,
-    ) -> Result<(), Refusal> {
-        self.check_owner(&reservation)?;
+    ) -> Result<(), ForeignReservation> {
+        let reservation = self.check_owner(reservation)?;
         self.reserved = self.reserved.saturating_sub(reservation.micro_usd);
         self.spent = self.spent.saturating_add(actual_micro_usd);
         Ok(())
     }
 
     /// The call never reached the provider: nothing is charged.
-    pub fn release(&mut self, reservation: Reservation) -> Result<(), Refusal> {
-        self.check_owner(&reservation)?;
+    pub fn release(&mut self, reservation: Reservation) -> Result<(), ForeignReservation> {
+        let reservation = self.check_owner(reservation)?;
         self.reserved = self.reserved.saturating_sub(reservation.micro_usd);
         Ok(())
     }
 
-    fn check_owner(&self, reservation: &Reservation) -> Result<(), Refusal> {
+    fn check_owner(&self, reservation: Reservation) -> Result<Reservation, ForeignReservation> {
         if reservation.guard_id == self.id {
-            Ok(())
+            Ok(reservation)
         } else {
-            Err(Refusal::ForeignReservation)
+            Err(ForeignReservation(reservation))
         }
     }
 }

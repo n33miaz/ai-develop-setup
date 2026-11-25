@@ -13,7 +13,7 @@ pub use chat::{
     PreparedRequest, Role, TokenUsage, build_request, parse_request_body, parse_response,
 };
 pub use config::{ApiConfig, ConfigError, DEFAULT_POLICY, ProviderConfig};
-pub use spend::{Month, Refusal, Reservation, SpendGuard};
+pub use spend::{ForeignReservation, Month, Refusal, Reservation, SpendGuard};
 pub use usage::usage_record;
 
 /// Package name as declared in the manifest.
