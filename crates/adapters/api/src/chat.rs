@@ -76,13 +76,14 @@ struct WireRequest {
     stream: bool,
 }
 
-/// Reference to a key the caller keeps in the product vault. The adapter never sees the key.
+/// Reference to a key kept in the product vault, taken from the provider's active key alias.
+/// The adapter never sees the key.
 #[derive(Clone, PartialEq, Eq)]
 pub struct KeyHandle(String);
 
 impl KeyHandle {
-    pub fn new(reference: impl Into<String>) -> Self {
-        Self(reference.into())
+    pub(crate) fn new(reference: String) -> Self {
+        Self(reference)
     }
 
     /// For the transport that resolves the handle at the last moment.
@@ -130,7 +131,6 @@ impl fmt::Debug for PreparedRequest {
 pub fn build_request(
     provider: &ProviderConfig,
     request: &ChatRequest,
-    key: KeyHandle,
 ) -> Result<PreparedRequest, MapError> {
     if request.messages.is_empty() {
         return Err(MapError::EmptyMessages);
@@ -159,7 +159,7 @@ pub fn build_request(
         key: KeyAuth {
             header: provider.key_header.clone(),
             prefix: provider.key_prefix.clone(),
-            handle: key,
+            handle: provider.key_handle(),
         },
         body,
         worst_case_micro_usd,

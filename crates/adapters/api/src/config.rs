@@ -6,6 +6,9 @@ use std::fmt;
 use ads_contracts::CommonIdV1;
 use serde::Deserialize;
 
+use crate::chat::KeyHandle;
+use crate::keys::{KeyAliases, alias_list};
+
 /// Documented defaults, embedded so a missing key always has a value.
 pub const DEFAULT_POLICY: &str = include_str!("../../../../defaults/api-adapter.toml");
 
@@ -29,7 +32,7 @@ impl fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
-fn invalid(field: impl Into<String>, reason: impl Into<String>) -> ConfigError {
+pub(crate) fn invalid(field: impl Into<String>, reason: impl Into<String>) -> ConfigError {
     ConfigError {
         field: field.into(),
         reason: reason.into(),
@@ -45,6 +48,7 @@ struct Raw {
     key_header: String,
     key_prefix: String,
     max_output_tokens: u32,
+    key_aliases: toml::Value,
     #[serde(default)]
     providers: BTreeMap<String, RawProvider>,
 }
@@ -61,6 +65,8 @@ struct RawProvider {
     key_header: Option<String>,
     key_prefix: Option<String>,
     max_output_tokens: Option<u32>,
+    key_aliases: Option<toml::Value>,
+    active_key: Option<toml::Value>,
 }
 
 /// Settings of one provider that speaks the Chat Completions format.
@@ -75,9 +81,15 @@ pub struct ProviderConfig {
     pub input_micro_usd_per_mtok: u64,
     pub output_micro_usd_per_mtok: u64,
     pub price_version: String,
+    pub keys: KeyAliases,
 }
 
 impl ProviderConfig {
+    /// Vault reference of the active key, `<provider>/<key alias>`.
+    pub fn key_handle(&self) -> KeyHandle {
+        KeyHandle::new(format!("{}/{}", self.alias.as_str(), self.keys.active()))
+    }
+
     /// Cost in micro-dollars, rounded up so an estimate never undercounts.
     pub fn cost_micro_usd(&self, tokens_in: u64, tokens_out: u64) -> u64 {
         let total = u128::from(tokens_in) * u128::from(self.input_micro_usd_per_mtok)
@@ -132,6 +144,7 @@ impl ApiConfig {
         check_header_name("key_header", &raw.key_header)?;
         check_prefix("key_prefix", &raw.key_prefix)?;
         check_max_tokens("max_output_tokens", raw.max_output_tokens)?;
+        let default_aliases = alias_list("key_aliases", &raw.key_aliases)?;
 
         let mut providers = BTreeMap::new();
         for (name, p) in raw.providers {
@@ -160,6 +173,11 @@ impl ApiConfig {
             {
                 return Err(invalid(at("price_version"), "empty or too long"));
             }
+            let key_aliases = match &p.key_aliases {
+                Some(list) => alias_list(&at("key_aliases"), list)?,
+                None => default_aliases.clone(),
+            };
+            let keys = KeyAliases::select(&at("active_key"), key_aliases, p.active_key.as_ref())?;
             let base = check_base_url(&at("base_url"), &p.base_url)?;
             let input = price(&at("input_usd_per_mtok"), p.input_usd_per_mtok)?;
             let output = price(&at("output_usd_per_mtok"), p.output_usd_per_mtok)?;
@@ -175,6 +193,7 @@ impl ApiConfig {
                     input_micro_usd_per_mtok: input,
                     output_micro_usd_per_mtok: output,
                     price_version: p.price_version,
+                    keys,
                 },
             );
         }

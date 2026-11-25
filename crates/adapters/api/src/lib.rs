@@ -1,10 +1,11 @@
 //! Adapter for direct provider API calls in the Chat Completions format.
 //!
-//! This slice is pure logic: no network and no key. The key arrives as a [`KeyHandle`] from the
-//! caller, which resolves it only inside a future transport.
+//! This slice is pure logic: no network and no key. A call names its key only by a [`KeyHandle`],
+//! built from the active key alias and resolved inside a future transport.
 
 mod chat;
 mod config;
+mod keys;
 mod spend;
 mod usage;
 
@@ -13,6 +14,7 @@ pub use chat::{
     PreparedRequest, Role, TokenUsage, build_request, parse_request_body, parse_response,
 };
 pub use config::{ApiConfig, ConfigError, DEFAULT_POLICY, ProviderConfig};
+pub use keys::{KeyAliases, MAX_KEY_ALIAS_CHARS, MAX_KEY_ALIASES};
 pub use spend::{ForeignReservation, Month, Refusal, Reservation, SpendGuard};
 pub use usage::usage_record;
 
