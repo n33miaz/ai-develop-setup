@@ -22,15 +22,16 @@ Estado: só lógica. Não há rede, e o adaptador nunca lê, guarda nem registra
 
 | Como termina (`result`) | Envio | Gasto | Registro |
 |---|---|---|---|
-| Pedido inválido (`Request`), instante ou provedor que não cabem no registro (`Record`), recusa da guarda (`Refused`) | nenhum | nada reservado | não |
+| Pedido inválido (`Request`), instante ou provedor que não cabem no registro ou instante fora do mês informado (`Record`), recusa da guarda (`Refused`) | nenhum | nada reservado | não |
 | O transporte garante que não saiu (`NotSent`) | uma tentativa | reserva devolvida | não |
 | Falha em que o pedido pode ter chegado (`Uncertain`), status fora de 2xx (`Status`), corpo grande demais ou ilegível (`Response`) | um | a reserva | `reserved` |
 | Sucesso com a contagem de tokens | um | o uso informado, mesmo acima da reserva | `reported` |
 | Sucesso sem a contagem de tokens | um | a reserva | `reserved` |
 
-- O resultado traz sempre o gasto da guarda logo após a chamada (sem as reservas de outras chamadas ainda abertas) e, quando há custo, o registro que o chamador grava no livro-caixa, com ou sem falha.
+- O mês e o instante vêm do mesmo momento, e o instante (UTC) tem de cair no mês: o livro-caixa soma pelo mês do registro, que precisa ser o da reserva.
+- O resultado traz sempre o gasto do mês corrente da guarda logo após a chamada (sem as reservas de outras chamadas ainda abertas, nem o custo de uma chamada reservada num mês que a guarda já deixou) e, quando há custo, o registro que o chamador grava no livro-caixa, com ou sem falha.
 - Não há repetição nem troca de chave. Quem implementa `Transport` não segue redirecionamento, não repete e não lê o corpo além do necessário para saber que passou de `MAX_RESPONSE_BYTES`; um corpo cortado no limite nunca é devolvido como inteiro.
-- Um panic no transporte atravessa o fluxo: a reserva continua presa na guarda (a virada do mês não a libera) e não há registro, então uma guarda nova, montada a partir do livro-caixa, não conhece esse valor.
+- Um panic no transporte atravessa o fluxo: a reserva continua presa na guarda até ela passar para um mês posterior e não há registro, então uma guarda nova, montada a partir do livro-caixa, não conhece esse valor.
 - A guarda dentro do `Mutex` não deve ser substituída com chamadas abertas. Se for, a chamada que teria custo termina em `GuardReplaced`, sem o texto da resposta, com o registro e com o gasto da guarda nova, que não inclui esse custo.
 - O registro `urn:ads:record:api_usage:1` não tem campo de desfecho: uma falha cobrada e um sucesso sem contagem de tokens produzem o mesmo registro (`reserved`, tokens zero). Quem precisa distinguir usa o `result`.
 
@@ -39,7 +40,10 @@ Estado: só lógica. Não há rede, e o adaptador nunca lê, guarda nem registra
 - Desligada por padrão (`enabled = false`). Ligada sem `monthly_cap_usd`, recusa toda chamada (`NoCap`).
 - Antes de cada chamada reserva o pior caso: o tamanho do corpo conta como tokens de entrada e `max_tokens` como saída, ao preço do provedor. A chamada só sai se esse valor cabe no que sobra do teto; com o teto atingido, recusa (`CapReached`).
 - Ao fim, `settle` troca a reserva pelo custo real; `release` devolve a reserva de uma chamada que não chegou ao provedor. Resposta sem a contagem de tokens custa a reserva inteira (`cost_basis = reserved`), então omitir a contagem não torna a chamada de graça.
-- O mês e o valor já gasto vêm do chamador (do livro-caixa); mês posterior zera o gasto, relógio voltado para trás não zera. Guardar o gasto entre execuções não é papel deste crate.
+- O mês e o valor já gasto vêm do chamador (do livro-caixa). Guardar o gasto entre execuções não é papel deste crate.
+- O mês corrente da guarda é o mais recente com que ela foi montada ou em que recebeu um pedido de reserva. Um mês posterior começa sem gasto e sem reservas. O custo de uma chamada é do mês que a reservou: liquidada ou devolvida depois da virada, ela não muda o mês corrente.
+- Relógio voltado para trás não zera nem libera o teto: a reserva conta no mês corrente da guarda. O mesmo vale para uma chamada que tomou o mês antes da virada e reservou depois dela. Nos dois casos o registro leva o mês anterior, e o gasto da guarda fica acima do total do livro-caixa no mês corrente.
+- Quem remonta a guarda passa o mês mais recente entre o do relógio e o do último registro do livro-caixa, com o total desse mês: uma guarda montada num mês anterior zera o gasto ao avançar.
 - O custo é uma estimativa a preço de lista; a fatura do provedor manda.
 - A guarda não conhece chaves: o teto e o gasto são do adaptador inteiro. Trocar o apelido ativo não zera nem aumenta o teto. Quem recarrega a configuração só para trocar de chave mantém a mesma guarda, porque uma guarda nova não conhece as reservas em aberto da anterior.
 

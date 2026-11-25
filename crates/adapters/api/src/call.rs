@@ -18,7 +18,8 @@ use crate::usage::usage_record;
 pub enum CallError {
     /// The request could not be built; nothing was sent.
     Request(MapError),
-    /// The timestamp or the provider settings do not fit the usage record; nothing was sent.
+    /// The timestamp or the provider settings do not fit the usage record, or the timestamp is
+    /// not in the month of the call; nothing was sent.
     Record,
     /// The spend guard refused; nothing was sent.
     Refused(Refusal),
@@ -55,7 +56,8 @@ impl std::error::Error for CallError {}
 #[must_use = "write the usage record to the ledger"]
 pub struct CallOutcome {
     pub result: Result<ChatResponse, CallError>,
-    /// Spend of the guard right after this call; holds of calls still open are not in it.
+    /// Spend of the guard's month right after this call. Holds of calls still open are not in
+    /// it, nor is the cost of a call whose reserved month the guard has already left.
     pub spent_micro_usd: u64,
     /// Present whenever the call costs something, for the caller to write to the ledger.
     pub record: Option<RecordApiUsageV1>,
@@ -63,9 +65,10 @@ pub struct CallOutcome {
 
 /// Run one call. The guard is locked to reserve and to settle, never while the transport sends.
 ///
-/// `now` and `timestamp` are taken before the call; the record carries `timestamp`. There is no
-/// retry and no change of key. If the transport panics, the reservation stays held in the guard
-/// and there is no record.
+/// `now` and `timestamp` are taken before the call, from the same instant: the record carries
+/// `timestamp`, which has to fall in `now`. There is no retry and no change of key. If the
+/// transport panics, the reservation stays held until the guard's month changes and there is no
+/// record.
 pub fn run_call<T: Transport + ?Sized>(
     transport: &T,
     guard: &Mutex<SpendGuard>,
@@ -88,6 +91,10 @@ pub fn run_call<T: Transport + ?Sized>(
     else {
         return unsent(CallError::Record);
     };
+    // The ledger totals by the record's month, so it must be the one reserved against.
+    if month_of(&reserved.ts.to_string()) != Some(now) {
+        return unsent(CallError::Record);
+    }
     // A statement of its own: the lock is gone before the transport runs.
     let authorized = lock(guard).authorize(now, prepared.worst_case_micro_usd);
     let reservation = match authorized {
@@ -133,6 +140,13 @@ pub fn run_call<T: Transport + ?Sized>(
         spent_micro_usd: guard.spent_micro_usd(),
         record: Some(record),
     }
+}
+
+/// Month of an RFC 3339 UTC timestamp.
+fn month_of(timestamp: &str) -> Option<Month> {
+    let year = timestamp.get(..4)?.parse().ok()?;
+    let month = timestamp.get(5..7)?.parse().ok()?;
+    Month::new(year, month)
 }
 
 fn read(answer: &TransportResponse) -> Result<ChatResponse, CallError> {

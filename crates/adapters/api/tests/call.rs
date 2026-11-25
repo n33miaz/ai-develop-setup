@@ -13,6 +13,7 @@ use ads_adapter_api::{
 use ads_contracts::RecordApiUsageV1CostBasis;
 
 const TIMESTAMP: &str = "2030-01-02T03:04:05Z";
+const NEXT_TIMESTAMP: &str = "2030-02-01T00:00:00Z";
 const PROMPT: &str = "very-private-prompt-text";
 const KEY_ALIAS: &str = "vault-entry";
 const WAIT: Duration = Duration::from_secs(5);
@@ -96,6 +97,10 @@ fn month() -> Month {
     Month::new(2030, 1).expect("month")
 }
 
+fn next_month() -> Month {
+    Month::new(2030, 2).expect("month")
+}
+
 fn spend_guard(cap_micro_usd: u64) -> SpendGuard {
     let usd = cap_micro_usd as f64 / 1_000_000.0 + 0.000_000_5;
     let config = ApiConfig::from_toml(&format!("enabled = true\nmonthly_cap_usd = {usd:.7}"))
@@ -121,12 +126,14 @@ fn call(transport: &dyn Transport, guard: &Mutex<SpendGuard>) -> CallOutcome {
 
 /// Whether exactly `free` still fits under the cap: no more spent or held than expected.
 fn assert_free(guard: &Mutex<SpendGuard>, free: u64) {
+    assert_free_in(guard, month(), free);
+}
+
+fn assert_free_in(guard: &Mutex<SpendGuard>, now: Month, free: u64) {
     let mut guard = guard.lock().unwrap_or_else(PoisonError::into_inner);
-    let over = guard.authorize(month(), free + 1);
+    let over = guard.authorize(now, free + 1);
     assert!(over.is_err(), "more than {free} is free");
-    let exact = guard
-        .authorize(month(), free)
-        .expect("exactly this is free");
+    let exact = guard.authorize(now, free).expect("exactly this is free");
     guard.release(exact).expect("own");
 }
 
@@ -174,6 +181,20 @@ fn a_timestamp_the_record_refuses_stops_the_call_before_it_is_sent() {
 
     assert_eq!(outcome.result, Err(CallError::Record));
     assert_eq!((outcome.spent_micro_usd, outcome.record), (0, None));
+    assert_eq!(fake.calls(), 0);
+    assert_free(&guard, worst());
+}
+
+#[test]
+fn a_timestamp_outside_the_month_of_the_call_stops_it_before_it_is_sent() {
+    let fake = Fake::answering(200, REPORTED);
+    let guard = guard(worst());
+    for timestamp in [NEXT_TIMESTAMP, "2029-01-02T03:04:05Z"] {
+        let outcome = run_call(&fake, &guard, &provider(), &request(), month(), timestamp);
+
+        assert_eq!(outcome.result, Err(CallError::Record));
+        assert_eq!((outcome.spent_micro_usd, outcome.record), (0, None));
+    }
     assert_eq!(fake.calls(), 0);
     assert_free(&guard, worst());
 }
@@ -309,6 +330,69 @@ fn a_panic_in_the_transport_keeps_the_reservation_held() {
     assert!(unwound.is_err());
     assert_eq!(guard.lock().unwrap().spent_micro_usd(), 0);
     assert_free(&guard, worst());
+    assert_free_in(&guard, next_month(), 2 * worst());
+}
+
+/// Runs a whole call in the next month while the first one is open, then answers the first.
+struct TurningMonth<'a> {
+    guard: &'a Mutex<SpendGuard>,
+    reply: Reply,
+    later: Mutex<Option<CallOutcome>>,
+}
+
+impl Transport for TurningMonth<'_> {
+    fn send(&self, _: &PreparedRequest) -> Reply {
+        let outcome = run_call(
+            &Fake::answering(200, REPORTED),
+            self.guard,
+            &provider(),
+            &request(),
+            next_month(),
+            NEXT_TIMESTAMP,
+        );
+        *self.later.lock().unwrap() = Some(outcome);
+        self.reply.clone()
+    }
+}
+
+/// Sum of the records dated in `month`, as a ledger would total them.
+fn ledger_total(outcomes: &[&CallOutcome], month: &str) -> u64 {
+    outcomes
+        .iter()
+        .filter_map(|outcome| outcome.record.as_ref())
+        .filter(|record| record.ts.to_string().starts_with(month))
+        .map(|record| record.cost_estimate_micro_usd)
+        .sum()
+}
+
+#[test]
+fn a_call_open_across_the_month_turn_stays_in_its_own_month() {
+    let replies = [
+        (Fake::answering(200, REPORTED).reply, REPORTED_COST),
+        (Err(TransportError::MaybeSent), worst()),
+        (Err(TransportError::NotSent), 0),
+    ];
+    for (reply, old_cost) in replies {
+        // Room for one hold only: the later call fits only if the old one stopped counting.
+        let guard = guard(worst());
+        let turning = TurningMonth {
+            guard: &guard,
+            reply,
+            later: Mutex::new(None),
+        };
+        let first = call(&turning, &guard);
+        let later = turning.later.lock().unwrap().take().expect("it ran");
+
+        assert!(later.result.is_ok(), "{:?}", later.result);
+        let outcomes = [&first, &later];
+        assert_eq!(ledger_total(&outcomes, "2030-01"), old_cost);
+        let current = ledger_total(&outcomes, "2030-02");
+        assert_eq!(current, REPORTED_COST);
+        assert_eq!(later.spent_micro_usd, current);
+        assert_eq!(first.spent_micro_usd, current);
+        assert_eq!(guard.lock().unwrap().spent_micro_usd(), current);
+        assert_free_in(&guard, next_month(), worst() - current);
+    }
 }
 
 /// Reports that it was entered, then waits to be told to answer.
