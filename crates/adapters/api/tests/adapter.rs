@@ -1,6 +1,6 @@
 use ads_adapter_api::{
-    ApiConfig, ChatRequest, KeyHandle, MapError, Message, Month, Refusal, Role, SpendGuard,
-    TokenUsage, build_request, parse_request_body, parse_response, usage_record,
+    ApiConfig, ChatRequest, MapError, Message, Month, Refusal, Role, SpendGuard, TokenUsage,
+    build_request, parse_request_body, parse_response, usage_record,
 };
 
 const PROVIDER: &str = r#"
@@ -156,7 +156,7 @@ fn the_request_maps_to_the_wire_format_and_back() {
     let cfg = config("");
     let provider = cfg.provider("provider-a").expect("provider");
     let original = request("hello");
-    let prepared = build_request(provider, &original, KeyHandle::new("vault-entry-1")).expect("ok");
+    let prepared = build_request(provider, &original).expect("ok");
 
     let wire: serde_json::Value = serde_json::from_str(&prepared.body).expect("json");
     assert_eq!(wire["model"], "model-x");
@@ -175,10 +175,9 @@ fn the_request_maps_to_the_wire_format_and_back() {
 fn defaults_fill_max_tokens_and_limits_are_enforced() {
     let cfg = config("max_output_tokens = 64");
     let provider = cfg.provider("provider-a").expect("provider");
-    let handle = || KeyHandle::new("k");
     let mut req = request("hi");
     req.max_tokens = None;
-    let prepared = build_request(provider, &req, handle()).expect("ok");
+    let prepared = build_request(provider, &req).expect("ok");
     assert_eq!(
         parse_request_body(&prepared.body).unwrap().1.max_tokens,
         Some(64)
@@ -186,24 +185,24 @@ fn defaults_fill_max_tokens_and_limits_are_enforced() {
 
     req.max_tokens = Some(65);
     assert_eq!(
-        build_request(provider, &req, handle()).unwrap_err(),
+        build_request(provider, &req).unwrap_err(),
         MapError::MaxTokens
     );
     req.max_tokens = Some(0);
     assert_eq!(
-        build_request(provider, &req, handle()).unwrap_err(),
+        build_request(provider, &req).unwrap_err(),
         MapError::MaxTokens
     );
     req.max_tokens = Some(10);
     req.temperature = Some(3.0);
     assert_eq!(
-        build_request(provider, &req, handle()).unwrap_err(),
+        build_request(provider, &req).unwrap_err(),
         MapError::Temperature
     );
     req.temperature = None;
     req.messages.clear();
     assert_eq!(
-        build_request(provider, &req, handle()).unwrap_err(),
+        build_request(provider, &req).unwrap_err(),
         MapError::EmptyMessages
     );
 }
@@ -212,7 +211,7 @@ fn defaults_fill_max_tokens_and_limits_are_enforced() {
 fn worst_case_counts_body_bytes_as_input_and_max_tokens_as_output() {
     let cfg = config("");
     let provider = cfg.provider("provider-a").expect("provider");
-    let prepared = build_request(provider, &request("hello"), KeyHandle::new("k")).unwrap();
+    let prepared = build_request(provider, &request("hello")).unwrap();
     let expected = provider.cost_micro_usd(prepared.body.len() as u64, 100);
     assert_eq!(prepared.worst_case_micro_usd, expected);
     // 100 output tokens at 8 USD per million is 800 micro-dollars, plus the input bound.
@@ -276,7 +275,7 @@ fn the_usage_record_has_no_content_and_validates_against_the_contract_shape() {
     let cfg = config("");
     let provider = cfg.provider("provider-a").expect("provider");
     let secret_text = "very-private-prompt-text";
-    let prepared = build_request(provider, &request(secret_text), KeyHandle::new("k")).unwrap();
+    let prepared = build_request(provider, &request(secret_text)).unwrap();
     let body = format!(
         r#"{{"choices":[{{"message":{{"content":"{secret_text}"}}}}],"usage":{{"prompt_tokens":3,"completion_tokens":4}}}}"#
     );
@@ -317,25 +316,21 @@ fn the_usage_record_has_no_content_and_validates_against_the_contract_shape() {
 
 #[test]
 fn debug_output_hides_prompt_text_response_text_and_the_key_reference() {
-    let cfg = config("");
+    let cfg = config("key_aliases = [\"vault-entry\"]");
     let provider = cfg.provider("provider-a").expect("provider");
-    let prepared = build_request(
-        provider,
-        &request("very-private-prompt-text"),
-        KeyHandle::new("vault-entry-1"),
-    )
-    .unwrap();
+    let prepared = build_request(provider, &request("very-private-prompt-text")).unwrap();
     let response =
         parse_response(r#"{"choices":[{"message":{"content":"very-private-answer"}}]}"#).unwrap();
     let shown = format!(
-        "{prepared:?} {:?} {response:?} {:?}",
+        "{prepared:?} {:?} {response:?} {:?} {:?} {cfg:?}",
         request("very-private-prompt-text"),
-        prepared.key
+        prepared.key,
+        provider.key_handle()
     );
     for hidden in [
         "very-private-prompt-text",
         "very-private-answer",
-        "vault-entry-1",
+        "vault-entry",
     ] {
         assert!(!shown.contains(hidden), "{hidden}");
     }

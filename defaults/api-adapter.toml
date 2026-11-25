@@ -21,10 +21,23 @@ key_prefix = "Bearer "
 # Teto de tokens de saída por chamada, usado quando o pedido não traz o seu e como limite máximo.
 max_output_tokens = 1024
 
+# Apelidos das chaves de API de cada provedor, para quem tem mais de uma. São nomes de referência no
+# cofre, nunca o valor da chave. De 1 a 8, sem repetição; cada um com 1 a 32 caracteres (letras
+# minúsculas, dígitos, - e _, começando por letra). Texto com cara de segredo (prefixo comum de
+# chave, ou 16 ou mais letras e dígitos seguidos com algum dígito) é recusado sem aparecer na
+# mensagem de erro. Quem tem uma chave só não precisa mexer.
+key_aliases = ["default"]
+
 # Um provedor por tabela; o apelido é o nome da tabela (letras, dígitos e . _ : -). Sem provedor
 # configurado não há chamada possível. Preços em dólares por milhão de tokens; `price_version`
-# identifica a tabela de preços usada, para o livro-caixa. `chat_path`, `key_header`, `key_prefix`
-# e `max_output_tokens` podem ser trocados por provedor. Exemplo, comentado de propósito:
+# identifica a tabela de preços usada, para o livro-caixa. `chat_path`, `key_header`, `key_prefix`,
+# `max_output_tokens` e `key_aliases` podem ser trocados por provedor.
+#
+# `active_key` (só dentro do provedor) diz qual apelido está em uso: precisa estar na lista, é
+# obrigatória com mais de um apelido e dispensável com um só. A chamada usa a referência
+# `<provedor>/<apelido>`. A troca é manual, mudando `active_key`: não há rotação nem troca automática
+# quando uma chamada falha. O teto mensal é um só para o adaptador, qualquer que seja a chave.
+# Exemplo, comentado de propósito:
 #
 # [providers.provider-a]
 # base_url = "https://api.example.com/v1"
@@ -32,3 +45,5 @@ max_output_tokens = 1024
 # input_usd_per_mtok = 2.5
 # output_usd_per_mtok = 10.0
 # price_version = "prices-2030-01-01"
+# key_aliases = ["personal", "work"]
+# active_key = "personal"
