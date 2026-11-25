@@ -1,13 +1,14 @@
 use std::num::NonZeroU64;
 
 use ads_contracts::{
-    CommonIdV1, CommonTimestampV1, RecordSessionHandoffV2, RecordSessionHandoffV2Number,
-    RecordSessionHandoffV2Trigger as Trigger,
+    CommonIdV1, CommonTimestampV1, CommonUlidV1, EventSessionHandoffV3, RecordSessionHandoffV2,
+    RecordSessionHandoffV2Number, RecordSessionHandoffV2Trigger as Trigger,
 };
 use ads_core::handoff::{
-    ChainError, Consent, ContextUsage, DEFAULT_POLICY, Decision, HandoffPolicy, next_session_name,
-    validate_chain,
+    ChainError, Consent, ConsentError, ContextUsage, DEFAULT_POLICY, Decision, HandoffPolicy,
+    next_session_name, validate_chain, verify_consent,
 };
+use serde_json::json;
 
 fn usage(used: u64) -> Option<ContextUsage> {
     Some(ContextUsage {
@@ -280,5 +281,161 @@ fn rejects_a_repeated_opening_prompt() {
     assert_eq!(
         validate_chain(&records),
         Err(ChainError::RepeatedOpeningPrompt)
+    );
+}
+
+const OWNER: &str = "user-1";
+
+fn id(text: &str) -> CommonIdV1 {
+    CommonIdV1::new(text.to_owned()).unwrap()
+}
+
+/// device-1 belongs to the owner; device-2 to someone else; device-3 was revoked at 2030.
+fn registry(device: &CommonIdV1, at: &CommonTimestampV1) -> Option<CommonIdV1> {
+    match device.as_str() {
+        "device-1" => Some(id(OWNER)),
+        "device-2" => Some(id("user-2")),
+        "device-3" if at.as_str() < "2030-01-01T00:00:00Z" => Some(id(OWNER)),
+        _ => None,
+    }
+}
+
+/// Accepted by device-1 for handoff-1 and session-1, the event the first golden record names.
+fn accept_event(change: impl FnOnce(&mut serde_json::Value)) -> EventSessionHandoffV3 {
+    let mut event: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../contracts/golden/event.session.handoff.v3/valid/02.json"
+    ))
+    .unwrap();
+    change(&mut event);
+    serde_json::from_value(event).unwrap()
+}
+
+fn verify(
+    record: &RecordSessionHandoffV2,
+    event: &EventSessionHandoffV3,
+) -> Result<(), ConsentError> {
+    verify_consent(record, &id(OWNER), event, registry)
+}
+
+#[test]
+fn confirms_the_acceptance_the_record_refers_to() {
+    let [mut record, _] = chain();
+    for trigger in [Trigger::ContextLimit, Trigger::AccountSwitch] {
+        record.trigger = trigger;
+        assert_eq!(
+            verify(&record, &accept_event(|_| {})),
+            Ok(()),
+            "{trigger:?}"
+        );
+    }
+}
+
+#[test]
+fn a_model_refusal_is_not_confirmed_without_its_offer() {
+    let [mut record, _] = chain();
+    record.trigger = Trigger::ModelRefusal;
+    for event in [
+        accept_event(|_| {}),
+        accept_event(|event| event["data"]["alternative_id"] = json!("b-z")),
+    ] {
+        assert_eq!(verify(&record, &event), Err(ConsentError::ModelRefusal));
+    }
+}
+
+#[test]
+fn an_agent_or_the_daemon_cannot_confirm() {
+    let [record, _] = chain();
+    // The registry names the owner for any id, so only the actor kind can refuse.
+    let anyone = |_: &CommonIdV1, _: &CommonTimestampV1| Some(id(OWNER));
+    // The contract admits an agent or the daemon only on a proposal.
+    for kind in ["agent", "daemon"] {
+        let event = accept_event(|event| {
+            event["data"]["status"] = json!("proposed");
+            event["actor"]["kind"] = json!(kind);
+        });
+        assert_eq!(
+            verify_consent(&record, &id(OWNER), &event, anyone),
+            Err(ConsentError::NotDevice),
+            "{kind}"
+        );
+    }
+}
+
+#[test]
+fn only_a_device_registered_to_the_owner_confirms() {
+    let [record, _] = chain();
+    for device in ["device-2", "device-3", "device-9"] {
+        let event = accept_event(|event| event["actor"]["id"] = json!(device));
+        assert_eq!(
+            verify(&record, &event),
+            Err(ConsentError::NotOwnerDevice),
+            "{device}"
+        );
+    }
+}
+
+#[test]
+fn the_registry_is_read_at_the_instant_of_the_event() {
+    let [record, _] = chain();
+    let before = accept_event(|event| {
+        event["actor"]["id"] = json!("device-3");
+        event["ts"] = json!("2029-12-31T23:59:59Z");
+    });
+    assert_eq!(verify(&record, &before), Ok(()));
+}
+
+#[test]
+fn the_owner_comes_from_the_caller_and_not_from_the_record() {
+    let [mut record, _] = chain();
+    // The record and the device agree on another user; the lineage owner is still user-1.
+    record.consent.user_id = id("user-2");
+    let event = accept_event(|event| event["actor"]["id"] = json!("device-2"));
+    assert_eq!(verify(&record, &event), Err(ConsentError::NotOwnerDevice));
+}
+
+#[test]
+fn only_an_acceptance_confirms() {
+    let [record, _] = chain();
+    for status in ["proposed", "declined"] {
+        let event = accept_event(|event| event["data"]["status"] = json!(status));
+        assert_eq!(
+            verify(&record, &event),
+            Err(ConsentError::NotAccepted),
+            "{status}"
+        );
+    }
+}
+
+#[test]
+fn rejects_an_acceptance_of_another_handoff() {
+    let [record, _] = chain();
+    let event = accept_event(|event| event["data"]["handoff_id"] = json!("handoff-9"));
+    assert_eq!(verify(&record, &event), Err(ConsentError::OtherHandoff));
+}
+
+#[test]
+fn rejects_an_acceptance_for_another_source_session() {
+    let [record, _] = chain();
+    let event = accept_event(|event| event["data"]["source_session_id"] = json!("session-9"));
+    assert_eq!(verify(&record, &event), Err(ConsentError::OtherSession));
+}
+
+#[test]
+fn rejects_an_event_the_consent_does_not_refer_to() {
+    let [mut record, _] = chain();
+    record.consent.event_id = CommonUlidV1::new("01ARZ3NDEKTSV4RRFFQ69G5FAD".to_owned()).unwrap();
+    assert_eq!(
+        verify(&record, &accept_event(|_| {})),
+        Err(ConsentError::OtherEvent)
+    );
+}
+
+#[test]
+fn rejects_a_consent_that_names_another_user() {
+    let [mut record, _] = chain();
+    record.consent.user_id = id("user-2");
+    assert_eq!(
+        verify(&record, &accept_event(|_| {})),
+        Err(ConsentError::OtherUser)
     );
 }

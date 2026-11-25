@@ -1,14 +1,15 @@
 //! Offer other configured routes after a refusal or a safety filter.
 
 use ads_contracts::{
-    CommonActorV1Kind, CommonIdV1, CommonTimestampV1, EventSessionHandoffV3,
-    EventSessionHandoffV3DataStatus, EventSessionRefusalDetectedV1Data,
-    EventSessionRefusalDetectedV1DataKind as Kind, EventSessionRefusalDetectedV1DataModel,
-    RecordSessionHandoffV2Trigger as Trigger, RecordTaskPacketV1,
+    CommonIdV1, CommonTimestampV1, EventSessionHandoffV3, EventSessionHandoffV3DataStatus,
+    EventSessionRefusalDetectedV1Data, EventSessionRefusalDetectedV1DataKind as Kind,
+    EventSessionRefusalDetectedV1DataModel, RecordSessionHandoffV2Trigger as Trigger,
+    RecordTaskPacketV1,
 };
 use serde::{Deserialize, Deserializer, de};
 
 use crate::budget::BudgetDecision;
+use crate::device::{DeviceRefusal, check_owner_device};
 use crate::handoff::{Consent, Decision, HandoffPolicy};
 use crate::routing::{self, Candidate, QuotaObservation, Route, RoutingPolicy, TaskProfile};
 
@@ -216,12 +217,12 @@ impl Offer {
         if consent.data.status != EventSessionHandoffV3DataStatus::Accepted {
             return Err(AcceptError::NotAccepted);
         }
-        if consent.actor.kind != CommonActorV1Kind::Device {
-            return Err(AcceptError::NotDevice);
-        }
-        if owner_at(&consent.actor.id, &consent.ts).as_ref() != Some(&self.owner_id) {
-            return Err(AcceptError::NotOwnerDevice);
-        }
+        check_owner_device(&consent.actor, &consent.ts, &self.owner_id, owner_at).map_err(
+            |refusal| match refusal {
+                DeviceRefusal::NotDevice => AcceptError::NotDevice,
+                DeviceRefusal::NotOwnerDevice => AcceptError::NotOwnerDevice,
+            },
+        )?;
         if consent.data.handoff_id != self.handoff_id {
             return Err(AcceptError::OtherHandoff);
         }

@@ -25,6 +25,7 @@ use ads_contracts::{
     RecordTaskQueueV1Version,
 };
 
+use crate::device::check_owner_device;
 use crate::timestamp::epoch_seconds;
 
 use CommonQueueTaskStateV1::{Cancelled, Done, Failed, Queued, Review, Running};
@@ -813,9 +814,7 @@ fn replay<'a>(
     let queue_id = first.queue_id();
     let stream = format!("queue/{}", queue_id.as_str());
     let owner_device = |event: QueueLogEvent<'_>| {
-        let actor = event.actor();
-        actor.kind == CommonActorV1Kind::Device
-            && owner_at(&actor.id, event.ts()).as_ref() == Some(owner)
+        check_owner_device(event.actor(), event.ts(), owner, &owner_at).is_ok()
     };
     if first.stream() != stream {
         return Err(ReplayRefusal::ForeignEvent);
