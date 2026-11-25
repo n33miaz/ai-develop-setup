@@ -4,10 +4,12 @@ use std::collections::HashSet;
 use std::num::NonZeroU64;
 
 use ads_contracts::{
-    CommonIdV1, CommonTimestampV1, RecordSessionHandoffV2, RecordSessionHandoffV2Number,
-    RecordSessionHandoffV2Trigger as Trigger,
+    CommonIdV1, CommonTimestampV1, EventSessionHandoffV3, EventSessionHandoffV3DataStatus,
+    RecordSessionHandoffV2, RecordSessionHandoffV2Number, RecordSessionHandoffV2Trigger as Trigger,
 };
 use serde::{Deserialize, Deserializer, de};
+
+use crate::device::{DeviceRefusal, check_owner_device};
 
 pub const DEFAULT_POLICY: &str = include_str!("../../../defaults/handoff.toml");
 
@@ -52,7 +54,8 @@ impl HandoffPolicy {
         toml::from_str(input)
     }
 
-    /// Consent must already have been verified for this handoff by the caller.
+    /// Consent must already have been verified for this handoff by the caller, with
+    /// [`verify_consent`] or, after a model refusal, [`crate::refusal::Offer::accept`].
     /// For account switches, the caller must first apply the account-switch policy.
     pub fn evaluate(
         &self,
@@ -79,6 +82,61 @@ impl HandoffPolicy {
             Consent::Pending | Consent::Declined => Decision::Propose,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConsentError {
+    /// A model refusal is accepted only with its offer, which names the chosen alternative.
+    ModelRefusal,
+    /// An agent or the daemon cannot accept.
+    NotDevice,
+    /// The device was not registered to the lineage owner at the instant of the event.
+    NotOwnerDevice,
+    NotAccepted,
+    OtherHandoff,
+    OtherSession,
+    /// The event is not the one the consent of the record refers to.
+    OtherEvent,
+    /// The consent of the record names a user other than the lineage owner.
+    OtherUser,
+}
+
+/// Confirms, before a handoff is appended, that `event` is the acceptance the record refers to,
+/// issued by a device of the lineage owner. `owner_id` comes from the caller, never from the
+/// record; `owner_at` reads the device registry at the instant of the event. The caller supplies
+/// an event read from its authenticated log. The event carries neither channel nor trigger, so
+/// neither is checked against it.
+pub fn verify_consent(
+    record: &RecordSessionHandoffV2,
+    owner_id: &CommonIdV1,
+    event: &EventSessionHandoffV3,
+    owner_at: impl Fn(&CommonIdV1, &CommonTimestampV1) -> Option<CommonIdV1>,
+) -> Result<(), ConsentError> {
+    if record.trigger == Trigger::ModelRefusal {
+        return Err(ConsentError::ModelRefusal);
+    }
+    check_owner_device(&event.actor, &event.ts, owner_id, owner_at).map_err(
+        |refusal| match refusal {
+            DeviceRefusal::NotDevice => ConsentError::NotDevice,
+            DeviceRefusal::NotOwnerDevice => ConsentError::NotOwnerDevice,
+        },
+    )?;
+    if event.data.status != EventSessionHandoffV3DataStatus::Accepted {
+        return Err(ConsentError::NotAccepted);
+    }
+    if event.data.handoff_id != record.id {
+        return Err(ConsentError::OtherHandoff);
+    }
+    if event.data.source_session_id != record.source_session_id {
+        return Err(ConsentError::OtherSession);
+    }
+    if event.id != record.consent.event_id {
+        return Err(ConsentError::OtherEvent);
+    }
+    if record.consent.user_id != *owner_id {
+        return Err(ConsentError::OtherUser);
+    }
+    Ok(())
 }
 
 fn deserialize_threshold<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u8, D::Error> {
