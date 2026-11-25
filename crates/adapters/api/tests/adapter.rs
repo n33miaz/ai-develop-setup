@@ -351,11 +351,16 @@ monthly_cap_usd = 0.0001",
     let mut b = SpendGuard::new(&cfg, month(1), 0);
     let held_a = a.authorize(month(1), 100).expect("fits");
     let held_b = b.authorize(month(1), 100).expect("fits");
-    assert_eq!(b.release(held_a).unwrap_err(), Refusal::ForeignReservation);
+    let returned = b.release(held_a).unwrap_err().into_reservation();
     // B still holds its own 100: its counters were not reduced by A's reservation.
     assert_eq!(b.authorize(month(1), 1).unwrap_err(), Refusal::CapReached);
     b.settle(held_b, 100).expect("own");
     assert_eq!(b.spent_micro_usd(), 100);
+    // The refusal handed A's reservation back: finishing it on A frees A's hold.
+    assert_eq!(returned.micro_usd(), 100);
+    a.release(returned).expect("issuer");
+    let again = a.authorize(month(1), 100).expect("a's 100 was released");
+    assert_eq!(again.micro_usd(), 100);
 }
 
 #[test]
