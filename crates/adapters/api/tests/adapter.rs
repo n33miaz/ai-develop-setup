@@ -110,6 +110,51 @@ fn a_new_month_resets_but_a_clock_set_back_does_not() {
 }
 
 #[test]
+fn finishing_an_old_reservation_leaves_the_new_month_untouched() {
+    let cfg = config("enabled = true\nmonthly_cap_usd = 1.0");
+    for settle in [true, false] {
+        let mut guard = SpendGuard::new(&cfg, month(1), 100_000);
+        let old = guard.authorize(month(1), 600_000).expect("fits");
+        // The old hold does not count in the new month.
+        let new = guard.authorize(month(2), 700_000).expect("fits");
+        if settle {
+            guard.settle(old, 600_000).expect("own");
+        } else {
+            guard.release(old).expect("own");
+        }
+        assert_eq!(guard.spent_micro_usd(), 0);
+        // Only the new hold is committed: finishing the old one frees none of it.
+        assert_eq!(
+            guard.authorize(month(2), 300_001).unwrap_err(),
+            Refusal::WouldExceedCap
+        );
+        let rest = guard.authorize(month(2), 300_000).expect("the remainder");
+        guard.release(rest).expect("own");
+        guard.settle(new, 200_000).expect("own");
+        assert_eq!(guard.spent_micro_usd(), 200_000);
+    }
+}
+
+#[test]
+fn a_reservation_made_with_the_clock_set_back_counts_in_the_guard_month() {
+    let cfg = config("enabled = true\nmonthly_cap_usd = 1.0");
+    let mut guard = SpendGuard::new(&cfg, month(3), 0);
+    let held = guard.authorize(month(2), 600_000).expect("fits");
+    assert_eq!(
+        guard.authorize(month(3), 400_001).unwrap_err(),
+        Refusal::WouldExceedCap
+    );
+    guard.settle(held, 600_000).expect("own");
+    assert_eq!(guard.spent_micro_usd(), 600_000);
+    for now in [month(2), month(3)] {
+        assert_eq!(
+            guard.authorize(now, 400_001).unwrap_err(),
+            Refusal::WouldExceedCap
+        );
+    }
+}
+
+#[test]
 fn config_refuses_bad_values() {
     for bad in [
         "monthly_cap_usd = 0.0",

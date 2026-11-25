@@ -61,11 +61,13 @@ impl fmt::Display for ForeignReservation {
 
 impl std::error::Error for ForeignReservation {}
 
-/// Amount held for one call until it settles or is released. Not `Clone`: settled once.
+/// Amount held for one call, in the month it was reserved, until it settles or is released.
+/// Not `Clone`: settled once.
 #[derive(Debug)]
 #[must_use = "settle or release the reservation"]
 pub struct Reservation {
     guard_id: u64,
+    month: Month,
     micro_usd: u64,
 }
 
@@ -98,12 +100,18 @@ impl SpendGuard {
         }
     }
 
+    /// The latest month the guard was built with or has authorized in.
+    pub fn month(&self) -> Month {
+        self.month
+    }
+
+    /// Spend of the guard's month.
     pub fn spent_micro_usd(&self) -> u64 {
         self.spent
     }
 
-    /// Hold `worst_case_micro_usd` for a call, or refuse. A later month resets the spend; an
-    /// earlier one (clock set back) does not.
+    /// Hold `worst_case_micro_usd` for a call, or refuse. A later month starts with nothing
+    /// spent or held; an earlier one (clock set back) counts in the guard's month.
     pub fn authorize(
         &mut self,
         now: Month,
@@ -116,6 +124,7 @@ impl SpendGuard {
         if now > self.month {
             self.month = now;
             self.spent = 0;
+            self.reserved = 0;
         }
         let committed = self.spent.saturating_add(self.reserved);
         if committed >= cap {
@@ -127,27 +136,33 @@ impl SpendGuard {
         self.reserved += worst_case_micro_usd;
         Ok(Reservation {
             guard_id: self.id,
+            month: self.month,
             micro_usd: worst_case_micro_usd,
         })
     }
 
-    /// Replace the reservation with what the call actually cost. A reservation from another
-    /// guard is returned in the error before any counter changes.
+    /// Replace the reservation with what the call actually cost, in the month that reserved it:
+    /// once the guard is past that month, nothing changes here. A reservation from another guard
+    /// is returned in the error before any counter changes.
     pub fn settle(
         &mut self,
         reservation: Reservation,
         actual_micro_usd: u64,
     ) -> Result<(), ForeignReservation> {
         let reservation = self.check_owner(reservation)?;
-        self.reserved = self.reserved.saturating_sub(reservation.micro_usd);
-        self.spent = self.spent.saturating_add(actual_micro_usd);
+        if reservation.month == self.month {
+            self.reserved = self.reserved.saturating_sub(reservation.micro_usd);
+            self.spent = self.spent.saturating_add(actual_micro_usd);
+        }
         Ok(())
     }
 
     /// The call never reached the provider: nothing is charged.
     pub fn release(&mut self, reservation: Reservation) -> Result<(), ForeignReservation> {
         let reservation = self.check_owner(reservation)?;
-        self.reserved = self.reserved.saturating_sub(reservation.micro_usd);
+        if reservation.month == self.month {
+            self.reserved = self.reserved.saturating_sub(reservation.micro_usd);
+        }
         Ok(())
     }
 

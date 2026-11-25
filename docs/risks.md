@@ -40,6 +40,7 @@ Estado da mitigação, em cada risco:
 | [Pasta de perfil lida ou alterada pelo produto](#pasta-de-perfil-lida-ou-alterada-pelo-produto) | núcleo (ligação ao perfil) e coletores | decidida, não implementada |
 | [Chave passa na frente do login do perfil](#chave-passa-na-frente-do-login-do-perfil) | adaptadores de ferramenta | parcial: filtro do ambiente do pai |
 | [Gasto de IA sem teto](#gasto-de-ia-sem-teto) | núcleo (orçamento) | parcial |
+| [Reserva de gasto presa por falha no transporte](#reserva-de-gasto-presa-por-falha-no-transporte) | adaptador de API | parcial: a guarda em uso retém o valor no mês; sem registro de uso |
 | [Texto de ferramenta tratado como instrução](#texto-de-ferramenta-tratado-como-instrução) | núcleo e adaptadores | só regra escrita |
 | [Instruções de agente sobrepostas ou ignoradas](#instruções-de-agente-sobrepostas-ou-ignoradas) | mantenedor | parcial |
 | [Segredo ou dado pessoal no repositório público](#segredo-ou-dado-pessoal-no-repositório-público) | mantenedor e CI | parcial |
@@ -287,6 +288,16 @@ Estado da mitigação, em cada risco:
 - **Mitigação existente.** O núcleo avalia o consumo observado e calcula uma rota alternativa quando há cota. Veja os parâmetros e a interpretação das medições no [README do núcleo](../crates/core/README.md#orçamento-e-roteamento).
 - **Plano B.** Manter a rota manual em observação. Sem alternativa elegível, a proposta fica vazia.
 - **O que falta.** Coletar uso e aplicar a decisão de parada entre tentativas. Até essa integração, a avaliação no núcleo não interrompe o gasto.
+
+### Reserva de gasto presa por falha no transporte
+
+- **Descrição.** Um panic no transporte atravessa o fluxo de chamada do adaptador de API: a reserva não é liquidada nem devolvida e nenhum registro de uso é produzido.
+- **Impacto.** Na guarda em uso, o valor reduz o que sobra do teto sem uso registrado. O pedido pode ter chegado ao provedor e ser cobrado; uma guarda reconstruída do livro-caixa não conta esse valor, e o gasto pode passar do teto.
+- **Dono.** Adaptador de API ([`crates/adapters/api`](../crates/adapters/api/README.md#fluxo-de-uma-chamada)).
+- **Teto.** Por chamada, a reserva do pior caso estimado, retida até a guarda passar para um mês posterior. Na mesma guarda e no mesmo mês, as reservas presas contam para `monthly_cap_usd` em [`defaults/api-adapter.toml`](../defaults/api-adapter.toml). Para o total que escapa a guardas reconstruídas, não definido.
+- **Mitigação existente (parcial).** A guarda em uso mantém a reserva no mês em que foi feita; o teste `a_panic_in_the_transport_keeps_the_reservation_held` cobre a retenção e a virada do mês. O adaptador vem desligado.
+- **Plano B.** Conferir a fatura do provedor, que manda sobre a estimativa, e desligar o adaptador (`enabled = false`) para recusar novas chamadas.
+- **O que falta.** O fluxo não captura o panic, não grava a reserva antes do envio e não produz registro para essa chamada. Ainda não há transporte de rede.
 
 ### Texto de ferramenta tratado como instrução
 

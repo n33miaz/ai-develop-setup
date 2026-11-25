@@ -198,7 +198,8 @@ impl fmt::Debug for ChatResponse {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ChatResponse")
             .field("text_bytes", &self.text.len())
-            .field("finish_reason", &self.finish_reason)
+            // Provider text like any other part of the body: only its presence is shown.
+            .field("has_finish_reason", &self.finish_reason.is_some())
             .field("usage", &self.usage)
             .finish_non_exhaustive()
     }
