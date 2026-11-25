@@ -1,0 +1,436 @@
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::{Mutex, PoisonError};
+use std::thread;
+use std::time::Duration;
+
+use ads_adapter_api::{
+    ApiConfig, CallError, CallOutcome, ChatRequest, MAX_RESPONSE_BYTES, MapError, Message, Month,
+    PreparedRequest, ProviderConfig, Refusal, Role, SpendGuard, Transport, TransportError,
+    TransportResponse, build_request, run_call,
+};
+use ads_contracts::RecordApiUsageV1CostBasis;
+
+const TIMESTAMP: &str = "2030-01-02T03:04:05Z";
+const PROMPT: &str = "very-private-prompt-text";
+const KEY_ALIAS: &str = "vault-entry";
+const WAIT: Duration = Duration::from_secs(5);
+// 3 tokens in at 2 USD and 4 out at 8 USD per million.
+const REPORTED_COST: u64 = 38;
+const REPORTED: &str = r#"{"choices":[{"message":{"content":"very-private-answer"},"finish_reason":"very-private-reason"}],"usage":{"prompt_tokens":3,"completion_tokens":4}}"#;
+
+type Reply = Result<TransportResponse, TransportError>;
+
+struct Fake {
+    reply: Reply,
+    calls: AtomicUsize,
+    keys: Mutex<Vec<String>>,
+}
+
+impl Fake {
+    fn new(reply: Reply) -> Self {
+        Self {
+            reply,
+            calls: AtomicUsize::new(0),
+            keys: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn answering(status: u16, body: impl Into<Vec<u8>>) -> Self {
+        Self::new(Ok(TransportResponse {
+            status,
+            body: body.into(),
+        }))
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+    }
+}
+
+impl Transport for Fake {
+    fn send(&self, request: &PreparedRequest) -> Reply {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let key = request.key.handle.reference().to_owned();
+        self.keys.lock().unwrap().push(key);
+        self.reply.clone()
+    }
+}
+
+fn provider() -> ProviderConfig {
+    let toml = format!(
+        r#"
+[providers.provider-a]
+base_url = "https://api.example.com/v1"
+model = "model-x"
+input_usd_per_mtok = 2.0
+output_usd_per_mtok = 8.0
+price_version = "prices-2030-01-01"
+key_aliases = ["{KEY_ALIAS}", "spare"]
+active_key = "{KEY_ALIAS}"
+"#
+    );
+    let config = ApiConfig::from_toml(&toml).expect("valid config");
+    config.provider("provider-a").expect("provider").clone()
+}
+
+fn request() -> ChatRequest {
+    ChatRequest {
+        messages: vec![Message {
+            role: Role::User,
+            content: PROMPT.to_owned(),
+        }],
+        max_tokens: Some(100),
+        temperature: None,
+    }
+}
+
+/// The amount one `request()` reserves.
+fn worst() -> u64 {
+    let prepared = build_request(&provider(), &request()).expect("valid request");
+    prepared.worst_case_micro_usd
+}
+
+fn month() -> Month {
+    Month::new(2030, 1).expect("month")
+}
+
+fn spend_guard(cap_micro_usd: u64) -> SpendGuard {
+    let usd = cap_micro_usd as f64 / 1_000_000.0 + 0.000_000_5;
+    let config = ApiConfig::from_toml(&format!("enabled = true\nmonthly_cap_usd = {usd:.7}"))
+        .expect("valid config");
+    assert_eq!(config.monthly_cap_micro_usd, Some(cap_micro_usd));
+    SpendGuard::new(&config, month(), 0)
+}
+
+fn guard(cap_micro_usd: u64) -> Mutex<SpendGuard> {
+    Mutex::new(spend_guard(cap_micro_usd))
+}
+
+fn call(transport: &dyn Transport, guard: &Mutex<SpendGuard>) -> CallOutcome {
+    run_call(
+        transport,
+        guard,
+        &provider(),
+        &request(),
+        month(),
+        TIMESTAMP,
+    )
+}
+
+/// Whether exactly `free` still fits under the cap: no more spent or held than expected.
+fn assert_free(guard: &Mutex<SpendGuard>, free: u64) {
+    let mut guard = guard.lock().unwrap_or_else(PoisonError::into_inner);
+    let over = guard.authorize(month(), free + 1);
+    assert!(over.is_err(), "more than {free} is free");
+    let exact = guard
+        .authorize(month(), free)
+        .expect("exactly this is free");
+    guard.release(exact).expect("own");
+}
+
+/// One attempt with the active key, charged at the reservation, with nothing left on hold.
+fn assert_charged_reserve(fake: Fake, expected: CallError) {
+    let guard = guard(3 * worst());
+    let outcome = call(&fake, &guard);
+
+    assert_eq!(outcome.result, Err(expected));
+    assert_eq!(outcome.spent_micro_usd, worst());
+    let record = outcome.record.expect("a record");
+    assert_eq!(record.cost_basis, RecordApiUsageV1CostBasis::Reserved);
+    assert_eq!(record.cost_estimate_micro_usd, worst());
+    assert_eq!((record.tokens_in, record.tokens_out), (0, 0));
+    assert_eq!(fake.calls(), 1);
+    assert_eq!(
+        *fake.keys.lock().unwrap(),
+        [format!("provider-a/{KEY_ALIAS}")]
+    );
+    assert_free(&guard, 2 * worst());
+}
+
+#[test]
+fn a_request_that_cannot_be_built_is_not_sent_and_holds_nothing() {
+    let fake = Fake::answering(200, REPORTED);
+    let guard = guard(worst());
+    let mut empty = request();
+    empty.messages.clear();
+    let outcome = run_call(&fake, &guard, &provider(), &empty, month(), TIMESTAMP);
+
+    assert_eq!(
+        outcome.result,
+        Err(CallError::Request(MapError::EmptyMessages))
+    );
+    assert_eq!((outcome.spent_micro_usd, outcome.record), (0, None));
+    assert_eq!(fake.calls(), 0);
+    assert_free(&guard, worst());
+}
+
+#[test]
+fn a_timestamp_the_record_refuses_stops_the_call_before_it_is_sent() {
+    let fake = Fake::answering(200, REPORTED);
+    let guard = guard(worst());
+    let outcome = run_call(&fake, &guard, &provider(), &request(), month(), "yesterday");
+
+    assert_eq!(outcome.result, Err(CallError::Record));
+    assert_eq!((outcome.spent_micro_usd, outcome.record), (0, None));
+    assert_eq!(fake.calls(), 0);
+    assert_free(&guard, worst());
+}
+
+#[test]
+fn a_refused_call_never_reaches_the_transport() {
+    let fake = Fake::answering(200, REPORTED);
+    let small = guard(worst() - 1);
+    let outcome = call(&fake, &small);
+    assert_eq!(
+        outcome.result,
+        Err(CallError::Refused(Refusal::WouldExceedCap))
+    );
+    assert_eq!((outcome.spent_micro_usd, outcome.record), (0, None));
+    assert_free(&small, worst() - 1);
+
+    let disabled = Mutex::new(SpendGuard::new(&ApiConfig::defaults(), month(), 7));
+    let outcome = call(&fake, &disabled);
+    assert_eq!(outcome.result, Err(CallError::Refused(Refusal::Disabled)));
+    assert_eq!((outcome.spent_micro_usd, outcome.record), (7, None));
+
+    assert_eq!(fake.calls(), 0);
+}
+
+#[test]
+fn a_request_that_certainly_did_not_leave_releases_the_reservation() {
+    let fake = Fake::new(Err(TransportError::NotSent));
+    let guard = guard(worst());
+    let outcome = call(&fake, &guard);
+
+    assert_eq!(outcome.result, Err(CallError::NotSent));
+    assert_eq!((outcome.spent_micro_usd, outcome.record), (0, None));
+    assert_eq!(fake.calls(), 1);
+    assert_free(&guard, worst());
+}
+
+#[test]
+fn a_failure_after_sending_charges_the_reservation() {
+    assert_charged_reserve(
+        Fake::new(Err(TransportError::MaybeSent)),
+        CallError::Uncertain,
+    );
+}
+
+#[test]
+fn a_status_outside_2xx_charges_the_reservation_even_with_reported_usage() {
+    for status in [199, 300, 307, 401, 429, 500] {
+        assert_charged_reserve(Fake::answering(status, REPORTED), CallError::Status(status));
+    }
+}
+
+#[test]
+fn an_oversized_body_charges_the_reservation() {
+    // Valid and with usage, so only the size can refuse it.
+    let mut body = REPORTED.as_bytes().to_vec();
+    body.resize(MAX_RESPONSE_BYTES + 1, b' ');
+    assert_charged_reserve(
+        Fake::answering(200, body),
+        CallError::Response(MapError::ResponseTooLarge),
+    );
+}
+
+#[test]
+fn an_unreadable_body_charges_the_reservation() {
+    for body in [&b"not json"[..], &[0xff, 0xfe], b"", br#"{"choices":[]}"#] {
+        assert_charged_reserve(
+            Fake::answering(200, body),
+            CallError::Response(MapError::MalformedResponse),
+        );
+    }
+}
+
+#[test]
+fn a_success_settles_the_reported_usage_and_frees_the_rest() {
+    let fake = Fake::answering(200, REPORTED);
+    let guard = guard(worst());
+    let outcome = call(&fake, &guard);
+
+    assert_eq!(
+        outcome.result.expect("response").text,
+        "very-private-answer"
+    );
+    assert_eq!(outcome.spent_micro_usd, REPORTED_COST);
+    let record = outcome.record.expect("a record");
+    assert_eq!(record.cost_basis, RecordApiUsageV1CostBasis::Reported);
+    assert_eq!(record.cost_estimate_micro_usd, REPORTED_COST);
+    assert_eq!((record.tokens_in, record.tokens_out), (3, 4));
+    assert_eq!(record.ts.to_string(), TIMESTAMP);
+    assert_eq!(fake.calls(), 1);
+    assert_free(&guard, worst() - REPORTED_COST);
+}
+
+#[test]
+fn a_success_without_usage_costs_the_reservation() {
+    // The last status that still counts as success.
+    let fake = Fake::answering(299, r#"{"choices":[{"message":{"content":"hi"}}]}"#);
+    let guard = guard(2 * worst());
+    let outcome = call(&fake, &guard);
+
+    assert_eq!(outcome.result.expect("response").text, "hi");
+    assert_eq!(outcome.spent_micro_usd, worst());
+    let record = outcome.record.expect("a record");
+    assert_eq!(record.cost_basis, RecordApiUsageV1CostBasis::Reserved);
+    assert_free(&guard, worst());
+}
+
+#[test]
+fn usage_above_the_reservation_is_charged_in_full() {
+    let body = r#"{"choices":[{"message":{"content":"hi"}}],"usage":{"prompt_tokens":0,"completion_tokens":1000000}}"#;
+    let guard = guard(worst());
+    let outcome = call(&Fake::answering(200, body), &guard);
+
+    assert_eq!(outcome.spent_micro_usd, 8_000_000);
+    assert_eq!(
+        outcome.record.expect("a record").cost_estimate_micro_usd,
+        8_000_000
+    );
+}
+
+struct Panicking;
+
+impl Transport for Panicking {
+    fn send(&self, _: &PreparedRequest) -> Reply {
+        panic!("transport failure");
+    }
+}
+
+#[test]
+fn a_panic_in_the_transport_keeps_the_reservation_held() {
+    let guard = guard(2 * worst());
+    let unwound = catch_unwind(AssertUnwindSafe(|| call(&Panicking, &guard)));
+
+    assert!(unwound.is_err());
+    assert_eq!(guard.lock().unwrap().spent_micro_usd(), 0);
+    assert_free(&guard, worst());
+}
+
+/// Reports that it was entered, then waits to be told to answer.
+struct Held {
+    entered: Sender<()>,
+    answer: Mutex<Receiver<()>>,
+}
+
+impl Transport for Held {
+    fn send(&self, _: &PreparedRequest) -> Reply {
+        self.entered.send(()).expect("test is listening");
+        let told = self.answer.lock().unwrap().recv_timeout(WAIT);
+        told.map_err(|_| TransportError::NotSent)?;
+        Err(TransportError::MaybeSent)
+    }
+}
+
+fn held() -> (Held, Receiver<()>, Sender<()>) {
+    let (entered, was_entered) = channel();
+    let (tell, answer) = channel();
+    let answer = Mutex::new(answer);
+    (Held { entered, answer }, was_entered, tell)
+}
+
+#[test]
+fn open_calls_do_not_block_each_other_and_stay_under_the_cap() {
+    let guard = guard(2 * worst());
+    let (first, first_entered, answer_first) = held();
+    let (second, second_entered, answer_second) = held();
+    let third = Fake::answering(200, REPORTED);
+
+    thread::scope(|scope| {
+        let a = scope.spawn(|| call(&first, &guard));
+        first_entered.recv_timeout(WAIT).expect("first is sending");
+        assert!(guard.try_lock().is_ok(), "the guard is locked during send");
+
+        let b = scope.spawn(|| call(&second, &guard));
+        second_entered
+            .recv_timeout(WAIT)
+            .expect("second is sending");
+
+        // Nothing is spent yet, but both reservations count against the cap.
+        let refused = call(&third, &guard);
+        assert_eq!(refused.result, Err(CallError::Refused(Refusal::CapReached)));
+        assert_eq!(refused.spent_micro_usd, 0);
+        assert_eq!(third.calls(), 0);
+
+        answer_second.send(()).expect("second waits");
+        assert_eq!(b.join().expect("second").spent_micro_usd, worst());
+        answer_first.send(()).expect("first waits");
+        assert_eq!(a.join().expect("first").spent_micro_usd, 2 * worst());
+    });
+}
+
+/// Puts a fresh guard in the place of the one that holds the reservation.
+struct Replacing<'a> {
+    guard: &'a Mutex<SpendGuard>,
+    reply: Reply,
+}
+
+impl Transport for Replacing<'_> {
+    fn send(&self, _: &PreparedRequest) -> Reply {
+        *self.guard.lock().unwrap() = spend_guard(worst());
+        self.reply.clone()
+    }
+}
+
+#[test]
+fn a_guard_replaced_during_the_call_is_reported_with_the_record() {
+    let guard = guard(worst());
+    let replacing = |reply| Replacing {
+        guard: &guard,
+        reply,
+    };
+    let outcome = call(&replacing(Err(TransportError::MaybeSent)), &guard);
+    assert_eq!(outcome.result, Err(CallError::GuardReplaced));
+    assert_eq!(outcome.spent_micro_usd, 0);
+    let record = outcome.record.expect("the caller still writes it");
+    assert_eq!(record.cost_estimate_micro_usd, worst());
+    assert_free(&guard, worst());
+
+    let outcome = call(&replacing(Err(TransportError::NotSent)), &guard);
+    assert_eq!(outcome.result, Err(CallError::NotSent));
+    assert_eq!(outcome.record, None);
+}
+
+#[test]
+fn errors_and_debug_output_carry_no_text_body_or_key_reference() {
+    let mut bad = request();
+    bad.temperature = Some(9.0);
+    let fakes = [
+        Fake::answering(200, REPORTED),
+        Fake::answering(500, REPORTED),
+        Fake::answering(200, "very-private-broken-body"),
+        Fake::new(Err(TransportError::MaybeSent)),
+        Fake::new(Err(TransportError::NotSent)),
+    ];
+    let guard = guard(100 * worst());
+    let mut outcomes: Vec<CallOutcome> = fakes.iter().map(|f| call(f, &guard)).collect();
+    outcomes.push(run_call(
+        &fakes[0],
+        &guard,
+        &provider(),
+        &bad,
+        month(),
+        TIMESTAMP,
+    ));
+
+    let mut shown = String::new();
+    for outcome in &outcomes {
+        shown.push_str(&format!("{outcome:?}\n"));
+        if let Err(error) = &outcome.result {
+            shown.push_str(&format!("{error} {error:?}\n"));
+        }
+    }
+    for fake in &fakes {
+        shown.push_str(&format!("{:?}\n", fake.reply));
+        if let Err(error) = &fake.reply {
+            shown.push_str(&format!("{error}\n"));
+        }
+    }
+    for hidden in ["very-private", KEY_ALIAS] {
+        assert!(!shown.contains(hidden), "{hidden}");
+    }
+}
