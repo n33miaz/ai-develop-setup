@@ -1,7 +1,7 @@
 use std::num::NonZeroU64;
 
 use ads_contracts::{
-    CommonIdV1, RecordSessionHandoffV2, RecordSessionHandoffV2Number,
+    CommonIdV1, CommonTimestampV1, RecordSessionHandoffV2, RecordSessionHandoffV2Number,
     RecordSessionHandoffV2Trigger as Trigger,
 };
 use ads_core::handoff::{
@@ -196,4 +196,89 @@ fn rejects_a_gap_before_the_first_handoff() {
     let [mut first, _] = chain();
     first.number = RecordSessionHandoffV2Number::new(3).unwrap();
     assert_eq!(validate_chain(&[first]), Err(ChainError::Number));
+}
+
+#[test]
+fn rejects_consent_from_another_user() {
+    let mut records = chain();
+    records[1].consent.user_id = CommonIdV1::new("user-2".to_owned()).unwrap();
+    assert_eq!(validate_chain(&records), Err(ChainError::User));
+}
+
+fn chain_created_at(first: &str, second: &str) -> [RecordSessionHandoffV2; 2] {
+    let mut records = chain();
+    for (record, text) in records.iter_mut().zip([first, second]) {
+        record.created_at = CommonTimestampV1::new(text.to_owned()).unwrap();
+    }
+    records
+}
+
+#[test]
+fn rejects_a_creation_instant_that_goes_back() {
+    for (first, second) in [
+        ("2030-01-02T03:04:05Z", "2030-01-02T03:04:04Z"),
+        ("2030-01-02T00:00:00Z", "2030-01-01T23:59:59.999999Z"),
+        ("2030-01-02T03:04:05.000001Z", "2030-01-02T03:04:05Z"),
+        // The second instant is earlier, although it sorts later as text.
+        ("2030-01-02T03:04:05.5Z", "2030-01-02T03:04:05Z"),
+    ] {
+        assert_eq!(
+            validate_chain(&chain_created_at(first, second)),
+            Err(ChainError::CreatedAt),
+            "{first} then {second}"
+        );
+    }
+}
+
+#[test]
+fn accepts_equal_creation_instants_however_they_are_written() {
+    for (first, second) in [
+        ("2030-01-02T03:04:05Z", "2030-01-02T03:04:05Z"),
+        ("2030-01-02T03:04:05Z", "2030-01-02T03:04:05.000000Z"),
+        ("2030-01-02T03:04:05.5Z", "2030-01-02T03:04:05.500Z"),
+        ("2030-01-02T03:04:05.500Z", "2030-01-02T03:04:05.5Z"),
+    ] {
+        assert_eq!(
+            validate_chain(&chain_created_at(first, second)),
+            Ok(()),
+            "{first} then {second}"
+        );
+    }
+}
+
+#[test]
+fn orders_creation_instants_by_time_and_not_by_text() {
+    for (first, second) in [
+        // The second instant is later, although it sorts earlier as text.
+        ("2030-01-02T03:04:05Z", "2030-01-02T03:04:05.5Z"),
+        ("2030-01-02T03:04:05.5Z", "2030-01-02T03:04:05.50001Z"),
+        // A leap second comes before the first instant of the next day.
+        ("2030-12-31T23:59:60.5Z", "2031-01-01T00:00:00.2Z"),
+    ] {
+        assert_eq!(
+            validate_chain(&chain_created_at(first, second)),
+            Ok(()),
+            "{first} then {second}"
+        );
+    }
+}
+
+#[test]
+fn rejects_a_repeated_state_document() {
+    let mut records = chain();
+    records[1].state_document_id = records[0].state_document_id.clone();
+    assert_eq!(
+        validate_chain(&records),
+        Err(ChainError::RepeatedStateDocument)
+    );
+}
+
+#[test]
+fn rejects_a_repeated_opening_prompt() {
+    let mut records = chain();
+    records[1].opening_prompt_id = records[0].opening_prompt_id.clone();
+    assert_eq!(
+        validate_chain(&records),
+        Err(ChainError::RepeatedOpeningPrompt)
+    );
 }
