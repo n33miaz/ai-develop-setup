@@ -121,6 +121,7 @@ pub mod event_session_handoff_proposed_v1;
 pub mod event_session_handoff_v1;
 pub mod event_session_handoff_v2;
 pub mod event_session_handoff_v3;
+pub mod event_session_handoff_v4;
 pub mod event_session_output_v1;
 pub mod event_session_permission_asked_v1;
 pub mod event_session_refusal_detected_v1;
@@ -270,6 +271,7 @@ pub use event_session_handoff_proposed_v1::*;
 pub use event_session_handoff_v1::*;
 pub use event_session_handoff_v2::*;
 pub use event_session_handoff_v3::*;
+pub use event_session_handoff_v4::*;
 pub use event_session_output_v1::*;
 pub use event_session_permission_asked_v1::*;
 pub use event_session_refusal_detected_v1::*;
@@ -667,6 +669,10 @@ pub const SCHEMAS: &[(&str, &str)] = &[
         "event.session.handoff.v3",
         "urn:ads:event:session.handoff:3",
     ),
+    (
+        "event.session.handoff.v4",
+        "urn:ads:event:session.handoff:4",
+    ),
     ("event.session.output.v1", "urn:ads:event:session.output:1"),
     (
         "event.session.permission_asked.v1",
@@ -984,6 +990,7 @@ pub fn reencode(id: &str, value: Value) -> Option<Result<Value, serde_json::Erro
         "urn:ads:event:session.handoff:1" => support::reencode::<EventSessionHandoffV1>(value),
         "urn:ads:event:session.handoff:2" => support::reencode::<EventSessionHandoffV2>(value),
         "urn:ads:event:session.handoff:3" => support::reencode::<EventSessionHandoffV3>(value),
+        "urn:ads:event:session.handoff:4" => support::reencode::<EventSessionHandoffV4>(value),
         "urn:ads:event:session.output:1" => support::reencode::<EventSessionOutputV1>(value),
         "urn:ads:event:session.permission_asked:1" => {
             support::reencode::<EventSessionPermissionAskedV1>(value)

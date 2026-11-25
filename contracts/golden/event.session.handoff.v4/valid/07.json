@@ -1,0 +1,20 @@
+{
+  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAH",
+  "type": "urn:ads:event:session.handoff:4",
+  "ts": "2030-01-02T03:04:05Z",
+  "stream": "handoff/handoff-3",
+  "seq": 2,
+  "actor": {
+    "kind": "device",
+    "id": "device-1"
+  },
+  "cause": "01ARZ3NDEKTSV4RRFFQ69G5FAG",
+  "data_class": "private",
+  "data": {
+    "handoff_id": "handoff-3",
+    "source_session_id": "session-1",
+    "trigger": "model_refusal",
+    "status": "declined",
+    "channel": "local"
+  }
+}
