@@ -114,6 +114,31 @@ pub enum ChainError {
     SourceSession,
     Lineage,
     Number,
+    /// The consent comes from a user other than the one of the first handoff.
+    User,
+    /// The creation instant is earlier than the one of the previous handoff.
+    CreatedAt,
+    /// The creation timestamp cannot be read as an instant.
+    UnreadableInstant,
+    RepeatedStateDocument,
+    RepeatedOpeningPrompt,
+}
+
+/// Ordering key of a UTC timestamp whose calendar the contract type already checked. Date and
+/// time have a fixed width and order as text; the fraction does not, so it counts in microseconds.
+fn instant_key(text: &str) -> Option<(&str, u32)> {
+    let date_time = text.get(..19)?;
+    let micros = match text.get(19..)?.strip_suffix('Z')? {
+        "" => 0,
+        fraction => {
+            let digits = fraction.strip_prefix('.')?;
+            if !(1..=6).contains(&digits.len()) || !digits.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            format!("{digits:0<6}").parse().ok()?
+        }
+    };
+    Some((date_time, micros))
 }
 
 /// Validate a complete chain in order from the first handoff.
@@ -123,7 +148,10 @@ pub fn validate_chain(chain: &[RecordSessionHandoffV2]) -> Result<(), ChainError
     };
     let mut handoffs = HashSet::new();
     let mut sessions = HashSet::from([first.source_session_id.as_str()]);
+    let mut documents = HashSet::new();
+    let mut prompts = HashSet::new();
     let mut previous: Option<&RecordSessionHandoffV2> = None;
+    let mut previous_instant = None;
 
     for record in chain {
         if !handoffs.insert(record.id.as_str()) {
@@ -145,7 +173,43 @@ pub fn validate_chain(chain: &[RecordSessionHandoffV2]) -> Result<(), ChainError
         if next_number(current) != Some(record.number) {
             return Err(ChainError::Number);
         }
+        if record.consent.user_id != first.consent.user_id {
+            return Err(ChainError::User);
+        }
+        let instant =
+            instant_key(record.created_at.as_str()).ok_or(ChainError::UnreadableInstant)?;
+        if previous_instant.is_some_and(|previous| instant < previous) {
+            return Err(ChainError::CreatedAt);
+        }
+        if !documents.insert(record.state_document_id.as_str()) {
+            return Err(ChainError::RepeatedStateDocument);
+        }
+        if !prompts.insert(record.opening_prompt_id.as_str()) {
+            return Err(ChainError::RepeatedOpeningPrompt);
+        }
         previous = Some(record);
+        previous_instant = Some(instant);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn malformed_text_has_no_instant() {
+        for text in [
+            "",
+            "2030-01-02",
+            "2030-01-02T03:04:05",
+            "2030-01-02T03:04:05.Z",
+            "2030-01-02T03:04:05.1234567Z",
+            "2030-01-02T03:04:05.+5Z",
+            "2030-01-02T03:04:05+00:00",
+            "2030-01-02T03:04:0é",
+        ] {
+            assert_eq!(instant_key(text), None, "{text}");
+        }
+    }
 }
