@@ -1,0 +1,79 @@
+{
+  "status.json": {
+    "rule": "O estado deve indicar proposta, aceite ou recusa.",
+    "keyword": "enum",
+    "instancePath": "/data/status"
+  },
+  "stream.json": {
+    "rule": "O evento pertence à família handoff.",
+    "keyword": "pattern",
+    "instancePath": "/stream"
+  },
+  "class.json": {
+    "rule": "O evento tem classificação privada.",
+    "keyword": "const",
+    "instancePath": "/data_class"
+  },
+  "accepted-actor.json": {
+    "rule": "Aceite e recusa exigem um aparelho como autor.",
+    "keyword": "const",
+    "instancePath": "/actor/kind"
+  },
+  "declined-actor.json": {
+    "rule": "Aceite e recusa exigem um aparelho como autor.",
+    "keyword": "const",
+    "instancePath": "/actor/kind"
+  },
+  "alternative.json": {
+    "rule": "A alternativa aceita é um identificador opaco do catálogo.",
+    "keyword": "pattern",
+    "instancePath": "/data/alternative_id"
+  },
+  "trigger-missing.json": {
+    "rule": "O evento informa o gatilho da passagem.",
+    "keyword": "required",
+    "instancePath": "/data",
+    "params": {
+      "missingProperty": "trigger"
+    }
+  },
+  "trigger.json": {
+    "rule": "O gatilho usa os mesmos valores do registro da passagem.",
+    "keyword": "enum",
+    "instancePath": "/data/trigger"
+  },
+  "accepted-channel.json": {
+    "rule": "Aceite e recusa informam o canal do consentimento.",
+    "keyword": "required",
+    "instancePath": "/data",
+    "params": {
+      "missingProperty": "channel"
+    }
+  },
+  "declined-channel.json": {
+    "rule": "Aceite e recusa informam o canal do consentimento.",
+    "keyword": "required",
+    "instancePath": "/data",
+    "params": {
+      "missingProperty": "channel"
+    }
+  },
+  "proposed-channel.json": {
+    "rule": "A proposta não tem canal: só aceite e recusa têm.",
+    "keyword": "not",
+    "instancePath": "/data"
+  },
+  "channel.json": {
+    "rule": "O canal é local ou remoto.",
+    "keyword": "enum",
+    "instancePath": "/data/channel"
+  },
+  "refusal-alternative.json": {
+    "rule": "O aceite após recusa de modelo nomeia a alternativa escolhida.",
+    "keyword": "required",
+    "instancePath": "/data",
+    "params": {
+      "missingProperty": "alternative_id"
+    }
+  }
+}

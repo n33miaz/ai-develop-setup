@@ -2,6 +2,10 @@
 
 Formato: uma seção por data. Contrato novo, campo opcional acrescentado, versão nova de uma URN e contrato aposentado entram aqui. As regras de versão estão no [README](README.md).
 
+## 2026-11-25
+
+- `session.handoff:4`, convivendo com a `:1` à `:3`: o evento informa o gatilho da passagem (`trigger`, com os valores do registro) e, no aceite e na recusa, o canal do consentimento (`channel`, local ou remoto); a proposta não tem canal. O aceite com gatilho `model_refusal` exige `alternative_id`. O núcleo ainda emite e confere a `:3`.
+
 ## 2026-11-24
 
 - Contrato novo `session.handoff_proposed:1`: proposta de passagem por limiar de contexto, só com metadados (sessão, limiar, percentual medido, número N da cadeia e documento anterior).
