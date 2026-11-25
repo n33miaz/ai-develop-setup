@@ -22,7 +22,7 @@ Estado: só lógica. Não há rede, e o adaptador nunca lê, guarda nem registra
 
 | Como termina (`result`) | Envio | Gasto | Registro |
 |---|---|---|---|
-| Pedido inválido (`Request`), instante ou provedor que não cabem no registro ou instante fora do mês informado (`Record`), recusa da guarda (`Refused`) | nenhum | nada reservado | não |
+| Pedido inválido (`Request`), instante ou provedor que não cabem no registro ou instante fora do mês informado (`Record`), recusa da guarda (`Refused`), mês anterior ao da guarda (`MonthPassed`) | nenhum | nada reservado | não |
 | O transporte garante que não saiu (`NotSent`) | uma tentativa | reserva devolvida | não |
 | Falha em que o pedido pode ter chegado (`Uncertain`), status fora de 2xx (`Status`), corpo grande demais ou ilegível (`Response`) | um | a reserva | `reserved` |
 | Sucesso com a contagem de tokens | um | o uso informado, mesmo acima da reserva | `reported` |
@@ -42,7 +42,7 @@ Estado: só lógica. Não há rede, e o adaptador nunca lê, guarda nem registra
 - Ao fim, `settle` troca a reserva pelo custo real; `release` devolve a reserva de uma chamada que não chegou ao provedor. Resposta sem a contagem de tokens custa a reserva inteira (`cost_basis = reserved`), então omitir a contagem não torna a chamada de graça.
 - O mês e o valor já gasto vêm do chamador (do livro-caixa). Guardar o gasto entre execuções não é papel deste crate.
 - O mês corrente da guarda é o mais recente com que ela foi montada ou em que recebeu um pedido de reserva. Um mês posterior começa sem gasto e sem reservas. O custo de uma chamada é do mês que a reservou: liquidada ou devolvida depois da virada, ela não muda o mês corrente.
-- Relógio voltado para trás não zera nem libera o teto: a reserva conta no mês corrente da guarda. O mesmo vale para uma chamada que tomou o mês antes da virada e reservou depois dela. Nos dois casos o registro leva o mês anterior, e o gasto da guarda fica acima do total do livro-caixa no mês corrente.
+- Relógio voltado para trás não zera nem libera o teto: `authorize` conta a reserva no mês corrente da guarda. `run_call` vai além e não envia uma chamada de mês anterior ao da guarda (`MonthPassed`), porque o registro levaria um mês e a cobrança outro. Isso inclui a chamada que tomou o mês antes da virada e chegou à guarda depois dela, que o chamador pode refazer com o instante atual. Se a guarda avançou por um relógio adiantado, a recusa dura até o relógio alcançar o mês dela ou até a guarda ser remontada.
 - Quem remonta a guarda passa o mês mais recente entre o do relógio e o do último registro do livro-caixa, com o total desse mês: uma guarda montada num mês anterior zera o gasto ao avançar.
 - O custo é uma estimativa a preço de lista; a fatura do provedor manda.
 - A guarda não conhece chaves: o teto e o gasto são do adaptador inteiro. Trocar o apelido ativo não zera nem aumenta o teto. Quem recarrega a configuração só para trocar de chave mantém a mesma guarda, porque uma guarda nova não conhece as reservas em aberto da anterior.

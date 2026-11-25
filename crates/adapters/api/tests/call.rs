@@ -200,6 +200,20 @@ fn a_timestamp_outside_the_month_of_the_call_stops_it_before_it_is_sent() {
 }
 
 #[test]
+fn a_call_behind_the_guard_month_is_not_sent_and_holds_nothing() {
+    let fake = Fake::answering(200, REPORTED);
+    let guard = guard(worst());
+    // Another reservation has already moved the guard to the next month.
+    assert_free_in(&guard, next_month(), worst());
+    let outcome = call(&fake, &guard);
+
+    assert_eq!(outcome.result, Err(CallError::MonthPassed));
+    assert_eq!((outcome.spent_micro_usd, outcome.record), (0, None));
+    assert_eq!(fake.calls(), 0);
+    assert_free_in(&guard, next_month(), worst());
+}
+
+#[test]
 fn a_refused_call_never_reaches_the_transport() {
     let fake = Fake::answering(200, REPORTED);
     let small = guard(worst() - 1);

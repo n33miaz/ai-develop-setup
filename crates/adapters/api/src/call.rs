@@ -23,6 +23,8 @@ pub enum CallError {
     Record,
     /// The spend guard refused; nothing was sent.
     Refused(Refusal),
+    /// The guard is already past the month of the call; nothing was sent.
+    MonthPassed,
     /// The transport is certain the request did not leave; nothing is charged.
     NotSent,
     /// The transport failed after the provider may have received the request.
@@ -41,6 +43,7 @@ impl fmt::Display for CallError {
             Self::Request(err) | Self::Response(err) => err.fmt(f),
             Self::Record => f.write_str("the usage record of this call cannot be built"),
             Self::Refused(refusal) => refusal.fmt(f),
+            Self::MonthPassed => f.write_str("the spend guard is past the month of the call"),
             Self::NotSent => TransportError::NotSent.fmt(f),
             Self::Uncertain => TransportError::MaybeSent.fmt(f),
             Self::Status(status) => write!(f, "the provider answered with status {status}"),
@@ -95,11 +98,21 @@ pub fn run_call<T: Transport + ?Sized>(
     if month_of(&reserved.ts.to_string()) != Some(now) {
         return unsent(CallError::Record);
     }
-    // A statement of its own: the lock is gone before the transport runs.
-    let authorized = lock(guard).authorize(now, prepared.worst_case_micro_usd);
+    // A block of its own: the lock is gone before the transport runs.
+    let authorized = {
+        let mut guard = lock(guard);
+        // A later guard month would be charged for a record dated in an earlier one.
+        if now < guard.month() {
+            Err(CallError::MonthPassed)
+        } else {
+            guard
+                .authorize(now, prepared.worst_case_micro_usd)
+                .map_err(CallError::Refused)
+        }
+    };
     let reservation = match authorized {
         Ok(reservation) => reservation,
-        Err(refusal) => return unsent(CallError::Refused(refusal)),
+        Err(error) => return unsent(error),
     };
 
     // The reservation has no `Drop`: a panic in here leaves the amount held.

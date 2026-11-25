@@ -100,7 +100,12 @@ impl SpendGuard {
         }
     }
 
-    /// Spend of the guard's month: the latest one it was built with or has authorized in.
+    /// The latest month the guard was built with or has authorized in.
+    pub fn month(&self) -> Month {
+        self.month
+    }
+
+    /// Spend of the guard's month.
     pub fn spent_micro_usd(&self) -> u64 {
         self.spent
     }
