@@ -3,7 +3,7 @@
 use std::fmt;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use ads_contracts::RecordApiUsageV1;
+use ads_contracts::{RecordApiUsageV2, RecordApiUsageV2Outcome};
 
 use crate::chat::{
     ChatRequest, ChatResponse, MAX_RESPONSE_BYTES, MapError, build_request, parse_response,
@@ -11,7 +11,7 @@ use crate::chat::{
 use crate::config::ProviderConfig;
 use crate::spend::{Month, Refusal, SpendGuard};
 use crate::transport::{Transport, TransportError, TransportResponse};
-use crate::usage::usage_record;
+use crate::usage::{report_usage, usage_record};
 
 /// Why a call gave no response. Carries no request text, response body or key reference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,7 +63,7 @@ pub struct CallOutcome {
     /// it, nor is the cost of a call whose reserved month the guard has already left.
     pub spent_micro_usd: u64,
     /// Present whenever the call costs something, for the caller to write to the ledger.
-    pub record: Option<RecordApiUsageV1>,
+    pub record: Option<RecordApiUsageV2>,
 }
 
 /// Run one call. The guard is locked to reserve and to settle, never while the transport sends.
@@ -90,12 +90,17 @@ pub fn run_call<T: Transport + ?Sized>(
         Err(err) => return unsent(CallError::Request(err)),
     };
     // Built before sending, so a call that may be billed can never end up without a record.
-    let Ok(reserved) = usage_record(provider, timestamp, None, prepared.worst_case_micro_usd)
-    else {
+    let Ok(mut record) = usage_record(
+        provider,
+        timestamp,
+        None,
+        prepared.worst_case_micro_usd,
+        RecordApiUsageV2Outcome::ChargedUncertain,
+    ) else {
         return unsent(CallError::Record);
     };
     // The ledger totals by the record's month, so it must be the one reserved against.
-    if month_of(&reserved.ts.to_string()) != Some(now) {
+    if month_of(&record.ts.to_string()) != Some(now) {
         return unsent(CallError::Record);
     }
     // A block of its own: the lock is gone before the transport runs.
@@ -116,7 +121,7 @@ pub fn run_call<T: Transport + ?Sized>(
     };
 
     // The reservation has no `Drop`: a panic in here leaves the amount held.
-    let (record, result) = match transport.send(&prepared) {
+    let result = match transport.send(&prepared) {
         Err(TransportError::NotSent) => {
             let mut guard = lock(guard);
             // A replacement guard never held this amount, so there is nothing to undo in it.
@@ -127,29 +132,39 @@ pub fn run_call<T: Transport + ?Sized>(
                 record: None,
             };
         }
-        Err(TransportError::MaybeSent) => (reserved, Err(CallError::Uncertain)),
+        Err(TransportError::MaybeSent) => Err(CallError::Uncertain),
+        Ok(answer) if !(200..300).contains(&answer.status) => {
+            record.outcome = RecordApiUsageV2Outcome::ChargedErrorStatus;
+            Err(CallError::Status(answer.status))
+        }
         Ok(answer) => match read(&answer) {
             Ok(response) => {
-                let record = usage_record(
-                    provider,
-                    timestamp,
-                    response.usage,
-                    prepared.worst_case_micro_usd,
-                )
-                .unwrap_or(reserved);
-                (record, Ok(response))
+                record.outcome = match response.usage {
+                    Some(usage) => {
+                        report_usage(&mut record, provider, usage);
+                        RecordApiUsageV2Outcome::SucceededReported
+                    }
+                    None => RecordApiUsageV2Outcome::SucceededReserved,
+                };
+                Ok(response)
             }
-            Err(error) => (reserved, Err(error)),
+            Err(error) => {
+                record.outcome = RecordApiUsageV2Outcome::ChargedBadResponse;
+                Err(CallError::Response(error))
+            }
         },
     };
 
     let mut guard = lock(guard);
-    let settled = guard.settle(reservation, record.cost_estimate_micro_usd);
+    let result = match guard.settle(reservation, record.cost_estimate_micro_usd) {
+        Ok(()) => result,
+        Err(_) => {
+            record.outcome = RecordApiUsageV2Outcome::ChargedGuardReplaced;
+            Err(CallError::GuardReplaced)
+        }
+    };
     CallOutcome {
-        result: match settled {
-            Ok(()) => result,
-            Err(_) => Err(CallError::GuardReplaced),
-        },
+        result,
         spent_micro_usd: guard.spent_micro_usd(),
         record: Some(record),
     }
@@ -162,16 +177,12 @@ fn month_of(timestamp: &str) -> Option<Month> {
     Month::new(year, month)
 }
 
-fn read(answer: &TransportResponse) -> Result<ChatResponse, CallError> {
-    if !(200..300).contains(&answer.status) {
-        return Err(CallError::Status(answer.status));
-    }
+fn read(answer: &TransportResponse) -> Result<ChatResponse, MapError> {
     if answer.body.len() > MAX_RESPONSE_BYTES {
-        return Err(CallError::Response(MapError::ResponseTooLarge));
+        return Err(MapError::ResponseTooLarge);
     }
-    let body = std::str::from_utf8(&answer.body)
-        .map_err(|_| CallError::Response(MapError::MalformedResponse))?;
-    parse_response(body).map_err(CallError::Response)
+    let body = std::str::from_utf8(&answer.body).map_err(|_| MapError::MalformedResponse)?;
+    parse_response(body)
 }
 
 // Each guard method leaves the counters consistent, so a poisoned lock is still usable.

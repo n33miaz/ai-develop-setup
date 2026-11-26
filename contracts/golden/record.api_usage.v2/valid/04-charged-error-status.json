@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "ts": "2030-03-01T12:01:00Z",
+  "provider_alias": "provider-a",
+  "model": "model-x",
+  "tokens_in": 0,
+  "tokens_out": 0,
+  "cost_estimate_micro_usd": 2000,
+  "cost_basis": "reserved",
+  "price_version": "prices-2030-01-01",
+  "outcome": "charged_error_status"
+}

@@ -137,6 +137,7 @@ pub mod record_action_effects_v1;
 pub mod record_action_plan_v1;
 pub mod record_action_plan_v2;
 pub mod record_api_usage_v1;
+pub mod record_api_usage_v2;
 pub mod record_approval_v1;
 pub mod record_host_event_v1;
 pub mod record_host_sample_v1;
@@ -287,6 +288,7 @@ pub use record_action_effects_v1::*;
 pub use record_action_plan_v1::*;
 pub use record_action_plan_v2::*;
 pub use record_api_usage_v1::*;
+pub use record_api_usage_v2::*;
 pub use record_approval_v1::*;
 pub use record_host_event_v1::*;
 pub use record_host_sample_v1::*;
@@ -703,6 +705,7 @@ pub const SCHEMAS: &[(&str, &str)] = &[
     ("record.action-plan.v1", "urn:ads:record:action-plan:1"),
     ("record.action-plan.v2", "urn:ads:record:action-plan:2"),
     ("record.api_usage.v1", "urn:ads:record:api_usage:1"),
+    ("record.api_usage.v2", "urn:ads:record:api_usage:2"),
     ("record.approval.v1", "urn:ads:record:approval:1"),
     ("record.host_event.v1", "urn:ads:record:host_event:1"),
     ("record.host_sample.v1", "urn:ads:record:host_sample:1"),
@@ -1010,6 +1013,7 @@ pub fn reencode(id: &str, value: Value) -> Option<Result<Value, serde_json::Erro
         "urn:ads:record:action-plan:1" => support::reencode::<RecordActionPlanV1>(value),
         "urn:ads:record:action-plan:2" => support::reencode::<RecordActionPlanV2>(value),
         "urn:ads:record:api_usage:1" => support::reencode::<RecordApiUsageV1>(value),
+        "urn:ads:record:api_usage:2" => support::reencode::<RecordApiUsageV2>(value),
         "urn:ads:record:approval:1" => support::reencode::<RecordApprovalV1>(value),
         "urn:ads:record:host_event:1" => support::reencode::<RecordHostEventV1>(value),
         "urn:ads:record:host_sample:1" => support::reencode::<RecordHostSampleV1>(value),

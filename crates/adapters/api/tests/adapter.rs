@@ -2,6 +2,7 @@ use ads_adapter_api::{
     ApiConfig, ChatRequest, MapError, Message, Month, Refusal, Role, SpendGuard, TokenUsage,
     build_request, parse_request_body, parse_response, usage_record,
 };
+use ads_contracts::RecordApiUsageV2Outcome;
 
 const PROVIDER: &str = r#"
 [providers.provider-a]
@@ -304,15 +305,32 @@ fn the_usage_record_is_sized_from_reported_tokens_or_the_reserve() {
             tokens_out: 1_000_000,
         }),
         7,
+        RecordApiUsageV2Outcome::SucceededReported,
     )
     .expect("record");
     assert_eq!(reported.cost_estimate_micro_usd, 10_000_000);
     assert_eq!(reported.provider_alias.as_str(), "provider-a");
 
-    let reserved = usage_record(provider, "2030-01-02T03:04:05Z", None, 1234).expect("record");
+    let reserved = usage_record(
+        provider,
+        "2030-01-02T03:04:05Z",
+        None,
+        1234,
+        RecordApiUsageV2Outcome::SucceededReserved,
+    )
+    .expect("record");
     assert_eq!(reserved.cost_estimate_micro_usd, 1234);
     assert_eq!((reserved.tokens_in, reserved.tokens_out), (0, 0));
-    assert!(usage_record(provider, "yesterday", None, 0).is_err());
+    assert!(
+        usage_record(
+            provider,
+            "yesterday",
+            None,
+            0,
+            RecordApiUsageV2Outcome::SucceededReserved,
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -330,12 +348,15 @@ fn the_usage_record_has_no_content_and_validates_against_the_contract_shape() {
         "2030-01-02T03:04:05Z",
         response.usage,
         prepared.worst_case_micro_usd,
+        RecordApiUsageV2Outcome::SucceededReported,
     )
     .unwrap();
 
     let json = serde_json::to_string(&record).expect("json");
     assert!(!json.contains(secret_text));
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["version"], 2);
+    assert_eq!(value["outcome"], "succeeded_reported");
     let mut keys: Vec<&str> = value
         .as_object()
         .unwrap()
@@ -349,6 +370,7 @@ fn the_usage_record_has_no_content_and_validates_against_the_contract_shape() {
             "cost_basis",
             "cost_estimate_micro_usd",
             "model",
+            "outcome",
             "price_version",
             "provider_alias",
             "tokens_in",

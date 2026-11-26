@@ -10,7 +10,7 @@ use ads_adapter_api::{
     PreparedRequest, ProviderConfig, Refusal, Role, SpendGuard, Transport, TransportError,
     TransportResponse, build_request, run_call,
 };
-use ads_contracts::RecordApiUsageV1CostBasis;
+use ads_contracts::{RecordApiUsageV2CostBasis, RecordApiUsageV2Outcome};
 
 const TIMESTAMP: &str = "2030-01-02T03:04:05Z";
 const NEXT_TIMESTAMP: &str = "2030-02-01T00:00:00Z";
@@ -138,16 +138,21 @@ fn assert_free_in(guard: &Mutex<SpendGuard>, now: Month, free: u64) {
 }
 
 /// One attempt with the active key, charged at the reservation, with nothing left on hold.
-fn assert_charged_reserve(fake: Fake, expected: CallError) {
+fn assert_charged_reserve(
+    fake: Fake,
+    expected: CallError,
+    expected_outcome: RecordApiUsageV2Outcome,
+) {
     let guard = guard(3 * worst());
     let outcome = call(&fake, &guard);
 
     assert_eq!(outcome.result, Err(expected));
     assert_eq!(outcome.spent_micro_usd, worst());
     let record = outcome.record.expect("a record");
-    assert_eq!(record.cost_basis, RecordApiUsageV1CostBasis::Reserved);
+    assert_eq!(record.cost_basis, RecordApiUsageV2CostBasis::Reserved);
     assert_eq!(record.cost_estimate_micro_usd, worst());
     assert_eq!((record.tokens_in, record.tokens_out), (0, 0));
+    assert_eq!(record.outcome, expected_outcome);
     assert_eq!(fake.calls(), 1);
     assert_eq!(
         *fake.keys.lock().unwrap(),
@@ -250,13 +255,18 @@ fn a_failure_after_sending_charges_the_reservation() {
     assert_charged_reserve(
         Fake::new(Err(TransportError::MaybeSent)),
         CallError::Uncertain,
+        RecordApiUsageV2Outcome::ChargedUncertain,
     );
 }
 
 #[test]
 fn a_status_outside_2xx_charges_the_reservation_even_with_reported_usage() {
     for status in [199, 300, 307, 401, 429, 500] {
-        assert_charged_reserve(Fake::answering(status, REPORTED), CallError::Status(status));
+        assert_charged_reserve(
+            Fake::answering(status, REPORTED),
+            CallError::Status(status),
+            RecordApiUsageV2Outcome::ChargedErrorStatus,
+        );
     }
 }
 
@@ -268,6 +278,7 @@ fn an_oversized_body_charges_the_reservation() {
     assert_charged_reserve(
         Fake::answering(200, body),
         CallError::Response(MapError::ResponseTooLarge),
+        RecordApiUsageV2Outcome::ChargedBadResponse,
     );
 }
 
@@ -277,6 +288,7 @@ fn an_unreadable_body_charges_the_reservation() {
         assert_charged_reserve(
             Fake::answering(200, body),
             CallError::Response(MapError::MalformedResponse),
+            RecordApiUsageV2Outcome::ChargedBadResponse,
         );
     }
 }
@@ -293,9 +305,10 @@ fn a_success_settles_the_reported_usage_and_frees_the_rest() {
     );
     assert_eq!(outcome.spent_micro_usd, REPORTED_COST);
     let record = outcome.record.expect("a record");
-    assert_eq!(record.cost_basis, RecordApiUsageV1CostBasis::Reported);
+    assert_eq!(record.cost_basis, RecordApiUsageV2CostBasis::Reported);
     assert_eq!(record.cost_estimate_micro_usd, REPORTED_COST);
     assert_eq!((record.tokens_in, record.tokens_out), (3, 4));
+    assert_eq!(record.outcome, RecordApiUsageV2Outcome::SucceededReported);
     assert_eq!(record.ts.to_string(), TIMESTAMP);
     assert_eq!(fake.calls(), 1);
     assert_free(&guard, worst() - REPORTED_COST);
@@ -311,7 +324,8 @@ fn a_success_without_usage_costs_the_reservation() {
     assert_eq!(outcome.result.expect("response").text, "hi");
     assert_eq!(outcome.spent_micro_usd, worst());
     let record = outcome.record.expect("a record");
-    assert_eq!(record.cost_basis, RecordApiUsageV1CostBasis::Reserved);
+    assert_eq!(record.cost_basis, RecordApiUsageV2CostBasis::Reserved);
+    assert_eq!(record.outcome, RecordApiUsageV2Outcome::SucceededReserved);
     assert_free(&guard, worst());
 }
 
@@ -486,6 +500,23 @@ fn a_guard_replaced_during_the_call_is_reported_with_the_record() {
     assert_eq!(outcome.spent_micro_usd, 0);
     let record = outcome.record.expect("the caller still writes it");
     assert_eq!(record.cost_estimate_micro_usd, worst());
+    assert_eq!(
+        record.outcome,
+        RecordApiUsageV2Outcome::ChargedGuardReplaced
+    );
+    assert_free(&guard, worst());
+
+    let outcome = call(&replacing(Fake::answering(200, REPORTED).reply), &guard);
+    assert_eq!(outcome.result, Err(CallError::GuardReplaced));
+    assert_eq!(outcome.spent_micro_usd, 0);
+    let record = outcome.record.expect("the caller still writes it");
+    assert_eq!(
+        record.outcome,
+        RecordApiUsageV2Outcome::ChargedGuardReplaced
+    );
+    assert_eq!(record.cost_basis, RecordApiUsageV2CostBasis::Reported);
+    assert_eq!(record.cost_estimate_micro_usd, REPORTED_COST);
+    assert_eq!((record.tokens_in, record.tokens_out), (3, 4));
     assert_free(&guard, worst());
 
     let outcome = call(&replacing(Err(TransportError::NotSent)), &guard);
@@ -531,4 +562,26 @@ fn errors_and_debug_output_carry_no_text_body_or_key_reference() {
     for hidden in ["very-private", KEY_ALIAS] {
         assert!(!shown.contains(hidden), "{hidden}");
     }
+}
+
+#[test]
+fn a_billed_failure_and_a_success_without_tokens_produce_different_records() {
+    let failure = call(&Fake::new(Err(TransportError::MaybeSent)), &guard(worst()));
+    let success = call(
+        &Fake::answering(299, r#"{"choices":[{"message":{"content":"hi"}}]}"#),
+        &guard(worst()),
+    );
+    assert_eq!(failure.result, Err(CallError::Uncertain));
+    assert!(success.result.expect("successful call").usage.is_none());
+
+    let failed_record = failure.record.expect("failure has a record");
+    let successful_record = success.record.expect("success has a record");
+    assert_ne!(failed_record, successful_record);
+    assert_eq!(
+        failed_record,
+        ads_contracts::RecordApiUsageV2 {
+            outcome: RecordApiUsageV2Outcome::ChargedUncertain,
+            ..successful_record
+        },
+    );
 }
