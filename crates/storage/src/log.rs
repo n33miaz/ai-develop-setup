@@ -19,8 +19,8 @@ use ads_core::gate::{
 };
 use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 use std::{collections::HashSet, num::NonZeroU64, path::Path};
-use storage_sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 /// Label leading the associated data of every event row; the row format follows it.

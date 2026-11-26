@@ -883,7 +883,7 @@ fn restore_job(
         }
     };
     let manifest = Manifest::from_bytes(&bytes)?;
-    let read_manifest = format!("sha256:{:x}", Sha256::digest(&bytes));
+    let read_manifest = digest_text(&bytes);
     if batch.rel.last() != Some(&manifest.action_id) {
         return Err(invalid("the manifest is of another action"));
     }
@@ -973,4 +973,24 @@ fn restore_job(
     let mut job = Job::new(work, steps, ops);
     job.read_manifest = Some(read_manifest);
     Ok(job)
+}
+
+/// `sha256:` and the SHA-256 of `bytes`, in lower-case hex.
+fn digest_text(bytes: &[u8]) -> String {
+    let hex: String = Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    format!("sha256:{hex}")
+}
+
+#[cfg(test)]
+mod digest_tests {
+    #[test]
+    fn digest_text_keeps_leading_zeros_in_lower_case() {
+        assert_eq!(
+            super::digest_text(b"ads-36"),
+            "sha256:0bbb0f7bfade40c1b69e98b0c534101d8b237370dad6404dc139d3c2a977b5ae"
+        );
+    }
 }

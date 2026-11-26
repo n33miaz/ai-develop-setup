@@ -588,7 +588,16 @@ fn plan_of(policy: &GatePolicy, record: &ActionPlanRecord) -> Option<ActionPlan>
 
 /// `sha256:` and the digest of the record as it is stored.
 pub(crate) fn effects_hash(effects: &Effects) -> String {
-    format!("sha256:{:x}", Sha256::digest(effects.to_bytes()))
+    digest_text(&effects.to_bytes())
+}
+
+/// `sha256:` and the SHA-256 of `bytes`, in lower-case hex.
+pub(crate) fn digest_text(bytes: &[u8]) -> String {
+    let hex: String = Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    format!("sha256:{hex}")
 }
 
 fn effects_stream(action_id: &str) -> Result<EventEnvelopeV1Stream, JournalError> {
@@ -837,4 +846,15 @@ fn approved_hash(
 pub struct ExecutionOutcome {
     pub operation: Result<Report, Box<Failure>>,
     pub recorded: Result<ActionSnapshot, JournalError>,
+}
+
+#[cfg(test)]
+mod digest_tests {
+    #[test]
+    fn digest_text_keeps_leading_zeros_in_lower_case() {
+        assert_eq!(
+            super::digest_text(b"ads-36"),
+            "sha256:0bbb0f7bfade40c1b69e98b0c534101d8b237370dad6404dc139d3c2a977b5ae"
+        );
+    }
 }

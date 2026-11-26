@@ -4,7 +4,7 @@ use ads_core::gate::{
     ActionPlanRecord, Command, ErrorCode, Event, GateHistory, GateJournal, Id, JournalError,
     JournalGate, OperationRequest, ShortText, State, Ulid, Via,
 };
-use common::{POSIX_HOME, POSIX_ROOT, at, id, meta, plan, policy};
+use common::{POSIX_HOME, POSIX_ROOT, at, id, meta, plan, policy, sha256_of};
 
 const NOW: &str = "2030-01-02T03:04:05Z";
 
@@ -488,7 +488,6 @@ fn changed_policy_refuses_to_request_approval() {
 #[test]
 fn recorded_target_that_cannot_be_normalized_has_its_own_warning() {
     use ads_core::gate::{PathText, PatternText, PlanHash};
-    use sha2::{Digest, Sha256};
 
     let original = policy(POSIX_HOME, "");
     let action_id = id("action-1");
@@ -505,7 +504,7 @@ fn recorded_target_that_cannot_be_normalized_has_its_own_warning() {
         &format!("target:0:{}:{new_text}", new_text.len()),
     );
     target.path = PathText::new(path).unwrap();
-    record.plan_hash = PlanHash::new(format!("sha256:{:x}", Sha256::digest(canonical))).unwrap();
+    record.plan_hash = PlanHash::new(sha256_of(&canonical)).unwrap();
     let mut first = history.events[0].to_json();
     first["data"]["plan_hash"] = record.plan_hash.as_str().into();
     history.events[0] = Event::from_json(first).unwrap();
