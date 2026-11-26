@@ -1,7 +1,8 @@
 use std::num::NonZeroU64;
 
 use ads_contracts::{
-    CommonIdV1, CommonTimestampV1, CommonUlidV1, EventSessionHandoffV3, RecordSessionHandoffV2,
+    CommonIdV1, CommonTimestampV1, CommonUlidV1, EventSessionHandoffV3, EventSessionHandoffV4,
+    RecordSessionHandoffV2, RecordSessionHandoffV2ConsentChannel as Channel,
     RecordSessionHandoffV2Number, RecordSessionHandoffV2Trigger as Trigger,
 };
 use ads_core::handoff::{
@@ -301,9 +302,9 @@ fn registry(device: &CommonIdV1, at: &CommonTimestampV1) -> Option<CommonIdV1> {
 }
 
 /// Accepted by device-1 for handoff-1 and session-1, the event the first golden record names.
-fn accept_event(change: impl FnOnce(&mut serde_json::Value)) -> EventSessionHandoffV3 {
+fn accept_event(change: impl FnOnce(&mut serde_json::Value)) -> EventSessionHandoffV4 {
     let mut event: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../contracts/golden/event.session.handoff.v3/valid/02.json"
+        "../../../contracts/golden/event.session.handoff.v4/valid/02.json"
     ))
     .unwrap();
     change(&mut event);
@@ -312,7 +313,7 @@ fn accept_event(change: impl FnOnce(&mut serde_json::Value)) -> EventSessionHand
 
 fn verify(
     record: &RecordSessionHandoffV2,
-    event: &EventSessionHandoffV3,
+    event: &EventSessionHandoffV4,
 ) -> Result<(), ConsentError> {
     verify_consent(record, &id(OWNER), event, registry)
 }
@@ -322,12 +323,40 @@ fn confirms_the_acceptance_the_record_refers_to() {
     let [mut record, _] = chain();
     for trigger in [Trigger::ContextLimit, Trigger::AccountSwitch] {
         record.trigger = trigger;
-        assert_eq!(
-            verify(&record, &accept_event(|_| {})),
-            Ok(()),
-            "{trigger:?}"
-        );
+        for channel in [Channel::Local, Channel::Remote] {
+            record.consent.channel = channel;
+            let event = accept_event(|event| {
+                event["data"]["trigger"] = json!(trigger);
+                event["data"]["channel"] = json!(channel);
+            });
+            assert_eq!(verify(&record, &event), Ok(()), "{trigger:?} {channel:?}");
+        }
     }
+}
+
+#[test]
+fn rejects_consent_for_another_trigger() {
+    let [record, _] = chain();
+    let event = accept_event(|event| event["data"]["trigger"] = json!("account_switch"));
+    assert_eq!(verify(&record, &event), Err(ConsentError::OtherTrigger));
+}
+
+#[test]
+fn rejects_consent_on_another_channel() {
+    let [record, _] = chain();
+    let event = accept_event(|event| event["data"]["channel"] = json!("remote"));
+    assert_eq!(verify(&record, &event), Err(ConsentError::OtherChannel));
+}
+
+#[test]
+fn historical_acceptance_is_readable_only_as_its_own_version() {
+    let text = include_str!("../../../contracts/golden/event.session.handoff.v3/valid/02.json");
+    assert!(serde_json::from_str::<EventSessionHandoffV3>(text).is_ok());
+    assert!(serde_json::from_str::<EventSessionHandoffV4>(text).is_err());
+    let mut event: serde_json::Value = serde_json::from_str(text).unwrap();
+    event["data"]["trigger"] = json!("context_limit");
+    event["data"]["channel"] = json!("local");
+    assert!(serde_json::from_value::<EventSessionHandoffV4>(event).is_err());
 }
 
 #[test]
@@ -336,7 +365,10 @@ fn a_model_refusal_is_not_confirmed_without_its_offer() {
     record.trigger = Trigger::ModelRefusal;
     for event in [
         accept_event(|_| {}),
-        accept_event(|event| event["data"]["alternative_id"] = json!("b-z")),
+        accept_event(|event| {
+            event["data"]["trigger"] = json!("model_refusal");
+            event["data"]["alternative_id"] = json!("b-z");
+        }),
     ] {
         assert_eq!(verify(&record, &event), Err(ConsentError::ModelRefusal));
     }
@@ -351,6 +383,7 @@ fn an_agent_or_the_daemon_cannot_confirm() {
     for kind in ["agent", "daemon"] {
         let event = accept_event(|event| {
             event["data"]["status"] = json!("proposed");
+            event["data"].as_object_mut().unwrap().remove("channel");
             event["actor"]["kind"] = json!(kind);
         });
         assert_eq!(
@@ -397,7 +430,12 @@ fn the_owner_comes_from_the_caller_and_not_from_the_record() {
 fn only_an_acceptance_confirms() {
     let [record, _] = chain();
     for status in ["proposed", "declined"] {
-        let event = accept_event(|event| event["data"]["status"] = json!(status));
+        let event = accept_event(|event| {
+            event["data"]["status"] = json!(status);
+            if status == "proposed" {
+                event["data"].as_object_mut().unwrap().remove("channel");
+            }
+        });
         assert_eq!(
             verify(&record, &event),
             Err(ConsentError::NotAccepted),

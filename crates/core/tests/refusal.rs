@@ -1,5 +1,5 @@
 use ads_contracts::{
-    CommonDataClassV1 as Class, CommonIdV1, CommonTimestampV1, EventSessionHandoffV3,
+    CommonDataClassV1 as Class, CommonIdV1, CommonTimestampV1, EventSessionHandoffV4,
     EventSessionRefusalDetectedV1, EventSessionRefusalDetectedV1Data,
     EventSessionRefusalDetectedV1DataKind as Kind, RecordSessionHandoffV2Trigger as Trigger,
     RecordTaskPacketV1,
@@ -20,12 +20,12 @@ const REFUSAL: &str =
     include_str!("../../../contracts/golden/event.session.refusal_detected.v1/valid/01.json");
 /// Accepted by device-1 for handoff-1 and session-1, naming the alternative `b-z`.
 const ACCEPTED: &str =
-    include_str!("../../../contracts/golden/event.session.handoff.v3/valid/05.json");
+    include_str!("../../../contracts/golden/event.session.handoff.v4/valid/05.json");
 /// The same acceptance without a named alternative, as for a context handoff.
 const ACCEPTED_BARE: &str =
-    include_str!("../../../contracts/golden/event.session.handoff.v3/valid/02.json");
+    include_str!("../../../contracts/golden/event.session.handoff.v4/valid/02.json");
 const PROPOSED: &str =
-    include_str!("../../../contracts/golden/event.session.handoff.v3/valid/01.json");
+    include_str!("../../../contracts/golden/event.session.handoff.v4/valid/06.json");
 const OWNER: &str = "owner-1";
 
 // A single rule keeps every tier eligible, so the tests see the order of the catalog.
@@ -358,7 +358,7 @@ fn respects_budget_quota_and_sensitivity() {
     assert_eq!(models(&offer), ["model-y"]);
 }
 
-fn consent(text: &str, change: impl FnOnce(&mut serde_json::Value)) -> EventSessionHandoffV3 {
+fn consent(text: &str, change: impl FnOnce(&mut serde_json::Value)) -> EventSessionHandoffV4 {
     let mut event: serde_json::Value = serde_json::from_str(text).unwrap();
     change(&mut event);
     serde_json::from_value(event).unwrap()
@@ -465,13 +465,46 @@ fn only_a_device_of_the_lineage_owner_accepts() {
         for kind in ["agent", "daemon"] {
             let mut event: serde_json::Value = serde_json::from_str(ACCEPTED).unwrap();
             event["actor"] = json!({ "kind": kind, "id": "device-1" });
-            assert!(serde_json::from_value::<EventSessionHandoffV3>(event).is_err());
+            assert!(serde_json::from_value::<EventSessionHandoffV4>(event).is_err());
         }
         let owner = |_: &CommonIdV1, _: &CommonTimestampV1| Some(id(OWNER));
         let proposal = consent(PROPOSED, |_| {});
         assert_eq!(
             offer.accept(&handoff(mode), &proposal, &chosen, owner),
             Err(AcceptError::NotAccepted)
+        );
+    }
+}
+
+#[test]
+fn only_a_model_refusal_acceptance_matches_the_offer() {
+    let mut offer = default_offer();
+    let policy = handoff("propose");
+    let choice = id("b-z");
+    let other = consent(ACCEPTED, |event| {
+        event["data"]["trigger"] = json!("account_switch")
+    });
+    assert_eq!(
+        offer.accept(&policy, &other, &choice, registry),
+        Err(AcceptError::OtherTrigger)
+    );
+
+    offer.trigger = Trigger::AccountSwitch;
+    let accepted = consent(ACCEPTED, |_| {});
+    assert_eq!(
+        offer.accept(&policy, &accepted, &choice, registry),
+        Err(AcceptError::OtherTrigger)
+    );
+}
+
+#[test]
+fn model_refusal_acceptance_requires_a_channel_and_an_alternative() {
+    for field in ["channel", "alternative_id"] {
+        let mut event: serde_json::Value = serde_json::from_str(ACCEPTED).unwrap();
+        event["data"].as_object_mut().unwrap().remove(field);
+        assert!(
+            serde_json::from_value::<EventSessionHandoffV4>(event).is_err(),
+            "{field}"
         );
     }
 }

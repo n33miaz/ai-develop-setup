@@ -134,7 +134,7 @@ O `stream` de um evento é `<família>/<id>`, e o `<id>` é o da entidade que o 
 | `urn:ads:event:session.handoff:1` | Evento privado de proposta, aceite ou recusa no stream `handoff/<id>`. |
 | `urn:ads:event:session.handoff:2` | Aceite e recusa exigem ator do tipo aparelho. |
 | `urn:ads:record:session-handoff:2` | O registro exige o ULID do evento de aceite em `consent.event_id`. |
-| `urn:ads:event:session.handoff:3` | Como a `:2`, com `alternative_id` opcional: a alternativa do catálogo aceita pelo aparelho. Obrigatório para seguir uma oferta após recusa de modelo. |
+| `urn:ads:event:session.handoff:3` | Versão histórica com `alternative_id` opcional para identificar a alternativa do catálogo aceita pelo aparelho. Novas passagens exigem a `:4`. |
 | `urn:ads:event:session.handoff:4` | Como a `:3`, com `trigger` (mesmos valores do registro) em todo evento e `channel` (`local` ou `remote`) obrigatório no aceite e na recusa e ausente na proposta. O aceite com `trigger = model_refusal` exige `alternative_id`. |
 | `urn:ads:event:session.handoff_proposed:1` | Proposta por limiar: sessão, limiar atingido, percentual de contexto medido, número N da cadeia e documento de passagem anterior (nulo na primeira). Só metadados, no stream `session/<id>`; a decisão continua em `session.handoff`. |
 
