@@ -14,7 +14,7 @@ Estado: só lógica. Não há rede, e o adaptador nunca lê, guarda nem registra
 | `transport` | A porta de transporte (`Transport`): recebe o pedido pronto e devolve status e corpo, ou diz se o pedido com certeza não saiu ou se pode ter chegado ao provedor. Não há implementação de rede. |
 | `call` | O fluxo de uma chamada (`run_call`): monta, reserva, envia uma vez e liquida. |
 | `spend` | A guarda de gasto. |
-| `usage` | O registro `urn:ads:record:api_usage:1` de uma chamada: alias do provedor, modelo, tokens e custo estimado em micro-dólares, sem conteúdo. O chamador o amplia para o `usage_event` do livro-caixa. |
+| `usage` | O registro `urn:ads:record:api_usage:2` de uma chamada: alias do provedor, modelo, tokens, custo estimado em micro-dólares e desfecho (`outcome`), sem conteúdo. O chamador o amplia para o `usage_event` do livro-caixa. |
 
 ## Fluxo de uma chamada
 
@@ -24,16 +24,16 @@ Estado: só lógica. Não há rede, e o adaptador nunca lê, guarda nem registra
 |---|---|---|---|
 | Pedido inválido (`Request`), instante ou provedor que não cabem no registro ou instante fora do mês informado (`Record`), recusa da guarda (`Refused`), mês anterior ao da guarda (`MonthPassed`) | nenhum | nada reservado | não |
 | O transporte garante que não saiu (`NotSent`) | uma tentativa | reserva devolvida | não |
-| Falha em que o pedido pode ter chegado (`Uncertain`), status fora de 2xx (`Status`), corpo grande demais ou ilegível (`Response`) | um | a reserva | `reserved` |
-| Sucesso com a contagem de tokens | um | o uso informado, mesmo acima da reserva | `reported` |
-| Sucesso sem a contagem de tokens | um | a reserva | `reserved` |
+| Falha em que o pedido pode ter chegado (`Uncertain`), status fora de 2xx (`Status`), corpo grande demais ou ilegível (`Response`) | um | a reserva | `reserved` / `charged_uncertain`, `charged_error_status` ou `charged_bad_response` |
+| Sucesso com a contagem de tokens | um | o uso informado, mesmo acima da reserva | `reported` / `succeeded_reported` |
+| Sucesso sem a contagem de tokens | um | a reserva | `reserved` / `succeeded_reserved` |
 
 - O mês e o instante vêm do mesmo momento, e o instante (UTC) tem de cair no mês: o livro-caixa soma pelo mês do registro, que precisa ser o da reserva.
 - O resultado traz sempre o gasto do mês corrente da guarda logo após a chamada (sem as reservas de outras chamadas ainda abertas, nem o custo de uma chamada reservada num mês que a guarda já deixou) e, quando há custo, o registro que o chamador grava no livro-caixa, com ou sem falha.
 - Não há repetição nem troca de chave. Quem implementa `Transport` não segue redirecionamento, não repete e não lê o corpo além do necessário para saber que passou de `MAX_RESPONSE_BYTES`; um corpo cortado no limite nunca é devolvido como inteiro.
 - Um panic no transporte atravessa o fluxo: a reserva continua presa na guarda até ela passar para um mês posterior e não há registro, então uma guarda nova, montada a partir do livro-caixa, não conhece esse valor.
 - A guarda dentro do `Mutex` não deve ser substituída com chamadas abertas. Se for, a chamada que teria custo termina em `GuardReplaced`, sem o texto da resposta, com o registro e com o gasto da guarda nova, que não inclui esse custo.
-- O registro `urn:ads:record:api_usage:1` não tem campo de desfecho: uma falha cobrada e um sucesso sem contagem de tokens produzem o mesmo registro (`reserved`, tokens zero). Quem precisa distinguir usa o `result`.
+- O registro `urn:ads:record:api_usage:2` traz o campo obrigatório `outcome` com o conjunto fechado de seis valores que distingue os desfechos: `succeeded_reported`, `succeeded_reserved`, `charged_uncertain`, `charged_error_status`, `charged_bad_response` e `charged_guard_replaced`. Uma falha cobrada e um sucesso sem contagem de tokens sempre produzem registros com `outcome` diferentes.
 
 ## Guarda de gasto
 

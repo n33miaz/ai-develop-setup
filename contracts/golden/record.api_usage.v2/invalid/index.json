@@ -1,0 +1,40 @@
+{
+  "01-unknown-outcome.json": {
+    "rule": "O desfecho deve ser um dos valores do conjunto fechado.",
+    "keyword": "enum",
+    "instancePath": "/outcome"
+  },
+  "02-missing-outcome.json": {
+    "rule": "O campo outcome é obrigatório.",
+    "keyword": "required",
+    "instancePath": ""
+  },
+  "03-unknown-basis.json": {
+    "rule": "A base do custo é reported ou reserved.",
+    "keyword": "enum",
+    "instancePath": "/cost_basis"
+  },
+  "04-negative-tokens.json": {
+    "rule": "Contagem de tokens não é negativa.",
+    "keyword": "minimum",
+    "instancePath": "/tokens_in"
+  },
+  "05-content-field.json": {
+    "rule": "O registro é fechado: nenhum campo de conteúdo do pedido ou da resposta.",
+    "keyword": "additionalProperties",
+    "instancePath": "",
+    "params": {
+      "additionalProperty": "content"
+    }
+  },
+  "06-reported-success-with-reserved-cost.json": {
+    "rule": "O sucesso com contagens informadas usa a base reported.",
+    "keyword": "const",
+    "instancePath": "/cost_basis"
+  },
+  "07-charged-uncertain-with-reported-cost.json": {
+    "rule": "A cobrança em caso de envio incerto usa a base reserved.",
+    "keyword": "const",
+    "instancePath": "/cost_basis"
+  }
+}

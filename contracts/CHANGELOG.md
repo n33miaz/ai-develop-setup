@@ -4,6 +4,8 @@ Formato: uma seção por data. Contrato novo, campo opcional acrescentado, vers�
 
 ## 2026-11-25
 
+- `record.api_usage:2`, convivendo com a `:1`: acrescenta o campo obrigatório `outcome` com o conjunto fechado de seis valores que o fluxo de chamada produz quando há registro: `succeeded_reported` (sucesso com contagem), `succeeded_reserved` (sucesso sem contagem), `charged_uncertain` (pedido pode ter chegado), `charged_error_status` (status fora de 2xx), `charged_bad_response` (corpo ilegível ou grande demais) e `charged_guard_replaced` (guarda substituída durante a chamada). É o que o adaptador de API escreve.
+
 - `session.handoff:4`, convivendo com a `:1` à `:3`: o evento informa o gatilho da passagem (`trigger`, com os valores do registro) e, no aceite e na recusa, o canal do consentimento (`channel`, local ou remoto); a proposta não tem canal. O aceite com gatilho `model_refusal` exige `alternative_id`. O núcleo ainda emite e confere a `:3`.
 
 ## 2026-11-24
