@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "ts": "2030-03-01T12:03:00Z",
+  "provider_alias": "provider-a",
+  "model": "model-x",
+  "tokens_in": 3,
+  "tokens_out": 4,
+  "cost_estimate_micro_usd": 38,
+  "cost_basis": "reported",
+  "price_version": "prices-2030-01-01",
+  "outcome": "charged_guard_replaced"
+}

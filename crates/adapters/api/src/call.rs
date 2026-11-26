@@ -90,7 +90,7 @@ pub fn run_call<T: Transport + ?Sized>(
         Err(err) => return unsent(CallError::Request(err)),
     };
     // Built before sending, so a call that may be billed can never end up without a record.
-    let Ok(mut record) = usage_record(
+    let Ok(record) = usage_record(
         provider,
         timestamp,
         None,
@@ -103,6 +103,7 @@ pub fn run_call<T: Transport + ?Sized>(
     if month_of(&record.ts.to_string()) != Some(now) {
         return unsent(CallError::Record);
     }
+    let mut record = record.into_fields();
     // A block of its own: the lock is gone before the transport runs.
     let authorized = {
         let mut guard = lock(guard);
@@ -155,17 +156,22 @@ pub fn run_call<T: Transport + ?Sized>(
         },
     };
 
-    let mut guard = lock(guard);
-    let result = match guard.settle(reservation, record.cost_estimate_micro_usd) {
-        Ok(()) => result,
-        Err(_) => {
-            record.outcome = RecordApiUsageV2Outcome::ChargedGuardReplaced;
-            Err(CallError::GuardReplaced)
-        }
+    let (result, spent_micro_usd) = {
+        let mut guard = lock(guard);
+        let result = match guard.settle(reservation, record.cost_estimate_micro_usd) {
+            Ok(()) => result,
+            Err(_) => {
+                record.outcome = RecordApiUsageV2Outcome::ChargedGuardReplaced;
+                Err(CallError::GuardReplaced)
+            }
+        };
+        (result, guard.spent_micro_usd())
     };
+    // The metadata was checked before sending, and each outcome sets a compatible cost basis.
+    let record = RecordApiUsageV2::new(record).expect("call outcome and cost basis agree");
     CallOutcome {
         result,
-        spent_micro_usd: guard.spent_micro_usd(),
+        spent_micro_usd,
         record: Some(record),
     }
 }

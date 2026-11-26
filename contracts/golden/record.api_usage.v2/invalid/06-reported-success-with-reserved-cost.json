@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "ts": "2030-02-03T04:05:06.5Z",
+  "provider_alias": "provider-b",
+  "model": "model-y",
+  "tokens_in": 0,
+  "tokens_out": 0,
+  "cost_estimate_micro_usd": 90000,
+  "cost_basis": "reserved",
+  "price_version": "prices-2030-02-01",
+  "outcome": "succeeded_reported"
+}

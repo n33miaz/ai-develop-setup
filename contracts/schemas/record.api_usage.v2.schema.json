@@ -66,6 +66,41 @@
       ]
     }
   },
+  "if": {
+    "properties": {
+      "outcome": {
+        "const": "succeeded_reported"
+      }
+    }
+  },
+  "then": {
+    "properties": {
+      "cost_basis": {
+        "const": "reported"
+      }
+    }
+  },
+  "else": {
+    "if": {
+      "properties": {
+        "outcome": {
+          "enum": [
+            "succeeded_reserved",
+            "charged_uncertain",
+            "charged_error_status",
+            "charged_bad_response"
+          ]
+        }
+      }
+    },
+    "then": {
+      "properties": {
+        "cost_basis": {
+          "const": "reserved"
+        }
+      }
+    }
+  },
   "examples": [
     {
       "version": 2,

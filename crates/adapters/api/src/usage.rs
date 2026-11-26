@@ -2,8 +2,8 @@
 
 use ads_contracts::{
     CommonTimestampV1, ContractError, RecordApiUsageV2, RecordApiUsageV2CostBasis,
-    RecordApiUsageV2Model, RecordApiUsageV2Outcome, RecordApiUsageV2PriceVersion,
-    RecordApiUsageV2Version,
+    RecordApiUsageV2Fields, RecordApiUsageV2Model, RecordApiUsageV2Outcome,
+    RecordApiUsageV2PriceVersion, RecordApiUsageV2Version,
 };
 
 use crate::chat::TokenUsage;
@@ -18,7 +18,7 @@ pub fn usage_record(
     reserved_micro_usd: u64,
     outcome: RecordApiUsageV2Outcome,
 ) -> Result<RecordApiUsageV2, ContractError> {
-    let mut record = RecordApiUsageV2 {
+    let mut record = RecordApiUsageV2Fields {
         version: RecordApiUsageV2Version,
         ts: CommonTimestampV1::new(timestamp)?,
         provider_alias: provider.alias.clone(),
@@ -33,11 +33,11 @@ pub fn usage_record(
     if let Some(usage) = usage {
         report_usage(&mut record, provider, usage);
     }
-    Ok(record)
+    RecordApiUsageV2::new(record)
 }
 
 pub(crate) fn report_usage(
-    record: &mut RecordApiUsageV2,
+    record: &mut RecordApiUsageV2Fields,
     provider: &ProviderConfig,
     usage: TokenUsage,
 ) {

@@ -2,7 +2,7 @@ use ads_adapter_api::{
     ApiConfig, ChatRequest, MapError, Message, Month, Refusal, Role, SpendGuard, TokenUsage,
     build_request, parse_request_body, parse_response, usage_record,
 };
-use ads_contracts::RecordApiUsageV2Outcome;
+use ads_contracts::{RecordApiUsageV2CostBasis, RecordApiUsageV2Outcome};
 
 const PROVIDER: &str = r#"
 [providers.provider-a]
@@ -331,6 +331,44 @@ fn the_usage_record_is_sized_from_reported_tokens_or_the_reserve() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn the_usage_record_requires_counts_that_match_the_outcome() {
+    use RecordApiUsageV2Outcome::*;
+
+    let cfg = config("");
+    let provider = cfg.provider("provider-a").expect("provider");
+    let counts = TokenUsage {
+        tokens_in: 0,
+        tokens_out: 0,
+    };
+    for (outcome, permits_reported, permits_reserved) in [
+        (SucceededReported, true, false),
+        (SucceededReserved, false, true),
+        (ChargedUncertain, false, true),
+        (ChargedErrorStatus, false, true),
+        (ChargedBadResponse, false, true),
+        (ChargedGuardReplaced, true, true),
+    ] {
+        for (usage, expected_basis, permitted) in [
+            (
+                Some(counts),
+                RecordApiUsageV2CostBasis::Reported,
+                permits_reported,
+            ),
+            (None, RecordApiUsageV2CostBasis::Reserved, permits_reserved),
+        ] {
+            let result = usage_record(provider, "2030-01-02T03:04:05Z", usage, 7, outcome);
+            if permitted {
+                let record = result.expect("valid usage and outcome");
+                assert_eq!(record.cost_basis, expected_basis);
+                assert_eq!(record.outcome, outcome);
+            } else {
+                assert!(result.is_err(), "{outcome:?} with {expected_basis:?}");
+            }
+        }
+    }
 }
 
 #[test]

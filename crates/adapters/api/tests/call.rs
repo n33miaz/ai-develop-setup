@@ -578,10 +578,10 @@ fn a_billed_failure_and_a_success_without_tokens_produce_different_records() {
     let successful_record = success.record.expect("success has a record");
     assert_ne!(failed_record, successful_record);
     assert_eq!(
-        failed_record,
-        ads_contracts::RecordApiUsageV2 {
+        failed_record.into_fields(),
+        ads_contracts::RecordApiUsageV2Fields {
             outcome: RecordApiUsageV2Outcome::ChargedUncertain,
-            ..successful_record
+            ..successful_record.into_fields()
         },
     );
 }
