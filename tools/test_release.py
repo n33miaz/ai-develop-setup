@@ -278,6 +278,21 @@ def workflow_jobs():
     return header, {key: "\n".join(lines) for key, lines in jobs.items()}
 
 
+def run_job_script(job, doubles, folder, env):
+    """Executa o script do job, com os comandos externos trocados pelos dublês."""
+    _, jobs = workflow_jobs()
+    step = textwrap.dedent(jobs[job].split("        run: |\n", 1)[1])
+    bash = shutil.which("bash")
+    if os.name == "nt":
+        git_bash = Path(shutil.which("git")).resolve().parents[1] / "bin" / "bash.exe"
+        if git_bash.is_file():
+            bash = str(git_bash)
+    return subprocess.run(
+        [bash, "-c", doubles + step], cwd=folder, env=dict(os.environ, **env), capture_output=True,
+        encoding="utf-8",
+    )
+
+
 class WorkflowContractTest(unittest.TestCase):
     def setUp(self):
         self.header, self.jobs = workflow_jobs()
@@ -327,8 +342,6 @@ class PruneWorkflowTest(unittest.TestCase):
     tag = "v0.1.0-dev.20261120.11"
 
     def run_step(self, tag_after, list_after, new=True, sha=SHA, listed_id=11):
-        _, jobs = workflow_jobs()
-        step = textwrap.dedent(jobs["prune-plan"].split("        run: |\n", 1)[1])
         doubles = r'''
 gh() {
     case "$*" in
@@ -365,20 +378,13 @@ python3() { "$TEST_PYTHON" "$@"; }
             output = folder / "output"
             output.touch()
             env = dict(
-                os.environ, REPO="example/project", NEW_TAG=self.tag if new else "", HEAD_SHA=SHA,
+                REPO="example/project", NEW_TAG=self.tag if new else "", HEAD_SHA=SHA,
                 REF_SHA=sha, KEEP="10", MODE="apply", WAIT_ATTEMPTS="3", WAIT_INTERVAL_SECONDS="2",
                 TAG_AFTER=str(tag_after), LIST_AFTER=str(list_after), GITHUB_OUTPUT="output",
                 GITHUB_STEP_SUMMARY="summary", TEST_PYTHON=Path(sys.executable).as_posix(),
                 PYTHONIOENCODING="utf-8",
             )
-            bash = shutil.which("bash")
-            if os.name == "nt":
-                git_bash = Path(shutil.which("git")).resolve().parents[1] / "bin" / "bash.exe"
-                if git_bash.is_file():
-                    bash = str(git_bash)
-            result = subprocess.run(
-                [bash, "-c", doubles + step], cwd=folder, env=env, capture_output=True, encoding="utf-8",
-            )
+            result = run_job_script("prune-plan", doubles, folder, env)
             self.assertTrue((folder / "calls").exists(), result.stderr)
             return result, (folder / "calls").read_text().splitlines(), output.read_text()
 
@@ -419,6 +425,132 @@ python3() { "$TEST_PYTHON" "$@"; }
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(calls, ["list", "refs"])
         self.assertIn("delete 1 v0.1.0-dev.20261120.1 -", output)
+
+
+class PruneDeletionWorkflowTest(unittest.TestCase):
+    old, older = dev(("20261120", 2), ("20261120", 1))
+    release_path = "repos/example/project/releases/2"
+    by_tag_path = f"repos/example/project/releases/tags/{old}"
+    ref_path = f"repos/example/project/git/ref/tags/{old}"
+    delete_release = f"DELETE {release_path}"
+    delete_tag = f"DELETE repos/example/project/git/refs/tags/{old}"
+
+    def run_step(self, release_lag=0, tag_lag=0, broken="", attempts="3", interval="2"):
+        """Cada `lag` é quantas consultas ainda encontram o alvo depois da exclusão."""
+        doubles = r'''
+still_there() {
+    echo "check $1" >> calls
+    if (( $(grep -cx "check after $1" calls) < $2 )); then echo "check after $1" >> calls; return 0; fi
+    echo 'gh: Not Found (HTTP 404)' >&2
+    return 1
+}
+gh() {
+    if [[ "$2" == "-X" && "$3" == "DELETE" ]]; then
+        echo "DELETE $4" >> calls
+        return
+    fi
+    local path=$2 lag=0 deleted
+    case "$path" in
+        */releases/tags/*) deleted= ;;
+        */releases/*) deleted="DELETE $path"; lag=$RELEASE_LAG ;;
+        */git/ref/tags/*) deleted="DELETE ${path/git\/ref\//git\/refs\/}"; lag=$TAG_LAG ;;
+        *) echo "unexpected gh call: $*" >&2; return 1 ;;
+    esac
+    if [[ -z "$deleted" ]]; then
+        echo 'gh: Not Found (HTTP 404)' >&2
+        return 1
+    fi
+    if ! grep -qx "$deleted" calls 2> /dev/null; then
+        if [[ "${3-}" != "--jq" ]]; then return; fi
+        case "$path" in
+            */releases/1) echo "$OLDER_TAG true false" ;;
+            */releases/*) echo "$OLD_TAG true false" ;;
+            *) echo "$OLD_SHA" ;;
+        esac
+        return
+    fi
+    if [[ "$path" == "$BROKEN" ]]; then
+        echo "check $path" >> calls
+        echo 'gh: Server Error (HTTP 500)' >&2
+        return 1
+    fi
+    still_there "$path" "$lag"
+}
+sleep() { echo "sleep $1" >> calls; }
+'''
+        targets = [f"delete 2 {self.old} {sha_of(self.old)}", f"delete 1 {self.older} -"]
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            env = dict(
+                REPO="example/project", TARGETS="\n".join(targets), OLD_TAG=self.old, OLD_SHA=sha_of(self.old),
+                OLDER_TAG=self.older, RELEASE_LAG=str(release_lag), TAG_LAG=str(tag_lag), BROKEN=broken,
+                WAIT_ATTEMPTS=attempts, WAIT_INTERVAL_SECONDS=interval,
+            )
+            result = run_job_script("prune", doubles, folder, env)
+            calls = folder / "calls"
+            lines = calls.read_text().splitlines() if calls.exists() else []
+        return result, [line for line in lines if not line.startswith("check after ")]
+
+    def after(self, calls, marker):
+        return calls[calls.index(marker) + 1 :]
+
+    def deletions(self, calls):
+        return [line for line in calls if line.startswith("DELETE ")]
+
+    def test_wait_settings_come_from_the_configuration(self):
+        prune = workflow_jobs()[1]["prune"]
+        for line in (
+            "WAIT_ATTEMPTS: ${{ needs.plan.outputs.wait_attempts }}",
+            "WAIT_INTERVAL_SECONDS: ${{ needs.plan.outputs.wait_interval_seconds }}",
+        ):
+            self.assertIn(line, prune)
+
+    def test_delayed_removal_is_checked_again_without_deleting_again(self):
+        result, calls = self.run_step(release_lag=2, tag_lag=2)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for delete, path in ((self.delete_release, self.release_path), (self.delete_tag, self.ref_path)):
+            check = f"check {path}"
+            self.assertEqual(self.after(calls, delete)[:5], [check, "sleep 2", check, "sleep 2", check])
+        self.assertEqual(
+            self.deletions(calls),
+            [self.delete_release, self.delete_tag, "DELETE repos/example/project/releases/1"],
+        )
+        self.assertIn(f"Apagadas: release 2 e tag {self.old}.", result.stdout)
+
+    def test_persistent_target_fails_after_the_last_attempt(self):
+        for lags, path, deletions, message in (
+            ({"release_lag": 3}, self.release_path, [self.delete_release], "a release 2 continua"),
+            ({"tag_lag": 3}, self.ref_path, [self.delete_release, self.delete_tag], f"a tag {self.old} continua"),
+        ):
+            with self.subTest(path=path):
+                result, calls = self.run_step(**lags)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(message, result.stdout)
+                check = f"check {path}"
+                self.assertEqual(self.after(calls, deletions[-1]), [check, "sleep 2", check, "sleep 2", check])
+                self.assertEqual(self.deletions(calls), deletions)
+                self.assertNotIn("Apagada", result.stdout)
+
+    def test_other_query_failure_stops_without_retrying(self):
+        for path, deletions in (
+            (self.release_path, [self.delete_release]),
+            (self.ref_path, [self.delete_release, self.delete_tag]),
+        ):
+            with self.subTest(path=path):
+                result, calls = self.run_step(broken=path)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("falha ao consultar", result.stdout)
+                self.assertEqual(self.after(calls, deletions[-1]), [f"check {path}"])
+                self.assertEqual(self.deletions(calls), deletions)
+                self.assertNotIn("Apagada", result.stdout)
+
+    def test_invalid_wait_settings_block_every_deletion(self):
+        for attempts, interval in (("", "2"), ("0", "2"), ("11", "2"), ("3", ""), ("3", "16"), ("3", "x")):
+            with self.subTest(attempts=attempts, interval=interval):
+                result, calls = self.run_step(attempts=attempts, interval=interval)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("parâmetros de espera inválidos", result.stdout)
+                self.assertEqual(calls, [])
 
 
 class CommandLineTest(unittest.TestCase):

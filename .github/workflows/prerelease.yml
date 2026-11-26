@@ -212,6 +212,8 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       TARGETS: ${{ needs.prune-plan.outputs.targets }}
+      WAIT_ATTEMPTS: ${{ needs.plan.outputs.wait_attempts }}
+      WAIT_INTERVAL_SECONDS: ${{ needs.plan.outputs.wait_interval_seconds }}
     steps:
       - name: Apagar o que o plano listou, conferindo cada alvo
         run: |
@@ -224,6 +226,18 @@ jobs:
             if grep -q 'HTTP 404' <<< "$out"; then return 0; fi
             echo "::error::falha ao consultar $1: $out"
             exit 1
+          }
+          [[ "$WAIT_ATTEMPTS" =~ ^([1-9]|10)$ && "$WAIT_INTERVAL_SECONDS" =~ ^([1-9]|1[0-5])$ ]] \
+            || { echo "::error::parâmetros de espera inválidos"; exit 1; }
+          # A remoção pode demorar a aparecer nas consultas: só a conferência repete, a exclusão não.
+          gone() {
+            local attempt
+            for ((attempt=1; attempt<=WAIT_ATTEMPTS; attempt++)); do
+              if absent "$1"; then return 0; fi
+              echo "Tentativa $attempt/$WAIT_ATTEMPTS: $1 ainda responde."
+              if (( attempt < WAIT_ATTEMPTS )); then sleep "$WAIT_INTERVAL_SECONDS"; fi
+            done
+            return 1
           }
           printf '%s\n' "$TARGETS" > targets.txt
           while read -r kind id tag sha; do
@@ -238,7 +252,7 @@ jobs:
               fi
               gh api -X DELETE "repos/$REPO/releases/$id" > /dev/null
             fi
-            absent "repos/$REPO/releases/$id" || { echo "::error::a release $id continua lá."; exit 1; }
+            gone "repos/$REPO/releases/$id" || { echo "::error::a release $id continua lá."; exit 1; }
             if [ "$sha" != "-" ] && ! absent "repos/$REPO/git/ref/tags/$tag"; then
               absent "repos/$REPO/releases/tags/$tag" || { echo "::error::a tag $tag ganhou outra release."; exit 1; }
               current=$(gh api "repos/$REPO/git/ref/tags/$tag" --jq .object.sha)
@@ -247,7 +261,7 @@ jobs:
                 exit 1
               fi
               gh api -X DELETE "repos/$REPO/git/refs/tags/$tag" > /dev/null
-              absent "repos/$REPO/git/ref/tags/$tag" || { echo "::error::a tag $tag continua lá."; exit 1; }
+              gone "repos/$REPO/git/ref/tags/$tag" || { echo "::error::a tag $tag continua lá."; exit 1; }
             fi
             if [ "$sha" = "-" ]; then echo "Apagada: release $id ($tag já sem tag)."; else echo "Apagadas: release $id e tag $tag."; fi
           done < targets.txt
