@@ -93,10 +93,17 @@ pub use wire::RecordActionPlanV2VerdictReasonsItemSubject as SubjectText;
 impl PlanHash {
     /// `sha256:` and the SHA-256 of the UTF-8 bytes of `text`, in lower-case hex.
     pub(crate) fn of(text: &str) -> Self {
-        let digest = Sha256::digest(text.as_bytes());
-        let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
-        Self(format!("sha256:{hex}"))
+        Self(sha256_text(text.as_bytes()))
     }
+}
+
+/// `sha256:` and the SHA-256 of `bytes`, in lower-case hexadecimal.
+pub fn sha256_text(bytes: &[u8]) -> String {
+    let hex: String = Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    format!("sha256:{hex}")
 }
 
 /// `(date and time to the second, microseconds)`; `None` when the text is not a timestamp.

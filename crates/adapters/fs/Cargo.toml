@@ -15,7 +15,6 @@ preserve-order = ["serde_json/preserve_order"]
 ads-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-sha2 = { workspace = true }
 toml = { workspace = true }
 
 # Abrir, mover e apagar relativo a um diretorio ja aberto, sem seguir link (ver src/sys).

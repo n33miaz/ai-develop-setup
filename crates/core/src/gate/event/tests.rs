@@ -58,6 +58,14 @@ fn sha256_matches_a_known_vector() {
 }
 
 #[test]
+fn sha256_text_keeps_leading_zeros_in_lower_case() {
+    assert_eq!(
+        super::sha256_text(b"ads-36"),
+        "sha256:0bbb0f7bfade40c1b69e98b0c534101d8b237370dad6404dc139d3c2a977b5ae"
+    );
+}
+
+#[test]
 fn rule_codes_paths_and_patterns_follow_the_contract_patterns() {
     for good in ["repository_root", "protected.user_home", "a1_b.c2"] {
         assert!(RuleCode::new(good).is_ok(), "{good}");
