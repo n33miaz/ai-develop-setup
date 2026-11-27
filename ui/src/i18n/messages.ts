@@ -125,7 +125,7 @@ export const ptBR = {
   'app.title': 'ai-develop-setup',
   'skip.toTerminal': 'Pular para o terminal',
   'notice.sample':
-    'Dados de exemplo. Para abrir terminais reais, inicie o host e o daemon e abra o link completo que o daemon imprime. Veja crates/daemon/README.md.',
+    'Dados de exemplo. Para abrir terminais reais, inicie o host e o daemon. {openLink} Veja crates/daemon/README.md.',
   'pwa.update': 'Uma atualização está disponível. Recarregue para aplicá-la.',
   'nav.menu': 'Menu',
   'nav.label': 'Tarefas e sessões',
@@ -147,7 +147,8 @@ export const ptBR = {
   'connection.bootstrapFailed': 'A janela não recebeu a conexão do núcleo.',
   'connection.disconnected': 'desconectado',
   'connection.linkUnavailable':
-    'conexão indisponível. Verifique se o daemon está em execução. Abra o novo link completo que o daemon imprime.',
+    'conexão indisponível. Verifique se o daemon está em execução. {openLink}',
+  'connection.openLink': 'Abra o novo link completo que o daemon imprime.',
   'connection.proofMissing':
     'o serviço na porta local não comprovou sua identidade. Confira se a janela e o núcleo têm a mesma versão. Reinicie o núcleo pelo sinal restart do lançador ou pare e inicie o lançador.',
   'connection.relaunchDesktop':
@@ -299,7 +300,7 @@ export const en: Record<MessageKey, string> = {
   'app.title': 'ai-develop-setup',
   'skip.toTerminal': 'Skip to the terminal',
   'notice.sample':
-    'Sample data only. To open real terminals, start the host and daemon and open the full link printed by the daemon. See crates/daemon/README.md.',
+    'Sample data only. To open real terminals, start the host and daemon. {openLink} See crates/daemon/README.md.',
   'nav.menu': 'Menu',
   'pwa.update': 'An update is available. Reload to apply it.',
   'nav.label': 'Tasks and sessions',
@@ -321,7 +322,8 @@ export const en: Record<MessageKey, string> = {
   'connection.bootstrapFailed': 'The window did not receive the core connection.',
   'connection.disconnected': 'disconnected',
   'connection.linkUnavailable':
-    'connection unavailable. Check that the daemon is running. Open the new full link printed by the daemon.',
+    'connection unavailable. Check that the daemon is running. {openLink}',
+  'connection.openLink': 'Open the new full link printed by the daemon.',
   'connection.proofMissing':
     'the service on the local port did not prove its identity. Check that the window and the core have the same version. Restart the core with the launcher restart signal, or stop and start the launcher.',
   'connection.relaunchDesktop':

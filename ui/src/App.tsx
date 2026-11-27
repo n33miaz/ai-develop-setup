@@ -643,7 +643,11 @@ export function App({
         </div>
       )}
 
-      {!live && <p className={styles.notice}>{t('notice.sample')}</p>}
+      {!live && (
+        <p className={styles.notice}>
+          {t('notice.sample', { openLink: t('connection.openLink') })}
+        </p>
+      )}
       {live && connection === 'connected' && <p className={styles.notice}>{t('notice.live')}</p>}
       <UpdateNotice className={styles.notice} />
       <UsagePanel tools={live ? null : sampleUsage} />
