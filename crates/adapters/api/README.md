@@ -58,3 +58,5 @@ Estado: só lógica. Não há rede, e o adaptador nunca lê, guarda nem registra
 ## Configuração
 
 Todas as chaves estão documentadas em `defaults/api-adapter.toml`; a do usuário só precisa das que muda. O formato é o mesmo para qualquer provedor compatível: o que muda por provedor é a URL base, o modelo, o caminho, o cabeçalho da chave e os preços.
+
+Erros de sintaxe apontam a linha do TOML. Erros de campo apontam a chave quando ela é conhecida. Em `providers[2].model`, por exemplo, o índice indica o segundo provedor na ordem em que aparece no arquivo. O diagnóstico omite apelidos de provedores, chaves desconhecidas e valores.

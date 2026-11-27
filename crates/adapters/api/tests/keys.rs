@@ -74,36 +74,24 @@ fn the_same_nickname_gives_each_provider_its_own_reference() {
 #[test]
 fn the_active_key_must_be_in_the_list() {
     let outside = format!("{TWO_KEYS}\nactive_key = \"other\"");
-    assert_eq!(
-        refused_field("", &outside),
-        "providers.provider-a.active_key"
-    );
+    assert_eq!(refused_field("", &outside), "providers[1].active_key");
     assert_eq!(
         refused_field("", r#"active_key = "work""#),
-        "providers.provider-a.active_key"
+        "providers[1].active_key"
     );
     assert!(load("", r#"active_key = "default""#).is_ok());
 }
 
 #[test]
 fn several_keys_need_an_explicit_choice() {
-    assert_eq!(
-        refused_field("", TWO_KEYS),
-        "providers.provider-a.active_key"
-    );
-    assert_eq!(
-        refused_field(TWO_KEYS, ""),
-        "providers.provider-a.active_key"
-    );
+    assert_eq!(refused_field("", TWO_KEYS), "providers[1].active_key");
+    assert_eq!(refused_field(TWO_KEYS, ""), "providers[1].active_key");
 }
 
 #[test]
 fn a_repeated_nickname_is_refused() {
     let own = "key_aliases = [\"work\", \"work\"]\nactive_key = \"work\"";
-    assert_eq!(
-        refused_field("", own),
-        "providers.provider-a.key_aliases[1]"
-    );
+    assert_eq!(refused_field("", own), "providers[1].key_aliases[1]");
     // The general list is checked even when no provider inherits it.
     let general = ApiConfig::from_toml(r#"key_aliases = ["work", "work"]"#);
     assert_eq!(general.expect_err("repeated").field, "key_aliases[1]");

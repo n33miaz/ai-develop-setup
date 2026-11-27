@@ -192,6 +192,63 @@ fn invalid_provider_names_stay_out_of_diagnostics() {
 }
 
 #[test]
+fn config_diagnostics_locate_toml_syntax_errors() {
+    let source = "# café\r\nenabled = true\r\nsynthetic-field = \"synthetic-value\n";
+    assert_config_diagnostic(source, "line 3");
+}
+
+#[test]
+fn config_diagnostics_locate_invalid_global_settings() {
+    assert_config_diagnostic("enabled = 'synthetic-value'", "enabled:");
+    assert_config_diagnostic("providers = 'synthetic-value'", "providers:");
+    assert_config_diagnostic("synthetic-field = 'synthetic-value'", "unknown field");
+}
+
+#[test]
+fn config_diagnostics_locate_provider_errors_in_source_order() {
+    let first = PROVIDER.replace("provider-a", "z-first");
+    let second = PROVIDER.replace("provider-a", "synthetic-provider");
+    for (entry, location) in [
+        (
+            second.replace("\"model-x\"", "['synthetic-value']"),
+            "providers[2].model",
+        ),
+        (
+            second.replace("model = \"model-x\"", ""),
+            "providers[2].model",
+        ),
+        (
+            second.replace("https://api.example.com/v1/", "synthetic-value"),
+            "providers[2].base_url",
+        ),
+        (
+            format!("{second}\nsynthetic-field = 'synthetic-value'"),
+            "providers[2]: unknown field",
+        ),
+        (
+            second.replace("synthetic-provider", "\"synthetic-provider@invalid\""),
+            "providers[2]:",
+        ),
+    ] {
+        assert_config_diagnostic(&format!("{first}\n{entry}"), location);
+    }
+    assert_config_diagnostic(
+        "[providers]\nsynthetic-provider = 'synthetic-value'",
+        "providers[1]:",
+    );
+}
+
+fn assert_config_diagnostic(source: &str, location: &str) {
+    let error = ApiConfig::from_toml(source).expect_err("invalid configuration");
+    for rendered in [error.to_string(), format!("{error:?}")] {
+        assert!(!rendered.contains("synthetic-provider"));
+        assert!(!rendered.contains("synthetic-field"));
+        assert!(!rendered.contains("synthetic-value"));
+    }
+    assert!(error.to_string().contains(location), "{error}");
+}
+
+#[test]
 fn secret_like_provider_names_cannot_reach_usage_records() {
     for name in ["SK-synthetic", "synthetic123456789", "Lab.A:west_2"] {
         let source = PROVIDER.replace("provider-a", &format!("{name:?}"));
@@ -210,7 +267,7 @@ fn secret_like_provider_names_cannot_reach_usage_records() {
             }
             Err(error) => {
                 assert_ne!(name, "Lab.A:west_2");
-                assert_eq!(error.field, "providers");
+                assert_eq!(error.field, "providers[1]");
                 assert!(!error.to_string().contains(name));
                 assert!(!format!("{error:?}").contains(name));
             }
@@ -566,7 +623,7 @@ fn tariff_precision_requires_whole_micro_dollars_per_million_tokens() {
         ] {
             assert_eq!(
                 load(price).expect_err(price).field,
-                format!("providers.provider-a.{field}")
+                format!("providers[1].{field}")
             );
         }
         for (price, micro) in [
