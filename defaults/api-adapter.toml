@@ -28,7 +28,8 @@ max_output_tokens = 1024
 # mensagem de erro. Quem tem uma chave só não precisa mexer.
 key_aliases = ["default"]
 
-# Um provedor por tabela; o apelido é o nome da tabela (letras, dígitos e . _ : -). Sem provedor
+# O nome da tabela é o apelido gravado no registro de uso (letras, dígitos e . _ : -).
+# A mesma verificação de texto com cara de segredo dos apelidos de chave vale aqui. Sem provedor
 # configurado não há chamada possível. Preços em dólares por milhão de tokens; `price_version`
 # identifica a tabela de preços usada, para o livro-caixa. `chat_path`, `key_header`, `key_prefix`,
 # `max_output_tokens` e `key_aliases` podem ser trocados por provedor.

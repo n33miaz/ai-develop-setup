@@ -21,7 +21,7 @@ pub fn usage_record(
     let mut record = RecordApiUsageV2Fields {
         version: RecordApiUsageV2Version,
         ts: CommonTimestampV1::new(timestamp)?,
-        provider_alias: provider.alias.clone(),
+        provider_alias: provider.alias().clone(),
         model: RecordApiUsageV2Model::new(provider.model.clone())?,
         tokens_in: 0,
         tokens_out: 0,

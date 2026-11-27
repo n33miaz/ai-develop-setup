@@ -112,7 +112,7 @@ fn alias<'a>(field: &str, value: &'a toml::Value) -> Result<&'a str, ConfigError
     Ok(name)
 }
 
-fn looks_like_secret(text: &str) -> bool {
+pub(crate) fn looks_like_secret(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
     SECRET_PREFIXES.iter().any(|p| lower.starts_with(p))
         || lower
