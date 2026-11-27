@@ -3,8 +3,8 @@ use chacha20poly1305::{
     XChaCha20Poly1305,
     aead::{Aead, AeadCore, KeyInit, Payload},
 };
+use sha2::{Digest, Sha256, digest::typenum::Unsigned};
 use std::fmt;
-use storage_sha2::{Digest, Sha256, digest::typenum::Unsigned};
 use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
 
