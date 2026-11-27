@@ -9,6 +9,7 @@ pub mod handoff_document;
 pub mod queue;
 pub mod refusal;
 pub mod routing;
+pub mod spend;
 mod timestamp;
 pub mod tool_launch;
 pub mod vault;

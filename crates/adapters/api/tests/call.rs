@@ -631,6 +631,18 @@ fn a_guard_replaced_during_the_call_is_reported_with_the_record() {
 }
 
 #[test]
+fn refused_calls_keep_the_adapter_wording() {
+    assert_eq!(
+        CallError::Refused(Refusal::Disabled).to_string(),
+        "the api adapter is disabled"
+    );
+    assert_eq!(
+        CallError::Refused(Refusal::CapReached).to_string(),
+        "the monthly cap is reached"
+    );
+}
+
+#[test]
 fn errors_and_debug_output_carry_no_text_body_or_key_reference() {
     let mut bad = request();
     bad.temperature = Some(9.0);

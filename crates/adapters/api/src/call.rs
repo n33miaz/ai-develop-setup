@@ -9,9 +9,9 @@ use crate::chat::{
     ChatRequest, ChatResponse, MAX_RESPONSE_BYTES, MapError, build_request, parse_response,
 };
 use crate::config::ProviderConfig;
-use crate::spend::{Month, Refusal, SpendGuard};
 use crate::transport::{Transport, TransportError, TransportResponse};
 use crate::usage::{report_usage, usage_record};
+use ads_core::spend::{Month, Refusal, SpendGuard};
 
 /// Why a call gave no response. Carries no request text, response body or key reference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,6 +42,7 @@ impl fmt::Display for CallError {
         match self {
             Self::Request(err) | Self::Response(err) => err.fmt(f),
             Self::Record => f.write_str("the usage record of this call cannot be built"),
+            Self::Refused(Refusal::Disabled) => f.write_str("the api adapter is disabled"),
             Self::Refused(refusal) => refusal.fmt(f),
             Self::MonthPassed => f.write_str("the spend guard is past the month of the call"),
             Self::NotSent => TransportError::NotSent.fmt(f),

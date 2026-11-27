@@ -13,7 +13,7 @@ Estado: só lógica. Não há rede, e o adaptador nunca lê, guarda nem registra
 | `chat` | Monta o corpo do formato Chat Completions e o devolve (`build_request`, `parse_request_body`); lê a resposta (`parse_response`). Os erros não levam texto do pedido nem da resposta. |
 | `transport` | A porta de transporte (`Transport`): recebe o pedido pronto e devolve status e corpo, ou diz se o pedido com certeza não saiu ou se pode ter chegado ao provedor. Não há implementação de rede. |
 | `call` | O fluxo de uma chamada (`run_call`): monta, reserva, envia uma vez e liquida. |
-| `spend` | A guarda de gasto. |
+| `spend` | Liga a configuração do adaptador (ligado, teto mensal) à guarda de gasto do núcleo (`ads_core::spend`), que o crate reexporta. |
 | `usage` | O registro `urn:ads:record:api_usage:2` de uma chamada: alias do provedor, modelo, tokens, custo estimado em micro-dólares e desfecho (`outcome`), sem conteúdo. O chamador o amplia para o `usage_event` do livro-caixa. |
 
 ## Fluxo de uma chamada
@@ -38,6 +38,8 @@ Estado: só lógica. Não há rede, e o adaptador nunca lê, guarda nem registra
 - O registro `urn:ads:record:api_usage:2` traz o campo obrigatório `outcome` com o conjunto fechado de seis valores que distingue os desfechos: `succeeded_reported`, `succeeded_reserved`, `charged_uncertain`, `charged_error_status`, `charged_bad_response` e `charged_guard_replaced`. Uma falha cobrada e um sucesso sem contagem de tokens sempre produzem registros com `outcome` diferentes.
 
 ## Guarda de gasto
+
+A política de autorização e reserva do mês fica no núcleo (`ads_core::spend`). Aqui ficam a conversão do pedido em custo pelo preço do provedor e a classificação do desfecho da chamada.
 
 - Desligada por padrão (`enabled = false`). Ligada sem `monthly_cap_usd`, recusa toda chamada (`NoCap`).
 - Antes de cada chamada reserva o pior caso: o tamanho do corpo conta como tokens de entrada e `max_tokens` como saída, ao preço do provedor. A chamada só sai se esse valor cabe no que sobra do teto; com o teto atingido, recusa (`CapReached`).

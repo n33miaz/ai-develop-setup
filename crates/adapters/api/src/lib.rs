@@ -11,6 +11,7 @@ mod spend;
 mod transport;
 mod usage;
 
+pub use ads_core::spend::{ForeignReservation, Month, Refusal, Reservation, SpendGuard};
 pub use call::{CallError, CallOutcome, run_call};
 pub use chat::{
     ChatRequest, ChatResponse, KeyAuth, KeyHandle, MAX_RESPONSE_BYTES, MAX_TOKEN_COUNT, MapError,
@@ -18,7 +19,6 @@ pub use chat::{
 };
 pub use config::{ApiConfig, ConfigError, DEFAULT_POLICY, ProviderConfig};
 pub use keys::{KeyAliases, MAX_KEY_ALIAS_CHARS, MAX_KEY_ALIASES};
-pub use spend::{ForeignReservation, Month, Refusal, Reservation, SpendGuard};
 pub use transport::{Transport, TransportError, TransportResponse};
 pub use usage::usage_record;
 
