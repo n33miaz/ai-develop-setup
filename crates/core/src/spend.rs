@@ -136,7 +136,7 @@ impl SpendGuard {
         if committed >= cap {
             return Err(Refusal::CapReached);
         }
-        if committed.saturating_add(worst_case_micro_usd) > cap {
+        if worst_case_micro_usd > cap - committed {
             return Err(Refusal::WouldExceedCap);
         }
         self.reserved += worst_case_micro_usd;
