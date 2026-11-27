@@ -85,6 +85,9 @@ pub fn generate(input: &HandoffInput) -> Result<(HandoffDocument, OpeningPrompt)
     check(Section::OpenWork, &input.open_work)?;
     check(Section::Decisions, &input.decisions)?;
     check(Section::RulesInForce, &input.rules_in_force)?;
+    if input.locations.len() > MAX_ITEMS {
+        return Err(DocumentError::TooManyItems(Section::Locations));
+    }
     let mut places = Vec::with_capacity(input.locations.len());
     let mut rendered_places = Vec::with_capacity(input.locations.len());
     for location in &input.locations {

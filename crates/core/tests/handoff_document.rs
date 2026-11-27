@@ -116,6 +116,26 @@ fn items_cannot_forge_sections_or_overflow() {
 }
 
 #[test]
+fn location_count_limit_precedes_entry_validation() {
+    let mut handoff = input(1, None);
+    let location = handoff.locations[0].clone();
+    handoff.locations.resize(MAX_ITEMS, location.clone());
+    assert!(generate(&handoff).is_ok());
+
+    handoff.locations[0].label.clear();
+    assert_eq!(
+        generate(&handoff).unwrap_err(),
+        DocumentError::EmptyItem(Section::Locations)
+    );
+
+    handoff.locations.push(location);
+    assert_eq!(
+        generate(&handoff).unwrap_err(),
+        DocumentError::TooManyItems(Section::Locations)
+    );
+}
+
+#[test]
 fn shipped_policy_never_starts_a_handoff_on_its_own() {
     let policy = HandoffPolicy::from_toml(DEFAULT_POLICY).unwrap();
     assert!(DEFAULT_POLICY.contains("mode = \"propose\""));
