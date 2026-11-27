@@ -19,20 +19,26 @@ impl Drop for Child {
 
 #[tokio::test]
 async fn binary_stdout_contains_only_the_launch_url() {
+    let run = ads_daemon::events::new_id().unwrap();
+    let scratch = temp::Scratch::with_files(
+        &format!("daemon-stdout-{run}"),
+        &["host.toml", "daemon.lock"],
+    );
     let endpoint = format!(r"\\.\pipe\ads-daemon-stdout-{}", std::process::id());
     let overrides = format!("channel_path = '{endpoint}'\n");
-    let path = temp::directory().join(format!("daemon-stdout-{}.toml", std::process::id()));
+    let path = scratch.path().join("host.toml");
     std::fs::write(&path, &overrides).unwrap();
     let host = HostConfig::from_toml_str(&overrides).unwrap();
     let mut listener = Listener::bind(&channel_endpoint(&host)).unwrap();
-    let lock = path.with_extension("lock");
+    let lock = scratch.path().join("daemon.lock");
     let mut child = Child(
         Command::new(env!("CARGO_BIN_EXE_ads-daemon"))
             .arg("--instance-lock")
             .arg(&lock)
             .arg("--host-config")
             .arg(&path)
-            .env("LOCALAPPDATA", path.with_extension("missing-profile"))
+            // Never declared in the scratch folder: creating it fails the cleanup.
+            .env("LOCALAPPDATA", scratch.path().join("missing-profile"))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
