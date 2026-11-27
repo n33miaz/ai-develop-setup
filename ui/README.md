@@ -137,6 +137,12 @@ npm ci
 npm run test:browser
 ```
 
+Cada execução usa uma pasta própria em `.test-tmp/` na raiz do repositório.
+Depois de encerrar os processos, o teste remove os arquivos conhecidos e as
+pastas vazias que criou, inclusive quando falha. O aviso de limpeza informa o
+caminho e a contagem das entradas preservadas, como arquivos adicionais do
+perfil do navegador.
+
 ## Fila de tarefas e aprovações
 
 Com a conexão autenticada, abra **Fila de tarefas**. O painel pede ao daemon o

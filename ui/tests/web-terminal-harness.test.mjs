@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
+import { lstat, mkdir, mkdtemp, readdir, rmdir, unlink, writeFile } from 'node:fs/promises'
+import { createServer } from 'node:net'
+import { dirname, join } from 'node:path'
 import test from 'node:test'
+import { fileURLToPath } from 'node:url'
 import { cdpRequests, stop, withTestProcesses } from './web-terminal-harness.mjs'
+import { withTestDirectory } from './web-terminal-scratch.mjs'
 
 test('partial startup preserves the failure and reaps every started process', async (t) => {
   const started = []
@@ -46,6 +51,108 @@ test('readiness reports an early exit without exposing process output', async ()
     { message: 'Daemon did not become ready: process exited with code 23' },
   )
 })
+
+const root = fileURLToPath(new URL('../..', import.meta.url))
+
+test(
+  'a long checkout path leaves room for the Unix socket',
+  { skip: process.platform === 'win32' },
+  async (t) => {
+    const parent = join(root, '.test-tmp')
+    await mkdir(parent, { recursive: true })
+    const longRoot = await mkdtemp(join(parent, 'long-checkout-'.repeat(9)))
+    t.after(async () => {
+      await rmdir(join(longRoot, '.test-tmp'))
+      await rmdir(longRoot)
+    })
+
+    const server = createServer()
+    let socketPath
+    try {
+      await withTestDirectory(
+        longRoot,
+        async ({ scratch, channelName, socketDirectory = scratch }) => {
+          socketPath = join(socketDirectory, `${channelName}.sock`)
+          assert.ok(Buffer.byteLength(join(scratch, `${channelName}.sock`)) > 107)
+          assert.ok(Buffer.byteLength(socketPath) <= 103, 'Unix socket path exceeds 103 bytes')
+          server.listen(socketPath)
+          await once(server, 'listening')
+          assert.ok((await lstat(socketPath)).isSocket())
+        },
+      )
+      await assert.rejects(readdir(dirname(socketPath)), { code: 'ENOENT' })
+    } finally {
+      if (server.listening) await new Promise((resolve) => server.close(resolve))
+    }
+  },
+)
+
+test('browser scratch removes known files and empty directories on success', async (t) => {
+  let scratch
+  await withTestDirectory(root, async (paths) => {
+    scratch = paths.scratch
+    t.after(async () => {
+      for (const file of [paths.hostConfig, paths.daemonConfig, paths.devToolsPort]) {
+        await ignoreMissing(unlink(file))
+      }
+      for (const directory of [paths.profile, paths.workdir, scratch]) {
+        await ignoreMissing(rmdir(directory))
+      }
+    })
+    for (const file of [paths.hostConfig, paths.daemonConfig, paths.devToolsPort]) {
+      await writeFile(file, 'fixture')
+    }
+  })
+  await assert.rejects(readdir(scratch), { code: 'ENOENT' })
+})
+
+test('browser scratch preserves unexpected entries and the original failure', async (t) => {
+  const reports = []
+  const failure = new Error('browser failed')
+  let paths
+  await assert.rejects(
+    withTestDirectory(
+      root,
+      async (layout) => {
+        paths = layout
+        const extra = join(paths.profile, 'unexpected')
+        t.after(async () => {
+          for (const file of [paths.hostConfig, paths.devToolsPort, extra]) {
+            await ignoreMissing(unlink(file))
+          }
+          for (const directory of [
+            paths.daemonConfig,
+            paths.profile,
+            paths.workdir,
+            paths.scratch,
+          ]) {
+            await ignoreMissing(rmdir(directory))
+          }
+        })
+        await writeFile(paths.hostConfig, 'fixture')
+        await writeFile(paths.devToolsPort, 'fixture')
+        await writeFile(extra, 'preserve')
+        await mkdir(paths.daemonConfig)
+        throw failure
+      },
+      (message) => reports.push(message),
+    ),
+    (error) => error === failure,
+  )
+  assert.deepEqual((await readdir(paths.scratch)).sort(), ['browser', 'daemon.toml'])
+  assert.deepEqual(await readdir(paths.profile), ['unexpected'])
+  assert.equal(reports.length, 1)
+  assert.ok(reports[0].includes(paths.scratch))
+  assert.match(reports[0], /browser \(1 retained\).*root \(1 retained\)/)
+})
+
+async function ignoreMissing(operation) {
+  try {
+    await operation
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error
+  }
+}
 
 class TestSocket extends EventTarget {
   send(message) {

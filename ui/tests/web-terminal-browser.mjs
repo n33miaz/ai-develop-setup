@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
-import { access, constants, mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { access, constants, readFile, stat, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { cdpRequests, stop, until, withTestProcesses } from './web-terminal-harness.mjs'
+import { withTestDirectory } from './web-terminal-scratch.mjs'
 
 const root = fileURLToPath(new URL('../..', import.meta.url))
 const target = resolve(root, process.env.CARGO_TARGET_DIR ?? 'target', 'debug')
@@ -43,7 +43,6 @@ if (missing.length) {
 }
 if (problems.length) throw new Error(problems.join('\n'))
 
-const scratch = await mkdtemp(join(tmpdir(), 'ads-web-test-'))
 const origin = 'http://127.0.0.1:5173'
 
 async function control(socket, key, modifiers = 2) {
@@ -61,12 +60,24 @@ async function control(socket, key, modifiers = 2) {
 }
 
 let ws
-await withTestProcesses(async (start) => {
-  const hostConfig = join(scratch, 'host.toml')
-  const daemonConfig = join(scratch, 'daemon.toml')
-  const workdir = join(scratch, 'work')
-  await mkdir(workdir)
-  await writeFile(hostConfig, `channel_name = 'ads-web-test-${process.pid}'\n`)
+await withTestDirectory(root, (paths) =>
+  withTestProcesses((start) => runBrowser(start, paths)).finally(() => ws?.close()),
+)
+
+async function runBrowser(
+  start,
+  {
+    scratch,
+    hostConfig,
+    daemonConfig,
+    workdir,
+    channelName,
+    socketDirectory = scratch,
+    profile,
+    devToolsPort,
+  },
+) {
+  await writeFile(hostConfig, `channel_name = '${channelName}'\n`)
   await writeFile(
     daemonConfig,
     `storage = false
@@ -80,10 +91,14 @@ args = ['${fileURLToPath(new URL('terminal-byte-echo.cjs', import.meta.url))}']
   const env = {
     ...process.env,
     LOCALAPPDATA: scratch,
+    TEMP: scratch,
+    TMP: scratch,
+    TMPDIR: scratch,
     XDG_RUNTIME_DIR: scratch,
     VITE_CORE_HARNESSES: 'claude',
   }
-  const host = start(binary('ads-ptyhost'), ['--config', hostConfig], { env })
+  const channelEnv = { ...env, XDG_RUNTIME_DIR: socketDirectory }
+  const host = start(binary('ads-ptyhost'), ['--config', hostConfig], { env: channelEnv })
   await host.waitForReady(
     (output) => output.includes('listening on'),
     'Test terminal host failed to start',
@@ -99,28 +114,31 @@ args = ['${fileURLToPath(new URL('terminal-byte-echo.cjs', import.meta.url))}']
   const daemon = start(
     binary('ads-daemon'),
     ['--config', daemonConfig, '--host-config', hostConfig],
-    { env },
+    { env: channelEnv },
   )
   const link = await daemon.waitForReady(
     (output) => output.split(/\r?\n/)[1] !== undefined && output.trim(),
     'Test daemon failed to issue a link',
   )
 
-  const profile = join(scratch, 'browser')
-  const browser = start(chromium, [
-    '--headless',
-    '--disable-gpu',
-    '--disable-background-networking',
-    '--lang=en-US',
-    '--window-size=1366,800',
-    '--no-first-run',
-    '--remote-debugging-port=0',
-    `--user-data-dir=${profile}`,
-    'about:blank',
-  ])
+  const browser = start(
+    chromium,
+    [
+      '--headless',
+      '--disable-gpu',
+      '--disable-background-networking',
+      '--lang=en-US',
+      '--window-size=1366,800',
+      '--no-first-run',
+      '--remote-debugging-port=0',
+      `--user-data-dir=${profile}`,
+      'about:blank',
+    ],
+    { env },
+  )
   const port = await browser.waitForReady(
     () =>
-      readFile(join(profile, 'DevToolsActivePort'), 'utf8')
+      readFile(devToolsPort, 'utf8')
         .then((data) => data.split('\n')[0])
         .catch(() => undefined),
     'Test browser failed to open DevTools',
@@ -223,4 +241,4 @@ args = ['${fileURLToPath(new URL('terminal-byte-echo.cjs', import.meta.url))}']
   await hasText('Sample data only')
   await state('disconnected')
   console.log('Browser without a launch link shows sample guidance')
-}).finally(() => ws?.close())
+}
