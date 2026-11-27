@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:record:api_usage:3",
+  "title": "Uso de uma chamada de API (com desfecho)",
+  "description": "O que o adaptador de API informa de uma chamada direta a um provedor: alias do provedor, modelo, tokens, custo estimado em micro-dólares, base do custo e desfecho. Nunca leva texto do pedido nem da resposta, nem chave. O chamador o amplia para o registro usage_event. As contagens e o custo usam inteiros de 0 a 9007199254740991 (2^53 - 1), representáveis exatamente em Rust e TypeScript.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "ts",
+    "provider_alias",
+    "model",
+    "tokens_in",
+    "tokens_out",
+    "cost_estimate_micro_usd",
+    "cost_basis",
+    "price_version",
+    "outcome"
+  ],
+  "properties": {
+    "version": {
+      "const": 3
+    },
+    "ts": {
+      "$ref": "urn:ads:common:timestamp:1"
+    },
+    "provider_alias": {
+      "$ref": "urn:ads:common:id:1"
+    },
+    "model": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "tokens_in": {
+      "$ref": "#/$defs/safe_integer"
+    },
+    "tokens_out": {
+      "$ref": "#/$defs/safe_integer"
+    },
+    "cost_estimate_micro_usd": {
+      "$ref": "#/$defs/safe_integer"
+    },
+    "cost_basis": {
+      "enum": [
+        "reported",
+        "reserved"
+      ]
+    },
+    "price_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 96
+    },
+    "outcome": {
+      "enum": [
+        "succeeded_reported",
+        "succeeded_reserved",
+        "charged_uncertain",
+        "charged_error_status",
+        "charged_bad_response",
+        "charged_guard_replaced"
+      ]
+    }
+  },
+  "if": {
+    "properties": {
+      "outcome": {
+        "const": "succeeded_reported"
+      }
+    }
+  },
+  "then": {
+    "properties": {
+      "cost_basis": {
+        "const": "reported"
+      }
+    }
+  },
+  "else": {
+    "if": {
+      "properties": {
+        "outcome": {
+          "enum": [
+            "succeeded_reserved",
+            "charged_uncertain",
+            "charged_error_status",
+            "charged_bad_response"
+          ]
+        }
+      }
+    },
+    "then": {
+      "properties": {
+        "cost_basis": {
+          "const": "reserved"
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "version": 3,
+      "ts": "2030-01-02T03:04:05Z",
+      "provider_alias": "provider-a",
+      "model": "model-x",
+      "tokens_in": 1200,
+      "tokens_out": 340,
+      "cost_estimate_micro_usd": 4500,
+      "cost_basis": "reported",
+      "price_version": "prices-2030-01-01",
+      "outcome": "succeeded_reported"
+    }
+  ],
+  "$defs": {
+    "safe_integer": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    }
+  }
+}

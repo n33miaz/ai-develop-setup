@@ -1,9 +1,9 @@
 //! Usage record of a call: tokens, estimated cost, provider alias and outcome, never any text.
 
 use ads_contracts::{
-    CommonTimestampV1, ContractError, RecordApiUsageV2, RecordApiUsageV2CostBasis,
-    RecordApiUsageV2Fields, RecordApiUsageV2Model, RecordApiUsageV2Outcome,
-    RecordApiUsageV2PriceVersion, RecordApiUsageV2Version,
+    CommonTimestampV1, ContractError, RecordApiUsageV3, RecordApiUsageV3CostBasis,
+    RecordApiUsageV3Fields, RecordApiUsageV3Model, RecordApiUsageV3Outcome,
+    RecordApiUsageV3PriceVersion, RecordApiUsageV3SafeInteger, RecordApiUsageV3Version,
 };
 
 use crate::chat::TokenUsage;
@@ -16,33 +16,41 @@ pub fn usage_record(
     timestamp: &str,
     usage: Option<TokenUsage>,
     reserved_micro_usd: u64,
-    outcome: RecordApiUsageV2Outcome,
-) -> Result<RecordApiUsageV2, ContractError> {
-    let mut record = RecordApiUsageV2Fields {
-        version: RecordApiUsageV2Version,
+    outcome: RecordApiUsageV3Outcome,
+) -> Result<RecordApiUsageV3, ContractError> {
+    let zero = RecordApiUsageV3SafeInteger::new(0)?;
+    let mut record = RecordApiUsageV3Fields {
+        version: RecordApiUsageV3Version,
         ts: CommonTimestampV1::new(timestamp)?,
         provider_alias: provider.alias().clone(),
-        model: RecordApiUsageV2Model::new(provider.model.clone())?,
-        tokens_in: 0,
-        tokens_out: 0,
-        cost_estimate_micro_usd: reserved_micro_usd,
-        cost_basis: RecordApiUsageV2CostBasis::Reserved,
-        price_version: RecordApiUsageV2PriceVersion::new(provider.price_version.clone())?,
+        model: RecordApiUsageV3Model::new(provider.model.clone())?,
+        tokens_in: zero,
+        tokens_out: zero,
+        cost_estimate_micro_usd: RecordApiUsageV3SafeInteger::new(reserved_micro_usd)?,
+        cost_basis: RecordApiUsageV3CostBasis::Reserved,
+        price_version: RecordApiUsageV3PriceVersion::new(provider.price_version.clone())?,
         outcome,
     };
     if let Some(usage) = usage {
-        report_usage(&mut record, provider, usage);
+        report_usage(&mut record, provider, usage)?;
     }
-    RecordApiUsageV2::new(record)
+    RecordApiUsageV3::new(record)
 }
 
 pub(crate) fn report_usage(
-    record: &mut RecordApiUsageV2Fields,
+    record: &mut RecordApiUsageV3Fields,
     provider: &ProviderConfig,
     usage: TokenUsage,
-) {
-    record.tokens_in = usage.tokens_in;
-    record.tokens_out = usage.tokens_out;
-    record.cost_estimate_micro_usd = provider.cost_micro_usd(usage.tokens_in, usage.tokens_out);
-    record.cost_basis = RecordApiUsageV2CostBasis::Reported;
+) -> Result<(), ContractError> {
+    let tokens_in = RecordApiUsageV3SafeInteger::new(usage.tokens_in)?;
+    let tokens_out = RecordApiUsageV3SafeInteger::new(usage.tokens_out)?;
+    let cost = RecordApiUsageV3SafeInteger::new(
+        provider.cost_micro_usd(usage.tokens_in, usage.tokens_out),
+    )?;
+
+    record.tokens_in = tokens_in;
+    record.tokens_out = tokens_out;
+    record.cost_estimate_micro_usd = cost;
+    record.cost_basis = RecordApiUsageV3CostBasis::Reported;
+    Ok(())
 }

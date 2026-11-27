@@ -234,7 +234,7 @@ pub struct ChatResponse {
     pub text: String,
     pub finish_reason: Option<String>,
     /// `None` unless the provider reported both counts, neither above [`MAX_TOKEN_COUNT`]; the
-    /// caller then charges the reserve.
+    /// caller then charges the reserve. A completed call also omits usage if its cost is out of range.
     pub usage: Option<TokenUsage>,
 }
 

@@ -10,7 +10,7 @@ use ads_adapter_api::{
     PreparedRequest, ProviderConfig, Refusal, Role, SpendGuard, Transport, TransportError,
     TransportResponse, build_request, run_call,
 };
-use ads_contracts::{RecordApiUsageV2CostBasis, RecordApiUsageV2Outcome};
+use ads_contracts::{RecordApiUsageV3CostBasis, RecordApiUsageV3Outcome};
 
 const TIMESTAMP: &str = "2030-01-02T03:04:05Z";
 const NEXT_TIMESTAMP: &str = "2030-02-01T00:00:00Z";
@@ -163,7 +163,7 @@ fn assert_free_in(guard: &Mutex<SpendGuard>, now: Month, free: u64) {
 fn assert_charged_reserve(
     fake: Fake,
     expected: CallError,
-    expected_outcome: RecordApiUsageV2Outcome,
+    expected_outcome: RecordApiUsageV3Outcome,
 ) {
     let guard = guard(3 * worst());
     let outcome = call(&fake, &guard);
@@ -171,9 +171,9 @@ fn assert_charged_reserve(
     assert_eq!(outcome.result, Err(expected));
     assert_eq!(outcome.spent_micro_usd, worst());
     let record = outcome.record.expect("a record");
-    assert_eq!(record.cost_basis, RecordApiUsageV2CostBasis::Reserved);
-    assert_eq!(record.cost_estimate_micro_usd, worst());
-    assert_eq!((record.tokens_in, record.tokens_out), (0, 0));
+    assert_eq!(record.cost_basis, RecordApiUsageV3CostBasis::Reserved);
+    assert_eq!(record.cost_estimate_micro_usd.get(), worst());
+    assert_eq!((record.tokens_in.get(), record.tokens_out.get()), (0, 0));
     assert_eq!(record.outcome, expected_outcome);
     assert_eq!(fake.calls(), 1);
     assert_eq!(
@@ -216,8 +216,8 @@ price_version = "p"
     assert!(billed.result.is_ok());
     assert_eq!(billed.spent_micro_usd, 1);
     let record = billed.record.unwrap();
-    assert_eq!(record.cost_basis, RecordApiUsageV2CostBasis::Reported);
-    assert_eq!(record.cost_estimate_micro_usd, 1);
+    assert_eq!(record.cost_basis, RecordApiUsageV3CostBasis::Reported);
+    assert_eq!(record.cost_estimate_micro_usd.get(), 1);
     assert_free(&funds, 1);
 }
 
@@ -315,7 +315,7 @@ fn a_failure_after_sending_charges_the_reservation() {
     assert_charged_reserve(
         Fake::new(Err(TransportError::MaybeSent)),
         CallError::Uncertain,
-        RecordApiUsageV2Outcome::ChargedUncertain,
+        RecordApiUsageV3Outcome::ChargedUncertain,
     );
 }
 
@@ -325,7 +325,7 @@ fn a_status_outside_2xx_charges_the_reservation_even_with_reported_usage() {
         assert_charged_reserve(
             Fake::answering(status, REPORTED),
             CallError::Status(status),
-            RecordApiUsageV2Outcome::ChargedErrorStatus,
+            RecordApiUsageV3Outcome::ChargedErrorStatus,
         );
     }
 }
@@ -338,7 +338,7 @@ fn an_oversized_body_charges_the_reservation() {
     assert_charged_reserve(
         Fake::answering(200, body),
         CallError::Response(MapError::ResponseTooLarge),
-        RecordApiUsageV2Outcome::ChargedBadResponse,
+        RecordApiUsageV3Outcome::ChargedBadResponse,
     );
 }
 
@@ -348,7 +348,7 @@ fn an_unreadable_body_charges_the_reservation() {
         assert_charged_reserve(
             Fake::answering(200, body),
             CallError::Response(MapError::MalformedResponse),
-            RecordApiUsageV2Outcome::ChargedBadResponse,
+            RecordApiUsageV3Outcome::ChargedBadResponse,
         );
     }
 }
@@ -365,10 +365,10 @@ fn a_success_settles_the_reported_usage_and_frees_the_rest() {
     );
     assert_eq!(outcome.spent_micro_usd, REPORTED_COST);
     let record = outcome.record.expect("a record");
-    assert_eq!(record.cost_basis, RecordApiUsageV2CostBasis::Reported);
-    assert_eq!(record.cost_estimate_micro_usd, REPORTED_COST);
-    assert_eq!((record.tokens_in, record.tokens_out), (3, 4));
-    assert_eq!(record.outcome, RecordApiUsageV2Outcome::SucceededReported);
+    assert_eq!(record.cost_basis, RecordApiUsageV3CostBasis::Reported);
+    assert_eq!(record.cost_estimate_micro_usd.get(), REPORTED_COST);
+    assert_eq!((record.tokens_in.get(), record.tokens_out.get()), (3, 4));
+    assert_eq!(record.outcome, RecordApiUsageV3Outcome::SucceededReported);
     assert_eq!(record.ts.to_string(), TIMESTAMP);
     assert_eq!(fake.calls(), 1);
     assert_free(&guard, worst() - REPORTED_COST);
@@ -384,8 +384,8 @@ fn a_success_without_usage_costs_the_reservation() {
     assert_eq!(outcome.result.expect("response").text, "hi");
     assert_eq!(outcome.spent_micro_usd, worst());
     let record = outcome.record.expect("a record");
-    assert_eq!(record.cost_basis, RecordApiUsageV2CostBasis::Reserved);
-    assert_eq!(record.outcome, RecordApiUsageV2Outcome::SucceededReserved);
+    assert_eq!(record.cost_basis, RecordApiUsageV3CostBasis::Reserved);
+    assert_eq!(record.outcome, RecordApiUsageV3Outcome::SucceededReserved);
     assert_free(&guard, worst());
 }
 
@@ -397,18 +397,50 @@ fn answering_counts(tokens_in: u64, tokens_out: u64) -> Fake {
 }
 
 #[test]
-fn token_counts_at_the_limit_are_charged_as_reported() {
+fn token_counts_and_cost_at_the_limit_are_charged_as_reported() {
     let limit = 9_007_199_254_740_991;
-    let guard = guard(worst());
-    let outcome = call(&answering_counts(limit, limit), &guard);
+    let mut provider = provider();
+    provider.input_micro_usd_per_mtok = 1_000_000;
+    provider.output_micro_usd_per_mtok = 0;
+    let request = request();
+    let reserved = build_request(&provider, &request)
+        .unwrap()
+        .worst_case_micro_usd;
+    let funds = guard(reserved);
+    let outcome = run_call(
+        &answering_counts(limit, limit),
+        &funds,
+        &provider,
+        &request,
+        month(),
+        TIMESTAMP,
+    );
 
-    let cost = provider().cost_micro_usd(limit, limit);
-    assert_eq!(outcome.spent_micro_usd, cost);
+    assert!(outcome.result.unwrap().usage.is_some());
+    assert_eq!(outcome.spent_micro_usd, limit);
     let record = outcome.record.expect("a record");
-    assert_eq!(record.cost_basis, RecordApiUsageV2CostBasis::Reported);
-    assert_eq!(record.cost_estimate_micro_usd, cost);
-    assert_eq!((record.tokens_in, record.tokens_out), (limit, limit));
-    assert_eq!(record.outcome, RecordApiUsageV2Outcome::SucceededReported);
+    assert_eq!(record.cost_basis, RecordApiUsageV3CostBasis::Reported);
+    assert_eq!(record.cost_estimate_micro_usd.get(), limit);
+    assert_eq!(
+        (record.tokens_in.get(), record.tokens_out.get()),
+        (limit, limit)
+    );
+    assert_eq!(record.outcome, RecordApiUsageV3Outcome::SucceededReported);
+}
+
+#[test]
+fn a_reported_cost_above_the_limit_uses_the_reservation() {
+    let limit = 9_007_199_254_740_991;
+    // 2 micro-dollars per input token makes the next even cost exceed the limit.
+    let funds = guard(2 * worst());
+    let above = call(&answering_counts(limit / 2 + 1, 0), &funds);
+    assert_eq!(above.spent_micro_usd, worst());
+    let record = above.record.unwrap();
+    assert_eq!(record.cost_estimate_micro_usd.get(), worst());
+    assert_eq!(record.cost_basis, RecordApiUsageV3CostBasis::Reserved);
+    assert_eq!(record.outcome, RecordApiUsageV3Outcome::SucceededReserved);
+    assert!(above.result.unwrap().usage.is_none());
+    assert_free(&funds, worst());
 }
 
 #[test]
@@ -427,10 +459,10 @@ fn a_token_count_above_the_limit_is_charged_like_a_response_without_counts() {
         assert_eq!(outcome, without, "{tokens_in} {tokens_out}");
         assert_eq!(outcome.spent_micro_usd, worst());
         let record = outcome.record.expect("a record");
-        assert_eq!(record.cost_basis, RecordApiUsageV2CostBasis::Reserved);
-        assert_eq!(record.cost_estimate_micro_usd, worst());
-        assert_eq!((record.tokens_in, record.tokens_out), (0, 0));
-        assert_eq!(record.outcome, RecordApiUsageV2Outcome::SucceededReserved);
+        assert_eq!(record.cost_basis, RecordApiUsageV3CostBasis::Reserved);
+        assert_eq!(record.cost_estimate_micro_usd.get(), worst());
+        assert_eq!((record.tokens_in.get(), record.tokens_out.get()), (0, 0));
+        assert_eq!(record.outcome, RecordApiUsageV3Outcome::SucceededReserved);
         assert_free(&guard, worst());
     }
 }
@@ -443,7 +475,11 @@ fn usage_above_the_reservation_is_charged_in_full() {
 
     assert_eq!(outcome.spent_micro_usd, 8_000_000);
     assert_eq!(
-        outcome.record.expect("a record").cost_estimate_micro_usd,
+        outcome
+            .record
+            .expect("a record")
+            .cost_estimate_micro_usd
+            .get(),
         8_000_000
     );
 }
@@ -495,7 +531,7 @@ fn ledger_total(outcomes: &[&CallOutcome], month: &str) -> u64 {
         .iter()
         .filter_map(|outcome| outcome.record.as_ref())
         .filter(|record| record.ts.to_string().starts_with(month))
-        .map(|record| record.cost_estimate_micro_usd)
+        .map(|record| record.cost_estimate_micro_usd.get())
         .sum()
 }
 
@@ -605,10 +641,10 @@ fn a_guard_replaced_during_the_call_is_reported_with_the_record() {
     assert_eq!(outcome.result, Err(CallError::GuardReplaced));
     assert_eq!(outcome.spent_micro_usd, 0);
     let record = outcome.record.expect("the caller still writes it");
-    assert_eq!(record.cost_estimate_micro_usd, worst());
+    assert_eq!(record.cost_estimate_micro_usd.get(), worst());
     assert_eq!(
         record.outcome,
-        RecordApiUsageV2Outcome::ChargedGuardReplaced
+        RecordApiUsageV3Outcome::ChargedGuardReplaced
     );
     assert_free(&guard, worst());
 
@@ -618,11 +654,11 @@ fn a_guard_replaced_during_the_call_is_reported_with_the_record() {
     let record = outcome.record.expect("the caller still writes it");
     assert_eq!(
         record.outcome,
-        RecordApiUsageV2Outcome::ChargedGuardReplaced
+        RecordApiUsageV3Outcome::ChargedGuardReplaced
     );
-    assert_eq!(record.cost_basis, RecordApiUsageV2CostBasis::Reported);
-    assert_eq!(record.cost_estimate_micro_usd, REPORTED_COST);
-    assert_eq!((record.tokens_in, record.tokens_out), (3, 4));
+    assert_eq!(record.cost_basis, RecordApiUsageV3CostBasis::Reported);
+    assert_eq!(record.cost_estimate_micro_usd.get(), REPORTED_COST);
+    assert_eq!((record.tokens_in.get(), record.tokens_out.get()), (3, 4));
     assert_free(&guard, worst());
 
     let outcome = call(&replacing(Err(TransportError::NotSent)), &guard);
@@ -697,8 +733,8 @@ fn a_billed_failure_and_a_success_without_tokens_produce_different_records() {
     assert_ne!(failed_record, successful_record);
     assert_eq!(
         failed_record.into_fields(),
-        ads_contracts::RecordApiUsageV2Fields {
-            outcome: RecordApiUsageV2Outcome::ChargedUncertain,
+        ads_contracts::RecordApiUsageV3Fields {
+            outcome: RecordApiUsageV3Outcome::ChargedUncertain,
             ..successful_record.into_fields()
         },
     );

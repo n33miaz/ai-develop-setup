@@ -2,7 +2,7 @@ use ads_adapter_api::{
     ApiConfig, ChatRequest, MAX_TOKEN_COUNT, MapError, Message, Month, Refusal, Role, SpendGuard,
     TokenUsage, build_request, parse_request_body, parse_response, usage_record,
 };
-use ads_contracts::{RecordApiUsageV2CostBasis, RecordApiUsageV2Outcome};
+use ads_contracts::{RecordApiUsageV3CostBasis, RecordApiUsageV3Outcome};
 
 const PROVIDER: &str = r#"
 [providers.provider-a]
@@ -259,7 +259,7 @@ fn secret_like_provider_names_cannot_reach_usage_records() {
                     "2030-01-02T03:04:05Z",
                     None,
                     1,
-                    RecordApiUsageV2Outcome::SucceededReserved,
+                    RecordApiUsageV3Outcome::SucceededReserved,
                 )
                 .expect("valid record");
                 let json = serde_json::to_value(record).unwrap();
@@ -469,10 +469,10 @@ fn the_usage_record_is_sized_from_reported_tokens_or_the_reserve() {
             tokens_out: 1_000_000,
         }),
         7,
-        RecordApiUsageV2Outcome::SucceededReported,
+        RecordApiUsageV3Outcome::SucceededReported,
     )
     .expect("record");
-    assert_eq!(reported.cost_estimate_micro_usd, 10_000_000);
+    assert_eq!(reported.cost_estimate_micro_usd.get(), 10_000_000);
     assert_eq!(reported.provider_alias.as_str(), "provider-a");
 
     let reserved = usage_record(
@@ -480,18 +480,21 @@ fn the_usage_record_is_sized_from_reported_tokens_or_the_reserve() {
         "2030-01-02T03:04:05Z",
         None,
         1234,
-        RecordApiUsageV2Outcome::SucceededReserved,
+        RecordApiUsageV3Outcome::SucceededReserved,
     )
     .expect("record");
-    assert_eq!(reserved.cost_estimate_micro_usd, 1234);
-    assert_eq!((reserved.tokens_in, reserved.tokens_out), (0, 0));
+    assert_eq!(reserved.cost_estimate_micro_usd.get(), 1234);
+    assert_eq!(
+        (reserved.tokens_in.get(), reserved.tokens_out.get()),
+        (0, 0)
+    );
     assert!(
         usage_record(
             provider,
             "yesterday",
             None,
             0,
-            RecordApiUsageV2Outcome::SucceededReserved,
+            RecordApiUsageV3Outcome::SucceededReserved,
         )
         .is_err()
     );
@@ -499,7 +502,7 @@ fn the_usage_record_is_sized_from_reported_tokens_or_the_reserve() {
 
 #[test]
 fn the_usage_record_requires_counts_that_match_the_outcome() {
-    use RecordApiUsageV2Outcome::*;
+    use RecordApiUsageV3Outcome::*;
 
     let cfg = config("");
     let provider = cfg.provider("provider-a").expect("provider");
@@ -518,10 +521,10 @@ fn the_usage_record_requires_counts_that_match_the_outcome() {
         for (usage, expected_basis, permitted) in [
             (
                 Some(counts),
-                RecordApiUsageV2CostBasis::Reported,
+                RecordApiUsageV3CostBasis::Reported,
                 permits_reported,
             ),
-            (None, RecordApiUsageV2CostBasis::Reserved, permits_reserved),
+            (None, RecordApiUsageV3CostBasis::Reserved, permits_reserved),
         ] {
             let result = usage_record(provider, "2030-01-02T03:04:05Z", usage, 7, outcome);
             if permitted {
@@ -550,14 +553,14 @@ fn the_usage_record_has_no_content_and_validates_against_the_contract_shape() {
         "2030-01-02T03:04:05Z",
         response.usage,
         prepared.worst_case_micro_usd,
-        RecordApiUsageV2Outcome::SucceededReported,
+        RecordApiUsageV3Outcome::SucceededReported,
     )
     .unwrap();
 
     let json = serde_json::to_string(&record).expect("json");
     assert!(!json.contains(secret_text));
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["version"], 2);
+    assert_eq!(value["version"], 3);
     assert_eq!(value["outcome"], "succeeded_reported");
     let mut keys: Vec<&str> = value
         .as_object()
