@@ -71,6 +71,7 @@ ads-ptyhost = { path = "crates/ptyhost" }
 ads-testkit = { path = "crates/testkit" }
 ads-e2e = { path = "crates/e2e" }
 portable-pty = "0.9.0"
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 regex = { version = "1", default-features = false, features = ["std", "unicode-gencat"] }
 rustix = { version = "1", default-features = false, features = ["fs", "std"] }
 serde = { version = "1", features = ["derive"] }

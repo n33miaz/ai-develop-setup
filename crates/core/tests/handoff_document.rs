@@ -7,6 +7,7 @@ use ads_core::handoff::{
 use ads_core::handoff_document::{
     DocumentError, HandoffInput, Location, MAX_ITEM_CHARS, MAX_ITEMS, Section, generate,
 };
+use pulldown_cmark::{Parser, html};
 
 fn id(value: &str) -> CommonIdV1 {
     CommonIdV1::new(value.to_owned()).unwrap()
@@ -80,6 +81,44 @@ fn document_has_the_four_sections() {
     ] {
         assert!(doc.markdown.contains(part), "{part}");
     }
+}
+
+#[test]
+fn indented_list_markers_render_as_literal_text() {
+    let mut handoff = input(1, None);
+    handoff.open_work = [
+        " - bullet",
+        "  + plus",
+        "   * star",
+        "  12. ordered",
+        " 1) ordered",
+        "    - indented",
+    ]
+    .map(str::to_owned)
+    .to_vec();
+    handoff.locations[0].label = "  2) tests".to_owned();
+
+    let (doc, _) = generate(&handoff).unwrap();
+    let mut rendered = String::new();
+    html::push_html(&mut rendered, Parser::new(&doc.markdown));
+
+    assert_eq!(
+        rendered,
+        concat!(
+            "<h1>project-a n2 · 2030-01-02</h1>\n",
+            "<p>Previous handoff document: none (first handoff)</p>\n",
+            "<h2>Open work</h2>\n<ul>\n",
+            "<li> - bullet</li>\n",
+            "<li>  + plus</li>\n",
+            "<li>   * star</li>\n",
+            "<li>  12. ordered</li>\n",
+            "<li> 1) ordered</li>\n",
+            "<li>    - indented</li>\n</ul>\n",
+            "<h2>Decisions</h2>\n<ul>\n<li>keep the schema closed</li>\n</ul>\n",
+            "<h2>Rules in force</h2>\n<ul>\n<li>no force-push</li>\n</ul>\n",
+            "<h2>Where things are</h2>\n<ul>\n<li>  2) tests: crates/core/tests</li>\n</ul>\n",
+        )
+    );
 }
 
 #[test]
