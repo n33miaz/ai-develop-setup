@@ -2,6 +2,9 @@ use super::*;
 use Channel::{LocalUi, RemoteDevice, Tray};
 use ads_contracts::{CommonUlidV1, EventQueueTaskStateChangedV2Type};
 
+#[path = "../tests/common/instant.rs"]
+mod instant;
+
 fn id(text: &str) -> CommonIdV1 {
     CommonIdV1::new(text).unwrap()
 }
@@ -883,14 +886,31 @@ fn clock_recovery_reason_takes_precedence_over_a_full_window() {
 /// device-01 belongs to owner-01; phone-01 too, until it is revoked at 03:04:07; device-02
 /// belongs to owner-02; moved-01 moves from owner-02 to owner-01 at 03:04:03.
 fn registry(device: &CommonIdV1, at: &CommonTimestampV1) -> Option<CommonIdV1> {
-    let at = at.as_str();
+    let before = |limit| instant::is_before(at, limit);
     match device.as_str() {
         "device-01" => Some(id("owner-01")),
-        "phone-01" if at < "2030-01-02T03:04:07Z" => Some(id("owner-01")),
+        "phone-01" if before("2030-01-02T03:04:07Z") => Some(id("owner-01")),
         "device-02" => Some(id("owner-02")),
-        "moved-01" if at < "2030-01-02T03:04:03Z" => Some(id("owner-02")),
+        "moved-01" if before("2030-01-02T03:04:03Z") => Some(id("owner-02")),
         "moved-01" => Some(id("owner-01")),
         _ => None,
+    }
+}
+
+#[test]
+fn the_registry_changes_the_owner_at_the_instant_itself() {
+    for (device, at, owner) in [
+        ("phone-01", "2030-01-02T03:04:06.999999Z", Some("owner-01")),
+        ("phone-01", "2030-01-02T03:04:07Z", None),
+        ("phone-01", "2030-01-02T03:04:07.0Z", None),
+        ("phone-01", "2030-01-02T03:04:07.000001Z", None),
+        ("moved-01", "2030-01-02T03:04:02.999999Z", Some("owner-02")),
+        ("moved-01", "2030-01-02T03:04:03Z", Some("owner-01")),
+        ("moved-01", "2030-01-02T03:04:03.0Z", Some("owner-01")),
+        ("moved-01", "2030-01-02T03:04:03.000001Z", Some("owner-01")),
+    ] {
+        let found = registry(&id(device), &ts(at));
+        assert_eq!(found, owner.map(id), "{device} {at}");
     }
 }
 

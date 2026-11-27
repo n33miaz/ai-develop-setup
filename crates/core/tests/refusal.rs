@@ -15,6 +15,9 @@ use ads_core::routing::{
 };
 use serde_json::json;
 
+#[path = "common/instant.rs"]
+mod instant;
+
 const TASK: &str =
     include_str!("../../../contracts/golden/record.task-packet.v1/valid/01-base.json");
 const REFUSAL: &str =
@@ -457,7 +460,7 @@ fn registry(device: &CommonIdV1, at: &CommonTimestampV1) -> Option<CommonIdV1> {
     match device.as_str() {
         "device-1" => Some(id(OWNER)),
         "device-2" => Some(id("owner-2")),
-        "device-3" if at.as_str() < "2030-01-01T00:00:00Z" => Some(id(OWNER)),
+        "device-3" if instant::is_before(at, "2030-01-01T00:00:00Z") => Some(id(OWNER)),
         _ => None,
     }
 }
@@ -572,6 +575,32 @@ fn only_a_device_of_the_lineage_owner_accepts() {
             offer.accept(&handoff(mode), &record(), &proposal, &chosen, owner),
             Err(AcceptError::NotAccepted)
         );
+    }
+}
+
+#[test]
+fn the_registry_is_read_at_the_instant_of_the_acceptance() {
+    let offer = default_offer();
+    let revoked = Err(AcceptError::NotOwnerDevice);
+    for (ts, expected) in [
+        ("2029-12-31T23:59:59Z", Ok(())),
+        ("2029-12-31T23:59:59.999999Z", Ok(())),
+        ("2030-01-01T00:00:00Z", revoked),
+        ("2030-01-01T00:00:00.0Z", revoked),
+        ("2030-01-01T00:00:00.000001Z", revoked),
+    ] {
+        let accepted = consent(ACCEPTED, |event| {
+            event["actor"]["id"] = json!("device-3");
+            event["ts"] = json!(ts);
+        });
+        let outcome = offer.accept(
+            &handoff("propose"),
+            &record(),
+            &accepted,
+            &id("b-z"),
+            registry,
+        );
+        assert_eq!(outcome.map(|_| ()), expected, "{ts}");
     }
 }
 

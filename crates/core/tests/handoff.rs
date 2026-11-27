@@ -11,6 +11,9 @@ use ads_core::handoff::{
 };
 use serde_json::json;
 
+#[path = "common/instant.rs"]
+mod instant;
+
 fn usage(used: u64) -> Option<ContextUsage> {
     Some(ContextUsage {
         used,
@@ -296,7 +299,7 @@ fn registry(device: &CommonIdV1, at: &CommonTimestampV1) -> Option<CommonIdV1> {
     match device.as_str() {
         "device-1" => Some(id(OWNER)),
         "device-2" => Some(id("user-2")),
-        "device-3" if at.as_str() < "2030-01-01T00:00:00Z" => Some(id(OWNER)),
+        "device-3" if instant::is_before(at, "2030-01-01T00:00:00Z") => Some(id(OWNER)),
         _ => None,
     }
 }
@@ -410,11 +413,20 @@ fn only_a_device_registered_to_the_owner_confirms() {
 #[test]
 fn the_registry_is_read_at_the_instant_of_the_event() {
     let [record, _] = chain();
-    let before = accept_event(|event| {
-        event["actor"]["id"] = json!("device-3");
-        event["ts"] = json!("2029-12-31T23:59:59Z");
-    });
-    assert_eq!(verify(&record, &before), Ok(()));
+    let revoked = Err(ConsentError::NotOwnerDevice);
+    for (ts, expected) in [
+        ("2029-12-31T23:59:59Z", Ok(())),
+        ("2029-12-31T23:59:59.999999Z", Ok(())),
+        ("2030-01-01T00:00:00Z", revoked),
+        ("2030-01-01T00:00:00.0Z", revoked),
+        ("2030-01-01T00:00:00.000001Z", revoked),
+    ] {
+        let event = accept_event(|event| {
+            event["actor"]["id"] = json!("device-3");
+            event["ts"] = json!(ts);
+        });
+        assert_eq!(verify(&record, &event), expected, "{ts}");
+    }
 }
 
 #[test]
