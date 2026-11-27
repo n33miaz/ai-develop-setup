@@ -36,10 +36,7 @@ use tokio_tungstenite::{
 
 type Socket = WebSocketStream<TcpStream>;
 
-struct Keys {
-    // EventLog drops its database connection before its key provider.
-    _scratch: Arc<Scratch>,
-}
+struct Keys;
 impl KeyProvider for Keys {
     fn current(&self) -> Result<(KeyId, SecretKey), CipherError> {
         Ok((KeyId::new("key-a")?, SecretKey::new(&[1; 32])))
@@ -123,15 +120,13 @@ impl Bench {
         EventLog::open(
             &self.db(),
             &self.config,
-            Box::new(Keys {
-                _scratch: self.scratch.clone(),
-            }),
+            Box::new(Keys),
             Box::new(self.anchor.clone()),
         )
         .unwrap()
     }
     async fn finish(mut self, fixture: Fixture) {
-        drop(fixture);
+        fixture.close().await;
         // Cancellation can leave API tasks holding the log. Clean up on the test task.
         bounded(async {
             while Arc::get_mut(&mut self.scratch).is_none() {
@@ -139,6 +134,9 @@ impl Bench {
             }
         })
         .await;
+    }
+    async fn fixture(&self, queue: Option<Arc<dyn QueueControl>>) -> Fixture {
+        fixture(queue, Some(self.scratch.clone())).await
     }
     fn bind_or_pending(&self) -> LocalQueue {
         self.try_bind_or_pending().unwrap()
@@ -227,11 +225,21 @@ struct Fixture {
     token: String,
     api: tokio::task::JoinHandle<Result<(), ApiError>>,
     peer: tokio::task::JoinHandle<()>,
+    _scratch: Option<Arc<Scratch>>,
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
         self.api.abort();
         self.peer.abort();
+    }
+}
+
+impl Fixture {
+    async fn close(mut self) {
+        self.api.abort();
+        self.peer.abort();
+        let _ = (&mut self.api).await;
+        let _ = (&mut self.peer).await;
     }
 }
 
@@ -244,7 +252,7 @@ async fn bounded<T>(future: impl Future<Output = T>) -> T {
         .expect("test timeout")
 }
 
-async fn fixture(queue: Option<Arc<dyn QueueControl>>) -> Fixture {
+async fn fixture(queue: Option<Arc<dyn QueueControl>>, scratch: Option<Arc<Scratch>>) -> Fixture {
     let backend = Arc::new(FakeBackend::with_echo());
     let host = Arc::new(PtyHost::new(backend, HostConfig::defaults()).unwrap());
     let (near, far) = tokio::io::duplex(262144);
@@ -273,7 +281,24 @@ async fn fixture(queue: Option<Arc<dyn QueueControl>>) -> Fixture {
         token,
         api: tokio::spawn(api.run()),
         peer,
+        _scratch: scratch,
     }
+}
+
+#[tokio::test]
+async fn queue_fixture_removes_its_scratch_after_the_server_closes() {
+    let bench = Bench::new("queue-fixture-cleanup");
+    let path = bench.scratch.path().to_owned();
+    let fixture = bench.fixture(Some(Arc::new(bench.bind_or_pending()))).await;
+
+    drop(bench);
+    assert!(path.is_dir(), "the running server keeps its scratch folder");
+
+    fixture.close().await;
+    assert!(
+        !path.exists(),
+        "the fixture removes the scratch folder after closing the server"
+    );
 }
 
 async fn connect(f: &Fixture) -> Socket {
@@ -362,7 +387,7 @@ fn custom_creation(bench: &Bench) -> Value {
 async fn get_reports_the_recorded_creation_policy() {
     let bench = Bench::new("queue-get-creation");
     let policy = custom_creation(&bench);
-    let f = fixture(Some(Arc::new(bench.bind_or_pending()))).await;
+    let f = bench.fixture(Some(Arc::new(bench.bind_or_pending()))).await;
     let mut ws = authenticated(&f).await;
     assert_eq!(
         queue_result(&mut ws, &bench.params()).await,
@@ -375,7 +400,7 @@ async fn get_reports_the_recorded_creation_policy() {
 async fn get_reports_the_latest_policy_change_without_rebinding() {
     let bench = Bench::new("queue-get-change");
     let mut policy = custom_creation(&bench);
-    let f = fixture(Some(Arc::new(bench.bind_or_pending()))).await;
+    let f = bench.fixture(Some(Arc::new(bench.bind_or_pending()))).await;
     let mut ws = authenticated(&f).await;
     let request = command("queue.get", bench.params());
     assert_eq!(
@@ -410,7 +435,7 @@ async fn get_reports_null_for_a_legacy_queue_without_a_policy() {
         "created:1",
         json!({"queue_id": bench.queue, "owner_id": "owner-01", "via": "local_ui", "state": "stopped"}),
     );
-    let f = fixture(Some(Arc::new(bench.bind_or_pending()))).await;
+    let f = bench.fixture(Some(Arc::new(bench.bind_or_pending()))).await;
     let mut ws = authenticated(&f).await;
     assert_eq!(
         queue_result(&mut ws, &bench.params()).await,
@@ -423,7 +448,7 @@ async fn get_reports_null_for_a_legacy_queue_without_a_policy() {
 #[tokio::test]
 async fn start_records_the_owner_and_stop_reports_whether_it_stopped() {
     let bench = Bench::new("queue-start");
-    let f = fixture(Some(bench.open())).await;
+    let f = bench.fixture(Some(bench.open())).await;
     let mut ws = authenticated(&f).await;
     let params = bench.params();
     assert_eq!(state(&mut ws, &params).await, "stopped");
@@ -479,7 +504,7 @@ async fn start_records_the_owner_and_stop_reports_whether_it_stopped() {
 #[tokio::test]
 async fn an_old_stop_sent_again_after_a_restart_stops_the_queue() {
     let bench = Bench::new("queue-old-stop");
-    let f = fixture(Some(bench.open())).await;
+    let f = bench.fixture(Some(bench.open())).await;
     let mut ws = authenticated(&f).await;
     let params = bench.params();
     let first_start = command("queue.start", params.clone());
@@ -560,11 +585,12 @@ async fn a_locked_queue_stop_does_not_stall_other_connections() {
     let mut bench = Bench::new("queue-stop-lock");
     bench.config = StorageConfig::from_toml_str("busy_timeout_ms = 60000").unwrap();
     let (entered, waiting) = tokio::sync::oneshot::channel();
-    let f = fixture(Some(Arc::new(ObservedStop {
-        queue: bench.open(),
-        entered: Mutex::new(Some(entered)),
-    })))
-    .await;
+    let f = bench
+        .fixture(Some(Arc::new(ObservedStop {
+            queue: bench.open(),
+            entered: Mutex::new(Some(entered)),
+        })))
+        .await;
     let mut ws = authenticated(&f).await;
     let mut other = authenticated(&f).await;
     assert_eq!(
@@ -634,7 +660,7 @@ impl QueueControl for Counting {
 #[tokio::test]
 async fn refused_queue_commands_never_reach_the_queue() {
     let counting = Arc::new(Counting::default());
-    let f = fixture(Some(counting.clone())).await;
+    let f = fixture(Some(counting.clone()), None).await;
     let params = json!({"queue_id": "queue-refusals"});
     for method in ["queue.get", "queue.create", "queue.start", "queue.stop"] {
         let mut unauthenticated = connect(&f).await;
@@ -665,7 +691,7 @@ async fn a_mistyped_queue_id_is_refused_as_not_found() {
     let methods = ["queue.get", "queue.create", "queue.start", "queue.stop"];
     let other = json!({"queue_id": "queue-elsewhere"});
     let bench = Bench::new("queue-unknown");
-    let f = fixture(Some(bench.open())).await;
+    let f = bench.fixture(Some(bench.open())).await;
     let mut ws = authenticated(&f).await;
     for method in methods {
         let reply = exchange(&mut ws, &command(method, other.clone())).await;
@@ -675,7 +701,9 @@ async fn a_mistyped_queue_id_is_refused_as_not_found() {
     bench.finish(f).await;
 
     let pending = Bench::new("queue-unknown-pending");
-    let f = fixture(Some(Arc::new(pending.bind_or_pending()))).await;
+    let f = pending
+        .fixture(Some(Arc::new(pending.bind_or_pending())))
+        .await;
     let mut ws = authenticated(&f).await;
     for method in methods {
         let reply = exchange(&mut ws, &command(method, other.clone())).await;
@@ -688,7 +716,7 @@ async fn a_mistyped_queue_id_is_refused_as_not_found() {
 #[tokio::test]
 async fn a_configured_queue_not_yet_created_is_refused_as_not_created() {
     let bench = Bench::new("queue-not-created");
-    let f = fixture(Some(Arc::new(bench.bind_or_pending()))).await;
+    let f = bench.fixture(Some(Arc::new(bench.bind_or_pending()))).await;
     let mut ws = authenticated(&f).await;
     for method in ["queue.get", "queue.start", "queue.stop"] {
         let reply = exchange(&mut ws, &command(method, bench.params())).await;
@@ -700,7 +728,7 @@ async fn a_configured_queue_not_yet_created_is_refused_as_not_created() {
 
 #[tokio::test]
 async fn queue_commands_without_queue_controls_are_refused_as_not_configured() {
-    let f = fixture(None).await;
+    let f = fixture(None, None).await;
     let mut ws = authenticated(&f).await;
     let params = json!({"queue_id": "queue-01"});
     for method in ["queue.get", "queue.create", "queue.start", "queue.stop"] {
@@ -714,7 +742,7 @@ async fn queue_commands_without_queue_controls_are_refused_as_not_configured() {
 #[tokio::test]
 async fn the_configured_queue_id_is_told_before_and_after_creation() {
     let bench = Bench::new("queue-configured");
-    let f = fixture(Some(Arc::new(bench.bind_or_pending()))).await;
+    let f = bench.fixture(Some(Arc::new(bench.bind_or_pending()))).await;
     let mut ws = authenticated(&f).await;
     let ask = || command("queue.configured", json!({}));
     let expected = json!({"queue_id": bench.queue});
@@ -737,7 +765,7 @@ async fn the_configured_queue_id_is_told_before_and_after_creation() {
 #[tokio::test(flavor = "current_thread")]
 async fn queue_discovery_answers_while_a_start_holds_the_write() {
     let bench = Bench::new("queue-configured-wait");
-    let f = fixture(Some(Arc::new(bench.bind_or_pending()))).await;
+    let f = bench.fixture(Some(Arc::new(bench.bind_or_pending()))).await;
     let mut writer = authenticated(&f).await;
     let mut ws = authenticated(&f).await;
     let create = command("queue.create", bench.params());
@@ -813,10 +841,13 @@ impl QueueControl for BlockingDiscovery {
 async fn a_blocking_queue_discovery_does_not_stall_other_requests() {
     let (entered, discovering) = tokio::sync::oneshot::channel();
     let (release, held) = std::sync::mpsc::channel();
-    let f = fixture(Some(Arc::new(BlockingDiscovery {
-        entered: Mutex::new(Some(entered)),
-        release: Mutex::new(held),
-    })))
+    let f = fixture(
+        Some(Arc::new(BlockingDiscovery {
+            entered: Mutex::new(Some(entered)),
+            release: Mutex::new(held),
+        })),
+        None,
+    )
     .await;
     let mut ws = authenticated(&f).await;
     let mut other = authenticated(&f).await;
@@ -840,7 +871,7 @@ async fn a_blocking_queue_discovery_does_not_stall_other_requests() {
 #[tokio::test]
 async fn a_failed_start_write_leaves_the_queue_stopped() {
     let bench = Bench::new("queue-failed-start");
-    let f = fixture(Some(bench.open())).await;
+    let f = bench.fixture(Some(bench.open())).await;
     let mut ws = authenticated(&f).await;
     let params = bench.params();
     bench.fail_writes(true);
@@ -858,7 +889,7 @@ async fn a_failed_start_write_leaves_the_queue_stopped() {
 #[tokio::test]
 async fn a_failed_stop_write_still_stops_and_is_recorded_before_the_next_start() {
     let bench = Bench::new("queue-failed-stop");
-    let f = fixture(Some(bench.open())).await;
+    let f = bench.fixture(Some(bench.open())).await;
     let mut ws = authenticated(&f).await;
     let params = bench.params();
     exchange(&mut ws, &command("queue.start", params.clone())).await;
@@ -893,7 +924,7 @@ async fn a_failed_stop_write_still_stops_and_is_recorded_before_the_next_start()
 #[tokio::test]
 async fn a_stop_left_unwritten_at_exit_is_recorded_as_a_restart() {
     let bench = Bench::new("queue-unwritten-stop");
-    let f = fixture(Some(bench.open())).await;
+    let f = bench.fixture(Some(bench.open())).await;
     let mut ws = authenticated(&f).await;
     let params = bench.params();
     exchange(&mut ws, &command("queue.start", params.clone())).await;
@@ -904,7 +935,7 @@ async fn a_stop_left_unwritten_at_exit_is_recorded_as_a_restart() {
     drop(f);
     bench.fail_writes(false);
 
-    let f = fixture(Some(bench.reopen().await)).await;
+    let f = bench.fixture(Some(bench.reopen().await)).await;
     let mut ws = authenticated(&f).await;
     assert_eq!(state(&mut ws, &params).await, "stopped");
     let events = bench.audit();
@@ -918,7 +949,7 @@ async fn a_stop_left_unwritten_at_exit_is_recorded_as_a_restart() {
 #[tokio::test]
 async fn reopening_restores_the_queue_stopped_and_refuses_another_owner() {
     let bench = Bench::new("queue-reopen");
-    let f = fixture(Some(bench.open())).await;
+    let f = bench.fixture(Some(bench.open())).await;
     let mut ws = authenticated(&f).await;
     exchange(&mut ws, &command("queue.start", bench.params())).await;
     drop(ws);
@@ -951,7 +982,7 @@ async fn opening_a_legacy_stream_restores_it_stopped_and_checks_the_owner() {
     ));
     assert_eq!(bench.kinds(), ["created:1", "enabled:1"]);
 
-    let f = fixture(Some(bench.open())).await;
+    let f = bench.fixture(Some(bench.open())).await;
     let mut ws = authenticated(&f).await;
     assert_eq!(state(&mut ws, &bench.params()).await, "stopped");
     assert_eq!(bench.kinds(), ["created:1", "enabled:1", "stopped:1"]);
@@ -1062,7 +1093,7 @@ fn versioned_error_catalogs_keep_the_published_queue_codes() {
 #[tokio::test]
 async fn create_without_a_session_leaves_the_stream_empty() {
     let bench = Bench::new("queue-create-no-session");
-    let f = fixture(Some(Arc::new(bench.bind_or_pending()))).await;
+    let f = bench.fixture(Some(Arc::new(bench.bind_or_pending()))).await;
     let mut ws = connect(&f).await;
     let create = command("queue.create", bench.params());
     bounded(ws.send(Message::Text(create.to_string().into())))
@@ -1079,7 +1110,7 @@ async fn create_without_a_session_leaves_the_stream_empty() {
 #[tokio::test]
 async fn create_records_the_default_policy_and_refuses_a_second_creation() {
     let bench = Bench::new("queue-create-policy");
-    let f = fixture(Some(Arc::new(bench.bind_or_pending()))).await;
+    let f = bench.fixture(Some(Arc::new(bench.bind_or_pending()))).await;
     let mut ws = authenticated(&f).await;
     let create = command("queue.create", bench.params());
     assert_eq!(exchange(&mut ws, &create).await["result"]["accepted"], true);
@@ -1130,7 +1161,7 @@ async fn rebinding_waits_for_the_previous_queue_handle() {
 async fn startup_binds_an_existing_queue_stopped() {
     let bench = Bench::new("queue-create-restart");
     {
-        let f = fixture(Some(Arc::new(bench.bind_or_pending()))).await;
+        let f = bench.fixture(Some(Arc::new(bench.bind_or_pending()))).await;
         let mut ws = authenticated(&f).await;
         for method in ["queue.create", "queue.start"] {
             assert_eq!(
@@ -1148,7 +1179,7 @@ async fn startup_binds_an_existing_queue_stopped() {
         .await;
     }
     let queue = wait_for_queue(|| bench.try_bind_or_pending()).await;
-    let f = fixture(Some(Arc::new(queue))).await;
+    let f = bench.fixture(Some(Arc::new(queue))).await;
     let mut ws = authenticated(&f).await;
     assert_eq!(state(&mut ws, &bench.params()).await, "stopped");
     let events = bench.audit();
