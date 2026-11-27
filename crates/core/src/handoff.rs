@@ -125,6 +125,14 @@ pub fn verify_consent(
     if event.data.status != EventSessionHandoffV4DataStatus::Accepted {
         return Err(ConsentError::NotAccepted);
     }
+    check_consent_record(record, owner_id, event)
+}
+
+pub(crate) fn check_consent_record(
+    record: &RecordSessionHandoffV2,
+    owner_id: &CommonIdV1,
+    event: &EventSessionHandoffV4,
+) -> Result<(), ConsentError> {
     if event.data.handoff_id != record.id {
         return Err(ConsentError::OtherHandoff);
     }
