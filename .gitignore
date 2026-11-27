@@ -23,6 +23,7 @@ CLAUDE.local.md
 
 # Rust
 target/
+.ads-target/
 **/*.rs.bk
 
 # Node, UI e casca Tauri
