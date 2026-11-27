@@ -73,6 +73,23 @@ fn holds_count_against_the_cap_until_settled_or_released() {
 }
 
 #[test]
+fn reservations_cannot_overflow_the_maximum_cap() {
+    let now = month(1);
+    let mut guard = SpendGuard::new(capped(u64::MAX), now, 0);
+    let held = guard.authorize(now, u64::MAX - 1).expect("fits");
+
+    assert_eq!(
+        guard.authorize(now, 2).unwrap_err(),
+        Refusal::WouldExceedCap
+    );
+
+    let remaining = guard.authorize(now, 1).expect("remaining capacity fits");
+    assert_eq!(guard.authorize(now, 1).unwrap_err(), Refusal::CapReached);
+    guard.release(remaining).expect("own");
+    guard.release(held).expect("own");
+}
+
+#[test]
 fn a_later_month_starts_empty_and_an_earlier_one_counts_in_the_guard_month() {
     let mut guard = SpendGuard::new(capped(1_000), month(5), 1_000);
     assert_eq!(
