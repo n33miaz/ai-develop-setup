@@ -2,6 +2,10 @@
 
 Formato: uma seção por data. Contrato novo, campo opcional acrescentado, versão nova de uma URN e contrato aposentado entram aqui. As regras de versão estão no [README](README.md).
 
+## 2026-11-27
+
+- `session.handoff_proposed:2` exige `previous_document_id` nulo na primeira sessão e um identificador nas seguintes. A versão `:1` continua disponível para leitura do histórico.
+
 ## 2026-11-25
 
 - `record.api_usage:2`, convivendo com a `:1`: acrescenta o campo obrigatório `outcome` com o conjunto fechado de seis valores que o fluxo de chamada produz quando há registro: `succeeded_reported` (sucesso com contagem), `succeeded_reserved` (sucesso sem contagem), `charged_uncertain` (pedido pode ter chegado), `charged_error_status` (status fora de 2xx), `charged_bad_response` (corpo ilegível ou grande demais) e `charged_guard_replaced` (guarda substituída durante a chamada). É o que o adaptador de API escreve.

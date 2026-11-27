@@ -137,6 +137,7 @@ O `stream` de um evento é `<família>/<id>`, e o `<id>` é o da entidade que o 
 | `urn:ads:event:session.handoff:3` | Versão histórica com `alternative_id` opcional para identificar a alternativa do catálogo aceita pelo aparelho. Novas passagens exigem a `:4`. |
 | `urn:ads:event:session.handoff:4` | Como a `:3`, com `trigger` (mesmos valores do registro) em todo evento e `channel` (`local` ou `remote`) obrigatório no aceite e na recusa e ausente na proposta. O aceite com `trigger = model_refusal` exige `alternative_id`. |
 | `urn:ads:event:session.handoff_proposed:1` | Proposta por limiar: sessão, limiar atingido, percentual de contexto medido, número N da cadeia e documento de passagem anterior (nulo na primeira). Só metadados, no stream `session/<id>`; a decisão continua em `session.handoff`. |
+| `urn:ads:event:session.handoff_proposed:2` | Proposta por limiar que valida o vínculo com o documento anterior. Quando `number` vale 1, `previous_document_id` deve ser nulo. A partir de 2, exige o identificador do documento. |
 
 Na versão 2, quem registra a passagem deve verificar se `consent.event_id` aponta para um evento `accepted` da mesma passagem e sessão de origem, emitido por um aparelho do usuário identificado em `consent.user_id`. A mesma conferência vale para um aceite na versão 3. Numa passagem com gatilho `model_refusal`, o aceite tem de ser da versão 3 e nomear a alternativa; o núcleo só devolve a rota dessa alternativa.
 
