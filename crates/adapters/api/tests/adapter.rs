@@ -181,6 +181,44 @@ fn config_refuses_bad_values() {
 }
 
 #[test]
+fn invalid_provider_names_stay_out_of_diagnostics() {
+    let sentinel = "synthetic@invalid";
+    let source = PROVIDER.replace("provider-a", &format!("{sentinel:?}"));
+    for input in [source.clone(), format!("{source}\n{source}")] {
+        let error = ApiConfig::from_toml(&input).expect_err("invalid provider");
+        assert!(!error.to_string().contains(sentinel));
+        assert!(!format!("{error:?}").contains(sentinel));
+    }
+}
+
+#[test]
+fn secret_like_provider_names_cannot_reach_usage_records() {
+    for name in ["SK-synthetic", "synthetic123456789", "Lab.A:west_2"] {
+        let source = PROVIDER.replace("provider-a", &format!("{name:?}"));
+        match ApiConfig::from_toml(&source) {
+            Ok(config) => {
+                let record = usage_record(
+                    config.provider(name).expect("configured alias"),
+                    "2030-01-02T03:04:05Z",
+                    None,
+                    1,
+                    RecordApiUsageV2Outcome::SucceededReserved,
+                )
+                .expect("valid record");
+                let json = serde_json::to_value(record).unwrap();
+                assert_eq!(json["provider_alias"], "Lab.A:west_2");
+            }
+            Err(error) => {
+                assert_ne!(name, "Lab.A:west_2");
+                assert_eq!(error.field, "providers");
+                assert!(!error.to_string().contains(name));
+                assert!(!format!("{error:?}").contains(name));
+            }
+        }
+    }
+}
+
+#[test]
 fn provider_overrides_win_over_the_defaults() {
     let toml = format!(
         "{PROVIDER}\nkey_header = \"x-api-key\"\nkey_prefix = \"\"\n\n[providers.provider-b]\nbase_url = \"https://b.example.com\"\nmodel = \"model-y\"\ninput_usd_per_mtok = 1.0\noutput_usd_per_mtok = 1.0\nprice_version = \"p\"\nchat_path = \"/v2/chat\"\nkey_header = \"authorization\"\nmax_output_tokens = 50\n"

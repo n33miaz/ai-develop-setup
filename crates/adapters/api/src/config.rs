@@ -7,7 +7,7 @@ use ads_contracts::CommonIdV1;
 use serde::Deserialize;
 
 use crate::chat::KeyHandle;
-use crate::keys::{KeyAliases, alias_list};
+use crate::keys::{KeyAliases, alias_list, looks_like_secret};
 
 /// Documented defaults, embedded so a missing key always has a value.
 pub const DEFAULT_POLICY: &str = include_str!("../../../../defaults/api-adapter.toml");
@@ -72,7 +72,7 @@ struct RawProvider {
 /// Settings of one provider that speaks the Chat Completions format.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderConfig {
-    pub alias: CommonIdV1,
+    alias: CommonIdV1,
     pub url: String,
     pub model: String,
     pub key_header: String,
@@ -85,6 +85,10 @@ pub struct ProviderConfig {
 }
 
 impl ProviderConfig {
+    pub fn alias(&self) -> &CommonIdV1 {
+        &self.alias
+    }
+
     /// Vault reference of the active key, `<provider>/<key alias>`.
     pub fn key_handle(&self) -> KeyHandle {
         KeyHandle::new(format!("{}/{}", self.alias.as_str(), self.keys.active()))
@@ -118,11 +122,11 @@ impl ApiConfig {
             .map_err(|_| invalid("defaults", "embedded defaults do not parse"))?;
         let user: toml::Table = user
             .parse()
-            .map_err(|err: toml::de::Error| invalid("config", err.message()))?;
+            .map_err(|_| invalid("config", "invalid TOML"))?;
         table.extend(user);
         let raw: Raw = table
             .try_into()
-            .map_err(|err: toml::de::Error| invalid("config", err.message()))?;
+            .map_err(|_| invalid("config", "unknown field, missing field or invalid value"))?;
         Self::validate(raw)
     }
 
@@ -148,9 +152,15 @@ impl ApiConfig {
 
         let mut providers = BTreeMap::new();
         for (name, p) in raw.providers {
-            let at = |key: &str| format!("providers.{name}.{key}");
+            if looks_like_secret(&name) {
+                return Err(invalid(
+                    "providers",
+                    "use a provider alias, never a key value",
+                ));
+            }
             let alias = CommonIdV1::new(name.clone())
-                .map_err(|_| invalid(format!("providers.{name}"), "alias is not a valid id"))?;
+                .map_err(|_| invalid("providers", "alias is not a valid id"))?;
+            let at = |key: &str| format!("providers.{name}.{key}");
             let chat_path = p.chat_path.unwrap_or_else(|| raw.chat_path.clone());
             let key_header = p.key_header.unwrap_or_else(|| raw.key_header.clone());
             let key_prefix = p.key_prefix.unwrap_or_else(|| raw.key_prefix.clone());
