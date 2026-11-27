@@ -1,6 +1,6 @@
 use ads_adapter_api::{
-    ApiConfig, ChatRequest, MapError, Message, Month, Refusal, Role, SpendGuard, TokenUsage,
-    build_request, parse_request_body, parse_response, usage_record,
+    ApiConfig, ChatRequest, MAX_TOKEN_COUNT, MapError, Message, Month, Refusal, Role, SpendGuard,
+    TokenUsage, build_request, parse_request_body, parse_response, usage_record,
 };
 use ads_contracts::{RecordApiUsageV2CostBasis, RecordApiUsageV2Outcome};
 
@@ -291,6 +291,48 @@ fn a_response_without_complete_usage_has_none_and_a_malformed_one_is_refused() {
             "{bad}"
         );
     }
+}
+
+#[test]
+fn a_token_count_above_the_limit_leaves_the_usage_unreported() {
+    const LIMIT: u64 = 9_007_199_254_740_991;
+    assert_eq!(MAX_TOKEN_COUNT, LIMIT);
+    let parse = |tokens_in: u64, tokens_out: u64| {
+        let body = format!(
+            r#"{{"model":"model-x","choices":[{{"message":{{"content":"hi"}},"finish_reason":"stop"}}],"usage":{{"prompt_tokens":{tokens_in},"completion_tokens":{tokens_out}}}}}"#
+        );
+        parse_response(&body).expect("ok")
+    };
+
+    let at_limit = parse(LIMIT, LIMIT);
+    assert_eq!(
+        at_limit.usage,
+        Some(TokenUsage {
+            tokens_in: LIMIT,
+            tokens_out: LIMIT
+        })
+    );
+    for (tokens_in, tokens_out) in [
+        (LIMIT + 1, 4),
+        (3, LIMIT + 1),
+        (u64::MAX, 4),
+        (3, u64::MAX),
+        (u64::MAX, u64::MAX),
+    ] {
+        let mut expected = at_limit.clone();
+        expected.usage = None;
+        assert_eq!(
+            parse(tokens_in, tokens_out),
+            expected,
+            "{tokens_in} {tokens_out}"
+        );
+    }
+
+    let beyond_u64 = r#"{"choices":[{"message":{"content":"hi"}}],"usage":{"prompt_tokens":18446744073709551616,"completion_tokens":4}}"#;
+    assert_eq!(
+        parse_response(beyond_u64).unwrap_err(),
+        MapError::MalformedResponse
+    );
 }
 
 #[test]

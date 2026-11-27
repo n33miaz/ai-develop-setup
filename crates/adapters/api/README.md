@@ -28,6 +28,7 @@ Estado: só lógica. Não há rede, e o adaptador nunca lê, guarda nem registra
 | Sucesso com a contagem de tokens | um | o uso informado, mesmo acima da reserva | `reported` / `succeeded_reported` |
 | Sucesso sem a contagem de tokens | um | a reserva | `reserved` / `succeeded_reserved` |
 
+- A contagem de tokens só vale com entrada e saída informadas, nenhuma acima de 9007199254740991 (2^53 − 1, `MAX_TOKEN_COUNT`): nem todo leitor do registro de uso representa um inteiro maior sem perda. Com uma delas acima, a resposta chega sem contagem (`usage = None`) e a chamada segue a linha do sucesso sem a contagem. Um número que não cabe em 64 bits sem sinal torna o corpo ilegível (`Response`).
 - O mês e o instante vêm do mesmo momento, e o instante (UTC) tem de cair no mês: o livro-caixa soma pelo mês do registro, que precisa ser o da reserva.
 - O resultado traz sempre o gasto do mês corrente da guarda logo após a chamada (sem as reservas de outras chamadas ainda abertas, nem o custo de uma chamada reservada num mês que a guarda já deixou) e, quando há custo, o registro que o chamador grava no livro-caixa, com ou sem falha.
 - Não há repetição nem troca de chave. Quem implementa `Transport` não segue redirecionamento, não repete e não lê o corpo além do necessário para saber que passou de `MAX_RESPONSE_BYTES`; um corpo cortado no limite nunca é devolvido como inteiro.

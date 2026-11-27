@@ -329,6 +329,52 @@ fn a_success_without_usage_costs_the_reservation() {
     assert_free(&guard, worst());
 }
 
+fn answering_counts(tokens_in: u64, tokens_out: u64) -> Fake {
+    let body = format!(
+        r#"{{"choices":[{{"message":{{"content":"hi"}}}}],"usage":{{"prompt_tokens":{tokens_in},"completion_tokens":{tokens_out}}}}}"#
+    );
+    Fake::answering(200, body)
+}
+
+#[test]
+fn token_counts_at_the_limit_are_charged_as_reported() {
+    let limit = 9_007_199_254_740_991;
+    let guard = guard(worst());
+    let outcome = call(&answering_counts(limit, limit), &guard);
+
+    let cost = provider().cost_micro_usd(limit, limit);
+    assert_eq!(outcome.spent_micro_usd, cost);
+    let record = outcome.record.expect("a record");
+    assert_eq!(record.cost_basis, RecordApiUsageV2CostBasis::Reported);
+    assert_eq!(record.cost_estimate_micro_usd, cost);
+    assert_eq!((record.tokens_in, record.tokens_out), (limit, limit));
+    assert_eq!(record.outcome, RecordApiUsageV2Outcome::SucceededReported);
+}
+
+#[test]
+fn a_token_count_above_the_limit_is_charged_like_a_response_without_counts() {
+    let above = 9_007_199_254_740_992;
+    let without_guard = guard(2 * worst());
+    let without = call(
+        &Fake::answering(200, r#"{"choices":[{"message":{"content":"hi"}}]}"#),
+        &without_guard,
+    );
+
+    for (tokens_in, tokens_out) in [(above, 4), (3, above), (u64::MAX, 4), (3, u64::MAX)] {
+        let guard = guard(2 * worst());
+        let outcome = call(&answering_counts(tokens_in, tokens_out), &guard);
+
+        assert_eq!(outcome, without, "{tokens_in} {tokens_out}");
+        assert_eq!(outcome.spent_micro_usd, worst());
+        let record = outcome.record.expect("a record");
+        assert_eq!(record.cost_basis, RecordApiUsageV2CostBasis::Reserved);
+        assert_eq!(record.cost_estimate_micro_usd, worst());
+        assert_eq!((record.tokens_in, record.tokens_out), (0, 0));
+        assert_eq!(record.outcome, RecordApiUsageV2Outcome::SucceededReserved);
+        assert_free(&guard, worst());
+    }
+}
+
 #[test]
 fn usage_above_the_reservation_is_charged_in_full() {
     let body = r#"{"choices":[{"message":{"content":"hi"}}],"usage":{"prompt_tokens":0,"completion_tokens":1000000}}"#;

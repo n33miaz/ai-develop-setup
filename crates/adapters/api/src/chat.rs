@@ -9,6 +9,10 @@ use crate::config::ProviderConfig;
 /// Largest response body the mapping reads.
 pub const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 
+/// Largest token count taken from a provider, 2^53 - 1: not every reader of the usage record
+/// holds a larger integer exactly.
+pub const MAX_TOKEN_COUNT: u64 = (1 << 53) - 1;
+
 /// Errors never carry request or response text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MapError {
@@ -190,7 +194,8 @@ pub struct ChatResponse {
     pub model: Option<String>,
     pub text: String,
     pub finish_reason: Option<String>,
-    /// `None` when the provider did not report both counts; the caller then charges the reserve.
+    /// `None` unless the provider reported both counts, neither above [`MAX_TOKEN_COUNT`]; the
+    /// caller then charges the reserve.
     pub usage: Option<TokenUsage>,
 }
 
@@ -242,10 +247,12 @@ pub fn parse_response(body: &str) -> Result<ChatResponse, MapError> {
     let usage = wire
         .usage
         .and_then(|u| match (u.prompt_tokens, u.completion_tokens) {
-            (Some(tokens_in), Some(tokens_out)) => Some(TokenUsage {
-                tokens_in,
-                tokens_out,
-            }),
+            (Some(tokens_in), Some(tokens_out)) if tokens_in.max(tokens_out) <= MAX_TOKEN_COUNT => {
+                Some(TokenUsage {
+                    tokens_in,
+                    tokens_out,
+                })
+            }
             _ => None,
         });
     Ok(ChatResponse {
