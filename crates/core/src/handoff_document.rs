@@ -149,8 +149,15 @@ fn rendered(items: &[String]) -> Vec<String> {
 /// quote, code, link or HTML). `line_start` also guards markers that only count at line start.
 fn escape_markdown(text: &str, line_start: bool) -> String {
     let mut out = String::with_capacity(text.len());
-    for (index, c) in text.chars().enumerate() {
-        let at_start = line_start && index == 0;
+    let text = if line_start && let Some(rest) = text.strip_prefix(' ') {
+        // Keep leading spaces as text without letting the block parser consume them.
+        out.push_str("&#32;");
+        rest
+    } else {
+        text
+    };
+    for c in text.chars() {
+        let at_start = line_start && out.is_empty();
         if matches!(
             c,
             '\\' | '`' | '*' | '_' | '[' | ']' | '<' | '>' | '#' | '&' | '|' | '~' | '!'
