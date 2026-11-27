@@ -1,5 +1,8 @@
 //! A queue written to the anchored log, read back after reopening and replayed into task records.
 
+#[path = "common/temp.rs"]
+mod temp;
+
 use ads_contracts::{CommonIdV1, CommonQueueTaskStateV1, CommonTimestampV1, EventEnvelopeV1};
 use ads_core::queue::{
     QueuePolicy, QueueStreamEvent, new_local_stopped, replay_queue, replay_task,
@@ -15,41 +18,21 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
+use temp::Scratch;
 
-/// A database folder inside the repository's `.test-tmp`, removed file by file on drop.
-struct Fixture {
-    dir: PathBuf,
-}
-
-impl Fixture {
-    fn new(name: &str) -> Self {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.test-tmp");
-        std::fs::create_dir_all(&root).unwrap();
-        let root = root.canonicalize().unwrap();
-        assert!(root.ends_with(".test-tmp"));
-        let dir = root.join(format!("{name}-{}", std::process::id()));
-        std::fs::create_dir(&dir).unwrap();
-        Self { dir }
-    }
-
-    fn db(&self) -> PathBuf {
-        self.dir.join("audit.db")
-    }
-}
-
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        for name in [
-            "queue.toml",
+fn audit_fixture(name: &str) -> (Scratch, PathBuf) {
+    let run = ads_daemon::events::new_id().unwrap();
+    let scratch = Scratch::with_files(
+        &format!("{name}-{run}"),
+        &[
             "audit.db",
             "audit.db-wal",
             "audit.db-shm",
             "audit.db-journal",
-        ] {
-            let _ = std::fs::remove_file(self.dir.join(name));
-        }
-        let _ = std::fs::remove_dir(&self.dir);
-    }
+        ],
+    );
+    let db = scratch.path().join("audit.db");
+    (scratch, db)
 }
 
 struct Keys;
@@ -192,16 +175,16 @@ fn queue_events() -> Vec<EventEnvelopeV1> {
 
 #[test]
 fn queue_records_are_rebuilt_from_the_log_after_reopening() {
-    let fixture = Fixture::new("queue-records");
+    let (scratch, db) = audit_fixture("queue-records");
     let anchor = Anchor::default();
     let events = queue_events();
-    let mut log = open(&fixture.db(), &anchor);
+    let mut log = open(&db, &anchor);
     for event in &events {
         log.append(event).unwrap();
     }
     drop(log);
 
-    let log = open(&fixture.db(), &anchor);
+    let log = open(&db, &anchor);
     let stored: Vec<QueueStreamEvent> = log
         .read_queue(&id("queue-01"))
         .unwrap()
@@ -260,17 +243,22 @@ fn queue_records_are_rebuilt_from_the_log_after_reopening() {
         );
         assert_eq!(alone.policy, queue.policy);
     }
+
+    let folder = scratch.path().to_owned();
+    drop(log);
+    drop(scratch);
+    assert!(!folder.try_exists().unwrap(), "fixture remains: {folder:?}");
 }
 
 /// Lowering the policy on reopening is covered with a session in the unit tests of `queue.rs`.
 #[test]
 fn a_rebound_queue_replays_the_policy_of_its_creation() {
-    let fixture = Fixture::new("queue-initial-policy");
+    let (_scratch, db) = audit_fixture("queue-initial-policy");
     let initial: QueuePolicy =
         toml::from_str("attempt_limit = 3\nadmission_limit = 1000\n").unwrap();
     let anchor = Anchor::default();
     let bind_queue = || {
-        let log = open(&fixture.db(), &anchor);
+        let log = open(&db, &anchor);
         let busy_timeout = Duration::from_millis(log.busy_timeout_ms().into());
         LoggedQueue::bind(
             Arc::new(Mutex::new(log)),
@@ -283,21 +271,21 @@ fn a_rebound_queue_replays_the_policy_of_its_creation() {
         )
         .unwrap()
     };
-    let mut log = open(&fixture.db(), &anchor);
+    let mut log = open(&db, &anchor);
     let (_, created) = new_local_stopped(id("queue-01"), &id("owner-01"), &initial);
     let created = serde_json::to_value(created).unwrap();
     log.append(&envelope(1, "created:2", DEVICE, created))
         .unwrap();
     drop(log);
     drop(bind_queue());
-    let mut log = open(&fixture.db(), &anchor);
+    let mut log = open(&db, &anchor);
     let mut task = creation("task-01", 1, None);
     task["attempt_limit"] = initial.attempt_limit.get().into();
     log.append(&envelope(2, "task_created:1", DEVICE, task))
         .unwrap();
     drop(log);
     drop(bind_queue());
-    let log = open(&fixture.db(), &anchor);
+    let log = open(&db, &anchor);
     let stored: Vec<_> = log
         .read_queue(&id("queue-01"))
         .unwrap()

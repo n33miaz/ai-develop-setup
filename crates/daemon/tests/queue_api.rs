@@ -1,6 +1,9 @@
 //! Owner control of the task queue through the authenticated local API, with the audit record
 //! read back from the anchored log.
 
+#[path = "common/temp.rs"]
+mod temp;
+
 use ads_contracts::{
     CommandQueueGetResponseV2Result, CommandQueueGetResponseV2ResultState, CommonIdV1,
     RecordTaskQueueV1State,
@@ -20,10 +23,11 @@ use ads_storage::{
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use temp::Scratch;
 use tokio::net::TcpStream;
 use tokio_tungstenite::{
     WebSocketStream,
@@ -32,39 +36,10 @@ use tokio_tungstenite::{
 
 type Socket = WebSocketStream<TcpStream>;
 
-/// A database folder inside the repository's `.test-tmp`, removed file by file on drop.
-struct Folder {
-    dir: PathBuf,
+struct Keys {
+    // EventLog drops its database connection before its key provider.
+    _scratch: Arc<Scratch>,
 }
-impl Folder {
-    fn new(name: &str) -> Self {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.test-tmp");
-        std::fs::create_dir_all(&root).unwrap();
-        let root = root.canonicalize().unwrap();
-        assert!(root.ends_with(".test-tmp"));
-        let dir = root.join(format!("{name}-{}", std::process::id()));
-        std::fs::create_dir(&dir).unwrap();
-        Self { dir }
-    }
-    fn db(&self) -> PathBuf {
-        self.dir.join("audit.db")
-    }
-}
-impl Drop for Folder {
-    fn drop(&mut self) {
-        for name in [
-            "audit.db",
-            "audit.db-wal",
-            "audit.db-shm",
-            "audit.db-journal",
-        ] {
-            let _ = std::fs::remove_file(self.dir.join(name));
-        }
-        let _ = std::fs::remove_dir(&self.dir);
-    }
-}
-
-struct Keys;
 impl KeyProvider for Keys {
     fn current(&self) -> Result<(KeyId, SecretKey), CipherError> {
         Ok((KeyId::new("key-a")?, SecretKey::new(&[1; 32])))
@@ -112,40 +87,65 @@ impl AnchorStore for Anchor {
     }
 }
 
-fn open_log(path: &Path, anchor: &Anchor, config: &StorageConfig) -> EventLog {
-    EventLog::open(path, config, Box::new(Keys), Box::new(anchor.clone())).unwrap()
-}
-
 fn id(text: &str) -> CommonIdV1 {
     CommonIdV1::new(text).unwrap()
 }
 
 /// A database, its vault slot and a queue id of its own: queue ids are held per process.
 struct Bench {
-    folder: Folder,
+    scratch: Arc<Scratch>,
     anchor: Anchor,
     queue: String,
     config: StorageConfig,
 }
 impl Bench {
     fn new(name: &str) -> Self {
+        let run = new_id().unwrap();
         Self {
-            folder: Folder::new(name),
+            scratch: Arc::new(Scratch::with_files(
+                &format!("{name}-{run}"),
+                &[
+                    "audit.db",
+                    "audit.db-wal",
+                    "audit.db-shm",
+                    "audit.db-journal",
+                ],
+            )),
             anchor: Anchor::default(),
             queue: name.to_owned(),
             config: StorageConfig::defaults(),
         }
+    }
+    fn db(&self) -> PathBuf {
+        self.scratch.path().join("audit.db")
+    }
+    fn open_log(&self) -> EventLog {
+        EventLog::open(
+            &self.db(),
+            &self.config,
+            Box::new(Keys {
+                _scratch: self.scratch.clone(),
+            }),
+            Box::new(self.anchor.clone()),
+        )
+        .unwrap()
+    }
+    async fn finish(mut self, fixture: Fixture) {
+        drop(fixture);
+        // Cancellation can leave API tasks holding the log. Clean up on the test task.
+        bounded(async {
+            while Arc::get_mut(&mut self.scratch).is_none() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
     }
     fn bind_or_pending(&self) -> LocalQueue {
         self.try_bind_or_pending().unwrap()
     }
 
     fn try_bind_or_pending(&self) -> Result<LocalQueue, QueueOpenError> {
-        self.bind_shared(Arc::new(Mutex::new(open_log(
-            &self.folder.db(),
-            &self.anchor,
-            &self.config,
-        ))))
+        self.bind_shared(Arc::new(Mutex::new(self.open_log())))
     }
 
     fn bind_shared(&self, log: Arc<Mutex<EventLog>>) -> Result<LocalQueue, QueueOpenError> {
@@ -161,11 +161,7 @@ impl Bench {
     }
     fn open_as(&self, owner_id: &str) -> Result<LoggedQueue, QueueOpenError> {
         LoggedQueue::bind(
-            Arc::new(Mutex::new(open_log(
-                &self.folder.db(),
-                &self.anchor,
-                &self.config,
-            ))),
+            Arc::new(Mutex::new(self.open_log())),
             id(&self.queue),
             QueueOwner {
                 owner_id: id(owner_id),
@@ -197,9 +193,7 @@ impl Bench {
             "data": data,
         }))
         .unwrap();
-        open_log(&self.folder.db(), &self.anchor, &self.config)
-            .append(&event)
-            .unwrap();
+        self.open_log().append(&event).unwrap();
     }
     /// Opens again once the previous handle, held by aborted API tasks, is gone.
     async fn reopen(&self) -> Arc<LoggedQueue> {
@@ -210,7 +204,7 @@ impl Bench {
     }
     /// Every event of the queue stream as JSON, read through a second connection.
     fn audit(&self) -> Vec<Value> {
-        open_log(&self.folder.db(), &self.anchor, &self.config)
+        self.open_log()
             .read_queue(&id(&self.queue))
             .unwrap()
             .into_iter()
@@ -374,6 +368,7 @@ async fn get_reports_the_recorded_creation_policy() {
         queue_result(&mut ws, &bench.params()).await,
         json!({"queue_id": bench.queue, "state": "stopped", "policy": policy})
     );
+    bench.finish(f).await;
 }
 
 #[tokio::test]
@@ -404,6 +399,7 @@ async fn get_reports_the_latest_policy_change_without_rebinding() {
         exchange(&mut ws, &request).await["result"]["policy"],
         policy
     );
+    bench.finish(f).await;
 }
 
 #[tokio::test]
@@ -421,6 +417,7 @@ async fn get_reports_null_for_a_legacy_queue_without_a_policy() {
         json!({"queue_id": bench.queue, "state": "stopped", "policy": null})
     );
     assert_eq!(bench.kinds(), ["created:1"]);
+    bench.finish(f).await;
 }
 
 #[tokio::test]
@@ -476,6 +473,7 @@ async fn start_records_the_owner_and_stop_reports_whether_it_stopped() {
         last["data"],
         json!({"queue_id": bench.queue, "reason": "owner", "owner_id": "owner-01", "via": "local_ui"})
     );
+    bench.finish(f).await;
 }
 
 #[tokio::test]
@@ -516,6 +514,7 @@ async fn an_old_stop_sent_again_after_a_restart_stops_the_queue() {
         first_start["params"]["_meta"]["idempotency_key"].clone();
     assert_eq!(exchange(&mut ws, &reused).await["result"]["accepted"], true);
     assert_eq!(state(&mut ws, &params).await, "stopped");
+    bench.finish(f).await;
 }
 
 struct ObservedStop {
@@ -573,7 +572,7 @@ async fn a_locked_queue_stop_does_not_stall_other_connections() {
         true
     );
 
-    let mut writer = rusqlite::Connection::open(bench.folder.db()).unwrap();
+    let mut writer = rusqlite::Connection::open(bench.db()).unwrap();
     let lock = writer
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .unwrap();
@@ -593,6 +592,8 @@ async fn a_locked_queue_stop_does_not_stall_other_connections() {
     );
     lock.rollback().unwrap();
     assert_eq!(bounded(stop).await.unwrap()["result"]["accepted"], true);
+    drop(writer);
+    bench.finish(f).await;
 }
 
 /// Counts every call, to prove refused commands never reach the queue.
@@ -671,6 +672,7 @@ async fn a_mistyped_queue_id_is_refused_as_not_found() {
         assert_eq!(reply["error"]["code"], -32026, "{method}");
     }
     assert_eq!(bench.kinds(), ["created:2"]);
+    bench.finish(f).await;
 
     let pending = Bench::new("queue-unknown-pending");
     let f = fixture(Some(Arc::new(pending.bind_or_pending()))).await;
@@ -680,6 +682,7 @@ async fn a_mistyped_queue_id_is_refused_as_not_found() {
         assert_eq!(reply["error"]["code"], -32026, "{method}");
     }
     assert!(pending.audit().is_empty());
+    pending.finish(f).await;
 }
 
 #[tokio::test]
@@ -692,6 +695,7 @@ async fn a_configured_queue_not_yet_created_is_refused_as_not_created() {
         assert_eq!(reply["error"]["code"], -32027, "{method}");
     }
     assert!(bench.audit().is_empty());
+    bench.finish(f).await;
 }
 
 #[tokio::test]
@@ -727,6 +731,7 @@ async fn the_configured_queue_id_is_told_before_and_after_creation() {
     let forged = command("queue.configured", json!({"queue_id": "queue-elsewhere"}));
     assert_eq!(exchange(&mut ws, &forged).await["error"]["code"], -32602);
     assert_eq!(bench.kinds(), ["created:2"]);
+    bench.finish(f).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -763,6 +768,7 @@ async fn queue_discovery_answers_while_a_start_holds_the_write() {
     release.send(()).unwrap();
     let reply = bounded(start).await.unwrap();
     assert_eq!(reply["result"]["accepted"], true, "{reply}");
+    bench.finish(f).await;
 }
 
 /// Discovery that blocks its thread until released, to prove the API runs it off the runtime.
@@ -846,6 +852,7 @@ async fn a_failed_start_write_leaves_the_queue_stopped() {
     let reply = exchange(&mut ws, &command("queue.start", params.clone())).await;
     assert_eq!(reply["result"]["accepted"], true);
     assert_eq!(bench.kinds(), ["created:2", "enabled:1"]);
+    bench.finish(f).await;
 }
 
 #[tokio::test]
@@ -880,6 +887,7 @@ async fn a_failed_stop_write_still_stops_and_is_recorded_before_the_next_start()
     assert_eq!(events[2]["cause"], stop["id"]);
     assert_eq!(events[2]["data"]["reason"], "owner");
     assert_eq!(events[3]["cause"], restart["id"]);
+    bench.finish(f).await;
 }
 
 #[tokio::test]
@@ -904,6 +912,7 @@ async fn a_stop_left_unwritten_at_exit_is_recorded_as_a_restart() {
     assert_eq!(events[2]["actor"]["kind"], "daemon");
     assert_eq!(events[2]["data"]["reason"], "restart");
     assert_eq!(events[2]["cause"], Value::Null);
+    bench.finish(f).await;
 }
 
 #[tokio::test]
@@ -947,6 +956,7 @@ async fn opening_a_legacy_stream_restores_it_stopped_and_checks_the_owner() {
     assert_eq!(state(&mut ws, &bench.params()).await, "stopped");
     assert_eq!(bench.kinds(), ["created:1", "enabled:1", "stopped:1"]);
     assert_eq!(bench.audit()[2]["data"]["reason"], "restart");
+    bench.finish(f).await;
 }
 
 #[test]
@@ -1063,6 +1073,7 @@ async fn create_without_a_session_leaves_the_stream_empty() {
         None | Some(Err(_)) | Some(Ok(Message::Close(_)))
     ));
     assert!(bench.audit().is_empty());
+    bench.finish(f).await;
 }
 
 #[tokio::test]
@@ -1088,6 +1099,7 @@ async fn create_records_the_default_policy_and_refuses_a_second_creation() {
     assert_eq!(again["error"]["code"], -32024);
     assert_eq!(again["error"]["message"], "queue already created");
     assert_eq!(bench.audit(), events);
+    bench.finish(f).await;
 }
 
 async fn wait_for_queue<T>(mut bind: impl FnMut() -> Result<T, QueueOpenError>) -> T {
@@ -1143,6 +1155,7 @@ async fn startup_binds_an_existing_queue_stopped() {
     assert_eq!(events.len(), 3);
     assert_eq!(events[2]["type"], "urn:ads:event:queue.stopped:1");
     assert_eq!(events[2]["data"]["reason"], "restart");
+    bench.finish(f).await;
 }
 
 #[test]
@@ -1154,11 +1167,7 @@ fn startup_binding_times_out_while_the_shared_log_is_locked() {
     let mut bench = Bench::new("queue-bind-busy");
     bench.config = StorageConfig::from_toml_str("busy_timeout_ms = 50").unwrap();
     drop(bench.open());
-    let log = Arc::new(Mutex::new(open_log(
-        &bench.folder.db(),
-        &bench.anchor,
-        &bench.config,
-    )));
+    let log = Arc::new(Mutex::new(bench.open_log()));
     let result = thread::scope(|scope| {
         let (locked, lock_ready) = mpsc::channel();
         let (release, released) = mpsc::channel::<()>();
