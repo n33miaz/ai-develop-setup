@@ -14,8 +14,8 @@ pub const DEFAULT_POLICY: &str = include_str!("../../../../defaults/api-adapter.
 
 const MAX_MODEL_CHARS: usize = 128;
 const MAX_PRICE_VERSION_CHARS: usize = 96;
-const MICRO: f64 = 1_000_000.0;
-const MAX_USD: f64 = 1_000_000_000.0;
+const MICRO_PER_USD: u64 = 1_000_000;
+const MAX_USD: u64 = 1_000_000_000;
 const HEADER_TOKEN_SYMBOLS: &str = "!#$%&'*+-.^_`|~";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,8 +49,13 @@ struct Raw {
     key_prefix: String,
     max_output_tokens: u32,
     key_aliases: toml::Value,
-    #[serde(default)]
-    providers: BTreeMap<String, RawProvider>,
+}
+
+#[derive(Deserialize)]
+struct ConfigLayer {
+    providers: Option<BTreeMap<String, RawProvider>>,
+    #[serde(flatten)]
+    settings: toml::Table,
 }
 
 #[derive(Deserialize)]
@@ -58,8 +63,8 @@ struct Raw {
 struct RawProvider {
     base_url: String,
     model: String,
-    input_usd_per_mtok: f64,
-    output_usd_per_mtok: f64,
+    input_usd_per_mtok: toml::Spanned<toml::Value>,
+    output_usd_per_mtok: toml::Spanned<toml::Value>,
     price_version: String,
     chat_path: Option<String>,
     key_header: Option<String>,
@@ -117,27 +122,34 @@ impl ApiConfig {
 
     /// Layer the user's top-level keys over the defaults, then validate everything.
     pub fn from_toml(user: &str) -> Result<Self, ConfigError> {
-        let mut table: toml::Table = DEFAULT_POLICY
-            .parse()
+        let defaults: ConfigLayer = toml::from_str(DEFAULT_POLICY)
             .map_err(|_| invalid("defaults", "embedded defaults do not parse"))?;
-        let user: toml::Table = user
-            .parse()
-            .map_err(|_| invalid("config", "invalid TOML"))?;
-        table.extend(user);
+        let overrides: ConfigLayer =
+            toml::from_str(user).map_err(|_| invalid("config", "invalid configuration"))?;
+        let mut table = defaults.settings;
+        table.extend(overrides.settings);
         let raw: Raw = table
             .try_into()
             .map_err(|_| invalid("config", "unknown field, missing field or invalid value"))?;
-        Self::validate(raw)
+        let (providers, source) = match overrides.providers {
+            Some(providers) => (providers, user),
+            None => (defaults.providers.unwrap_or_default(), DEFAULT_POLICY),
+        };
+        Self::validate(raw, providers, source)
     }
 
-    fn validate(raw: Raw) -> Result<Self, ConfigError> {
+    fn validate(
+        raw: Raw,
+        entries: BTreeMap<String, RawProvider>,
+        source: &str,
+    ) -> Result<Self, ConfigError> {
         let cap = match raw.monthly_cap_usd {
             None => None,
             Some(usd) => {
-                if !usd.is_finite() || usd <= 0.0 || usd > MAX_USD {
+                if !usd.is_finite() || usd <= 0.0 || usd > MAX_USD as f64 {
                     return Err(invalid("monthly_cap_usd", "must be greater than zero"));
                 }
-                let micro = (usd * MICRO).floor() as u64;
+                let micro = (usd * MICRO_PER_USD as f64).floor() as u64;
                 if micro == 0 {
                     return Err(invalid("monthly_cap_usd", "below one micro-dollar"));
                 }
@@ -151,7 +163,7 @@ impl ApiConfig {
         let default_aliases = alias_list("key_aliases", &raw.key_aliases)?;
 
         let mut providers = BTreeMap::new();
-        for (name, p) in raw.providers {
+        for (name, p) in entries {
             if looks_like_secret(&name) {
                 return Err(invalid(
                     "providers",
@@ -189,8 +201,8 @@ impl ApiConfig {
             };
             let keys = KeyAliases::select(&at("active_key"), key_aliases, p.active_key.as_ref())?;
             let base = check_base_url(&at("base_url"), &p.base_url)?;
-            let input = price(&at("input_usd_per_mtok"), p.input_usd_per_mtok)?;
-            let output = price(&at("output_usd_per_mtok"), p.output_usd_per_mtok)?;
+            let input = price(&at("input_usd_per_mtok"), p.input_usd_per_mtok, source)?;
+            let output = price(&at("output_usd_per_mtok"), p.output_usd_per_mtok, source)?;
             providers.insert(
                 name,
                 ProviderConfig {
@@ -223,17 +235,37 @@ impl ApiConfig {
     }
 }
 
-fn price(field: &str, usd_per_mtok: f64) -> Result<u64, ConfigError> {
-    if !usd_per_mtok.is_finite() || !(0.0..=MAX_USD).contains(&usd_per_mtok) {
-        return Err(invalid(field, "must be a finite, non-negative price"));
+fn price(field: &str, rate: toml::Spanned<toml::Value>, source: &str) -> Result<u64, ConfigError> {
+    let micro = match rate.get_ref() {
+        toml::Value::Integer(usd) => u64::try_from(*usd)
+            .ok()
+            .and_then(|n| n.checked_mul(MICRO_PER_USD)),
+        // The binary float can lose decimal places before we even scale it.
+        toml::Value::Float(n) if n.is_finite() => decimal_micro_usd(&source[rate.span()]),
+        _ => None,
+    };
+    micro.filter(|n| *n <= MAX_USD * MICRO_PER_USD)
+        .ok_or_else(|| invalid(field, "must be a non-negative price up to one billion USD in whole micro-dollars per million tokens"))
+}
+
+fn decimal_micro_usd(literal: &str) -> Option<u64> {
+    let literal = literal.replace('_', "");
+    let (mantissa, exponent) = literal.split_once(['e', 'E']).unwrap_or((&literal, "0"));
+    let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    let digits = format!("{whole}{fraction}");
+    let unsigned = digits.trim_start_matches(['+', '-']);
+    let significant = unsigned.trim_end_matches('0');
+    if significant.is_empty() {
+        return Some(0);
     }
-    let micro = (usd_per_mtok * MICRO).round() as u64;
-    // A positive price below the precision must not become free; zero stays an explicit choice.
-    Ok(if usd_per_mtok > 0.0 {
-        micro.max(1)
-    } else {
-        micro
-    })
+    if mantissa.starts_with('-') {
+        return None;
+    }
+    let trailing_zeros = unsigned.len() - significant.len();
+    let scale = 6 + i64::from(exponent.parse::<i32>().ok()?) + trailing_zeros as i64
+        - fraction.len() as i64;
+    let factor = 10_u64.checked_pow(scale.try_into().ok()?)?;
+    significant.parse::<u64>().ok()?.checked_mul(factor)
 }
 
 fn check_max_tokens(field: &str, value: u32) -> Result<(), ConfigError> {

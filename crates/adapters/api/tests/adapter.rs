@@ -544,17 +544,47 @@ monthly_cap_usd = 0.0001",
 }
 
 #[test]
-fn a_tiny_positive_price_is_not_rounded_to_free() {
-    let toml = PROVIDER.replace("input_usd_per_mtok = 2.0", "input_usd_per_mtok = 0.0000004");
-    let cfg = ApiConfig::from_toml(&toml).expect("valid");
-    assert_eq!(
-        cfg.provider("provider-a").unwrap().input_micro_usd_per_mtok,
-        1
-    );
-    let zero = PROVIDER.replace("input_usd_per_mtok = 2.0", "input_usd_per_mtok = 0.0");
-    let cfg = ApiConfig::from_toml(&zero).expect("zero is valid");
-    assert_eq!(
-        cfg.provider("provider-a").unwrap().input_micro_usd_per_mtok,
-        0
-    );
+fn tariff_precision_requires_whole_micro_dollars_per_million_tokens() {
+    for (field, old) in [
+        ("input_usd_per_mtok", "2.0"),
+        ("output_usd_per_mtok", "8.0"),
+    ] {
+        let load = |price: &str| {
+            ApiConfig::from_toml(
+                &PROVIDER.replace(&format!("{field} = {old}"), &format!("{field} = {price}")),
+            )
+        };
+        for price in [
+            "1.49e-6",
+            "0.0000004",
+            "999999999.00000101",
+            "1e-400",
+            "-0.01",
+            "nan",
+            "inf",
+            "1_000_000_000.000001",
+        ] {
+            assert_eq!(
+                load(price).expect_err(price).field,
+                format!("providers.provider-a.{field}")
+            );
+        }
+        for (price, micro) in [
+            ("0.0", 0),
+            ("1.00e-6", 1),
+            ("0.000_249", 249),
+            ("10e-7", 1),
+            ("999999999.000001", 999_999_999_000_001),
+            ("1e9", 1_000_000_000_000_000),
+        ] {
+            let cfg = load(price).expect(price);
+            let p = cfg.provider("provider-a").unwrap();
+            let rate = if field == "input_usd_per_mtok" {
+                p.input_micro_usd_per_mtok
+            } else {
+                p.output_micro_usd_per_mtok
+            };
+            assert_eq!(rate, micro);
+        }
+    }
 }

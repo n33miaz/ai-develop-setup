@@ -162,6 +162,44 @@ fn assert_charged_reserve(
 }
 
 #[test]
+fn tariff_precision_bounds_the_reservation_and_settles_reported_tokens() {
+    let cfg = ApiConfig::from_toml(
+        r#"
+[providers.precision]
+base_url = "https://api.example.com"
+model = "model-x"
+input_usd_per_mtok = 0
+output_usd_per_mtok = 0.000001
+max_output_tokens = 1000001
+price_version = "p"
+"#,
+    )
+    .unwrap();
+    let provider = cfg.provider("precision").unwrap();
+    let mut req = request();
+    req.max_tokens = None;
+    let fake = Fake::answering(
+        200,
+        r#"{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":999999}}"#,
+    );
+    let denied = run_call(&fake, &guard(1), provider, &req, month(), TIMESTAMP);
+    assert_eq!(
+        denied.result,
+        Err(CallError::Refused(Refusal::WouldExceedCap))
+    );
+    assert_eq!(fake.calls(), 0);
+
+    let funds = guard(2);
+    let billed = run_call(&fake, &funds, provider, &req, month(), TIMESTAMP);
+    assert!(billed.result.is_ok());
+    assert_eq!(billed.spent_micro_usd, 1);
+    let record = billed.record.unwrap();
+    assert_eq!(record.cost_basis, RecordApiUsageV2CostBasis::Reported);
+    assert_eq!(record.cost_estimate_micro_usd, 1);
+    assert_free(&funds, 1);
+}
+
+#[test]
 fn a_request_that_cannot_be_built_is_not_sent_and_holds_nothing() {
     let fake = Fake::answering(200, REPORTED);
     let guard = guard(worst());
