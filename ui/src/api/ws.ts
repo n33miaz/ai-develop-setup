@@ -16,6 +16,14 @@ import {
   type EventEnvelopeV1,
 } from './contracts'
 import {
+  covers,
+  DEFAULT_REPLAY_BYTES,
+  DEFAULT_REPLAY_EVENTS,
+  remember,
+  replayLimit,
+  type ReplayBuffer,
+} from './replay'
+import {
   isApprovalList,
   isHarnessList,
   isLocalCommand,
@@ -54,14 +62,6 @@ function accepted(response: Reply): boolean {
 /** Quantos ids de `harness.list` vencidos são lembrados para descartar a resposta tardia. */
 const EXPIRED_IDS = 32
 
-const DEFAULT_REPLAY_EVENTS = 256
-const DEFAULT_REPLAY_BYTES = 4 * 1024 * 1024
-
-/** Limite de replay válido (inteiro de 1 em diante) ou o padrão. */
-function replayLimit(value: number | undefined, fallback: number): number {
-  return value !== undefined && Number.isSafeInteger(value) && value >= 1 ? value : fallback
-}
-
 export function createWsCoreClient({
   url,
   token,
@@ -97,8 +97,6 @@ export function createCoreClient(
   }: Omit<WsClientOptions, 'url' | 'token' | 'socketFactory'> & { reconnectOnDrop?: boolean },
   token?: string,
 ): CoreClient {
-  // Com 0 nada ficaria guardado: um terminal remontado ficaria vazio e uma nova assinatura depois de
-  // reconectar daria por encerrada uma sessão viva.
   const replayEvents = replayLimit(configuredEvents, DEFAULT_REPLAY_EVENTS)
   const replayBytes = replayLimit(configuredBytes, DEFAULT_REPLAY_BYTES)
   let state: ConnectionState = 'disconnected'
@@ -120,14 +118,8 @@ export function createCoreClient(
   // O protocolo não cancela assinaturas: uma assinatura no núcleo por stream e conexão serve a todos
   // os ouvintes locais e continua depois que o último sai, guardando os eventos recentes para quem
   // vier depois. Um ouvinte que pede eventos que já não estão guardados recebe só o próprio fim.
-  interface Shared {
+  interface Shared extends ReplayBuffer {
     stream: string
-    /** `after_seq` pedido ao núcleo. */
-    start: number
-    /** Maior `seq` recebido. */
-    last: number
-    events: { event: EventEnvelopeV1; size: number }[]
-    bytes: number
     listeners: Set<Listener>
   }
   const streams = new Map<string, Shared>()
@@ -175,24 +167,6 @@ export function createCoreClient(
     listener.seq = event.seq
     listener.onEvent(event)
     return true
-  }
-  /** Guarda o evento recebido em ordem, descartando os mais antigos acima dos tetos. */
-  function remember(shared: Shared, event: EventEnvelopeV1, size: number) {
-    if (event.seq <= (shared.events.at(-1)?.event.seq ?? 0)) return
-    shared.events.push({ event, size })
-    shared.bytes += size
-    while (shared.events.length > replayEvents || shared.bytes > replayBytes) {
-      shared.bytes -= shared.events.shift()?.size ?? 0
-    }
-  }
-  /** Os eventos guardados bastam para um ouvinte que começa depois de `afterSeq`. */
-  function covers(shared: Shared, afterSeq: number): boolean {
-    if (afterSeq >= shared.last) return true
-    if (afterSeq < shared.start) return false
-    // A partir de 0 o núcleo também só reenviaria o que ainda retém.
-    if (afterSeq === 0 && shared.start === 0) return true
-    const oldest = shared.events[0]?.event.seq
-    return oldest !== undefined && oldest <= afterSeq + 1
   }
   function transmit(command: CommandRequestV1): Promise<Reply> {
     if (!isLocalCommand(command)) return Promise.reject(new Error('invalid local command'))
@@ -338,7 +312,7 @@ export function createCoreClient(
             }
             const shared = streams.get(event.stream)
             if (!shared) return
-            remember(shared, event, String(message.data).length)
+            remember(shared, event, String(message.data).length, replayEvents, replayBytes)
             shared.last = Math.max(shared.last, event.seq)
             for (const listener of [...shared.listeners]) {
               if (state !== 'connected' || !shared.listeners.has(listener)) continue
