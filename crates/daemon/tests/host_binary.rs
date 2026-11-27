@@ -28,8 +28,8 @@ fn host_command_keeps_only_the_system_root() {
     );
 }
 
-fn test_config(name: &str, contents: &str) -> std::path::PathBuf {
-    let path = temp::directory().join(format!("{name}-{}.toml", std::process::id()));
+fn test_config(scratch: &temp::Scratch, name: &str, contents: &str) -> std::path::PathBuf {
+    let path = scratch.path().join(name);
     std::fs::write(&path, contents).unwrap();
     path
 }
@@ -41,9 +41,13 @@ async fn send(ws: &mut Socket, method: &str, params: Value) {
 
 #[tokio::test]
 async fn real_host_runs_configured_echo_through_the_api() {
+    let run = ads_daemon::events::new_id().unwrap();
+    let scratch =
+        temp::Scratch::with_files(&format!("daemon-echo-{run}"), &["host.toml", "user.toml"]);
     let endpoint = format!(r"\\.\pipe\ads-daemon-echo-{}", std::process::id());
     let host_config = test_config(
-        "daemon-echo-host",
+        &scratch,
+        "host.toml",
         &format!("channel_path = '{endpoint}'\n"),
     );
     let _host = Process::host(&host_config);
@@ -56,17 +60,15 @@ async fn real_host_runs_configured_echo_through_the_api() {
         "workdirs": {"workspace": cwd},
         "tools": {"claude": echo("claude", "ANTHROPIC_API_KEY"), "codex": echo("codex", "OPENAI_API_KEY")}
     });
-    let user_config = test_config("daemon-echo-user", &toml::to_string(&config).unwrap());
+    let user_config = test_config(&scratch, "user.toml", &toml::to_string(&config).unwrap());
     let mut daemon = Process::start(
         Command::new(env!("CARGO_BIN_EXE_ads-daemon"))
             .arg("--config")
             .arg(&user_config)
             .arg("--host-config")
             .arg(host_config)
-            .env(
-                "LOCALAPPDATA",
-                user_config.with_extension("missing-profile"),
-            )
+            // Never declared in the scratch folder: creating it fails the cleanup.
+            .env("LOCALAPPDATA", scratch.path().join("missing-profile"))
             // Reach the daemon but must not reach the tools.
             .env("ANTHROPIC_API_KEY", "leaked-sentinel")
             .env("OPENAI_API_KEY", "leaked-sentinel"),
