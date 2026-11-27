@@ -30,7 +30,7 @@ Não há oferta quando `enabled = false`, quando a passagem está em `off`, quan
 - `order`: ordem do roteador, outras ferramentas primeiro (padrão) ou mesma ferramenta primeiro;
 - `max_alternatives`: quantidade de alternativas.
 
-A oferta é só uma proposta e identifica cada alternativa pelo id do candidato no catálogo. A rota vale apenas com um evento `accepted` de `session.handoff:3` para a mesma passagem e a mesma sessão de origem, emitido por um aparelho registrado no dono da linhagem no instante do aceite, que nomeia em `alternative_id` uma das alternativas oferecidas. O núcleo confere tudo isso, com o mesmo registro de aparelhos usado no replay da fila, e devolve só a rota aceita: agente, daemon, aparelho de outro dono ou revogado, aceite sem alternativa e pedido de outra rota que não a aceita são recusados. A sessão nova recebe o contexto pela mesma passagem desta ADR, com o gatilho `model_refusal`.
+A oferta identifica cada alternativa pelo id do candidato no catálogo. A rota exige um evento `accepted` de `session.handoff:4` para a mesma passagem e sessão de origem, com o gatilho `model_refusal`, o canal do aceite e o `alternative_id` da rota escolhida. O núcleo consulta o registro de aparelhos usado no replay da fila para confirmar que o aparelho pertencia ao dono da linhagem no instante do aceite. Só a alternativa aceita pode iniciar a nova sessão, que recebe o contexto pela passagem desta ADR.
 
 Cada sessão usa o nome `<projeto> n<N> · <data>`, com o apelido do projeto como nome da linhagem, `n1` para a origem e data UTC no formato `AAAA-MM-DD`. Cada passagem cria a sessão seguinte e aponta para a passagem que criou sua origem, quando houver. O registro autorizado vincula as duas sessões e referencia os dois artefatos do produto.
 
@@ -43,5 +43,7 @@ Se a passagem perder estado necessário, quebrar o isolamento ou entregar materi
 ## Próximos passos
 
 Integrar medição, consentimento, geração dos textos, armazenamento e abertura da sessão no daemon e na interface. Verificar o isolamento, a filtragem de ambos os artefatos e a recuperação em caso de falha antes de ativar o fluxo.
+
+Implementar a anexação à cadeia. Antes de gravar uma passagem por contexto ou troca de conta, esse caminho deve chamar `verify_consent` com o evento do log autenticado e conferir o gatilho e o canal do registro. Para `model_refusal`, deve exigir o aceite da alternativa com `Offer::accept`.
 
 Para a oferta após recusa, falta detectar a recusa e o filtro na saída da ferramenta e emitir o evento. Falta também mostrar a oferta na interface e ligar o registro de aparelhos real ao aceite.

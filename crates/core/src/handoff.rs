@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::num::NonZeroU64;
 
 use ads_contracts::{
-    CommonIdV1, CommonTimestampV1, EventSessionHandoffV3, EventSessionHandoffV3DataStatus,
+    CommonIdV1, CommonTimestampV1, EventSessionHandoffV4, EventSessionHandoffV4DataStatus,
     RecordSessionHandoffV2, RecordSessionHandoffV2Number, RecordSessionHandoffV2Trigger as Trigger,
 };
 use serde::{Deserialize, Deserializer, de};
@@ -95,6 +95,8 @@ pub enum ConsentError {
     NotAccepted,
     OtherHandoff,
     OtherSession,
+    OtherTrigger,
+    OtherChannel,
     /// The event is not the one the consent of the record refers to.
     OtherEvent,
     /// The consent of the record names a user other than the lineage owner.
@@ -102,14 +104,13 @@ pub enum ConsentError {
 }
 
 /// Confirms, before a handoff is appended, that `event` is the acceptance the record refers to,
-/// issued by a device of the lineage owner. `owner_id` comes from the caller, never from the
-/// record; `owner_at` reads the device registry at the instant of the event. The caller supplies
-/// an event read from its authenticated log. The event carries neither channel nor trigger, so
-/// neither is checked against it.
+/// issued for the recorded trigger and channel by a device of the lineage owner.
+/// The caller supplies the owner and the event from its authenticated log.
+/// `owner_at` reads the device registry at the instant of the event.
 pub fn verify_consent(
     record: &RecordSessionHandoffV2,
     owner_id: &CommonIdV1,
-    event: &EventSessionHandoffV3,
+    event: &EventSessionHandoffV4,
     owner_at: impl Fn(&CommonIdV1, &CommonTimestampV1) -> Option<CommonIdV1>,
 ) -> Result<(), ConsentError> {
     if record.trigger == Trigger::ModelRefusal {
@@ -121,7 +122,7 @@ pub fn verify_consent(
             DeviceRefusal::NotOwnerDevice => ConsentError::NotOwnerDevice,
         },
     )?;
-    if event.data.status != EventSessionHandoffV3DataStatus::Accepted {
+    if event.data.status != EventSessionHandoffV4DataStatus::Accepted {
         return Err(ConsentError::NotAccepted);
     }
     if event.data.handoff_id != record.id {
@@ -135,6 +136,16 @@ pub fn verify_consent(
     }
     if record.consent.user_id != *owner_id {
         return Err(ConsentError::OtherUser);
+    }
+    if event.data.trigger.as_str() != record.trigger.as_str() {
+        return Err(ConsentError::OtherTrigger);
+    }
+    if event
+        .data
+        .channel
+        .is_none_or(|channel| channel.as_str() != record.consent.channel.as_str())
+    {
+        return Err(ConsentError::OtherChannel);
     }
     Ok(())
 }

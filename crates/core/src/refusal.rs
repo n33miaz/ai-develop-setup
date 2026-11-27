@@ -1,10 +1,10 @@
 //! Offer other configured routes after a refusal or a safety filter.
 
 use ads_contracts::{
-    CommonIdV1, CommonTimestampV1, EventSessionHandoffV3, EventSessionHandoffV3DataStatus,
-    EventSessionRefusalDetectedV1Data, EventSessionRefusalDetectedV1DataKind as Kind,
-    EventSessionRefusalDetectedV1DataModel, RecordSessionHandoffV2Trigger as Trigger,
-    RecordTaskPacketV1,
+    CommonIdV1, CommonTimestampV1, EventSessionHandoffV4, EventSessionHandoffV4DataStatus,
+    EventSessionHandoffV4DataTrigger, EventSessionRefusalDetectedV1Data,
+    EventSessionRefusalDetectedV1DataKind as Kind, EventSessionRefusalDetectedV1DataModel,
+    RecordSessionHandoffV2Trigger as Trigger, RecordTaskPacketV1,
 };
 use serde::{Deserialize, Deserializer, de};
 
@@ -79,6 +79,7 @@ pub enum AcceptError {
     NotOwnerDevice,
     OtherHandoff,
     OtherSession,
+    OtherTrigger,
     /// The acceptance does not name the chosen alternative.
     NoChoice,
     /// The route about to start is not the one the device accepted.
@@ -204,17 +205,18 @@ impl RefusalPolicy {
 impl Offer {
     /// Returns the route of `choice` only when `consent` is the acceptance of this handoff by a
     /// device of the lineage owner and names `choice`, one of the offered alternatives.
+    /// An accepted v4 event carries the channel by construction.
     /// `owner_at` reads the device registry at the instant of the acceptance, as the queue replay
     /// does: a device of another owner, an unknown or revoked device, an agent and the daemon
     /// cannot accept.
     pub fn accept(
         &self,
         handoff: &HandoffPolicy,
-        consent: &EventSessionHandoffV3,
+        consent: &EventSessionHandoffV4,
         choice: &CommonIdV1,
         owner_at: impl Fn(&CommonIdV1, &CommonTimestampV1) -> Option<CommonIdV1>,
     ) -> Result<Route, AcceptError> {
-        if consent.data.status != EventSessionHandoffV3DataStatus::Accepted {
+        if consent.data.status != EventSessionHandoffV4DataStatus::Accepted {
             return Err(AcceptError::NotAccepted);
         }
         check_owner_device(&consent.actor, &consent.ts, &self.owner_id, owner_at).map_err(
@@ -232,6 +234,11 @@ impl Offer {
         let Some(accepted) = consent.data.alternative_id.as_ref() else {
             return Err(AcceptError::NoChoice);
         };
+        if self.trigger != Trigger::ModelRefusal
+            || consent.data.trigger != EventSessionHandoffV4DataTrigger::ModelRefusal
+        {
+            return Err(AcceptError::OtherTrigger);
+        }
         if accepted != choice {
             return Err(AcceptError::OtherRoute);
         }
