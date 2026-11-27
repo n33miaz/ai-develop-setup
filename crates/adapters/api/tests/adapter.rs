@@ -293,6 +293,33 @@ fn provider_overrides_win_over_the_defaults() {
 }
 
 #[test]
+fn request_size_limit_is_inclusive_and_can_be_overridden_per_provider() {
+    let input = request("text with a newline\n");
+    let defaults = config("");
+    let provider = defaults.provider("provider-a").unwrap();
+    let bytes = build_request(provider, &input).unwrap().body.len();
+
+    let limited = config(&format!("max_request_bytes = {bytes}"));
+    let provider = limited.provider("provider-a").unwrap();
+    assert_eq!(build_request(provider, &input).unwrap().body.len(), bytes);
+
+    let lower = bytes - 1;
+    let toml = format!("max_request_bytes = {bytes}\n{PROVIDER}\nmax_request_bytes = {lower}");
+    let limited = ApiConfig::from_toml(&toml).unwrap();
+    let provider = limited.provider("provider-a").unwrap();
+    assert_eq!(
+        build_request(provider, &input),
+        Err(MapError::RequestTooLarge)
+    );
+
+    let toml = format!("{PROVIDER}\nmax_request_bytes = 0");
+    assert_eq!(
+        ApiConfig::from_toml(&toml).unwrap_err().field,
+        "providers[1].max_request_bytes"
+    );
+}
+
+#[test]
 fn the_request_maps_to_the_wire_format_and_back() {
     let cfg = config("");
     let provider = cfg.provider("provider-a").expect("provider");

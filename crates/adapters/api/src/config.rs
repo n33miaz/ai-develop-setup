@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::num::NonZeroUsize;
 
 use ads_contracts::CommonIdV1;
 use serde::de::DeserializeOwned;
@@ -48,6 +49,7 @@ struct Raw {
     key_header: String,
     key_prefix: String,
     max_output_tokens: u32,
+    max_request_bytes: NonZeroUsize,
     key_aliases: toml::Value,
 }
 
@@ -61,6 +63,7 @@ struct RawProvider {
     key_header: Option<String>,
     key_prefix: Option<String>,
     max_output_tokens: Option<u32>,
+    max_request_bytes: Option<NonZeroUsize>,
     key_aliases: Option<toml::Value>,
     active_key: Option<toml::Value>,
 }
@@ -113,6 +116,7 @@ impl Raw {
             key_header: settings.required("key_header")?,
             key_prefix: settings.required("key_prefix")?,
             max_output_tokens: settings.required("max_output_tokens")?,
+            max_request_bytes: settings.required("max_request_bytes")?,
             key_aliases: settings.required("key_aliases")?,
         };
         settings.finish()?;
@@ -136,6 +140,7 @@ impl RawProvider {
             key_header: settings.optional("key_header")?,
             key_prefix: settings.optional("key_prefix")?,
             max_output_tokens: settings.optional("max_output_tokens")?,
+            max_request_bytes: settings.optional("max_request_bytes")?,
             key_aliases: settings.optional("key_aliases")?,
             active_key: settings.optional("active_key")?,
         };
@@ -157,6 +162,7 @@ pub struct ProviderConfig {
     pub key_header: String,
     pub key_prefix: String,
     pub max_output_tokens: u32,
+    pub max_request_bytes: usize,
     pub input_micro_usd_per_mtok: u64,
     pub output_micro_usd_per_mtok: u64,
     pub price_version: String,
@@ -271,6 +277,7 @@ impl ApiConfig {
             let key_header = p.key_header.unwrap_or_else(|| raw.key_header.clone());
             let key_prefix = p.key_prefix.unwrap_or_else(|| raw.key_prefix.clone());
             let max_output_tokens = p.max_output_tokens.unwrap_or(raw.max_output_tokens);
+            let max_request_bytes = p.max_request_bytes.unwrap_or(raw.max_request_bytes).get();
             check_path(&at("chat_path"), &chat_path)?;
             check_header_name(&at("key_header"), &key_header)?;
             check_prefix(&at("key_prefix"), &key_prefix)?;
@@ -306,6 +313,7 @@ impl ApiConfig {
                     key_header,
                     key_prefix,
                     max_output_tokens,
+                    max_request_bytes,
                     input_micro_usd_per_mtok: input,
                     output_micro_usd_per_mtok: output,
                     price_version: p.price_version,

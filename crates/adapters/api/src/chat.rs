@@ -1,6 +1,7 @@
 //! Map a request to the Chat Completions wire format and a response back. No network, no key.
 
 use std::fmt;
+use std::io::{self, Write};
 
 use serde::{Deserialize, Serialize};
 
@@ -19,6 +20,7 @@ pub enum MapError {
     EmptyMessages,
     MaxTokens,
     Temperature,
+    RequestTooLarge,
     MalformedRequest,
     MalformedResponse,
     ResponseTooLarge,
@@ -30,6 +32,7 @@ impl fmt::Display for MapError {
             Self::EmptyMessages => "request has no messages",
             Self::MaxTokens => "max_tokens is zero or above the provider limit",
             Self::Temperature => "temperature is not between 0 and 2",
+            Self::RequestTooLarge => "request body is too large",
             Self::MalformedRequest => "request body is not a valid chat request",
             Self::MalformedResponse => "response body is not a valid chat response",
             Self::ResponseTooLarge => "response body is too large",
@@ -71,13 +74,32 @@ pub struct ChatRequest {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct WireRequest {
-    model: String,
-    messages: Vec<Message>,
+struct WireRequest<M, S> {
+    model: M,
+    messages: S,
     max_tokens: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     temperature: Option<f64>,
     stream: bool,
+}
+
+struct RequestBody {
+    bytes: Vec<u8>,
+    limit: usize,
+}
+
+impl Write for RequestBody {
+    fn write(&mut self, chunk: &[u8]) -> io::Result<usize> {
+        if chunk.len() > self.limit - self.bytes.len() {
+            return Err(io::Error::from(io::ErrorKind::FileTooLarge));
+        }
+        self.bytes.extend_from_slice(chunk);
+        Ok(chunk.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 /// Reference to a key kept in the product vault, taken from the provider's active key alias.
@@ -148,14 +170,30 @@ pub fn build_request(
     {
         return Err(MapError::Temperature);
     }
+    let limit = provider.max_request_bytes;
+    request
+        .messages
+        .iter()
+        .try_fold(limit, |remaining, message| {
+            remaining.checked_sub(message.content.len())
+        })
+        .ok_or(MapError::RequestTooLarge)?;
     let wire = WireRequest {
-        model: provider.model.clone(),
-        messages: request.messages.clone(),
+        model: provider.model.as_str(),
+        messages: request.messages.as_slice(),
         max_tokens,
         temperature: request.temperature,
         stream: false,
     };
-    let body = serde_json::to_string(&wire).map_err(|_| MapError::MalformedRequest)?;
+    let mut output = RequestBody {
+        bytes: Vec::new(),
+        limit,
+    };
+    serde_json::to_writer(&mut output, &wire).map_err(|error| match error.io_error_kind() {
+        Some(io::ErrorKind::FileTooLarge) => MapError::RequestTooLarge,
+        _ => MapError::MalformedRequest,
+    })?;
+    let body = String::from_utf8(output.bytes).map_err(|_| MapError::MalformedRequest)?;
     let worst_case_micro_usd = provider.cost_micro_usd(body.len() as u64, u64::from(max_tokens));
     Ok(PreparedRequest {
         url: provider.url.clone(),
@@ -172,7 +210,8 @@ pub fn build_request(
 
 /// Read a request body back: the model it names and the request that produced it.
 pub fn parse_request_body(body: &str) -> Result<(String, ChatRequest), MapError> {
-    let wire: WireRequest = serde_json::from_str(body).map_err(|_| MapError::MalformedRequest)?;
+    let wire: WireRequest<String, Vec<Message>> =
+        serde_json::from_str(body).map_err(|_| MapError::MalformedRequest)?;
     Ok((
         wire.model,
         ChatRequest {
