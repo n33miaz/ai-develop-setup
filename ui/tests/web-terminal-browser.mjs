@@ -2,9 +2,8 @@ import assert from 'node:assert/strict'
 import { access, constants, mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
-import { cdpRequests, stop, withTestProcesses } from './web-terminal-harness.mjs'
+import { cdpRequests, stop, until, withTestProcesses } from './web-terminal-harness.mjs'
 
 const root = fileURLToPath(new URL('../..', import.meta.url))
 const target = resolve(root, process.env.CARGO_TARGET_DIR ?? 'target', 'debug')
@@ -47,15 +46,6 @@ if (problems.length) throw new Error(problems.join('\n'))
 const scratch = await mkdtemp(join(tmpdir(), 'ads-web-test-'))
 const origin = 'http://127.0.0.1:5173'
 
-async function until(check, message) {
-  for (let attempt = 0; attempt < 150; attempt++) {
-    const result = await check()
-    if (result) return result
-    await delay(100)
-  }
-  throw new Error(message)
-}
-
 async function control(socket, key, modifiers = 2) {
   const code = key === 'Insert' ? 'Insert' : 'Key' + key.toUpperCase()
   const virtualKey = key === 'Insert' ? 45 : key.toUpperCase().charCodeAt(0)
@@ -94,24 +84,30 @@ args = ['${fileURLToPath(new URL('terminal-byte-echo.cjs', import.meta.url))}']
     VITE_CORE_HARNESSES: 'claude',
   }
   const host = start(binary('ads-ptyhost'), ['--config', hostConfig], { env })
-  await until(() => host.output().includes('listening on'), 'Test terminal host failed to start')
+  await host.waitForReady(
+    (output) => output.includes('listening on'),
+    'Test terminal host failed to start',
+  )
   const vite = start(process.execPath, ['node_modules/vite/bin/vite.js'], {
     cwd: join(root, 'ui'),
     env,
   })
-  await until(() => vite.output().includes(origin), 'Test Vite failed to start on port 5173')
+  await vite.waitForReady(
+    (output) => output.includes(origin),
+    'Test Vite failed to start on port 5173',
+  )
   const daemon = start(
     binary('ads-daemon'),
     ['--config', daemonConfig, '--host-config', hostConfig],
     { env },
   )
-  const link = await until(
-    () => daemon.output().split(/\r?\n/)[1] !== undefined && daemon.output().trim(),
+  const link = await daemon.waitForReady(
+    (output) => output.split(/\r?\n/)[1] !== undefined && output.trim(),
     'Test daemon failed to issue a link',
   )
 
   const profile = join(scratch, 'browser')
-  start(chromium, [
+  const browser = start(chromium, [
     '--headless',
     '--disable-gpu',
     '--disable-background-networking',
@@ -122,7 +118,7 @@ args = ['${fileURLToPath(new URL('terminal-byte-echo.cjs', import.meta.url))}']
     `--user-data-dir=${profile}`,
     'about:blank',
   ])
-  const port = await until(
+  const port = await browser.waitForReady(
     () =>
       readFile(join(profile, 'DevToolsActivePort'), 'utf8')
         .then((data) => data.split('\n')[0])
