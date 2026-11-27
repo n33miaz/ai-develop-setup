@@ -44,9 +44,9 @@ use windows::Win32::Security::{
 };
 use windows::Win32::Storage::FileSystem::{
     CreateDirectoryW, DELETE, FILE_ACCESS_RIGHTS, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ,
-    FILE_GENERIC_WRITE, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
-    FILE_SHARE_MODE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE, FileAttributeTagInfo,
-    GetFileInformationByHandleEx, READ_CONTROL, SYNCHRONIZE,
+    FILE_GENERIC_WRITE, FILE_INFO_BY_HANDLE_CLASS, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
+    FILE_SHARE_DELETE, FILE_SHARE_MODE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE,
+    FileAttributeTagInfo, GetFileInformationByHandleEx, READ_CONTROL, SYNCHRONIZE,
 };
 use windows::Win32::System::IO::IO_STATUS_BLOCK;
 use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
@@ -237,6 +237,10 @@ fn status_error(status: NTSTATUS) -> io::Error {
 /// Opens the folder `path` itself (a reparse point is opened, not followed) and holds it: until
 /// the handle is dropped, nobody can rename or delete it, nor rename a folder above it.
 pub(super) fn open_dir(path: &Path) -> io::Result<File> {
+    open_dir_with_share(path, HELD)
+}
+
+fn open_dir_with_share(path: &Path, share: FILE_SHARE_MODE) -> io::Result<File> {
     let access = FILE_READ_ATTRIBUTES.0
         | FILE_LIST_DIRECTORY.0
         | FILE_TRAVERSE.0
@@ -244,26 +248,47 @@ pub(super) fn open_dir(path: &Path) -> io::Result<File> {
         | SYNCHRONIZE.0;
     OpenOptions::new()
         .access_mode(access)
-        .share_mode(HELD.0)
+        .share_mode(share.0)
         .custom_flags(FLAG_BACKUP_SEMANTICS | FLAG_OPEN_REPARSE_POINT)
         .open(path)
+}
+
+#[cfg(feature = "test-support")]
+pub(super) fn open_fixture_dir(path: &Path) -> io::Result<File> {
+    open_dir_with_share(path, SHARED)
+}
+
+#[cfg(feature = "test-support")]
+pub(super) fn file_id(file: &File) -> io::Result<[u64; 3]> {
+    use windows::Win32::Storage::FileSystem::FileIdInfo;
+
+    // FILE_ID_INFO: volume serial number and 128-bit file ID.
+    file_information(file, FileIdInfo)
+}
+
+fn file_information<const N: usize>(
+    file: &File,
+    class: FILE_INFO_BY_HANDLE_CLASS,
+) -> io::Result<[u64; N]> {
+    let mut words = [0_u64; N];
+    // SAFETY: the buffer is writable for the size passed and aligned for the structure.
+    unsafe {
+        GetFileInformationByHandleEx(
+            raw(file),
+            class,
+            words.as_mut_ptr().cast(),
+            size_of_val(&words) as u32,
+        )
+    }
+    .map_err(os_error)?;
+    Ok(words)
 }
 
 /// What the open entry is, read from its handle.
 pub(super) fn kind(file: &File) -> io::Result<Kind> {
     // FILE_ATTRIBUTE_TAG_INFO: attributes, reparse tag.
-    let mut tag = [0_u64; 1];
-    // SAFETY: the buffer is writable for the size passed and aligned for the structure.
-    unsafe {
-        GetFileInformationByHandleEx(
-            raw(file),
-            FileAttributeTagInfo,
-            tag.as_mut_ptr().cast(),
-            size_of_val(&tag) as u32,
-        )
-    }
-    .map_err(os_error)?;
-    let attributes = tag[0] as u32;
+    let [tag] = file_information(file, FileAttributeTagInfo)?;
+    let attributes = tag as u32;
     Ok(if attributes & ATTRIBUTE_REPARSE_POINT != 0 {
         Kind::Other
     } else if attributes & ATTRIBUTE_DIRECTORY != 0 {
@@ -414,21 +439,40 @@ pub(super) fn open_to_remove(root: &File, name: &str) -> io::Result<File> {
     open_at(root, name, access, HELD, FILE_OPEN, ITSELF, None)
 }
 
+#[cfg(feature = "test-support")]
+pub(super) fn open_child_dir(root: &File, name: &str) -> io::Result<File> {
+    let access = FILE_ACCESS_RIGHTS(
+        FILE_READ_ATTRIBUTES.0 | FILE_LIST_DIRECTORY.0 | FILE_TRAVERSE.0 | DELETE.0,
+    );
+    open_at(root, name, access, HELD, FILE_OPEN, ITSELF, None)
+}
+
+#[cfg(feature = "test-support")]
+pub(super) fn remove_fixture_file(root: &File, name: &str) -> io::Result<()> {
+    let access = FILE_ACCESS_RIGHTS(DELETE.0 | SYNCHRONIZE.0);
+    let file = open_at(root, name, access, HELD, FILE_OPEN, FILE, None)?;
+    remove_fixture_entry(&file)
+}
+
+#[cfg(feature = "test-support")]
+pub(super) fn remove_fixture_entry(file: &File) -> io::Result<()> {
+    remove_with_flags(file, 0x1 | 0x2)
+}
+
 /// Removes the open entry, the one the handle points to, whatever its name is now.
 pub(super) fn remove(file: &File) -> io::Result<()> {
+    remove_with_flags(file, DISPOSITION_DELETE)
+}
+
+fn remove_with_flags(file: &File, flags: u32) -> io::Result<()> {
     // FILE_DISPOSITION_INFO_EX: flags. Without it, FILE_DISPOSITION_INFO: the entry goes when
     // the handle, about to be dropped, is closed.
-    apply(
-        file,
-        FileDispositionInformationEx,
-        &[u64::from(DISPOSITION_DELETE)],
-        4,
-    )
-    .or_else(|status| match unsupported(status) {
-        true => apply(file, FileDispositionInformation, &[1], 1),
-        false => Err(status),
-    })
-    .map_err(status_error)
+    apply(file, FileDispositionInformationEx, &[u64::from(flags)], 4)
+        .or_else(|status| match unsupported(status) {
+            true => apply(file, FileDispositionInformation, &[1], 1),
+            false => Err(status),
+        })
+        .map_err(status_error)
 }
 
 /// Moves the open entry to `name` in the open folder `root`, replacing what is there.

@@ -20,6 +20,22 @@ pub(super) fn open_dir(path: &Path) -> io::Result<OwnedFd> {
     Ok(open(path, flags, Mode::empty())?)
 }
 
+#[cfg(feature = "test-support")]
+pub(super) fn open_child_dir(dir: &OwnedFd, name: &str) -> io::Result<OwnedFd> {
+    let flags = ENTRY | OFlags::RDONLY | OFlags::DIRECTORY;
+    Ok(openat(dir, name, flags, Mode::empty())?)
+}
+
+#[cfg(feature = "test-support")]
+pub(super) fn remove_child_dir(dir: &OwnedFd, name: &str, child: &OwnedFd) -> io::Result<()> {
+    // Unix removes an empty directory by name. Check that the opened directory was unlinked.
+    unlinkat(dir, name, AtFlags::REMOVEDIR)?;
+    if stat(child)?.st_nlink != 0 {
+        return Err(io::Error::other("scratch folder identity changed"));
+    }
+    Ok(())
+}
+
 pub(super) fn stat(fd: &OwnedFd) -> io::Result<Stat> {
     Ok(fstat(fd)?)
 }

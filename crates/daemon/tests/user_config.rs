@@ -108,6 +108,45 @@ fn empty_configuration_files_are_removed_on_panic() {
 }
 
 #[test]
+fn scratch_preserves_files_when_the_directory_is_replaced() {
+    let run = ads_daemon::events::new_id().unwrap();
+    let scratch = temp::Scratch::with_files(&format!("daemon-identity-{run}"), &["listed"])
+        .with_subdirs(&[("nested", &["listed"])]);
+    let path = scratch.path().to_owned();
+    let original = path.with_extension("original");
+    std::fs::write(path.join("listed"), b"original").unwrap();
+    std::fs::rename(&path, &original).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    let nested = path.join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    std::fs::write(path.join("listed"), b"replacement").unwrap();
+    std::fs::write(nested.join("listed"), b"nested replacement").unwrap();
+
+    let result = std::panic::catch_unwind(|| drop(scratch));
+    let original_contents = std::fs::read(original.join("listed"));
+    let replacement_contents = std::fs::read(path.join("listed"));
+    let nested_contents = std::fs::read(nested.join("listed"));
+
+    std::fs::remove_file(original.join("listed")).unwrap();
+    std::fs::remove_dir(original).unwrap();
+    if nested_contents.is_ok() {
+        std::fs::remove_file(nested.join("listed")).unwrap();
+        std::fs::remove_dir(nested).unwrap();
+    }
+    if replacement_contents.is_ok() {
+        std::fs::remove_file(path.join("listed")).unwrap();
+        std::fs::remove_dir(path).unwrap();
+    }
+
+    assert_eq!(original_contents.unwrap(), b"original");
+    assert_eq!(replacement_contents.unwrap(), b"replacement");
+    assert_eq!(nested_contents.unwrap(), b"nested replacement");
+    let error = result.expect_err("cleanup should refuse a replacement folder");
+    let message = error.downcast_ref::<String>().unwrap();
+    assert!(message.contains("scratch folder") && message.contains("identity changed"));
+}
+
+#[test]
 fn scratch_reports_and_preserves_unexpected_files_in_subdirectories() {
     let run = ads_daemon::events::new_id().unwrap();
     let scratch = temp::Scratch::with_files(&format!("daemon-cleanup-{run}"), &[])
