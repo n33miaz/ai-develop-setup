@@ -183,7 +183,8 @@ impl ScriptedPeer {
                 next_seq: 1.try_into().unwrap(),
             }),
             Call::Close(_) => ResultBody::Closed(wire::Closed { exit_code: None }),
-            _ => ResultBody::Empty(wire::Empty {}),
+            Call::List(_) => ResultBody::SessionList(wire::SessionList { sessions: vec![] }),
+            Call::Open(_) | Call::Write(_) | Call::Resize(_) => ResultBody::Empty(wire::Empty {}),
         })
     }
 
@@ -359,31 +360,13 @@ pub(super) async fn scripted_fixture(
 ) -> (Fixture, Arc<Mutex<Vec<PeerCall>>>) {
     let backend = Arc::new(FakeBackend::new());
     let host = Arc::new(PtyHost::new(backend.clone(), HostConfig::defaults()).unwrap());
-    let calls = Arc::new(Mutex::new(Vec::new()));
-    let error_text = Arc::new(Mutex::new(String::new()));
-    let (near, far) = tokio::io::duplex(4096);
-    let release: Arc<Notify> = Arc::default();
-    let peer = ScriptedPeer {
-        scenario,
-        stream: far,
-        host: host.clone(),
-        release: release.clone(),
-        calls: calls.clone(),
-        budget: refusals.iter().copied().collect(),
-        code,
-        error_text: error_text.clone(),
-        burst,
-    };
-    let peer = tokio::spawn(peer.run());
-    let client = PtyClient::over(
-        near,
-        ClientConfig {
-            max_frame_bytes: 131072,
-            queue_capacity: 2,
-        },
-    )
-    .await
-    .unwrap();
+    let ConnectedPeer {
+        client,
+        task: peer,
+        calls,
+        error_text,
+        release,
+    } = connect_peer(host.clone(), scenario, code, burst, refusals).await;
     let api = LocalApi::bind(
         ApiConfig::from_toml_str(overrides).unwrap(),
         client,
@@ -412,4 +395,72 @@ pub(super) async fn scripted_fixture(
         },
         calls,
     )
+}
+
+struct ConnectedPeer {
+    client: PtyClient,
+    task: tokio::task::JoinHandle<()>,
+    calls: Arc<Mutex<Vec<PeerCall>>>,
+    error_text: Arc<Mutex<String>>,
+    release: Arc<Notify>,
+}
+
+async fn connect_peer(
+    host: Arc<PtyHost>,
+    scenario: PeerScenario,
+    code: wire::ErrorCode,
+    burst: usize,
+    refusals: &[(PeerCall, usize)],
+) -> ConnectedPeer {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let error_text = Arc::new(Mutex::new(String::new()));
+    let (near, far) = tokio::io::duplex(4096);
+    let release: Arc<Notify> = Arc::default();
+    let peer = ScriptedPeer {
+        scenario,
+        stream: far,
+        host,
+        release: release.clone(),
+        calls: calls.clone(),
+        budget: refusals.iter().copied().collect(),
+        code,
+        error_text: error_text.clone(),
+        burst,
+    };
+    let task = tokio::spawn(peer.run());
+    let client = super::bounded(PtyClient::over(
+        near,
+        ClientConfig {
+            max_frame_bytes: 131072,
+            queue_capacity: 2,
+        },
+    ))
+    .await
+    .unwrap();
+    ConnectedPeer {
+        client,
+        task,
+        calls,
+        error_text,
+        release,
+    }
+}
+
+#[tokio::test]
+async fn scripted_peer_lists_empty_sessions_through_pty_client() {
+    let backend = Arc::new(FakeBackend::new());
+    let host = Arc::new(PtyHost::new(backend, HostConfig::defaults()).unwrap());
+    let ConnectedPeer { client, task, .. } = connect_peer(
+        host,
+        PeerScenario::Plain,
+        wire::ErrorCode::InternalError,
+        0,
+        &[],
+    )
+    .await;
+
+    let result = super::bounded(client.list()).await;
+    drop(client);
+    super::bounded(task).await.unwrap();
+    assert!(result.unwrap().sessions.is_empty());
 }
