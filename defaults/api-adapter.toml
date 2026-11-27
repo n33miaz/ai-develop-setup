@@ -21,6 +21,11 @@ key_prefix = "Bearer "
 # Teto de tokens de saída por chamada, usado quando o pedido não traz o seu e como limite máximo.
 max_output_tokens = 1024
 
+# Teto do corpo JSON de cada pedido, em bytes (inteiro positivo). O padrão recomendado é 1 MiB.
+# Conta o modelo, as mensagens e os escapes. O adaptador recusa pedidos acima do teto antes do
+# envio. Reduza o histórico ou ajuste o teto para o tamanho aceito pelo provedor.
+max_request_bytes = 1048576
+
 # Apelidos das chaves de API de cada provedor, para quem tem mais de uma. São nomes de referência no
 # cofre, nunca o valor da chave. De 1 a 8, sem repetição; cada um com 1 a 32 caracteres (letras
 # minúsculas, dígitos, - e _, começando por letra). Texto com cara de segredo (prefixo comum de
@@ -33,7 +38,7 @@ key_aliases = ["default"]
 # configurado não há chamada possível. As tarifas de entrada e saída aceitam de zero a um bilhão
 # de dólares por milhão de tokens, em múltiplos exatos de 0,000001. O campo `price_version`
 # identifica a tabela de preços usada, para o livro-caixa. `chat_path`, `key_header`, `key_prefix`,
-# `max_output_tokens` e `key_aliases` podem ser trocados por provedor.
+# `max_output_tokens`, `max_request_bytes` e `key_aliases` podem ser trocados por provedor.
 #
 # `active_key` (só dentro do provedor) diz qual apelido está em uso: precisa estar na lista, é
 # obrigatória com mais de um apelido e dispensável com um só. A chamada usa a referência

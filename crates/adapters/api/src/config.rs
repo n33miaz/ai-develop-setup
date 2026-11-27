@@ -2,9 +2,12 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::num::NonZeroUsize;
 
 use ads_contracts::CommonIdV1;
-use serde::Deserialize;
+use serde::de::DeserializeOwned;
+use toml::Spanned;
+use toml::de::{DeTable, DeValue, ValueDeserializer};
 
 use crate::chat::KeyHandle;
 use crate::keys::{KeyAliases, alias_list, looks_like_secret};
@@ -39,8 +42,6 @@ pub(crate) fn invalid(field: impl Into<String>, reason: impl Into<String>) -> Co
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Raw {
     enabled: bool,
     monthly_cap_usd: Option<f64>,
@@ -48,18 +49,10 @@ struct Raw {
     key_header: String,
     key_prefix: String,
     max_output_tokens: u32,
+    max_request_bytes: NonZeroUsize,
     key_aliases: toml::Value,
 }
 
-#[derive(Deserialize)]
-struct ConfigLayer {
-    providers: Option<BTreeMap<String, RawProvider>>,
-    #[serde(flatten)]
-    settings: toml::Table,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct RawProvider {
     base_url: String,
     model: String,
@@ -70,8 +63,94 @@ struct RawProvider {
     key_header: Option<String>,
     key_prefix: Option<String>,
     max_output_tokens: Option<u32>,
+    max_request_bytes: Option<NonZeroUsize>,
     key_aliases: Option<toml::Value>,
     active_key: Option<toml::Value>,
+}
+
+struct Settings<'a> {
+    table: DeTable<'a>,
+    scope: Option<&'a str>,
+}
+
+impl Settings<'_> {
+    fn field(&self, key: &'static str) -> String {
+        match self.scope {
+            Some(scope) => format!("{scope}.{key}"),
+            None => key.to_owned(),
+        }
+    }
+
+    fn optional<T: DeserializeOwned>(
+        &mut self,
+        key: &'static str,
+    ) -> Result<Option<T>, ConfigError> {
+        take(&mut self.table, key)
+            .map(|value| {
+                T::deserialize(ValueDeserializer::from(value))
+                    .map_err(|_| invalid(self.field(key), "invalid value"))
+            })
+            .transpose()
+    }
+
+    fn required<T: DeserializeOwned>(&mut self, key: &'static str) -> Result<T, ConfigError> {
+        self.optional(key)?
+            .ok_or_else(|| invalid(self.field(key), "missing field"))
+    }
+
+    fn finish(&self) -> Result<(), ConfigError> {
+        if !self.table.is_empty() {
+            return Err(invalid(self.scope.unwrap_or("config"), "unknown field"));
+        }
+        Ok(())
+    }
+}
+
+impl Raw {
+    fn read(table: DeTable<'_>) -> Result<Self, ConfigError> {
+        let mut settings = Settings { table, scope: None };
+        let raw = Self {
+            enabled: settings.required("enabled")?,
+            monthly_cap_usd: settings.optional("monthly_cap_usd")?,
+            chat_path: settings.required("chat_path")?,
+            key_header: settings.required("key_header")?,
+            key_prefix: settings.required("key_prefix")?,
+            max_output_tokens: settings.required("max_output_tokens")?,
+            max_request_bytes: settings.required("max_request_bytes")?,
+            key_aliases: settings.required("key_aliases")?,
+        };
+        settings.finish()?;
+        Ok(raw)
+    }
+}
+
+impl RawProvider {
+    fn read(table: DeTable<'_>, scope: &str) -> Result<Self, ConfigError> {
+        let mut settings = Settings {
+            table,
+            scope: Some(scope),
+        };
+        let raw = Self {
+            base_url: settings.required("base_url")?,
+            model: settings.required("model")?,
+            input_usd_per_mtok: settings.required("input_usd_per_mtok")?,
+            output_usd_per_mtok: settings.required("output_usd_per_mtok")?,
+            price_version: settings.required("price_version")?,
+            chat_path: settings.optional("chat_path")?,
+            key_header: settings.optional("key_header")?,
+            key_prefix: settings.optional("key_prefix")?,
+            max_output_tokens: settings.optional("max_output_tokens")?,
+            max_request_bytes: settings.optional("max_request_bytes")?,
+            key_aliases: settings.optional("key_aliases")?,
+            active_key: settings.optional("active_key")?,
+        };
+        settings.finish()?;
+        Ok(raw)
+    }
+}
+
+fn take<'a>(table: &mut DeTable<'a>, key: &'static str) -> Option<Spanned<DeValue<'a>>> {
+    table.remove(&Spanned::new(0..0, key.into()))
 }
 
 /// Settings of one provider that speaks the Chat Completions format.
@@ -83,6 +162,7 @@ pub struct ProviderConfig {
     pub key_header: String,
     pub key_prefix: String,
     pub max_output_tokens: u32,
+    pub max_request_bytes: usize,
     pub input_micro_usd_per_mtok: u64,
     pub output_micro_usd_per_mtok: u64,
     pub price_version: String,
@@ -122,27 +202,41 @@ impl ApiConfig {
 
     /// Layer the user's top-level keys over the defaults, then validate everything.
     pub fn from_toml(user: &str) -> Result<Self, ConfigError> {
-        let defaults: ConfigLayer = toml::from_str(DEFAULT_POLICY)
+        let mut defaults = DeTable::parse(DEFAULT_POLICY)
+            .map(Spanned::into_inner)
             .map_err(|_| invalid("defaults", "embedded defaults do not parse"))?;
-        let overrides: ConfigLayer =
-            toml::from_str(user).map_err(|_| invalid("config", "invalid configuration"))?;
-        let mut table = defaults.settings;
-        table.extend(overrides.settings);
-        let raw: Raw = table
-            .try_into()
-            .map_err(|_| invalid("config", "unknown field, missing field or invalid value"))?;
-        let (providers, source) = match overrides.providers {
-            Some(providers) => (providers, user),
-            None => (defaults.providers.unwrap_or_default(), DEFAULT_POLICY),
+        let mut overrides = DeTable::parse(user)
+            .map(Spanned::into_inner)
+            .map_err(|error| {
+                let reason = match error.span() {
+                    Some(span) => {
+                        let line = 1 + user
+                            .bytes()
+                            .take(span.start)
+                            .filter(|&b| b == b'\n')
+                            .count();
+                        format!("invalid TOML at line {line}")
+                    }
+                    None => "invalid TOML".to_owned(),
+                };
+                invalid("config", reason)
+            })?;
+        let default_providers = take(&mut defaults, "providers");
+        let (providers, source) = match take(&mut overrides, "providers") {
+            Some(providers) => (Some(providers), user),
+            None => (default_providers, DEFAULT_POLICY),
         };
-        Self::validate(raw, providers, source)
+        defaults.extend(overrides);
+        let raw = Raw::read(defaults)?;
+        let entries = match providers.map(Spanned::into_inner) {
+            Some(DeValue::Table(entries)) => entries,
+            Some(_) => return Err(invalid("providers", "must be a table")),
+            None => DeTable::new(),
+        };
+        Self::validate(raw, entries, source)
     }
 
-    fn validate(
-        raw: Raw,
-        entries: BTreeMap<String, RawProvider>,
-        source: &str,
-    ) -> Result<Self, ConfigError> {
+    fn validate(raw: Raw, entries: DeTable<'_>, source: &str) -> Result<Self, ConfigError> {
         let cap = match raw.monthly_cap_usd {
             None => None,
             Some(usd) => {
@@ -163,20 +257,27 @@ impl ApiConfig {
         let default_aliases = alias_list("key_aliases", &raw.key_aliases)?;
 
         let mut providers = BTreeMap::new();
-        for (name, p) in entries {
+        let mut entries: Vec<_> = entries.into_iter().collect();
+        entries.sort_by_key(|(name, _)| name.span().start);
+        for (index, (name, entry)) in entries.into_iter().enumerate() {
+            let position = index + 1;
+            let scope = format!("providers[{position}]");
+            let name = name.into_inner().into_owned();
             if looks_like_secret(&name) {
-                return Err(invalid(
-                    "providers",
-                    "use a provider alias, never a key value",
-                ));
+                return Err(invalid(scope, "use a provider alias, never a key value"));
             }
             let alias = CommonIdV1::new(name.clone())
-                .map_err(|_| invalid("providers", "alias is not a valid id"))?;
-            let at = |key: &str| format!("providers.{name}.{key}");
+                .map_err(|_| invalid(&scope, "alias is not a valid id"))?;
+            let DeValue::Table(table) = entry.into_inner() else {
+                return Err(invalid(scope, "must be a table"));
+            };
+            let p = RawProvider::read(table, &scope)?;
+            let at = |key: &str| format!("{scope}.{key}");
             let chat_path = p.chat_path.unwrap_or_else(|| raw.chat_path.clone());
             let key_header = p.key_header.unwrap_or_else(|| raw.key_header.clone());
             let key_prefix = p.key_prefix.unwrap_or_else(|| raw.key_prefix.clone());
             let max_output_tokens = p.max_output_tokens.unwrap_or(raw.max_output_tokens);
+            let max_request_bytes = p.max_request_bytes.unwrap_or(raw.max_request_bytes).get();
             check_path(&at("chat_path"), &chat_path)?;
             check_header_name(&at("key_header"), &key_header)?;
             check_prefix(&at("key_prefix"), &key_prefix)?;
@@ -212,6 +313,7 @@ impl ApiConfig {
                     key_header,
                     key_prefix,
                     max_output_tokens,
+                    max_request_bytes,
                     input_micro_usd_per_mtok: input,
                     output_micro_usd_per_mtok: output,
                     price_version: p.price_version,

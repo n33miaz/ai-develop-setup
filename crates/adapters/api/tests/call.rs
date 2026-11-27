@@ -87,6 +87,28 @@ fn request() -> ChatRequest {
     }
 }
 
+#[test]
+fn oversized_request_is_refused_before_transport() {
+    let provider = provider();
+    let transport = Fake::answering(200, REPORTED);
+    let cap = 10_000_000;
+    let guard = guard(cap);
+    for content in ["\0".repeat(200_000), "a".repeat(1024 * 1024 + 1)] {
+        let mut request = request();
+        request.messages[0].content = content;
+        let outcome = run_call(&transport, &guard, &provider, &request, month(), TIMESTAMP);
+
+        assert_eq!(transport.calls(), 0);
+        assert_eq!(
+            outcome.result,
+            Err(CallError::Request(MapError::RequestTooLarge))
+        );
+        assert_eq!(outcome.spent_micro_usd, 0);
+        assert!(outcome.record.is_none());
+        assert_free(&guard, cap);
+    }
+}
+
 /// The amount one `request()` reserves.
 fn worst() -> u64 {
     let prepared = build_request(&provider(), &request()).expect("valid request");
