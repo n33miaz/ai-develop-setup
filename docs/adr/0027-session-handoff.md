@@ -44,6 +44,6 @@ Se a passagem perder estado necessário, quebrar o isolamento ou entregar materi
 
 Integrar medição, consentimento, geração dos textos, armazenamento e abertura da sessão no daemon e na interface. Verificar o isolamento, a filtragem de ambos os artefatos e a recuperação em caso de falha antes de ativar o fluxo.
 
-Implementar a anexação à cadeia. Antes de gravar uma passagem por contexto ou troca de conta, esse caminho deve chamar `verify_consent` com o evento do log autenticado e conferir o gatilho e o canal do registro. Para `model_refusal`, deve exigir o aceite da alternativa com `Offer::accept`.
+Implementar a anexação à cadeia. Para contexto ou troca de conta, a integração deve chamar `verify_consent`. Para `model_refusal`, deve chamar `Offer::accept`, que também exige a alternativa escolhida na oferta. Ambos recebem o registro da passagem e o evento do log autenticado. Exigem a mesma passagem, sessão de origem, referência ao evento, gatilho e canal, além do consentimento em nome do dono da linhagem, emitido por um aparelho dele no instante do aceite.
 
 Para a oferta após recusa, falta detectar a recusa e o filtro na saída da ferramenta e emitir o evento. Falta também mostrar a oferta na interface e ligar o registro de aparelhos real ao aceite.

@@ -1,11 +1,12 @@
 use ads_contracts::{
     CommonDataClassV1 as Class, CommonIdV1, CommonTimestampV1, EventSessionHandoffV4,
     EventSessionRefusalDetectedV1, EventSessionRefusalDetectedV1Data,
-    EventSessionRefusalDetectedV1DataKind as Kind, RecordSessionHandoffV2Trigger as Trigger,
+    EventSessionRefusalDetectedV1DataKind as Kind, RecordSessionHandoffV2,
+    RecordSessionHandoffV2ConsentChannel as Channel, RecordSessionHandoffV2Trigger as Trigger,
     RecordTaskPacketV1,
 };
 use ads_core::budget::{BudgetDecision, Dimension};
-use ads_core::handoff::HandoffPolicy;
+use ads_core::handoff::{ConsentError, HandoffPolicy};
 use ads_core::refusal::{
     AcceptError, DEFAULT_POLICY, DetectError, Offer, RefusalPolicy, RouteContext, detected,
 };
@@ -364,6 +365,28 @@ fn consent(text: &str, change: impl FnOnce(&mut serde_json::Value)) -> EventSess
     serde_json::from_value(event).unwrap()
 }
 
+fn record() -> RecordSessionHandoffV2 {
+    let mut record: RecordSessionHandoffV2 = serde_json::from_str(include_str!(
+        "../../../contracts/golden/record.session-handoff.v2/valid/01.json"
+    ))
+    .unwrap();
+    record.trigger = Trigger::ModelRefusal;
+    record.consent.user_id = id(OWNER);
+    record.consent.event_id = consent(ACCEPTED, |_| {}).into_fields().id;
+    record
+}
+
+fn assert_record_refused(
+    record: &RecordSessionHandoffV2,
+    event: &EventSessionHandoffV4,
+    error: ConsentError,
+) {
+    assert_eq!(
+        default_offer().accept(&handoff("propose"), record, event, &id("b-z"), registry),
+        Err(AcceptError::Record(error))
+    );
+}
+
 #[test]
 fn proceeds_only_with_device_consent_for_an_offered_route() {
     let fixture = Fixture::new();
@@ -379,19 +402,20 @@ fn proceeds_only_with_device_consent_for_an_offered_route() {
     let accepted = consent(ACCEPTED, |_| {});
     for mode in ["propose", "auto-with-consent"] {
         let route = offer
-            .accept(&handoff(mode), &accepted, &chosen, registry)
+            .accept(&handoff(mode), &record(), &accepted, &chosen, registry)
             .unwrap();
         assert_eq!(route, catalog()[2].route);
         assert_eq!(route.model.as_str(), "model-z");
     }
 
     assert_eq!(
-        offer.accept(&handoff("off"), &accepted, &chosen, registry),
+        offer.accept(&handoff("off"), &record(), &accepted, &chosen, registry),
         Err(AcceptError::Policy)
     );
     assert_eq!(
         offer.accept(
             &handoff("propose"),
+            &record(),
             &consent(PROPOSED, |_| {}),
             &chosen,
             registry
@@ -402,7 +426,7 @@ fn proceeds_only_with_device_consent_for_an_offered_route() {
         event["data"]["status"] = json!("declined")
     });
     assert_eq!(
-        offer.accept(&handoff("propose"), &declined, &chosen, registry),
+        offer.accept(&handoff("propose"), &record(), &declined, &chosen, registry),
         Err(AcceptError::NotAccepted)
     );
     let other = consent(ACCEPTED, |event| {
@@ -410,14 +434,20 @@ fn proceeds_only_with_device_consent_for_an_offered_route() {
         event["stream"] = json!("handoff/handoff-2");
     });
     assert_eq!(
-        offer.accept(&handoff("propose"), &other, &chosen, registry),
+        offer.accept(&handoff("propose"), &record(), &other, &chosen, registry),
         Err(AcceptError::OtherHandoff)
     );
     let elsewhere = consent(ACCEPTED, |event| {
         event["data"]["source_session_id"] = json!("session-9");
     });
     assert_eq!(
-        offer.accept(&handoff("propose"), &elsewhere, &chosen, registry),
+        offer.accept(
+            &handoff("propose"),
+            &record(),
+            &elsewhere,
+            &chosen,
+            registry
+        ),
         Err(AcceptError::OtherSession)
     );
 }
@@ -444,6 +474,75 @@ fn default_offer() -> Offer {
 }
 
 #[test]
+fn refusal_consent_rejects_record_with_other_event() {
+    let mut record = record();
+    record.consent.event_id = consent(ACCEPTED_BARE, |_| {}).into_fields().id;
+    assert_record_refused(
+        &record,
+        &consent(ACCEPTED, |_| {}),
+        ConsentError::OtherEvent,
+    );
+}
+
+#[test]
+fn refusal_consent_rejects_record_with_other_user() {
+    let mut record = record();
+    record.consent.user_id = id("owner-2");
+    assert_record_refused(&record, &consent(ACCEPTED, |_| {}), ConsentError::OtherUser);
+}
+
+#[test]
+fn refusal_consent_rejects_record_with_other_channel() {
+    let mut record = record();
+    record.consent.channel = Channel::Remote;
+    assert_record_refused(
+        &record,
+        &consent(ACCEPTED, |_| {}),
+        ConsentError::OtherChannel,
+    );
+}
+
+#[test]
+fn refusal_consent_rejects_record_with_other_handoff() {
+    let mut record = record();
+    record.id = id("handoff-2");
+    assert_record_refused(
+        &record,
+        &consent(ACCEPTED, |_| {}),
+        ConsentError::OtherHandoff,
+    );
+}
+
+#[test]
+fn refusal_consent_rejects_record_with_other_source_session() {
+    let mut record = record();
+    record.source_session_id = id("session-2");
+    assert_record_refused(
+        &record,
+        &consent(ACCEPTED, |_| {}),
+        ConsentError::OtherSession,
+    );
+}
+
+#[test]
+fn refusal_consent_rejects_record_with_other_trigger() {
+    let mut record = record();
+    record.trigger = Trigger::AccountSwitch;
+    assert_record_refused(
+        &record,
+        &consent(ACCEPTED, |_| {}),
+        ConsentError::OtherTrigger,
+    );
+}
+
+#[test]
+fn refusal_consent_rejects_acceptance_without_channel() {
+    let mut fields = consent(ACCEPTED, |_| {}).into_fields();
+    fields.data.channel = None;
+    assert!(EventSessionHandoffV4::new(fields).is_err());
+}
+
+#[test]
 fn only_a_device_of_the_lineage_owner_accepts() {
     let offer = default_offer();
     let chosen = id("b-z");
@@ -455,7 +554,7 @@ fn only_a_device_of_the_lineage_owner_accepts() {
         ] {
             let foreign = consent(ACCEPTED, |event| event["actor"]["id"] = json!(device));
             assert_eq!(
-                offer.accept(&handoff(mode), &foreign, &chosen, registry),
+                offer.accept(&handoff(mode), &record(), &foreign, &chosen, registry),
                 Err(error),
                 "{device}"
             );
@@ -470,7 +569,7 @@ fn only_a_device_of_the_lineage_owner_accepts() {
         let owner = |_: &CommonIdV1, _: &CommonTimestampV1| Some(id(OWNER));
         let proposal = consent(PROPOSED, |_| {});
         assert_eq!(
-            offer.accept(&handoff(mode), &proposal, &chosen, owner),
+            offer.accept(&handoff(mode), &record(), &proposal, &chosen, owner),
             Err(AcceptError::NotAccepted)
         );
     }
@@ -485,14 +584,14 @@ fn only_a_model_refusal_acceptance_matches_the_offer() {
         event["data"]["trigger"] = json!("account_switch")
     });
     assert_eq!(
-        offer.accept(&policy, &other, &choice, registry),
+        offer.accept(&policy, &record(), &other, &choice, registry),
         Err(AcceptError::OtherTrigger)
     );
 
     offer.trigger = Trigger::AccountSwitch;
     let accepted = consent(ACCEPTED, |_| {});
     assert_eq!(
-        offer.accept(&policy, &accepted, &choice, registry),
+        offer.accept(&policy, &record(), &accepted, &choice, registry),
         Err(AcceptError::OtherTrigger)
     );
 }
@@ -518,21 +617,21 @@ fn acceptance_is_bound_to_the_chosen_route() {
         // The device accepted b-z; starting any other alternative is refused.
         for other in ["c-w", "a-y", "a-x"] {
             assert_eq!(
-                offer.accept(&policy, &accepted, &id(other), registry),
+                offer.accept(&policy, &record(), &accepted, &id(other), registry),
                 Err(AcceptError::OtherRoute),
                 "{other}"
             );
         }
         let bare = consent(ACCEPTED_BARE, |_| {});
         assert_eq!(
-            offer.accept(&policy, &bare, &id("b-z"), registry),
+            offer.accept(&policy, &record(), &bare, &id("b-z"), registry),
             Err(AcceptError::NoChoice)
         );
         let refused = consent(ACCEPTED, |event| {
             event["data"]["alternative_id"] = json!("a-x")
         });
         assert_eq!(
-            offer.accept(&policy, &refused, &id("a-x"), registry),
+            offer.accept(&policy, &record(), &refused, &id("a-x"), registry),
             Err(AcceptError::NotOffered)
         );
         let named = consent(ACCEPTED, |event| {
@@ -540,7 +639,7 @@ fn acceptance_is_bound_to_the_chosen_route() {
         });
         assert_eq!(
             offer
-                .accept(&policy, &named, &id("c-w"), registry)
+                .accept(&policy, &record(), &named, &id("c-w"), registry)
                 .map(|route| route.model.as_str().to_owned()),
             Ok("model-w".to_owned())
         );

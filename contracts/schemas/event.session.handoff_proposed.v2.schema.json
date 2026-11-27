@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ads:event:session.handoff_proposed:2",
+  "title": "Passagem proposta por limiar de contexto",
+  "description": "O núcleo propõe passar o trabalho a uma sessão nova porque o contexto da sessão atingiu o limiar configurado. Só metadados: nunca leva conteúdo da conversa. A decisão do dono é registrada em session.handoff.",
+  "allOf": [
+    {
+      "$ref": "urn:ads:event:envelope:1"
+    },
+    {
+      "type": "object",
+      "required": [
+        "type",
+        "stream",
+        "data"
+      ],
+      "properties": {
+        "type": {
+          "const": "urn:ads:event:session.handoff_proposed:2"
+        },
+        "stream": {
+          "type": "string",
+          "pattern": "^session/"
+        },
+        "data_class": {
+          "const": "private"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "session_id",
+            "threshold_pct",
+            "context_pct",
+            "number",
+            "previous_document_id"
+          ],
+          "properties": {
+            "session_id": {
+              "$ref": "urn:ads:common:id:1"
+            },
+            "threshold_pct": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "description": "Limiar configurado que foi atingido, em percentual da janela de contexto."
+            },
+            "context_pct": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "description": "Percentual medido da janela de contexto ocupada, arredondado para baixo."
+            },
+            "number": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991,
+              "description": "Número N da sessão atual na cadeia; a primeira sessão é 1."
+            },
+            "previous_document_id": {
+              "anyOf": [
+                {
+                  "$ref": "urn:ads:common:id:1"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Documento de passagem que abriu a sessão atual; nulo na primeira sessão da cadeia."
+            }
+          },
+          "if": {
+            "properties": {
+              "number": {
+                "const": 1
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "previous_document_id": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "previous_document_id": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "id": "01ARZ3NDEKTSV4RRFFQ69G5FAD",
+      "type": "urn:ads:event:session.handoff_proposed:2",
+      "ts": "2030-01-02T03:04:05Z",
+      "stream": "session/session-1",
+      "seq": 1,
+      "actor": {
+        "kind": "daemon",
+        "id": "core-01"
+      },
+      "cause": null,
+      "data_class": "private",
+      "data": {
+        "session_id": "session-1",
+        "threshold_pct": 80,
+        "context_pct": 83,
+        "number": 1,
+        "previous_document_id": null
+      }
+    }
+  ]
+}

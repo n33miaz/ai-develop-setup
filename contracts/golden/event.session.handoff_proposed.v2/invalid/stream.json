@@ -1,0 +1,20 @@
+{
+  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAD",
+  "type": "urn:ads:event:session.handoff_proposed:2",
+  "ts": "2030-01-02T03:04:05Z",
+  "stream": "handoff/handoff-1",
+  "seq": 1,
+  "actor": {
+    "kind": "daemon",
+    "id": "core-01"
+  },
+  "cause": null,
+  "data_class": "private",
+  "data": {
+    "session_id": "session-1",
+    "threshold_pct": 80,
+    "context_pct": 83,
+    "number": 1,
+    "previous_document_id": null
+  }
+}

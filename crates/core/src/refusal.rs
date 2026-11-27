@@ -4,13 +4,13 @@ use ads_contracts::{
     CommonIdV1, CommonTimestampV1, EventSessionHandoffV4, EventSessionHandoffV4DataStatus,
     EventSessionHandoffV4DataTrigger, EventSessionRefusalDetectedV1Data,
     EventSessionRefusalDetectedV1DataKind as Kind, EventSessionRefusalDetectedV1DataModel,
-    RecordSessionHandoffV2Trigger as Trigger, RecordTaskPacketV1,
+    RecordSessionHandoffV2, RecordSessionHandoffV2Trigger as Trigger, RecordTaskPacketV1,
 };
 use serde::{Deserialize, Deserializer, de};
 
 use crate::budget::BudgetDecision;
 use crate::device::{DeviceRefusal, check_owner_device};
-use crate::handoff::{Consent, Decision, HandoffPolicy};
+use crate::handoff::{Consent, ConsentError, Decision, HandoffPolicy, check_consent_record};
 use crate::routing::{self, Candidate, QuotaObservation, Route, RoutingPolicy, TaskProfile};
 
 pub const DEFAULT_POLICY: &str = include_str!("../../../defaults/refusal.toml");
@@ -85,6 +85,7 @@ pub enum AcceptError {
     /// The route about to start is not the one the device accepted.
     OtherRoute,
     NotOffered,
+    Record(ConsentError),
     Policy,
 }
 
@@ -205,13 +206,14 @@ impl RefusalPolicy {
 impl Offer {
     /// Returns the route of `choice` only when `consent` is the acceptance of this handoff by a
     /// device of the lineage owner and names `choice`, one of the offered alternatives.
-    /// An accepted v4 event carries the channel by construction.
+    /// The record must identify this acceptance, its owner, trigger and channel.
     /// `owner_at` reads the device registry at the instant of the acceptance, as the queue replay
     /// does: a device of another owner, an unknown or revoked device, an agent and the daemon
     /// cannot accept.
     pub fn accept(
         &self,
         handoff: &HandoffPolicy,
+        record: &RecordSessionHandoffV2,
         consent: &EventSessionHandoffV4,
         choice: &CommonIdV1,
         owner_at: impl Fn(&CommonIdV1, &CommonTimestampV1) -> Option<CommonIdV1>,
@@ -239,6 +241,7 @@ impl Offer {
         {
             return Err(AcceptError::OtherTrigger);
         }
+        check_consent_record(record, &self.owner_id, consent).map_err(AcceptError::Record)?;
         if accepted != choice {
             return Err(AcceptError::OtherRoute);
         }
