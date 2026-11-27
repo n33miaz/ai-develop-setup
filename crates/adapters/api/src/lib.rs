@@ -13,8 +13,8 @@ mod usage;
 
 pub use call::{CallError, CallOutcome, run_call};
 pub use chat::{
-    ChatRequest, ChatResponse, KeyAuth, KeyHandle, MAX_RESPONSE_BYTES, MapError, Message,
-    PreparedRequest, Role, TokenUsage, build_request, parse_request_body, parse_response,
+    ChatRequest, ChatResponse, KeyAuth, KeyHandle, MAX_RESPONSE_BYTES, MAX_TOKEN_COUNT, MapError,
+    Message, PreparedRequest, Role, TokenUsage, build_request, parse_request_body, parse_response,
 };
 pub use config::{ApiConfig, ConfigError, DEFAULT_POLICY, ProviderConfig};
 pub use keys::{KeyAliases, MAX_KEY_ALIAS_CHARS, MAX_KEY_ALIASES};
