@@ -23,6 +23,11 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(feature = "test-support")]
+mod fixture;
+#[cfg(feature = "test-support")]
+pub use fixture::FixtureDir;
+
 /// Who runs the launcher. On Windows, security identifiers in text form; on Unix, the
 /// effective user id in decimal.
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -84,7 +84,7 @@ A biblioteca padrão não cria pasta nem arquivo com lista de acesso própria, n
 | `private_descriptor` | 1 | `ConvertStringSecurityDescriptorToSecurityDescriptorW` | montar o descritor com dono e lista de acesso protegida de uma entrada só, a do usuário |
 | `create_dir` | 1 | `CreateDirectoryW` | criar a pasta privada com esse descritor, entrada herdada pelos arquivos de dentro |
 | `is_network_path` | 1 | `GetDriveTypeW` | detectar unidade de rede pela raiz terminada em NUL antes de abrir o banco de auditoria |
-| `kind` | 1 | `GetFileInformationByHandleEx` | ler do identificador aberto se a entrada é pasta, arquivo ou ponto de reanálise |
+| `file_information` | 1 | `GetFileInformationByHandleEx` | ler o tipo da entrada pelo identificador aberto e, em testes, o volume e a identidade da pasta temporária |
 | `open_at` | 2 | `NtCreateFile`, `OwnedHandle::from_raw_handle` | abrir os arquivos existentes da auditoria e abrir ou criar a trava, o estado temporário e os sinais por um nome só, relativos à pasta aberta, sem seguir ponto de reanálise, e criar arquivo já com o descritor privado |
 | `apply` | 1 | `NtSetInformationFile` | mover o estado temporário sobre o estado e apagar um sinal, os dois pelo identificador em que foram conferidos |
 | `security` | 4 | `GetSecurityInfo` (dono e lista de acesso), `GetAclInformation`, `GetAce`, leitura do cabeçalho da entrada | conferir o dono e cada entrada da lista de acesso da pasta, dos arquivos da auditoria, da trava e de cada sinal, no identificador aberto |
