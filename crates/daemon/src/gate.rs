@@ -14,11 +14,10 @@ use ads_core::gate::{
     AbsPath, ActionPlan, ActionPlanRecord, ActionSnapshot, Command, Decision, Estimate, Event,
     EventMeta, GateHistory, GateJournal, GatePolicy, Id, JournalError, JournalGate,
     OperationRequest, PlanError, PlanOperation, PlanRequest, StartedExecution, State,
-    TargetRequest, classify,
+    TargetRequest, classify, sha256_text,
 };
 use ads_storage::{EventLog, PendingReads, StorageError, StoredEvent};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 
 use crate::api::checked;
 use crate::audit::ProductLog;
@@ -588,16 +587,12 @@ fn plan_of(policy: &GatePolicy, record: &ActionPlanRecord) -> Option<ActionPlan>
 
 /// `sha256:` and the digest of the record as it is stored.
 pub(crate) fn effects_hash(effects: &Effects) -> String {
-    digest_text(&effects.to_bytes())
+    sha256_text(&effects.to_bytes())
 }
 
-/// `sha256:` and the SHA-256 of `bytes`, in lower-case hex.
+#[cfg(test)]
 pub(crate) fn digest_text(bytes: &[u8]) -> String {
-    let hex: String = Sha256::digest(bytes)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
-    format!("sha256:{hex}")
+    sha256_text(bytes)
 }
 
 fn effects_stream(action_id: &str) -> Result<EventEnvelopeV1Stream, JournalError> {
@@ -846,15 +841,4 @@ fn approved_hash(
 pub struct ExecutionOutcome {
     pub operation: Result<Report, Box<Failure>>,
     pub recorded: Result<ActionSnapshot, JournalError>,
-}
-
-#[cfg(test)]
-mod digest_tests {
-    #[test]
-    fn digest_text_keeps_leading_zeros_in_lower_case() {
-        assert_eq!(
-            super::digest_text(b"ads-36"),
-            "sha256:0bbb0f7bfade40c1b69e98b0c534101d8b237370dad6404dc139d3c2a977b5ae"
-        );
-    }
 }
