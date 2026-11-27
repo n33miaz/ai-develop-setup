@@ -66,7 +66,16 @@ await withTestDirectory(root, (paths) =>
 
 async function runBrowser(
   start,
-  { scratch, hostConfig, daemonConfig, workdir, channelName, profile, devToolsPort },
+  {
+    scratch,
+    hostConfig,
+    daemonConfig,
+    workdir,
+    channelName,
+    socketDirectory = scratch,
+    profile,
+    devToolsPort,
+  },
 ) {
   await writeFile(hostConfig, `channel_name = '${channelName}'\n`)
   await writeFile(
@@ -88,7 +97,8 @@ args = ['${fileURLToPath(new URL('terminal-byte-echo.cjs', import.meta.url))}']
     XDG_RUNTIME_DIR: scratch,
     VITE_CORE_HARNESSES: 'claude',
   }
-  const host = start(binary('ads-ptyhost'), ['--config', hostConfig], { env })
+  const channelEnv = { ...env, XDG_RUNTIME_DIR: socketDirectory }
+  const host = start(binary('ads-ptyhost'), ['--config', hostConfig], { env: channelEnv })
   await host.waitForReady(
     (output) => output.includes('listening on'),
     'Test terminal host failed to start',
@@ -104,7 +114,7 @@ args = ['${fileURLToPath(new URL('terminal-byte-echo.cjs', import.meta.url))}']
   const daemon = start(
     binary('ads-daemon'),
     ['--config', daemonConfig, '--host-config', hostConfig],
-    { env },
+    { env: channelEnv },
   )
   const link = await daemon.waitForReady(
     (output) => output.split(/\r?\n/)[1] !== undefined && output.trim(),

@@ -1,5 +1,8 @@
 import { lstat, mkdir, mkdtemp, readdir, realpath, rmdir, unlink } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
+const unixSocketPathLimit = 103 // macOS leaves 103 bytes before the terminating NUL.
 
 async function entry(path) {
   return lstat(path, { bigint: true }).catch((error) => {
@@ -48,14 +51,51 @@ export async function withTestDirectory(root, run, report = console.warn) {
     profile,
     devToolsPort: join(profile, 'DevToolsActivePort'),
   }
-  let workIdentity, profileIdentity
+  let workIdentity, profileIdentity, socketParent, socketParentIdentity, socketIdentity
   try {
+    if (process.platform !== 'win32') {
+      try {
+        socketParent = await realpath(tmpdir())
+        socketParentIdentity = await entry(socketParent)
+        if (!socketParentIdentity?.isDirectory()) throw new Error('Invalid temporary directory')
+        paths.socketDirectory = await mkdtemp(join(socketParent, 'ads-'))
+        socketIdentity = await entry(paths.socketDirectory)
+        if (!socketIdentity?.isDirectory()) throw new Error('Invalid socket directory')
+      } catch (cause) {
+        throw new Error(
+          'Could not create a Unix socket directory; set TMPDIR to a writable directory',
+          {
+            cause,
+          },
+        )
+      }
+      if (Buffer.byteLength(join(paths.socketDirectory, socketName)) > unixSocketPathLimit) {
+        throw new Error(
+          `Unix socket path exceeds ${unixSocketPathLimit} bytes; set a shorter TMPDIR`,
+        )
+      }
+    }
     await mkdir(paths.workdir)
     workIdentity = await entry(paths.workdir)
     await mkdir(profile)
     profileIdentity = await entry(profile)
     return await run(paths)
   } finally {
+    const socketDirectory = paths.socketDirectory
+    if (socketDirectory) {
+      try {
+        if (!(await isSameDirectory(socketParent, socketParentIdentity))) {
+          throw new Error('Unix socket parent directory changed')
+        }
+        const count = await cleanSubdirectory(socketDirectory, socketIdentity, [
+          [join(socketDirectory, socketName), 'isSocket'],
+        ])
+        if (count) report(`Browser test files in ${socketDirectory}: ${count} retained`)
+        else if (await entry(socketDirectory)) throw new Error('Unix socket directory changed')
+      } catch {
+        report(`Browser test files in ${socketDirectory}: cleanup incomplete`)
+      }
+    }
     const retained = []
     try {
       if (
@@ -67,7 +107,6 @@ export async function withTestDirectory(root, run, report = console.warn) {
       await removeKnownFiles([
         [paths.hostConfig, 'isFile'],
         [paths.daemonConfig, 'isFile'],
-        [join(scratch, socketName), 'isSocket'],
       ])
       const remaining = new Set(await readdir(scratch))
       for (const [name, path, identity, files] of [

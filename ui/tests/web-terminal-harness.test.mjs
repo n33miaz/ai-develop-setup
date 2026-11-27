@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
-import { mkdir, readdir, rmdir, unlink, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { lstat, mkdir, mkdtemp, readdir, rmdir, unlink, writeFile } from 'node:fs/promises'
+import { createServer } from 'node:net'
+import { dirname, join } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { cdpRequests, stop, withTestProcesses } from './web-terminal-harness.mjs'
@@ -52,6 +53,39 @@ test('readiness reports an early exit without exposing process output', async ()
 })
 
 const root = fileURLToPath(new URL('../..', import.meta.url))
+
+test(
+  'a long checkout path leaves room for the Unix socket',
+  { skip: process.platform === 'win32' },
+  async (t) => {
+    const parent = join(root, '.test-tmp')
+    await mkdir(parent, { recursive: true })
+    const longRoot = await mkdtemp(join(parent, 'long-checkout-'.repeat(9)))
+    t.after(async () => {
+      await rmdir(join(longRoot, '.test-tmp'))
+      await rmdir(longRoot)
+    })
+
+    const server = createServer()
+    let socketPath
+    try {
+      await withTestDirectory(
+        longRoot,
+        async ({ scratch, channelName, socketDirectory = scratch }) => {
+          socketPath = join(socketDirectory, `${channelName}.sock`)
+          assert.ok(Buffer.byteLength(join(scratch, `${channelName}.sock`)) > 107)
+          assert.ok(Buffer.byteLength(socketPath) <= 103, 'Unix socket path exceeds 103 bytes')
+          server.listen(socketPath)
+          await once(server, 'listening')
+          assert.ok((await lstat(socketPath)).isSocket())
+        },
+      )
+      await assert.rejects(readdir(dirname(socketPath)), { code: 'ENOENT' })
+    } finally {
+      if (server.listening) await new Promise((resolve) => server.close(resolve))
+    }
+  },
+)
 
 test('browser scratch removes known files and empty directories on success', async (t) => {
   let scratch
