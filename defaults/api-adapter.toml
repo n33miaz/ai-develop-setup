@@ -30,7 +30,8 @@ key_aliases = ["default"]
 
 # O nome da tabela é o apelido gravado no registro de uso (letras, dígitos e . _ : -).
 # A mesma verificação de texto com cara de segredo dos apelidos de chave vale aqui. Sem provedor
-# configurado não há chamada possível. Preços em dólares por milhão de tokens; `price_version`
+# configurado não há chamada possível. As tarifas de entrada e saída aceitam de zero a um bilhão
+# de dólares por milhão de tokens, em múltiplos exatos de 0,000001. O campo `price_version`
 # identifica a tabela de preços usada, para o livro-caixa. `chat_path`, `key_header`, `key_prefix`,
 # `max_output_tokens` e `key_aliases` podem ser trocados por provedor.
 #
