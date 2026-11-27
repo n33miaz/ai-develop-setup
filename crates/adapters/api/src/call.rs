@@ -3,7 +3,7 @@
 use std::fmt;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use ads_contracts::{RecordApiUsageV2, RecordApiUsageV2Outcome};
+use ads_contracts::{RecordApiUsageV3, RecordApiUsageV3Outcome};
 
 use crate::chat::{
     ChatRequest, ChatResponse, MAX_RESPONSE_BYTES, MapError, build_request, parse_response,
@@ -18,8 +18,8 @@ use ads_core::spend::{Month, Refusal, SpendGuard};
 pub enum CallError {
     /// The request could not be built; nothing was sent.
     Request(MapError),
-    /// The timestamp or the provider settings do not fit the usage record, or the timestamp is
-    /// not in the month of the call; nothing was sent.
+    /// The metadata or reservation does not fit the usage record, or the timestamp is not
+    /// in the month of the call; nothing was sent.
     Record,
     /// The spend guard refused; nothing was sent.
     Refused(Refusal),
@@ -64,7 +64,7 @@ pub struct CallOutcome {
     /// it, nor is the cost of a call whose reserved month the guard has already left.
     pub spent_micro_usd: u64,
     /// Present whenever the call costs something, for the caller to write to the ledger.
-    pub record: Option<RecordApiUsageV2>,
+    pub record: Option<RecordApiUsageV3>,
 }
 
 /// Run one call. The guard is locked to reserve and to settle, never while the transport sends.
@@ -96,7 +96,7 @@ pub fn run_call<T: Transport + ?Sized>(
         timestamp,
         None,
         prepared.worst_case_micro_usd,
-        RecordApiUsageV2Outcome::ChargedUncertain,
+        RecordApiUsageV3Outcome::ChargedUncertain,
     ) else {
         return unsent(CallError::Record);
     };
@@ -136,22 +136,24 @@ pub fn run_call<T: Transport + ?Sized>(
         }
         Err(TransportError::MaybeSent) => Err(CallError::Uncertain),
         Ok(answer) if !(200..300).contains(&answer.status) => {
-            record.outcome = RecordApiUsageV2Outcome::ChargedErrorStatus;
+            record.outcome = RecordApiUsageV3Outcome::ChargedErrorStatus;
             Err(CallError::Status(answer.status))
         }
         Ok(answer) => match read(&answer) {
-            Ok(response) => {
-                record.outcome = match response.usage {
-                    Some(usage) => {
-                        report_usage(&mut record, provider, usage);
-                        RecordApiUsageV2Outcome::SucceededReported
-                    }
-                    None => RecordApiUsageV2Outcome::SucceededReserved,
+            Ok(mut response) => {
+                record.outcome = if response
+                    .usage
+                    .is_some_and(|usage| report_usage(&mut record, provider, usage).is_ok())
+                {
+                    RecordApiUsageV3Outcome::SucceededReported
+                } else {
+                    response.usage = None;
+                    RecordApiUsageV3Outcome::SucceededReserved
                 };
                 Ok(response)
             }
             Err(error) => {
-                record.outcome = RecordApiUsageV2Outcome::ChargedBadResponse;
+                record.outcome = RecordApiUsageV3Outcome::ChargedBadResponse;
                 Err(CallError::Response(error))
             }
         },
@@ -159,17 +161,17 @@ pub fn run_call<T: Transport + ?Sized>(
 
     let (result, spent_micro_usd) = {
         let mut guard = lock(guard);
-        let result = match guard.settle(reservation, record.cost_estimate_micro_usd) {
+        let result = match guard.settle(reservation, record.cost_estimate_micro_usd.get()) {
             Ok(()) => result,
             Err(_) => {
-                record.outcome = RecordApiUsageV2Outcome::ChargedGuardReplaced;
+                record.outcome = RecordApiUsageV3Outcome::ChargedGuardReplaced;
                 Err(CallError::GuardReplaced)
             }
         };
         (result, guard.spent_micro_usd())
     };
     // The metadata was checked before sending, and each outcome sets a compatible cost basis.
-    let record = RecordApiUsageV2::new(record).expect("call outcome and cost basis agree");
+    let record = RecordApiUsageV3::new(record).expect("call outcome and cost basis agree");
     CallOutcome {
         result,
         spent_micro_usd,
