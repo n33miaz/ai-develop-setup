@@ -24,6 +24,29 @@ test('partial startup preserves the failure and reaps every started process', as
   for (const child of started) assert.ok(child.exitCode !== null || child.signalCode !== null)
 })
 
+test('readiness reports a spawn failure without exposing the command', async () => {
+  await assert.rejects(
+    withTestProcesses(async (start) => {
+      const process = start('https://example.invalid/#private-link', [])
+      await process.waitForReady(() => false, 'Terminal host did not become ready', 2)
+    }),
+    { message: 'Terminal host did not become ready: could not start process' },
+  )
+})
+
+test('readiness reports an early exit without exposing process output', async () => {
+  await assert.rejects(
+    withTestProcesses(async (start) => {
+      const daemon = start(process.execPath, [
+        '-e',
+        `console.log('https://example.invalid/#private-link'); console.error('private error'); process.exitCode = 23`,
+      ])
+      await daemon.waitForReady(() => false, 'Daemon did not become ready', 10)
+    }),
+    { message: 'Daemon did not become ready: process exited with code 23' },
+  )
+})
+
 class TestSocket extends EventTarget {
   send(message) {
     this.lastId = JSON.parse(message).id

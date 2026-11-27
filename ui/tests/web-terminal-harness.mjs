@@ -1,16 +1,57 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
+import { setTimeout as delay } from 'node:timers/promises'
+
+export async function until(check, message, attempts = 150) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const result = await check()
+    if (result) return result
+    await delay(100)
+  }
+  throw new Error(message)
+}
 
 export async function withTestProcesses(run) {
   const children = []
   function start(program, args, options = {}) {
-    const child = spawn(program, args, { stdio: ['ignore', 'pipe', 'pipe'], ...options })
+    let child
+    try {
+      child = spawn(program, args, { stdio: ['ignore', 'pipe', 'pipe'], ...options })
+    } catch {
+      throw new Error('Could not start test process')
+    }
     children.push(child)
     let output = ''
     child.stdout.on('data', (chunk) => (output += chunk))
     child.stderr.resume()
-    child.on('error', () => {})
-    return { child, output: () => output }
+    let failure
+    child.on('error', () => {
+      failure ??= 'could not start process'
+    })
+    child.once('exit', (code, signal) => {
+      failure ??= signal ? `process exited on ${signal}` : `process exited with code ${code}`
+    })
+    return {
+      child,
+      waitForReady(check, message, attempts) {
+        const checkProcess = () => {
+          if (failure) throw new Error(`${message}: ${failure}`)
+        }
+        return until(
+          async () => {
+            checkProcess()
+            const result = await check(output)
+            checkProcess()
+            return result
+          },
+          message,
+          attempts,
+        ).catch((error) => {
+          checkProcess()
+          throw error
+        })
+      },
+    }
   }
   try {
     return await run(start)
