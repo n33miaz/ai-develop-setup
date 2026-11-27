@@ -23,9 +23,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-#[cfg(feature = "test-support")]
+#[cfg(any(test, feature = "test-support"))]
 mod fixture;
-#[cfg(feature = "test-support")]
+#[cfg(any(test, feature = "test-support"))]
 pub use fixture::FixtureDir;
 
 /// Who runs the launcher. On Windows, security identifiers in text form; on Unix, the

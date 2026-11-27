@@ -253,12 +253,12 @@ fn open_dir_with_share(path: &Path, share: FILE_SHARE_MODE) -> io::Result<File> 
         .open(path)
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn open_fixture_dir(path: &Path) -> io::Result<File> {
     open_dir_with_share(path, SHARED)
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn file_id(file: &File) -> io::Result<[u64; 3]> {
     use windows::Win32::Storage::FileSystem::FileIdInfo;
 
@@ -439,7 +439,7 @@ pub(super) fn open_to_remove(root: &File, name: &str) -> io::Result<File> {
     open_at(root, name, access, HELD, FILE_OPEN, ITSELF, None)
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn open_child_dir(root: &File, name: &str) -> io::Result<File> {
     let access = FILE_ACCESS_RIGHTS(
         FILE_READ_ATTRIBUTES.0 | FILE_LIST_DIRECTORY.0 | FILE_TRAVERSE.0 | DELETE.0,
@@ -447,14 +447,14 @@ pub(super) fn open_child_dir(root: &File, name: &str) -> io::Result<File> {
     open_at(root, name, access, HELD, FILE_OPEN, ITSELF, None)
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn remove_fixture_file(root: &File, name: &str) -> io::Result<()> {
     let access = FILE_ACCESS_RIGHTS(DELETE.0 | SYNCHRONIZE.0);
     let file = open_at(root, name, access, HELD, FILE_OPEN, FILE, None)?;
     remove_fixture_entry(&file)
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn remove_fixture_entry(file: &File) -> io::Result<()> {
     remove_with_flags(file, 0x1 | 0x2)
 }
