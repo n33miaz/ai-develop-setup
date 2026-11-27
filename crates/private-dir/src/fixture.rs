@@ -121,3 +121,7 @@ fn check_name(name: &str) -> io::Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "fixture_tests.rs"]
+mod tests;
