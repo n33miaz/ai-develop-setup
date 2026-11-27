@@ -8,6 +8,7 @@ import {
   type SessionEvent,
 } from './api'
 import { App } from './App'
+import { ConnectionStatus } from './components/ConnectionStatus'
 import { createTranslator, I18nContext, type Locale, type Translate } from './i18n'
 import { sampleSessionEvents, type SampleEvents } from './sample/data'
 import { THEME_STORAGE_KEY } from './theme/theme'
@@ -151,8 +152,29 @@ describe('App', () => {
     ).toBeInTheDocument()
     expect(screen.getByRole('status')).toHaveTextContent('Núcleo: desconectado')
     expect(screen.getByText(/Dados de exemplo/)).toHaveTextContent(
-      /abra o link completo que o daemon imprime/,
+      /Abra o novo link completo que o daemon imprime/,
     )
+  })
+
+  it.each<[Locale, string]>([
+    ['pt-BR', 'Abra o novo link completo que o daemon imprime.'],
+    ['en', 'Open the new full link printed by the daemon.'],
+  ])('gives the same open link instruction on both screens in %s', (locale, instruction) => {
+    renderApp(locale)
+    render(
+      <I18nContext value={createTranslator(locale)}>
+        <ConnectionStatus state="link_unavailable" />
+      </I18nContext>,
+    )
+
+    const notice = screen.getByText(/crates\/daemon\/README\.md/)
+    expect(notice).toHaveTextContent(instruction)
+    expect(notice).not.toHaveTextContent('{')
+    const status = screen.getByRole('status', { name: (name) => name.includes(instruction) })
+    expect(status).toHaveAttribute('data-state', 'link_unavailable')
+    expect(status).toHaveTextContent(instruction)
+    expect(status).not.toHaveTextContent('{')
+    expect(status).not.toHaveAccessibleName(/\{/)
   })
 
   it('shows the title, the name and the activity carried by the events', () => {

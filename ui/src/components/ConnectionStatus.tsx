@@ -20,7 +20,8 @@ export function ConnectionStatus({ state }: { state: ConnectionState }) {
     state === 'proof_missing' ||
     state === 'relaunch_required' ||
     state === 'retry_exhausted'
-  const label = `${t('connection.label')}: ${t(LABEL[state])}`
+  const message = t(LABEL[state], { openLink: t('connection.openLink') })
+  const label = `${t('connection.label')}: ${message}`
   return (
     <p
       className={[styles.status, styles[actionable ? 'disconnected' : state]].join(' ')}
