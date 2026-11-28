@@ -478,16 +478,89 @@ fn worst_case_counts_body_bytes_as_input_and_max_tokens_as_output() {
 }
 
 #[test]
-fn the_response_maps_text_and_usage() {
-    let body = r#"{"model":"model-x","choices":[{"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}"#;
-    let response = parse_response(body).expect("ok");
-    assert_eq!(response.text, "hi");
+fn a_documented_reasoning_response_maps_final_text_and_usage() {
+    // Formato da resposta sem streaming: https://api-docs.deepseek.com/api/create-chat-completion/#responses
+    let body = r#"{
+        "id": "fixture-lantern",
+        "object": "chat.completion",
+        "created": 1710000123,
+        "model": "fixture-reasoning",
+        "system_fingerprint": "fp_fixture_lantern",
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": "Leave the lantern beside the gate.",
+                "reasoning_content": "The gate marks the turn."
+            },
+            "logprobs": null,
+            "finish_reason": "stop"
+        }],
+        "usage": {
+            "prompt_tokens": 36,
+            "completion_tokens": 21,
+            "total_tokens": 57,
+            "prompt_cache_hit_tokens": 16,
+            "prompt_cache_miss_tokens": 20,
+            "prompt_tokens_details": {"cached_tokens": 16},
+            "completion_tokens_details": {"reasoning_tokens": 13}
+        }
+    }"#;
+
+    let response = parse_response(body).expect("valid reasoning response");
+    assert_eq!(response.model.as_deref(), Some("fixture-reasoning"));
+    assert_eq!(response.text, "Leave the lantern beside the gate.");
     assert_eq!(response.finish_reason.as_deref(), Some("stop"));
     assert_eq!(
         response.usage,
         Some(TokenUsage {
-            tokens_in: 10,
-            tokens_out: 5
+            tokens_in: 36,
+            tokens_out: 21,
+        })
+    );
+}
+
+#[test]
+fn a_documented_tool_call_response_maps_null_content_to_empty_text() {
+    // Formato da chamada de função: https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create
+    let body = r#"{
+        "id": "chatcmpl-fixture-orchard",
+        "object": "chat.completion",
+        "created": 1720000321,
+        "model": "fixture-tool-call",
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": "call_fixture_orchard",
+                    "type": "function",
+                    "function": {
+                        "name": "count_seed_trays",
+                        "arguments": "{\"bed\":\"orchard\"}"
+                    }
+                }]
+            },
+            "logprobs": null,
+            "finish_reason": "tool_calls"
+        }],
+        "usage": {
+            "prompt_tokens": 41,
+            "completion_tokens": 26,
+            "total_tokens": 67
+        }
+    }"#;
+
+    let response = parse_response(body).expect("valid tool call response");
+    assert_eq!(response.model.as_deref(), Some("fixture-tool-call"));
+    assert_eq!(response.text, "");
+    assert_eq!(response.finish_reason.as_deref(), Some("tool_calls"));
+    assert_eq!(
+        response.usage,
+        Some(TokenUsage {
+            tokens_in: 41,
+            tokens_out: 26,
         })
     );
 }
