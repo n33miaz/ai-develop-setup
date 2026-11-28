@@ -31,6 +31,11 @@ async function cleanSubdirectory(path, original, files) {
   return remaining.length
 }
 
+// Chrome puts a Unix socket two levels below TMPDIR and aborts when the path does not fit.
+export function browserEnvironment(env, { scratch, socketDirectory = scratch }) {
+  return { ...env, TMPDIR: socketDirectory }
+}
+
 export async function withTestDirectory(root, run, report = console.warn) {
   const parent = join(await realpath(root), '.test-tmp')
   await mkdir(parent, { recursive: true })

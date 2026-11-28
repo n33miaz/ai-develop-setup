@@ -1,11 +1,36 @@
-import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { setTimeout as delay } from 'node:timers/promises'
 import { stripVTControlCharacters } from 'node:util'
 
+const capturedErrorCharacters = 64 * 1024
+const reportedErrorLines = 20
+const reportedErrorCharacters = 4000
+// Failure messages end up in public logs: no links and nothing as long as a run token.
+const secrets = /[a-z][a-z0-9+.-]{0,30}:\/\/\S+|[\w-]{43,}/gi
+
+function errorTail(captured, truncated) {
+  // A truncated capture can start inside a link or a token, so its first line is dropped.
+  const start = truncated ? captured.indexOf('\n') + 1 || captured.length : 0
+  return stripVTControlCharacters(captured.slice(start))
+    .replace(secrets, '[redacted]')
+    .trim()
+    .split(/\r?\n/)
+    .slice(-reportedErrorLines)
+    .join('\n')
+    .slice(-reportedErrorCharacters)
+}
+
+// The browser drops a request that is in flight when its page navigates.
+const droppedByNavigation = 'Inspected target navigated or closed'
+
 export async function until(check, message, attempts = 150) {
   for (let attempt = 0; attempt < attempts; attempt++) {
-    const result = await check()
+    let result
+    try {
+      result = await check()
+    } catch (error) {
+      if (error.cause?.message !== droppedByNavigation) throw error
+    }
     if (result) return result
     await delay(100)
   }
@@ -24,7 +49,15 @@ export async function withTestProcesses(run) {
     children.push(child)
     let output = ''
     child.stdout.on('data', (chunk) => (output += chunk))
-    child.stderr.resume()
+    let errors = ''
+    let truncated = false
+    child.stderr.setEncoding('utf8').on('data', (chunk) => {
+      errors += chunk
+      if (errors.length <= capturedErrorCharacters) return
+      errors = errors.slice(-capturedErrorCharacters)
+      truncated = true
+    })
+    const errorsClosed = new Promise((done) => child.stderr.once('close', done))
     let failure
     child.on('error', () => {
       failure ??= 'could not start process'
@@ -48,9 +81,16 @@ export async function withTestProcesses(run) {
           },
           message,
           attempts,
-        ).catch((error) => {
-          checkProcess()
-          throw error
+        ).catch(async (error) => {
+          // Output can arrive after the exit event, and a descendant can keep the pipe open.
+          if (failure) await Promise.race([errorsClosed, delay(1000, undefined, { ref: false })])
+          const tail = errorTail(errors, truncated)
+          if (!tail) {
+            checkProcess()
+            throw error
+          }
+          const reason = failure ? `${message}: ${failure}` : error.message
+          throw new Error(`${reason}\nLast lines of stderr:\n${tail}`)
         })
       },
     }
@@ -95,7 +135,9 @@ export function cdpRequests(ws, timeoutMs = 15000) {
         pending.set(id, { resolve, reject })
         ws.send(JSON.stringify({ id, method, params }))
       })
-      assert.ok(!result.error, `${method} failed`)
+      if (result.error) {
+        throw new Error(`${method} failed: ${result.error.message}`, { cause: result.error })
+      }
       return result.result
     } finally {
       clearTimeout(timer)

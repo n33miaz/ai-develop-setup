@@ -150,6 +150,17 @@ pastas vazias que criou, inclusive quando falha. O aviso de limpeza informa o
 caminho e a contagem das entradas preservadas, como arquivos adicionais do
 perfil do navegador.
 
+No Linux e no macOS, o teste cria também uma pasta curta no diretório
+temporário do sistema. Nela ficam o socket do host de terminais e o `TMPDIR` do
+navegador: um socket Unix tem limite de tamanho no caminho, e no Linux o Chrome
+aborta na partida quando o socket que ele cria abaixo do `TMPDIR` não cabe. O que
+o navegador deixar ali também é preservado e informado.
+
+Quando um processo falha ao partir, ou não fica pronto no prazo, a mensagem de
+erro traz o final da saída de erro dele (até 20 linhas e 4000 caracteres), com
+links e sequências longas como o token de acesso trocados por `[redacted]`. A
+saída padrão, por onde o daemon entrega o link, não é incluída.
+
 ## Fila de tarefas e aprovações
 
 Com a conexão autenticada, abra **Fila de tarefas**. O painel pede ao daemon o

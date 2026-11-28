@@ -3,7 +3,7 @@ import { access, constants, readFile, stat, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { cdpRequests, stop, until, withTestProcesses } from './web-terminal-harness.mjs'
-import { withTestDirectory } from './web-terminal-scratch.mjs'
+import { browserEnvironment, withTestDirectory } from './web-terminal-scratch.mjs'
 
 const root = fileURLToPath(new URL('../..', import.meta.url))
 const target = resolve(root, process.env.CARGO_TARGET_DIR ?? 'target', 'debug')
@@ -134,7 +134,7 @@ args = ['${fileURLToPath(new URL('terminal-byte-echo.cjs', import.meta.url))}']
       `--user-data-dir=${profile}`,
       'about:blank',
     ],
-    { env },
+    { env: browserEnvironment(env, { scratch, socketDirectory }) },
   )
   const port = await browser.waitForReady(
     () =>
