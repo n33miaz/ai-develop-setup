@@ -6,8 +6,8 @@ use ads_contracts::{
     RecordSessionHandoffV2Number, RecordSessionHandoffV2Trigger as Trigger,
 };
 use ads_core::handoff::{
-    ChainError, Consent, ConsentError, ContextUsage, DEFAULT_POLICY, Decision, HandoffPolicy,
-    next_session_name, validate_chain, verify_consent,
+    AppendError, ChainError, Consent, ConsentError, ContextUsage, DEFAULT_POLICY, Decision,
+    HandoffPolicy, append_handoff, next_session_name, validate_chain, verify_consent,
 };
 use serde_json::json;
 
@@ -312,6 +312,89 @@ fn accept_event(change: impl FnOnce(&mut serde_json::Value)) -> EventSessionHand
     .unwrap();
     change(&mut event);
     serde_json::from_value(event).unwrap()
+}
+
+fn accept_account_switch(device: &str) -> EventSessionHandoffV4 {
+    accept_event(|event| {
+        event["id"] = json!("01ARZ3NDEKTSV4RRFFQ69G5FAE");
+        event["stream"] = json!("handoff/handoff-2");
+        event["actor"]["id"] = json!(device);
+        event["data"]["handoff_id"] = json!("handoff-2");
+        event["data"]["source_session_id"] = json!("session-2");
+        event["data"]["trigger"] = json!("account_switch");
+    })
+}
+
+#[test]
+fn appends_context_and_account_switch_handoffs_in_order() {
+    let expected = chain();
+    let [first, second] = expected.clone();
+    let owner = id(OWNER);
+    let mut records = Vec::new();
+    append_handoff(&mut records, first, &owner, &accept_event(|_| {}), registry).unwrap();
+    append_handoff(
+        &mut records,
+        second,
+        &owner,
+        &accept_account_switch("device-1"),
+        registry,
+    )
+    .unwrap();
+    assert_eq!(records, expected);
+}
+
+#[test]
+fn append_rejects_consent_from_another_users_device() {
+    let [first, second] = chain();
+    let before = vec![first];
+    let mut records = before.clone();
+    let event = accept_account_switch("device-2");
+
+    let result = append_handoff(&mut records, second, &id(OWNER), &event, registry);
+
+    assert_eq!(records, before);
+    assert_eq!(
+        result,
+        Err(AppendError::Consent(ConsentError::NotOwnerDevice))
+    );
+}
+
+#[test]
+fn append_rejects_a_broken_chain_with_valid_consent() {
+    let [first, mut second] = chain();
+    let before = vec![first];
+    let mut records = before.clone();
+    second.previous_handoff_id = None;
+
+    let result = append_handoff(
+        &mut records,
+        second,
+        &id(OWNER),
+        &accept_account_switch("device-1"),
+        registry,
+    );
+
+    assert_eq!(records, before);
+    assert_eq!(result, Err(AppendError::Chain(ChainError::PreviousHandoff)));
+}
+
+#[test]
+fn append_rejects_model_refusal_even_with_an_accepted_alternative() {
+    let [mut record, _] = chain();
+    record.trigger = Trigger::ModelRefusal;
+    let event = accept_event(|event| {
+        event["data"]["trigger"] = json!("model_refusal");
+        event["data"]["alternative_id"] = json!("b-z");
+    });
+    let mut records = Vec::new();
+
+    let result = append_handoff(&mut records, record, &id(OWNER), &event, registry);
+
+    assert!(records.is_empty());
+    assert_eq!(
+        result,
+        Err(AppendError::Consent(ConsentError::ModelRefusal))
+    );
 }
 
 fn verify(
