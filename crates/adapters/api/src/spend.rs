@@ -6,9 +6,6 @@ use crate::config::ApiConfig;
 
 impl From<&ApiConfig> for SpendLimit {
     fn from(config: &ApiConfig) -> Self {
-        Self {
-            enabled: config.enabled,
-            monthly_cap_micro_usd: config.monthly_cap_micro_usd,
-        }
+        config.spend_limit
     }
 }

@@ -1,14 +1,13 @@
-use ads_core::spend::{Month, Refusal, SpendGuard, SpendLimit};
+use ads_core::spend::{
+    CapAboveMaximum, MAX_MONTHLY_CAP_MICRO_USD, Month, Refusal, SpendGuard, SpendLimit,
+};
 
 fn month(m: u8) -> Month {
     Month::new(2030, m).unwrap()
 }
 
 fn capped(micro_usd: u64) -> SpendLimit {
-    SpendLimit {
-        enabled: true,
-        monthly_cap_micro_usd: Some(micro_usd),
-    }
+    SpendLimit::new(true, Some(micro_usd)).unwrap()
 }
 
 #[test]
@@ -22,27 +21,17 @@ fn months_outside_one_to_twelve_are_refused() {
 #[test]
 fn the_default_limit_is_off_and_refuses_before_the_cap() {
     let limit = SpendLimit::default();
-    assert!(!limit.enabled);
-    assert_eq!(limit.monthly_cap_micro_usd, None);
+    assert!(!limit.enabled());
+    assert_eq!(limit.monthly_cap_micro_usd(), None);
     let mut guard = SpendGuard::new(limit, month(1), 0);
     assert_eq!(guard.authorize(month(1), 0).unwrap_err(), Refusal::Disabled);
     let mut off = SpendGuard::new(
-        SpendLimit {
-            enabled: false,
-            monthly_cap_micro_usd: Some(1_000_000),
-        },
+        SpendLimit::new(false, Some(1_000_000)).unwrap(),
         month(1),
         0,
     );
     assert_eq!(off.authorize(month(1), 1).unwrap_err(), Refusal::Disabled);
-    let mut uncapped = SpendGuard::new(
-        SpendLimit {
-            enabled: true,
-            monthly_cap_micro_usd: None,
-        },
-        month(1),
-        0,
-    );
+    let mut uncapped = SpendGuard::new(SpendLimit::new(true, None).unwrap(), month(1), 0);
     assert_eq!(uncapped.authorize(month(1), 0).unwrap_err(), Refusal::NoCap);
 }
 
@@ -73,11 +62,28 @@ fn holds_count_against_the_cap_until_settled_or_released() {
 }
 
 #[test]
+fn a_monthly_limit_cannot_exceed_the_maximum() {
+    let max = MAX_MONTHLY_CAP_MICRO_USD;
+    assert_eq!(capped(max).monthly_cap_micro_usd(), Some(max));
+    for enabled in [true, false] {
+        assert_eq!(
+            SpendLimit::new(enabled, Some(max + 1)),
+            Err(CapAboveMaximum)
+        );
+    }
+}
+
+#[test]
 fn reservations_cannot_overflow_the_maximum_cap() {
     let now = month(1);
-    let mut guard = SpendGuard::new(capped(u64::MAX), now, 0);
-    let held = guard.authorize(now, u64::MAX - 1).expect("fits");
+    let max = MAX_MONTHLY_CAP_MICRO_USD;
+    let mut guard = SpendGuard::new(capped(max), now, 0);
+    let held = guard.authorize(now, max - 1).expect("fits");
 
+    assert_eq!(
+        guard.authorize(now, u64::MAX).unwrap_err(),
+        Refusal::WouldExceedCap
+    );
     assert_eq!(
         guard.authorize(now, 2).unwrap_err(),
         Refusal::WouldExceedCap

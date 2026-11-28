@@ -21,9 +21,43 @@ impl Month {
 /// Whether spending is on and the monthly cap, in micro-dollars, from the caller's configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SpendLimit {
-    pub enabled: bool,
-    pub monthly_cap_micro_usd: Option<u64>,
+    enabled: bool,
+    monthly_cap_micro_usd: Option<u64>,
 }
+
+/// One billion USD, in micro-dollars.
+pub const MAX_MONTHLY_CAP_MICRO_USD: u64 = 1_000_000_000_000_000;
+
+impl SpendLimit {
+    pub fn new(enabled: bool, monthly_cap_micro_usd: Option<u64>) -> Result<Self, CapAboveMaximum> {
+        if monthly_cap_micro_usd.is_some_and(|cap| cap > MAX_MONTHLY_CAP_MICRO_USD) {
+            return Err(CapAboveMaximum);
+        }
+        Ok(Self {
+            enabled,
+            monthly_cap_micro_usd,
+        })
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    pub fn monthly_cap_micro_usd(&self) -> Option<u64> {
+        self.monthly_cap_micro_usd
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CapAboveMaximum;
+
+impl fmt::Display for CapAboveMaximum {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("must be at most one billion USD")
+    }
+}
+
+impl std::error::Error for CapAboveMaximum {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Refusal {
