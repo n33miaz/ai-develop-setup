@@ -4,6 +4,7 @@ use ads_daemon::pty_client::{ClientConfig, PtyClient};
 use ads_ptyhost::wire::{self, Call, ResultBody};
 use ads_ptyhost::{FakeBackend, HostConfig, PtyHost};
 use std::collections::{HashMap, HashSet};
+use std::num::NonZeroU64;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncWriteExt, DuplexStream};
@@ -183,7 +184,20 @@ impl ScriptedPeer {
                 next_seq: 1.try_into().unwrap(),
             }),
             Call::Close(_) => ResultBody::Closed(wire::Closed { exit_code: None }),
-            Call::List(_) => ResultBody::SessionList(wire::SessionList { sessions: vec![] }),
+            Call::List(_) => ResultBody::SessionList(wire::SessionList {
+                sessions: self
+                    .host
+                    .sessions()
+                    .into_iter()
+                    .map(|info| wire::SessionEntry {
+                        session_id: info.id,
+                        running: info.exit.is_none(),
+                        exit_code: info.exit.map(|status| i64::from(status.code)),
+                        oldest_seq: NonZeroU64::new(info.oldest_seq.0).unwrap_or(NonZeroU64::MIN),
+                        next_seq: NonZeroU64::new(info.next_seq.0).unwrap_or(NonZeroU64::MIN),
+                    })
+                    .collect(),
+            }),
             Call::Open(_) | Call::Write(_) | Call::Resize(_) => ResultBody::Empty(wire::Empty {}),
         })
     }
@@ -447,20 +461,40 @@ async fn connect_peer(
 }
 
 #[tokio::test]
-async fn scripted_peer_lists_empty_sessions_through_pty_client() {
+async fn scripted_peer_lists_sessions_through_pty_client() {
     let backend = Arc::new(FakeBackend::new());
     let host = Arc::new(PtyHost::new(backend, HostConfig::defaults()).unwrap());
     let ConnectedPeer { client, task, .. } = connect_peer(
         host,
-        PeerScenario::Plain,
+        PeerScenario::Recover,
         wire::ErrorCode::InternalError,
         0,
         &[],
     )
     .await;
 
-    let result = super::bounded(client.list()).await;
+    let empty = super::bounded(client.list()).await.unwrap();
+    assert!(empty.sessions.is_empty());
+
+    let session_id = wire::SessionId::new("opened-by-client").unwrap();
+    super::bounded(client.open(wire::OpenParams {
+        session_id: session_id.clone(),
+        program: "fake-shell".to_owned().try_into().unwrap(),
+        args: Vec::new(),
+        cwd: None,
+        env: Default::default(),
+        cols: 80.try_into().unwrap(),
+        rows: 24.try_into().unwrap(),
+    }))
+    .await
+    .unwrap();
+    let listed = super::bounded(client.list()).await.unwrap();
     drop(client);
     super::bounded(task).await.unwrap();
-    assert!(result.unwrap().sessions.is_empty());
+    let listed_ids: Vec<_> = listed
+        .sessions
+        .into_iter()
+        .map(|session| session.session_id)
+        .collect();
+    assert_eq!(listed_ids, [session_id]);
 }
