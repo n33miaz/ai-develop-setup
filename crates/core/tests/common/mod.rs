@@ -129,7 +129,12 @@ pub fn canonical_of(record: &serde_json::Value) -> String {
     lines.join("\n") + "\n"
 }
 
-/// `sha256:` and the digest of `text`.
+/// `sha256:` and the digest of `text`, computed independently of the core helper.
 pub fn sha256_of(text: &str) -> String {
-    ads_core::gate::sha256_text(text.as_bytes())
+    use sha2::{Digest, Sha256};
+    let hex: String = Sha256::digest(text.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    format!("sha256:{hex}")
 }

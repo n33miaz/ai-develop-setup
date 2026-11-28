@@ -3,6 +3,7 @@
 pub mod budget;
 pub use ads_child_env as child_env;
 mod device;
+pub mod digest;
 pub mod gate;
 pub mod handoff;
 pub mod handoff_document;

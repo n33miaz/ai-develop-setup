@@ -15,8 +15,8 @@ mod path;
 mod plan;
 mod policy;
 
+pub use crate::digest::sha256_text;
 pub use classify::{ClassificationBudgetExceeded, Finding, Rule, Verdict, classify, may_name};
-pub use event::sha256_text;
 pub use event::{
     ActionDenied, ActionExecuted, ActionFailed, ActionPlanFields, ActionPlanRecord,
     ActionPlanRecordV1, ActionPlanned, ActionStarted, Actor, ActorKind, ApprovalDenied,

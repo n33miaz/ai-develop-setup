@@ -9,6 +9,7 @@ use super::*;
 use crate::audit::TestVault;
 use crate::auth::Token;
 use ads_contracts::EventEnvelopeV1Stream;
+use ads_core::digest::sha256_text;
 use ads_core::gate::{
     Estimate, GatePolicy, HostFacts, OperationRequest, PlanRequest, ShortText, TargetRequest,
 };
@@ -1052,7 +1053,7 @@ fn a_record_hashed_in_another_form_is_unreadable_and_never_executed() {
     // of the struct, as a `Value` keeping insertion order would also give.
     let legacy = |effects: &Effects| -> String {
         let bytes = serde_json::to_vec(effects).unwrap();
-        crate::gate::digest_text(&bytes)
+        sha256_text(&bytes)
     };
     let (same, same_approval, same_hash, same_seen, same_effects) =
         purge_recorded_with(&mut bench, &gate, OVERRIDES, "act-same-form", canonical);

@@ -5,9 +5,9 @@ use std::num::NonZeroU64;
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
-use sha2::{Digest, Sha256};
 
 use super::path::{AbsPath, TargetPath};
+use crate::digest::sha256_text;
 
 #[path = "conversion.rs"]
 mod conversion;
@@ -95,15 +95,6 @@ impl PlanHash {
     pub(crate) fn of(text: &str) -> Self {
         Self(sha256_text(text.as_bytes()))
     }
-}
-
-/// `sha256:` and the SHA-256 of `bytes`, in lower-case hexadecimal.
-pub fn sha256_text(bytes: &[u8]) -> String {
-    let hex: String = Sha256::digest(bytes)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
-    format!("sha256:{hex}")
 }
 
 /// `(date and time to the second, microseconds)`; `None` when the text is not a timestamp.

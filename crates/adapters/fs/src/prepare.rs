@@ -1,9 +1,10 @@
 //! Everything that is checked before the first mutation. Read only: a rehearsal is this and
 //! nothing else, and an execution starts with it.
 
+use ads_core::digest::sha256_text;
 use ads_core::gate::{
     AbsPath, ActionPlan, Decision, Estimate, ExecutionPermit, GatePolicy, Id, Operation,
-    OperationRequest, PlanHash, PlanRequest, Rule, TargetRequest, classify, may_name, sha256_text,
+    OperationRequest, PlanHash, PlanRequest, Rule, TargetRequest, classify, may_name,
 };
 
 use crate::fence::{Fence, Kind};

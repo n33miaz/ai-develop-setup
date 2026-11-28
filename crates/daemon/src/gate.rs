@@ -10,11 +10,12 @@ use std::{
 
 use ads_adapter_fs::{Effects, Executor, Failure, Reason, Report, Stop};
 use ads_contracts::{EventEnvelopeV1, EventEnvelopeV1Stream};
+use ads_core::digest::sha256_text;
 use ads_core::gate::{
     AbsPath, ActionPlan, ActionPlanRecord, ActionSnapshot, Command, Decision, Estimate, Event,
     EventMeta, GateHistory, GateJournal, GatePolicy, Id, JournalError, JournalGate,
     OperationRequest, PlanError, PlanOperation, PlanRequest, StartedExecution, State,
-    TargetRequest, classify, sha256_text,
+    TargetRequest, classify,
 };
 use ads_storage::{EventLog, PendingReads, StorageError, StoredEvent};
 use serde_json::{Value, json};
@@ -588,11 +589,6 @@ fn plan_of(policy: &GatePolicy, record: &ActionPlanRecord) -> Option<ActionPlan>
 /// `sha256:` and the digest of the record as it is stored.
 pub(crate) fn effects_hash(effects: &Effects) -> String {
     sha256_text(&effects.to_bytes())
-}
-
-#[cfg(test)]
-pub(crate) fn digest_text(bytes: &[u8]) -> String {
-    sha256_text(bytes)
 }
 
 fn effects_stream(action_id: &str) -> Result<EventEnvelopeV1Stream, JournalError> {
