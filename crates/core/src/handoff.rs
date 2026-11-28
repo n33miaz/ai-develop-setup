@@ -1,6 +1,8 @@
 //! Session handoff rules.
 
 use std::collections::HashSet;
+use std::error::Error;
+use std::fmt;
 use std::num::NonZeroU64;
 
 use ads_contracts::{
@@ -10,6 +12,8 @@ use ads_contracts::{
 use serde::{Deserialize, Deserializer, de};
 
 use crate::device::{DeviceRefusal, check_owner_device};
+use crate::refusal::{AcceptError, Offer};
+use crate::routing::Route;
 
 pub const DEFAULT_POLICY: &str = include_str!("../../../defaults/handoff.toml");
 
@@ -102,6 +106,25 @@ pub enum ConsentError {
     /// The consent of the record names a user other than the lineage owner.
     OtherUser,
 }
+
+impl fmt::Display for ConsentError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::ModelRefusal => "a model refusal is accepted only with its offer",
+            Self::NotDevice => "only a device can accept",
+            Self::NotOwnerDevice => "the device does not belong to the lineage owner",
+            Self::NotAccepted => "the handoff was not accepted",
+            Self::OtherHandoff => "the record and the acceptance name different handoffs",
+            Self::OtherSession => "the record and the acceptance name different source sessions",
+            Self::OtherTrigger => "the record and the acceptance name different triggers",
+            Self::OtherChannel => "the acceptance does not name the recorded channel",
+            Self::OtherEvent => "the record refers to another acceptance event",
+            Self::OtherUser => "the record names a user other than the lineage owner",
+        })
+    }
+}
+
+impl Error for ConsentError {}
 
 /// Confirms, before a handoff is appended, that `event` is the acceptance the record refers to,
 /// issued for the recorded trigger and channel by a device of the lineage owner.
@@ -201,10 +224,54 @@ pub enum ChainError {
     RepeatedOpeningPrompt,
 }
 
+impl fmt::Display for ChainError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::RepeatedHandoff => "a handoff id repeats in the chain",
+            Self::RepeatedSession => "a session repeats in the chain",
+            Self::PreviousHandoff => "a handoff does not point to the previous one",
+            Self::SourceSession => {
+                "a handoff does not start in the session the previous one created"
+            }
+            Self::Lineage => "a handoff belongs to another lineage",
+            Self::Number => "a session number is out of sequence or out of range",
+            Self::User => "a handoff has the consent of another user",
+            Self::CreatedAt => "a handoff was created before the previous one",
+            Self::UnreadableInstant => "a creation timestamp cannot be read as an instant",
+            Self::RepeatedStateDocument => "a state document repeats in the chain",
+            Self::RepeatedOpeningPrompt => "an opening prompt repeats in the chain",
+        })
+    }
+}
+
+impl Error for ChainError {}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AppendError {
     Consent(ConsentError),
+    /// The offer refused the acceptance of a handoff after a model refusal.
+    Accept(AcceptError),
     Chain(ChainError),
+}
+
+impl fmt::Display for AppendError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Consent(error) => write!(f, "handoff consent refused: {error}"),
+            Self::Accept(error) => write!(f, "refusal handoff not accepted: {error}"),
+            Self::Chain(error) => write!(f, "invalid handoff chain: {error}"),
+        }
+    }
+}
+
+impl Error for AppendError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Consent(error) => Some(error),
+            Self::Accept(error) => Some(error),
+            Self::Chain(error) => Some(error),
+        }
+    }
 }
 
 /// Appends a context or account-switch handoff after validating consent and the full chain.
@@ -217,6 +284,32 @@ pub fn append_handoff(
     owner_at: impl Fn(&CommonIdV1, &CommonTimestampV1) -> Option<CommonIdV1>,
 ) -> Result<(), AppendError> {
     verify_consent(&record, owner_id, event, owner_at).map_err(AppendError::Consent)?;
+    push_validated(chain, record)
+}
+
+/// Appends a model refusal handoff once `offer` accepts the record and the full chain is valid,
+/// and returns the accepted route. The caller supplies the acceptance from its authenticated log.
+pub fn append_refusal_handoff(
+    chain: &mut Vec<RecordSessionHandoffV2>,
+    record: RecordSessionHandoffV2,
+    offer: &Offer,
+    policy: &HandoffPolicy,
+    event: &EventSessionHandoffV4,
+    choice: &CommonIdV1,
+    owner_at: impl Fn(&CommonIdV1, &CommonTimestampV1) -> Option<CommonIdV1>,
+) -> Result<Route, AppendError> {
+    let route = offer
+        .accept(policy, &record, event, choice, owner_at)
+        .map_err(AppendError::Accept)?;
+    push_validated(chain, record)?;
+    Ok(route)
+}
+
+/// Leaves the chain unchanged unless it stays valid with `record` at its end.
+fn push_validated(
+    chain: &mut Vec<RecordSessionHandoffV2>,
+    record: RecordSessionHandoffV2,
+) -> Result<(), AppendError> {
     let mut candidate = chain.clone();
     candidate.push(record);
     validate_chain(&candidate).map_err(AppendError::Chain)?;

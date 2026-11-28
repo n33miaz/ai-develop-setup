@@ -1,3 +1,5 @@
+use std::error::Error;
+
 use ads_contracts::{
     CommonDataClassV1 as Class, CommonIdV1, CommonTimestampV1, EventSessionHandoffV4,
     EventSessionRefusalDetectedV1, EventSessionRefusalDetectedV1Data,
@@ -6,12 +8,14 @@ use ads_contracts::{
     RecordTaskPacketV1,
 };
 use ads_core::budget::{BudgetDecision, Dimension};
-use ads_core::handoff::{ConsentError, HandoffPolicy};
+use ads_core::handoff::{
+    AppendError, ChainError, ConsentError, HandoffPolicy, append_refusal_handoff,
+};
 use ads_core::refusal::{
     AcceptError, DEFAULT_POLICY, DetectError, Offer, RefusalPolicy, RouteContext, detected,
 };
 use ads_core::routing::{
-    Candidate, QuotaObservation, QuotaState, RoutingPolicy, Size, TaskProfile,
+    Candidate, QuotaObservation, QuotaState, Route, RoutingPolicy, Size, TaskProfile,
 };
 use serde_json::json;
 
@@ -718,6 +722,164 @@ fn acceptance_is_bound_to_the_chosen_route() {
             Ok("model-w".to_owned())
         );
     }
+}
+
+fn append(
+    chain: &mut Vec<RecordSessionHandoffV2>,
+    record: RecordSessionHandoffV2,
+    choice: &str,
+) -> Result<Route, AppendError> {
+    append_refusal_handoff(
+        chain,
+        record,
+        &default_offer(),
+        &handoff("propose"),
+        &consent(ACCEPTED, |_| {}),
+        &id(choice),
+        registry,
+    )
+}
+
+/// A chain that already holds the handoff of [`record`].
+fn appended_chain() -> Vec<RecordSessionHandoffV2> {
+    let mut chain = Vec::new();
+    append(&mut chain, record(), "b-z").unwrap();
+    chain
+}
+
+#[test]
+fn appends_the_record_of_the_accepted_alternative() {
+    let mut chain = Vec::new();
+    let route = append(&mut chain, record(), "b-z").unwrap();
+    assert_eq!(route, catalog()[2].route);
+    assert_eq!(chain, [record()]);
+}
+
+#[test]
+fn appends_after_the_previous_handoff_of_the_chain() {
+    let mut first = record();
+    first.trigger = Trigger::ContextLimit;
+    let mut second: RecordSessionHandoffV2 = serde_json::from_str(include_str!(
+        "../../../contracts/golden/record.session-handoff.v2/valid/02.json"
+    ))
+    .unwrap();
+    second.trigger = Trigger::ModelRefusal;
+    second.consent.user_id = id(OWNER);
+    second.consent.event_id = record().consent.event_id;
+    let accepted = consent(ACCEPTED, |event| {
+        event["stream"] = json!("handoff/handoff-2");
+        event["data"]["handoff_id"] = json!("handoff-2");
+        event["data"]["source_session_id"] = json!("session-2");
+    });
+    let offer = Offer {
+        handoff_id: id("handoff-2"),
+        source_session_id: id("session-2"),
+        ..default_offer()
+    };
+    let mut chain = vec![first.clone()];
+
+    append_refusal_handoff(
+        &mut chain,
+        second.clone(),
+        &offer,
+        &handoff("propose"),
+        &accepted,
+        &id("b-z"),
+        registry,
+    )
+    .unwrap();
+
+    assert_eq!(chain, [first, second]);
+}
+
+#[test]
+fn refused_acceptance_leaves_the_chain_unchanged() {
+    let mut other_session = record();
+    other_session.source_session_id = id("session-2");
+    let mut other_handoff = record();
+    other_handoff.id = id("handoff-2");
+    for (record, choice, error) in [
+        (record(), "c-w", AcceptError::OtherRoute),
+        (
+            other_session,
+            "b-z",
+            AcceptError::Record(ConsentError::OtherSession),
+        ),
+        (
+            other_handoff,
+            "b-z",
+            AcceptError::Record(ConsentError::OtherHandoff),
+        ),
+    ] {
+        // With a filled chain the same record would also fail the chain check.
+        for before in [Vec::new(), appended_chain()] {
+            let mut chain = before.clone();
+            assert_eq!(
+                append(&mut chain, record.clone(), choice),
+                Err(AppendError::Accept(error))
+            );
+            assert_eq!(chain, before);
+        }
+    }
+}
+
+#[test]
+fn invalid_chain_is_left_unchanged() {
+    let mut unlinked = record();
+    unlinked.previous_handoff_id = Some(id("handoff-0"));
+    for (before, record, error) in [
+        (Vec::new(), unlinked, ChainError::PreviousHandoff),
+        (appended_chain(), record(), ChainError::RepeatedHandoff),
+    ] {
+        let mut chain = before.clone();
+        assert_eq!(
+            append(&mut chain, record, "b-z"),
+            Err(AppendError::Chain(error))
+        );
+        assert_eq!(chain, before);
+    }
+}
+
+#[test]
+fn append_errors_read_as_messages_and_keep_their_causes() {
+    fn messages(error: &dyn Error) -> Vec<String> {
+        std::iter::successors(Some(error), |error| (*error).source())
+            .map(ToString::to_string)
+            .collect()
+    }
+    assert_eq!(
+        messages(&AppendError::Accept(AcceptError::Record(
+            ConsentError::OtherChannel
+        ))),
+        [
+            "refusal handoff not accepted: the record does not match the acceptance: \
+             the acceptance does not name the recorded channel",
+            "the record does not match the acceptance: \
+             the acceptance does not name the recorded channel",
+            "the acceptance does not name the recorded channel",
+        ]
+    );
+    assert_eq!(
+        messages(&AppendError::Accept(AcceptError::OtherRoute)),
+        [
+            "refusal handoff not accepted: the chosen alternative is not the accepted one",
+            "the chosen alternative is not the accepted one",
+        ]
+    );
+    assert_eq!(
+        messages(&AppendError::Consent(ConsentError::NotOwnerDevice)),
+        [
+            "handoff consent refused: the device does not belong to the lineage owner",
+            "the device does not belong to the lineage owner",
+        ]
+    );
+    assert_eq!(
+        messages(&AppendError::Chain(ChainError::PreviousHandoff)),
+        [
+            "invalid handoff chain: a handoff does not point to the previous one",
+            "a handoff does not point to the previous one",
+        ]
+    );
 }
 
 #[test]

@@ -1,5 +1,8 @@
 //! Offer other configured routes after a refusal or a safety filter.
 
+use std::error::Error;
+use std::fmt;
+
 use ads_contracts::{
     CommonIdV1, CommonTimestampV1, EventSessionHandoffV4, EventSessionHandoffV4DataStatus,
     EventSessionHandoffV4DataTrigger, EventSessionRefusalDetectedV1Data,
@@ -87,6 +90,33 @@ pub enum AcceptError {
     NotOffered,
     Record(ConsentError),
     Policy,
+}
+
+impl fmt::Display for AcceptError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotAccepted => f.write_str("the handoff was not accepted"),
+            Self::NotDevice => f.write_str("only a device can accept"),
+            Self::NotOwnerDevice => f.write_str("the device does not belong to the lineage owner"),
+            Self::OtherHandoff => f.write_str("the handoff is not the offered one"),
+            Self::OtherSession => f.write_str("the source session is not the offered one"),
+            Self::OtherTrigger => f.write_str("the trigger is not a model refusal"),
+            Self::NoChoice => f.write_str("the acceptance names no alternative"),
+            Self::OtherRoute => f.write_str("the chosen alternative is not the accepted one"),
+            Self::NotOffered => f.write_str("the accepted alternative was not offered"),
+            Self::Record(error) => write!(f, "the record does not match the acceptance: {error}"),
+            Self::Policy => f.write_str("the handoff policy does not allow the handoff"),
+        }
+    }
+}
+
+impl Error for AcceptError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Record(error) => Some(error),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

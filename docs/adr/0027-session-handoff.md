@@ -36,6 +36,10 @@ Cada sessão usa o nome `<projeto> n<N> · <data>`, com o apelido do projeto com
 
 Credenciais, conteúdo de login de ferramentas, arquivos de perfil protegidos por C1 e segredos do cofre ficam fora do documento, do prompt, dos eventos e do registro. A futura integração deve restringir a entrada ao contexto autorizado e verificar ambos os artefatos antes de guardar ou entregar qualquer texto. Referências só podem ser resolvidas dentro do acervo do usuário que autorizou a passagem. Antes de anexar uma passagem, a integração deve conferir que o usuário é o mesmo da linhagem, que o instante de criação não retrocede e que os identificadores de documento e prompt não se repetem na cadeia.
 
+### Anexação à cadeia
+
+O núcleo anexa à cadeia com `append_handoff`, para contexto ou troca de conta, e com `append_refusal_handoff`, para `model_refusal`; a integração deve usar essas funções. A primeira confere o aceite com `verify_consent`. A segunda chama `Offer::accept`, que também exige a alternativa escolhida na oferta, e devolve a rota aceita. Ambas recebem o registro da passagem e o evento do log autenticado. Exigem a mesma passagem, sessão de origem, referência ao evento, gatilho e canal, além do consentimento em nome do dono da linhagem, emitido por um aparelho dele no instante do aceite. Depois validam a cadeia inteira com o registro conferido no fim; em qualquer erro, a cadeia fica como estava.
+
 ## Condição de reversão
 
 Se a passagem perder estado necessário, quebrar o isolamento ou entregar material protegido, usar `off` e retomar o trabalho na sessão de origem ou em uma sessão aberta manualmente. Conservar a cadeia autorizada para diagnóstico com acesso restrito. Se só a oferta após recusa causar problema, usar `enabled = false` em `defaults/refusal.toml`; os outros gatilhos continuam.
@@ -43,7 +47,5 @@ Se a passagem perder estado necessário, quebrar o isolamento ou entregar materi
 ## Próximos passos
 
 Integrar medição, consentimento, geração dos textos, armazenamento e abertura da sessão no daemon e na interface. Verificar o isolamento, a filtragem de ambos os artefatos e a recuperação em caso de falha antes de ativar o fluxo.
-
-Implementar a anexação à cadeia. Para contexto ou troca de conta, a integração deve chamar `verify_consent`. Para `model_refusal`, deve chamar `Offer::accept`, que também exige a alternativa escolhida na oferta. Ambos recebem o registro da passagem e o evento do log autenticado. Exigem a mesma passagem, sessão de origem, referência ao evento, gatilho e canal, além do consentimento em nome do dono da linhagem, emitido por um aparelho dele no instante do aceite.
 
 Para a oferta após recusa, falta detectar a recusa e o filtro na saída da ferramenta e emitir o evento. Falta também mostrar a oferta na interface e ligar o registro de aparelhos real ao aceite.
