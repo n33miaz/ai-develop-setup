@@ -560,6 +560,14 @@ fn rebuilt(golden: &Value, home: &str, quarantine: bool) -> (Value, Value) {
     (record.to_json(), event.to_json())
 }
 
+#[test]
+fn digest_and_gate_exports_match_known_vector() {
+    let input = b"ads-36";
+    let expected = "sha256:0bbb0f7bfade40c1b69e98b0c534101d8b237370dad6404dc139d3c2a977b5ae";
+    assert_eq!(ads_core::digest::sha256_text(input), expected);
+    assert_eq!(ads_core::gate::sha256_text(input), expected);
+}
+
 /// The vector of `contracts/README.md`: the first valid golden record, rebuilt by the core
 /// from a plan, with the same record and the same hash.
 #[test]
