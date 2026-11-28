@@ -124,10 +124,11 @@ fn next_month() -> Month {
 }
 
 fn spend_guard(cap_micro_usd: u64) -> SpendGuard {
-    let usd = cap_micro_usd as f64 / 1_000_000.0 + 0.000_000_5;
-    let config = ApiConfig::from_toml(&format!("enabled = true\nmonthly_cap_usd = {usd:.7}"))
-        .expect("valid config");
-    assert_eq!(config.monthly_cap_micro_usd, Some(cap_micro_usd));
+    let config = ApiConfig::from_toml(&format!(
+        "enabled = true\nmonthly_cap_usd = {cap_micro_usd}e-6"
+    ))
+    .expect("valid config");
+    assert_eq!(config.monthly_cap_micro_usd(), Some(cap_micro_usd));
     SpendGuard::new(&config, month(), 0)
 }
 

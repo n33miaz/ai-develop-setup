@@ -41,15 +41,15 @@ fn request(text: &str) -> ChatRequest {
 #[test]
 fn defaults_are_off_without_cap_or_provider() {
     let defaults = ApiConfig::defaults();
-    assert!(!defaults.enabled);
-    assert_eq!(defaults.monthly_cap_micro_usd, None);
+    assert!(!defaults.enabled());
+    assert_eq!(defaults.monthly_cap_micro_usd(), None);
     assert_eq!(defaults.providers().count(), 0);
 }
 
 #[test]
 fn a_provider_with_a_cap_is_still_refused_while_disabled() {
     let cfg = config("monthly_cap_usd = 10.0");
-    assert!(!cfg.enabled);
+    assert!(!cfg.enabled());
     let mut guard = SpendGuard::new(&cfg, month(1), 0);
     assert_eq!(guard.authorize(month(1), 1).unwrap_err(), Refusal::Disabled);
 }
@@ -152,6 +152,46 @@ fn a_reservation_made_with_the_clock_set_back_counts_in_the_guard_month() {
             guard.authorize(now, 400_001).unwrap_err(),
             Refusal::WouldExceedCap
         );
+    }
+}
+
+#[test]
+fn monthly_cap_preserves_exact_micro_dollars() {
+    let cfg = config("enabled = true\nmonthly_cap_usd = 2.01");
+    assert_eq!(cfg.monthly_cap_micro_usd(), Some(2_010_000));
+    let mut guard = SpendGuard::new(&cfg, month(1), 0);
+    let reservation = guard.authorize(month(1), 2_010_000).expect("fits");
+    assert_eq!(
+        guard.authorize(month(1), 1).unwrap_err(),
+        Refusal::CapReached
+    );
+    guard.release(reservation).expect("own");
+    for (value, micro_usd) in [
+        ("2_010e-3", 2_010_000),
+        ("1", 1_000_000),
+        ("1e9", 1_000_000_000_000_000),
+    ] {
+        let cfg = config(&format!("monthly_cap_usd = {value}"));
+        assert_eq!(cfg.monthly_cap_micro_usd(), Some(micro_usd));
+    }
+}
+
+#[test]
+fn monthly_cap_above_the_maximum_has_its_own_error() {
+    for value in ["1000000000.000001", "1000000000.0000001", "1e30"] {
+        let error = ApiConfig::from_toml(&format!("monthly_cap_usd = {value}")).unwrap_err();
+        assert_eq!(error.field, "monthly_cap_usd");
+        assert_eq!(error.reason, "must be at most one billion USD", "{value}");
+    }
+    for (value, reason) in [
+        ("0.0", "must be greater than zero"),
+        ("-1.0", "must be greater than zero"),
+        ("1e-7", "below one micro-dollar"),
+        ("2.0100001", "must be in whole micro-dollars"),
+    ] {
+        let error = ApiConfig::from_toml(&format!("monthly_cap_usd = {value}")).unwrap_err();
+        assert_eq!(error.field, "monthly_cap_usd");
+        assert_eq!(error.reason, reason, "{value}");
     }
 }
 

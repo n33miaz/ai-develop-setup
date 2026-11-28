@@ -5,6 +5,7 @@ use std::fmt;
 use std::num::NonZeroUsize;
 
 use ads_contracts::CommonIdV1;
+use ads_core::spend::{CapAboveMaximum, MAX_MONTHLY_CAP_MICRO_USD, SpendLimit};
 use serde::de::DeserializeOwned;
 use toml::Spanned;
 use toml::de::{DeTable, DeValue, ValueDeserializer};
@@ -19,6 +20,7 @@ const MAX_MODEL_CHARS: usize = 128;
 const MAX_PRICE_VERSION_CHARS: usize = 96;
 const MICRO_PER_USD: u64 = 1_000_000;
 const MAX_USD: u64 = 1_000_000_000;
+const MONTHLY_CAP_FIELD: &str = "monthly_cap_usd";
 const HEADER_TOKEN_SYMBOLS: &str = "!#$%&'*+-.^_`|~";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,7 +46,7 @@ pub(crate) fn invalid(field: impl Into<String>, reason: impl Into<String>) -> Co
 
 struct Raw {
     enabled: bool,
-    monthly_cap_usd: Option<f64>,
+    monthly_cap_usd: Option<Spanned<toml::Value>>,
     chat_path: String,
     key_header: String,
     key_prefix: String,
@@ -111,7 +113,7 @@ impl Raw {
         let mut settings = Settings { table, scope: None };
         let raw = Self {
             enabled: settings.required("enabled")?,
-            monthly_cap_usd: settings.optional("monthly_cap_usd")?,
+            monthly_cap_usd: settings.optional(MONTHLY_CAP_FIELD)?,
             chat_path: settings.required("chat_path")?,
             key_header: settings.required("key_header")?,
             key_prefix: settings.required("key_prefix")?,
@@ -189,8 +191,7 @@ impl ProviderConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApiConfig {
-    pub enabled: bool,
-    pub monthly_cap_micro_usd: Option<u64>,
+    pub(crate) spend_limit: SpendLimit,
     providers: BTreeMap<String, ProviderConfig>,
 }
 
@@ -226,30 +227,33 @@ impl ApiConfig {
             Some(providers) => (Some(providers), user),
             None => (default_providers, DEFAULT_POLICY),
         };
+        let cap_source = if overrides.contains_key(&Spanned::new(0..0, MONTHLY_CAP_FIELD.into())) {
+            user
+        } else {
+            DEFAULT_POLICY
+        };
         defaults.extend(overrides);
         let raw = Raw::read(defaults)?;
+        let cap = raw
+            .monthly_cap_usd
+            .as_ref()
+            .map(|value| monthly_cap(value, cap_source))
+            .transpose()?;
+        let spend_limit = SpendLimit::new(raw.enabled, cap).map_err(cap_above_maximum)?;
         let entries = match providers.map(Spanned::into_inner) {
             Some(DeValue::Table(entries)) => entries,
             Some(_) => return Err(invalid("providers", "must be a table")),
             None => DeTable::new(),
         };
-        Self::validate(raw, entries, source)
+        Self::validate(raw, entries, source, spend_limit)
     }
 
-    fn validate(raw: Raw, entries: DeTable<'_>, source: &str) -> Result<Self, ConfigError> {
-        let cap = match raw.monthly_cap_usd {
-            None => None,
-            Some(usd) => {
-                if !usd.is_finite() || usd <= 0.0 || usd > MAX_USD as f64 {
-                    return Err(invalid("monthly_cap_usd", "must be greater than zero"));
-                }
-                let micro = (usd * MICRO_PER_USD as f64).floor() as u64;
-                if micro == 0 {
-                    return Err(invalid("monthly_cap_usd", "below one micro-dollar"));
-                }
-                Some(micro)
-            }
-        };
+    fn validate(
+        raw: Raw,
+        entries: DeTable<'_>,
+        source: &str,
+        spend_limit: SpendLimit,
+    ) -> Result<Self, ConfigError> {
         check_path("chat_path", &raw.chat_path)?;
         check_header_name("key_header", &raw.key_header)?;
         check_prefix("key_prefix", &raw.key_prefix)?;
@@ -322,10 +326,17 @@ impl ApiConfig {
             );
         }
         Ok(Self {
-            enabled: raw.enabled,
-            monthly_cap_micro_usd: cap,
+            spend_limit,
             providers,
         })
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.spend_limit.enabled()
+    }
+
+    pub fn monthly_cap_micro_usd(&self) -> Option<u64> {
+        self.spend_limit.monthly_cap_micro_usd()
     }
 
     pub fn provider(&self, alias: &str) -> Option<&ProviderConfig> {
@@ -338,36 +349,89 @@ impl ApiConfig {
 }
 
 fn price(field: &str, rate: toml::Spanned<toml::Value>, source: &str) -> Result<u64, ConfigError> {
-    let micro = match rate.get_ref() {
-        toml::Value::Integer(usd) => u64::try_from(*usd)
-            .ok()
-            .and_then(|n| n.checked_mul(MICRO_PER_USD)),
-        // The binary float can lose decimal places before we even scale it.
-        toml::Value::Float(n) if n.is_finite() => decimal_micro_usd(&source[rate.span()]),
-        _ => None,
-    };
-    micro.filter(|n| *n <= MAX_USD * MICRO_PER_USD)
+    micro_usd(&rate, source)
+        .filter(|&(whole, fractional)| !fractional && whole <= MAX_USD * MICRO_PER_USD)
+        .map(|(whole, _)| whole)
         .ok_or_else(|| invalid(field, "must be a non-negative price up to one billion USD in whole micro-dollars per million tokens"))
 }
 
-fn decimal_micro_usd(literal: &str) -> Option<u64> {
+fn cap_above_maximum(error: CapAboveMaximum) -> ConfigError {
+    invalid(MONTHLY_CAP_FIELD, error.to_string())
+}
+
+fn monthly_cap(value: &Spanned<toml::Value>, source: &str) -> Result<u64, ConfigError> {
+    let negative = match value.get_ref() {
+        toml::Value::Integer(n) => *n < 0,
+        toml::Value::Float(n) => n.is_finite() && n.is_sign_negative(),
+        _ => false,
+    };
+    let error = |reason| invalid(MONTHLY_CAP_FIELD, reason);
+    if negative {
+        return Err(error("must be greater than zero"));
+    }
+    match micro_usd(value, source) {
+        None => Err(error("must be a finite number")),
+        Some((0, false)) => Err(error("must be greater than zero")),
+        Some((0, true)) => Err(error("below one micro-dollar")),
+        Some((whole, true)) if whole >= MAX_MONTHLY_CAP_MICRO_USD => {
+            Err(cap_above_maximum(CapAboveMaximum))
+        }
+        Some((_, true)) => Err(error("must be in whole micro-dollars")),
+        Some((whole, false)) => Ok(whole),
+    }
+}
+
+fn micro_usd(value: &Spanned<toml::Value>, source: &str) -> Option<(u64, bool)> {
+    match value.get_ref() {
+        toml::Value::Integer(usd) => {
+            let usd = u64::try_from(*usd).ok()?;
+            Some((usd.saturating_mul(MICRO_PER_USD), false))
+        }
+        // The binary float can lose decimal places before we even scale it.
+        toml::Value::Float(_) => decimal_micro_usd(&source[value.span()]),
+        _ => None,
+    }
+}
+
+// Return the whole micro-dollars (saturating on overflow) and whether a fraction remains.
+fn decimal_micro_usd(literal: &str) -> Option<(u64, bool)> {
     let literal = literal.replace('_', "");
     let (mantissa, exponent) = literal.split_once(['e', 'E']).unwrap_or((&literal, "0"));
     let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
     let digits = format!("{whole}{fraction}");
-    let unsigned = digits.trim_start_matches(['+', '-']);
+    let unsigned = digits
+        .trim_start_matches(['+', '-'])
+        .trim_start_matches('0');
     let significant = unsigned.trim_end_matches('0');
     if significant.is_empty() {
-        return Some(0);
+        return Some((0, false));
     }
-    if mantissa.starts_with('-') {
+    if mantissa.starts_with('-') || !significant.as_bytes()[0].is_ascii_digit() {
         return None;
     }
     let trailing_zeros = unsigned.len() - significant.len();
-    let scale = 6 + i64::from(exponent.parse::<i32>().ok()?) + trailing_zeros as i64
-        - fraction.len() as i64;
-    let factor = 10_u64.checked_pow(scale.try_into().ok()?)?;
-    significant.parse::<u64>().ok()?.checked_mul(factor)
+    let exponent = exponent
+        .parse::<i32>()
+        .unwrap_or(if exponent.starts_with('-') {
+            i32::MIN
+        } else {
+            i32::MAX
+        });
+    let scale = 6 + i64::from(exponent) + trailing_zeros as i64 - fraction.len() as i64;
+    let whole_digits = significant.len() as i64 + scale;
+    if whole_digits <= 0 {
+        return Some((0, true));
+    }
+    if whole_digits > 20 {
+        return Some((u64::MAX, false));
+    }
+    let prefix_len = significant.len().min(whole_digits as usize);
+    let whole = significant[..prefix_len].parse::<u64>().unwrap_or(u64::MAX);
+    let zeros = whole_digits as u32 - prefix_len as u32;
+    Some((
+        whole.saturating_mul(10_u64.saturating_pow(zeros)),
+        prefix_len < significant.len(),
+    ))
 }
 
 fn check_max_tokens(field: &str, value: u32) -> Result<(), ConfigError> {

@@ -163,7 +163,10 @@ fn switching_the_key_neither_resets_nor_raises_the_cap() {
     };
     let before = capped("personal");
     let after = capped("work");
-    assert_eq!(before.monthly_cap_micro_usd, after.monthly_cap_micro_usd);
+    assert_eq!(
+        before.monthly_cap_micro_usd(),
+        after.monthly_cap_micro_usd()
+    );
 
     // A guard rebuilt from the switched configuration starts from the same ledger total.
     let mut rebuilt = SpendGuard::new(&after, month, 900_000);

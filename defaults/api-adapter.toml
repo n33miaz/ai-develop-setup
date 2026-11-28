@@ -5,7 +5,8 @@
 # Desligado por padrão. Ligar não basta: sem `monthly_cap_usd` o adaptador recusa toda chamada.
 enabled = false
 
-# Teto mensal de gasto estimado, em dólares (maior que zero). Sem valor, o adaptador recusa tudo.
+# Teto mensal de gasto estimado, de um microdólar a um bilhão de dólares, inclusive,
+# em múltiplos exatos de 0,000001 dólar. Sem valor, o adaptador recusa tudo.
 # Ao atingir o teto, as chamadas seguintes são recusadas até o mês seguinte, e uma chamada só sai se o
 # pior caso dela (entrada limitada pelo tamanho do pedido, saída pelo teto de tokens) cabe no que sobra.
 # Exemplo, comentado de propósito: monthly_cap_usd = 20.0
