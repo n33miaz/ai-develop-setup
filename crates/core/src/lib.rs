@@ -7,6 +7,7 @@ pub mod digest;
 pub mod gate;
 pub mod handoff;
 pub mod handoff_document;
+pub mod handoff_proposal;
 pub mod queue;
 pub mod refusal;
 pub mod routing;
