@@ -1,10 +1,19 @@
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
 import fs from 'node:fs/promises'
-import { lstat, mkdir, mkdtemp, readdir, rmdir, unlink, writeFile } from 'node:fs/promises'
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rmdir,
+  unlink,
+  writeFile,
+} from 'node:fs/promises'
 import { syncBuiltinESMExports } from 'node:module'
 import { createServer } from 'node:net'
-import { dirname, join } from 'node:path'
+import { dirname, join, sep } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { cdpRequests, stop, withTestProcesses } from './web-terminal-harness.mjs'
@@ -90,8 +99,9 @@ test(
 )
 
 test('browser scratch removes known files and empty directories on success', async (t) => {
+  const fixture = await createScratchFixture()
   let scratch
-  await withTestDirectory(root, async (paths) => {
+  await withTestDirectory(fixture, async (paths) => {
     scratch = paths.scratch
     t.after(async () => {
       for (const file of [paths.hostConfig, paths.daemonConfig, paths.devToolsPort]) {
@@ -100,26 +110,29 @@ test('browser scratch removes known files and empty directories on success', asy
       for (const directory of [paths.profile, paths.workdir, scratch]) {
         await ignoreMissing(rmdir(directory))
       }
+      await removeScratchFixture(fixture)
     })
     for (const file of [paths.hostConfig, paths.daemonConfig, paths.devToolsPort]) {
       await writeFile(file, 'fixture')
     }
   })
   await assert.rejects(readdir(scratch), { code: 'ENOENT' })
+  assert.deepEqual(await readdir(join(fixture, '.test-tmp')), [])
 })
 
 test('browser scratch preserves unexpected entries and the original failure', async (t) => {
+  const fixture = await createScratchFixture()
   const reports = []
   const failure = new Error('browser failed')
   let paths
   await assert.rejects(
     withTestDirectory(
-      root,
+      fixture,
       async (layout) => {
         paths = layout
-        const extra = join(paths.profile, 'unexpected')
+        const extras = [paths.profile, paths.workdir].map((path) => join(path, 'unexpected'))
         t.after(async () => {
-          for (const file of [paths.hostConfig, paths.devToolsPort, extra]) {
+          for (const file of [paths.hostConfig, paths.devToolsPort, ...extras]) {
             await ignoreMissing(unlink(file))
           }
           for (const directory of [
@@ -130,10 +143,11 @@ test('browser scratch preserves unexpected entries and the original failure', as
           ]) {
             await ignoreMissing(rmdir(directory))
           }
+          await removeScratchFixture(fixture)
         })
         await writeFile(paths.hostConfig, 'fixture')
         await writeFile(paths.devToolsPort, 'fixture')
-        await writeFile(extra, 'preserve')
+        for (const extra of extras) await writeFile(extra, 'preserve')
         await mkdir(paths.daemonConfig)
         throw failure
       },
@@ -141,11 +155,11 @@ test('browser scratch preserves unexpected entries and the original failure', as
     ),
     (error) => error === failure,
   )
-  assert.deepEqual((await readdir(paths.scratch)).sort(), ['browser', 'daemon.toml'])
+  assert.deepEqual((await readdir(paths.scratch)).sort(), ['daemon.toml', 'work'])
   assert.deepEqual(await readdir(paths.profile), ['unexpected'])
   assert.equal(reports.length, 2)
   assert.ok(reports[0].includes(paths.scratch))
-  assert.match(reports[0], /browser \(1 retained\).*root \(1 retained\)/)
+  assert.match(reports[0], /work \(1 retained\).*root \(1 retained\)/)
 })
 
 test('browser scratch reports the cleanup error code without replacing the test failure', async (t) => {
@@ -195,49 +209,148 @@ test('browser scratch reports the cleanup error code without replacing the test 
 
 const unlinkFile = unlink
 
-test('browser scratch totals retained directories and file bytes without following links', async (t) => {
+test('consecutive runs reuse one browser profile', async (t) => {
+  const fixture = await createScratchFixture()
+  const profile = join(await fs.realpath(fixture), '.test-tmp', 'browser-profile')
+  const kept = join(profile, 'Preferences')
+  const runs = []
+  t.after(async () => {
+    for (const { path } of runs) {
+      if (path === profile) continue
+      await ignoreMissing(unlink(join(path, 'Preferences')))
+      await ignoreMissing(rmdir(path))
+    }
+    await ignoreMissing(unlink(kept))
+    await ignoreMissing(rmdir(profile))
+    await removeScratchFixture(fixture)
+  })
+  for (let run = 0; run < 2; run++) {
+    await withTestDirectory(fixture, async (paths) => {
+      const { ino } = await lstat(paths.profile, { bigint: true })
+      runs.push({ path: paths.profile, ino })
+      if (run === 0) await writeFile(join(paths.profile, 'Preferences'), 'kept')
+    })
+  }
+  assert.deepEqual(runs[1], runs[0])
+  assert.equal(runs[0].path, profile)
+  assert.equal(await readFile(kept, 'utf8'), 'kept')
+  assert.deepEqual(await readdir(join(fixture, '.test-tmp')), ['browser-profile'])
+})
+
+test('a locked browser profile is refused with instructions until released', async (t) => {
   const fixture = await createScratchFixture()
   const parent = join(fixture, '.test-tmp')
-  const old = join(parent, 'web-terminal-previous')
-  const other = join(parent, 'unrelated')
-  const oldFile = join(old, 'payload')
-  const otherFile = join(other, 'payload')
-  const reports = []
-  await mkdir(old)
-  await mkdir(other)
-  await writeFile(oldFile, '12345')
-  await writeFile(otherFile, 'ignore these bytes')
+  const lock = join(parent, 'browser-profile.lock')
   t.after(async () => {
-    await unlink(oldFile)
-    await rmdir(old)
-    await unlink(otherFile)
-    await rmdir(other)
+    await ignoreMissing(unlink(lock))
+    await removeScratchFixture(fixture)
   })
-  const linkedScratch = join(parent, 'web-terminal-link')
+  const refused = (error) =>
+    error.message.includes('browser-profile.lock') &&
+    error.message.includes('delete that file and run again')
+  const unexpected = () => assert.fail('the locked profile was used')
+
+  await withTestDirectory(fixture, async () => {
+    const before = await readdir(parent)
+    await assert.rejects(withTestDirectory(fixture, unexpected), refused)
+    assert.deepEqual(await readdir(parent), before)
+  })
+
+  // What an interrupted run leaves behind.
+  await writeFile(lock, 'interrupted')
+  await assert.rejects(withTestDirectory(fixture, unexpected), refused)
+  assert.equal(await readFile(lock, 'utf8'), 'interrupted')
+  await unlink(lock)
+  assert.equal(await withTestDirectory(fixture, () => 'ran'), 'ran')
+})
+
+test('a linked browser profile is refused and its target stays intact', async (t) => {
+  const fixture = await createScratchFixture()
+  const parent = join(fixture, '.test-tmp')
+  const profile = join(parent, 'browser-profile')
+  const target = join(fixture, 'target')
+  const port = join(target, 'DevToolsActivePort')
+  await mkdir(target)
+  await writeFile(port, 'outside')
+  await fs.symlink(target, profile, 'junction')
+  t.after(async () => {
+    await unlink(profile)
+    await ignoreMissing(unlink(port))
+    await rmdir(target)
+    await removeScratchFixture(fixture)
+  })
+  await assert.rejects(
+    withTestDirectory(fixture, () => assert.fail('the linked profile was used')),
+    /not a real directory/,
+  )
+  assert.equal(await readFile(port, 'utf8'), 'outside')
+  assert.ok((await lstat(profile)).isSymbolicLink())
+  assert.deepEqual(await readdir(parent), ['browser-profile'])
+})
+
+test('a DevTools port left by an earlier run is not read', async (t) => {
+  const fixture = await createScratchFixture()
+  const profile = join(fixture, '.test-tmp', 'browser-profile')
+  const port = join(profile, 'DevToolsActivePort')
+  await mkdir(profile)
+  await writeFile(port, '1234\n/devtools/browser/old')
+  t.after(async () => {
+    await ignoreMissing(unlink(port))
+    await ignoreMissing(rmdir(profile))
+    await removeScratchFixture(fixture)
+  })
+  await withTestDirectory(fixture, async (paths) => {
+    // The path the browser test polls, and the one inside the profile it launches with.
+    for (const path of [paths.devToolsPort, join(paths.profile, 'DevToolsActivePort'), port]) {
+      await assert.rejects(readFile(path, 'utf8'), { code: 'ENOENT' })
+    }
+    assert.equal(await fs.realpath(paths.profile), await fs.realpath(profile))
+  })
+})
+
+test('the retained report reads only the first level and follows no links', async (t) => {
+  const fixture = await createScratchFixture()
+  const parent = join(await fs.realpath(fixture), '.test-tmp')
+  const old = join(parent, 'web-terminal-previous')
+  const oldProfile = join(old, 'browser')
+  const oldFiles = [join(old, 'host.toml'), join(oldProfile, 'payload')]
+  const linked = join(parent, 'web-terminal-link')
+  await mkdir(oldProfile, { recursive: true })
+  for (const file of oldFiles) await writeFile(file, 'fixture')
+  await fs.symlink(oldProfile, linked, 'junction')
+  const visited = []
+  const mocks = ['lstat', 'readdir'].map((name) => {
+    const call = fs[name]
+    return t.mock.method(fs, name, (path, ...rest) => {
+      visited.push(path)
+      return call(path, ...rest)
+    })
+  })
+  const restore = () => {
+    for (const mock of mocks) mock.mock.restore()
+    syncBuiltinESMExports()
+  }
+  t.after(async () => {
+    restore()
+    await unlink(linked)
+    for (const file of oldFiles) await unlink(file)
+    await rmdir(oldProfile)
+    await rmdir(old)
+    await removeScratchFixture(fixture)
+  })
+  const reports = []
+  syncBuiltinESMExports()
   await withTestDirectory(
     fixture,
-    async ({ profile, scratch }) => {
-      const retained = join(profile, 'retained')
-      const retainedFile = join(retained, 'payload')
-      const linkedDirectory = join(retained, 'linked-directory')
-      t.after(async () => {
-        await ignoreMissing(unlink(linkedScratch))
-        await ignoreMissing(unlink(linkedDirectory))
-        await ignoreMissing(unlink(retainedFile))
-        await ignoreMissing(rmdir(retained))
-        await ignoreMissing(rmdir(profile))
-        await ignoreMissing(rmdir(scratch))
-        await removeScratchFixture(fixture)
-      })
-      await mkdir(retained)
-      await writeFile(retainedFile, 'abc')
-      await fs.symlink(other, linkedDirectory, 'junction')
-      await fs.symlink(other, linkedScratch, 'junction')
-    },
+    () => {},
     (message) => reports.push(message),
   )
-  assert.ok(reports.includes('Retained web-terminal-* directories: 2 (8 bytes)'))
-  assert.equal((await lstat(otherFile)).size, 18)
+  restore()
+  assert.ok(visited.includes(old))
+  const inside = (path) =>
+    path === oldProfile || [oldProfile, linked].some((base) => path.startsWith(base + sep))
+  assert.deepEqual(visited.filter(inside), [])
+  assert.deepEqual(reports, ['Retained web-terminal-* directories: 1 (2 first-level entries)'])
 })
 
 async function createScratchFixture() {
