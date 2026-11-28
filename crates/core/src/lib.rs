@@ -15,6 +15,9 @@ mod timestamp;
 pub mod tool_launch;
 pub mod vault;
 
+#[cfg(test)]
+mod test_timestamp;
+
 /// Package name as declared in the manifest.
 pub const fn crate_name() -> &'static str {
     env!("CARGO_PKG_NAME")
