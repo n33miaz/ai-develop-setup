@@ -283,11 +283,11 @@ Estado da mitigação, em cada risco:
 
 - **Descrição.** Tarefas ou tentativas repetidas consomem cota ou custo sem limite.
 - **Impacto.** Custo inesperado ou cota esgotada.
-- **Dono.** Núcleo (orçamento e roteamento).
-- **Teto.** USD faturável, percentual de cota, turnos e tempo definidos no pacote de cada tarefa.
-- **Mitigação existente.** O núcleo avalia o consumo observado e calcula uma rota alternativa quando há cota. Veja os parâmetros e a interpretação das medições no [README do núcleo](../crates/core/README.md#orçamento-e-roteamento).
-- **Plano B.** Manter a rota manual em observação. Sem alternativa elegível, a proposta fica vazia.
-- **O que falta.** Coletar uso e aplicar a decisão de parada entre tentativas. Até essa integração, a avaliação no núcleo não interrompe o gasto.
+- **Dono.** Núcleo (orçamento por tarefa, roteamento e guarda mensal).
+- **Teto.** USD faturável, percentual de cota, turnos e tempo definidos no pacote de cada tarefa. Para chamadas diretas, o teto mensal de custo estimado é compartilhado pelo adaptador de API e configurado em `monthly_cap_usd` ([`defaults/api-adapter.toml`](../defaults/api-adapter.toml)). O padrão é `enabled = false` e teto sem valor.
+- **Mitigação existente.** O núcleo avalia o consumo observado por tarefa e calcula uma rota alternativa quando há cota ([orçamento e roteamento](../crates/core/README.md#orçamento-e-roteamento)). No fluxo de chamadas diretas, o adaptador calcula o pior caso pela tarifa do provedor e consulta a [guarda mensal do núcleo](../crates/core/src/spend.rs) antes de enviar. A guarda recusa se estiver desligada, se faltar teto, se o teto já tiver sido atingido ou se a estimativa exceder o saldo após descontar gasto e reservas em aberto. Após o envio, o adaptador liquida com o custo calculado a partir do uso informado quando válido, ou com a estimativa reservada. Se o transporte confirmar que nada saiu, devolve a reserva.
+- **Plano B.** Manter a rota manual em observação. Sem alternativa elegível, a proposta fica vazia. Manter as chamadas diretas desligadas com `enabled = false` e conferir o gasto na fatura do provedor.
+- **O que falta.** Na execução de tarefas, coletar o uso e aplicar a decisão de parada entre tentativas. O daemon ainda não usa o adaptador de API nem aplica o teto mensal. Faltam o transporte de rede, a leitura da chave no cofre e a integração com o livro-caixa para persistir os registros de uso e reconstruir a guarda com o total do mês.
 
 ### Reserva de gasto presa por falha no transporte
 
@@ -295,9 +295,9 @@ Estado da mitigação, em cada risco:
 - **Impacto.** Na guarda em uso, o valor reduz o que sobra do teto sem uso registrado. O pedido pode ter chegado ao provedor e ser cobrado; uma guarda reconstruída do livro-caixa não conta esse valor, e o gasto pode passar do teto.
 - **Dono.** Adaptador de API ([`crates/adapters/api`](../crates/adapters/api/README.md#fluxo-de-uma-chamada)).
 - **Teto.** Por chamada, a reserva do pior caso estimado, retida até a guarda passar para um mês posterior. Na mesma guarda e no mesmo mês, as reservas presas contam para `monthly_cap_usd` em [`defaults/api-adapter.toml`](../defaults/api-adapter.toml). Para o total que escapa a guardas reconstruídas, não definido.
-- **Mitigação existente (parcial).** A guarda em uso mantém a reserva no mês em que foi feita; o teste `a_panic_in_the_transport_keeps_the_reservation_held` cobre a retenção e a virada do mês. O adaptador vem desligado.
+- **Mitigação existente (parcial).** A guarda do núcleo mantém a reserva no mês em que foi feita. No adaptador, o teste `a_panic_in_the_transport_keeps_the_reservation_held` cobre a retenção e a virada do mês. O adaptador vem desligado.
 - **Plano B.** Conferir a fatura do provedor, que manda sobre a estimativa, e desligar o adaptador (`enabled = false`) para recusar novas chamadas.
-- **O que falta.** O fluxo não captura o panic, não grava a reserva antes do envio e não produz registro para essa chamada. Ainda não há transporte de rede.
+- **O que falta.** Tratar a falha no fluxo da chamada e persistir a reserva antes do envio para reconciliar o valor quando o desfecho for desconhecido. A integração do adaptador com o daemon e o livro-caixa ainda está pendente.
 
 ### Texto de ferramenta tratado como instrução
 
