@@ -477,6 +477,51 @@ fn default_offer() -> Offer {
 }
 
 #[test]
+fn matching_record_and_consent_must_match_the_offer() {
+    let offer = default_offer();
+    let other_offers = [
+        (
+            Offer {
+                handoff_id: id("handoff-2"),
+                ..offer.clone()
+            },
+            AcceptError::OtherHandoff,
+        ),
+        (
+            Offer {
+                source_session_id: id("session-2"),
+                ..offer
+            },
+            AcceptError::OtherSession,
+        ),
+    ];
+    let policy = handoff("propose");
+    let record = record();
+    let accepted = consent(ACCEPTED, |_| {});
+    for (offer, error) in other_offers {
+        assert_eq!(
+            offer.accept(&policy, &record, &accepted, &id("b-z"), registry),
+            Err(error)
+        );
+    }
+}
+
+#[test]
+fn consent_source_session_error_precedes_record_handoff_error() {
+    let offer = default_offer();
+    let policy = handoff("propose");
+    let mut record = record();
+    record.id = id("handoff-2");
+    let accepted = consent(ACCEPTED, |event| {
+        event["data"]["source_session_id"] = json!("session-2");
+    });
+    assert_eq!(
+        offer.accept(&policy, &record, &accepted, &id("b-z"), registry),
+        Err(AcceptError::OtherSession)
+    );
+}
+
+#[test]
 fn refusal_consent_rejects_record_with_other_event() {
     let mut record = record();
     record.consent.event_id = consent(ACCEPTED_BARE, |_| {}).into_fields().id;
