@@ -239,9 +239,53 @@ fn config_diagnostics_locate_toml_syntax_errors() {
 
 #[test]
 fn config_diagnostics_locate_invalid_global_settings() {
-    assert_config_diagnostic("enabled = 'synthetic-value'", "enabled:");
-    assert_config_diagnostic("providers = 'synthetic-value'", "providers:");
-    assert_config_diagnostic("synthetic-field = 'synthetic-value'", "unknown field");
+    for (source, diagnostic) in [
+        ("enabled = 'synthetic-value'", "enabled: must be a boolean"),
+        (
+            "[enabled]\nsynthetic-field = 'synthetic-value'",
+            "enabled: must be a boolean",
+        ),
+        (
+            "providers = 'synthetic-value'",
+            "providers: must be a table",
+        ),
+        (
+            "chat_path = ['synthetic-value']",
+            "chat_path: must be a path starting with /",
+        ),
+        (
+            "max_output_tokens = -1",
+            "max_output_tokens: must be an integer from 1 to 4294967295",
+        ),
+        (
+            "max_request_bytes = 0",
+            "max_request_bytes: must be a positive integer in bytes",
+        ),
+        (
+            "key_aliases = { synthetic-field = 'synthetic-value' }",
+            "key_aliases: must be a list of key aliases",
+        ),
+    ] {
+        assert_config_diagnostic(source, diagnostic);
+    }
+}
+
+#[test]
+fn config_diagnostics_locate_unknown_keys_without_echoing_input() {
+    let source = "# café\r\nenabled = true\r\n'z-synthetic-field' = '''\r\nsynthetic-value'''\r\na-synthetic-field = 1";
+    assert_config_diagnostic(source, "config: unknown field at line 3");
+
+    let source = "# café\n\n[synthetic-field]\nvalue = 'synthetic-value'";
+    assert_config_diagnostic(source, "config: unknown field at line 3");
+
+    let provider = PROVIDER.replace("provider-a", "synthetic-provider");
+    let provider = provider.trim_end();
+    let source = format!("{provider}\nsynthetic-field = [\n'synthetic-value'\n]");
+    let line = provider.lines().count() + 1;
+    assert_config_diagnostic(
+        &source,
+        &format!("providers[1]: unknown field at line {line}"),
+    );
 }
 
 #[test]
@@ -251,19 +295,26 @@ fn config_diagnostics_locate_provider_errors_in_source_order() {
     for (entry, location) in [
         (
             second.replace("\"model-x\"", "['synthetic-value']"),
-            "providers[2].model",
+            "providers[2].model: must be non-empty text",
         ),
         (
             second.replace("model = \"model-x\"", ""),
-            "providers[2].model",
+            "providers[2].model: missing field",
         ),
         (
             second.replace("https://api.example.com/v1/", "synthetic-value"),
             "providers[2].base_url",
         ),
         (
-            format!("{second}\nsynthetic-field = 'synthetic-value'"),
-            "providers[2]: unknown field",
+            format!("{second}\nmax_request_bytes = 'synthetic-value'"),
+            "providers[2].max_request_bytes: must be a positive integer in bytes",
+        ),
+        (
+            second.replace(
+                "input_usd_per_mtok = 2.0",
+                "input_usd_per_mtok = 'synthetic-value'",
+            ),
+            "providers[2].input_usd_per_mtok: must be a non-negative price",
         ),
         (
             second.replace("synthetic-provider", "\"synthetic-provider@invalid\""),

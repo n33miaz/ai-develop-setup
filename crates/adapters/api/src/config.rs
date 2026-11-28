@@ -22,6 +22,14 @@ const MICRO_PER_USD: u64 = 1_000_000;
 const MAX_USD: u64 = 1_000_000_000;
 const MONTHLY_CAP_FIELD: &str = "monthly_cap_usd";
 const HEADER_TOKEN_SYMBOLS: &str = "!#$%&'*+-.^_`|~";
+const CHAT_PATH_EXPECTED: &str = "must be a path starting with / without query, fragment or spaces";
+const KEY_HEADER_EXPECTED: &str = "must be a valid HTTP header name";
+const KEY_PREFIX_EXPECTED: &str = "must be text without control characters";
+const MAX_OUTPUT_TOKENS_EXPECTED: &str = "must be an integer from 1 to 4294967295";
+const MAX_REQUEST_BYTES_EXPECTED: &str = "must be a positive integer in bytes";
+const MONTHLY_CAP_EXPECTED: &str = "must be a finite number";
+const PRICE_EXPECTED: &str =
+    "must be a non-negative price up to one billion USD in whole micro-dollars per million tokens";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigError {
@@ -86,73 +94,90 @@ impl Settings<'_> {
     fn optional<T: DeserializeOwned>(
         &mut self,
         key: &'static str,
+        expected: &str,
     ) -> Result<Option<T>, ConfigError> {
         take(&mut self.table, key)
             .map(|value| {
                 T::deserialize(ValueDeserializer::from(value))
-                    .map_err(|_| invalid(self.field(key), "invalid value"))
+                    .map_err(|_| invalid(self.field(key), expected))
             })
             .transpose()
     }
 
-    fn required<T: DeserializeOwned>(&mut self, key: &'static str) -> Result<T, ConfigError> {
-        self.optional(key)?
+    fn required<T: DeserializeOwned>(
+        &mut self,
+        key: &'static str,
+        expected: &str,
+    ) -> Result<T, ConfigError> {
+        self.optional(key, expected)?
             .ok_or_else(|| invalid(self.field(key), "missing field"))
     }
 
-    fn finish(&self) -> Result<(), ConfigError> {
-        if !self.table.is_empty() {
-            return Err(invalid(self.scope.unwrap_or("config"), "unknown field"));
+    fn finish(&self, source: &str) -> Result<(), ConfigError> {
+        if let Some(key) = self.table.keys().min_by_key(|key| key.span().start) {
+            let line = line_at(source, key.span().start);
+            return Err(invalid(
+                self.scope.unwrap_or("config"),
+                format!("unknown field at line {line}"),
+            ));
         }
         Ok(())
     }
 }
 
 impl Raw {
-    fn read(table: DeTable<'_>) -> Result<Self, ConfigError> {
+    fn read(table: DeTable<'_>, source: &str) -> Result<Self, ConfigError> {
         let mut settings = Settings { table, scope: None };
         let raw = Self {
-            enabled: settings.required("enabled")?,
-            monthly_cap_usd: settings.optional(MONTHLY_CAP_FIELD)?,
-            chat_path: settings.required("chat_path")?,
-            key_header: settings.required("key_header")?,
-            key_prefix: settings.required("key_prefix")?,
-            max_output_tokens: settings.required("max_output_tokens")?,
-            max_request_bytes: settings.required("max_request_bytes")?,
-            key_aliases: settings.required("key_aliases")?,
+            enabled: settings.required("enabled", "must be a boolean")?,
+            monthly_cap_usd: settings.optional(MONTHLY_CAP_FIELD, MONTHLY_CAP_EXPECTED)?,
+            chat_path: settings.required("chat_path", CHAT_PATH_EXPECTED)?,
+            key_header: settings.required("key_header", KEY_HEADER_EXPECTED)?,
+            key_prefix: settings.required("key_prefix", KEY_PREFIX_EXPECTED)?,
+            max_output_tokens: settings
+                .required("max_output_tokens", MAX_OUTPUT_TOKENS_EXPECTED)?,
+            max_request_bytes: settings
+                .required("max_request_bytes", MAX_REQUEST_BYTES_EXPECTED)?,
+            key_aliases: settings.required("key_aliases", "must be a list of key aliases")?,
         };
-        settings.finish()?;
+        settings.finish(source)?;
         Ok(raw)
     }
 }
 
 impl RawProvider {
-    fn read(table: DeTable<'_>, scope: &str) -> Result<Self, ConfigError> {
+    fn read(table: DeTable<'_>, scope: &str, source: &str) -> Result<Self, ConfigError> {
         let mut settings = Settings {
             table,
             scope: Some(scope),
         };
         let raw = Self {
-            base_url: settings.required("base_url")?,
-            model: settings.required("model")?,
-            input_usd_per_mtok: settings.required("input_usd_per_mtok")?,
-            output_usd_per_mtok: settings.required("output_usd_per_mtok")?,
-            price_version: settings.required("price_version")?,
-            chat_path: settings.optional("chat_path")?,
-            key_header: settings.optional("key_header")?,
-            key_prefix: settings.optional("key_prefix")?,
-            max_output_tokens: settings.optional("max_output_tokens")?,
-            max_request_bytes: settings.optional("max_request_bytes")?,
-            key_aliases: settings.optional("key_aliases")?,
-            active_key: settings.optional("active_key")?,
+            base_url: settings.required("base_url", "must be an HTTPS URL")?,
+            model: settings.required("model", "must be non-empty text")?,
+            input_usd_per_mtok: settings.required("input_usd_per_mtok", PRICE_EXPECTED)?,
+            output_usd_per_mtok: settings.required("output_usd_per_mtok", PRICE_EXPECTED)?,
+            price_version: settings.required("price_version", "must be non-empty text")?,
+            chat_path: settings.optional("chat_path", CHAT_PATH_EXPECTED)?,
+            key_header: settings.optional("key_header", KEY_HEADER_EXPECTED)?,
+            key_prefix: settings.optional("key_prefix", KEY_PREFIX_EXPECTED)?,
+            max_output_tokens: settings
+                .optional("max_output_tokens", MAX_OUTPUT_TOKENS_EXPECTED)?,
+            max_request_bytes: settings
+                .optional("max_request_bytes", MAX_REQUEST_BYTES_EXPECTED)?,
+            key_aliases: settings.optional("key_aliases", "must be a list of key aliases")?,
+            active_key: settings.optional("active_key", "must be a text key alias")?,
         };
-        settings.finish()?;
+        settings.finish(source)?;
         Ok(raw)
     }
 }
 
 fn take<'a>(table: &mut DeTable<'a>, key: &'static str) -> Option<Spanned<DeValue<'a>>> {
     table.remove(&Spanned::new(0..0, key.into()))
+}
+
+fn line_at(source: &str, offset: usize) -> usize {
+    1 + source.bytes().take(offset).filter(|&b| b == b'\n').count()
 }
 
 /// Settings of one provider that speaks the Chat Completions format.
@@ -210,14 +235,7 @@ impl ApiConfig {
             .map(Spanned::into_inner)
             .map_err(|error| {
                 let reason = match error.span() {
-                    Some(span) => {
-                        let line = 1 + user
-                            .bytes()
-                            .take(span.start)
-                            .filter(|&b| b == b'\n')
-                            .count();
-                        format!("invalid TOML at line {line}")
-                    }
+                    Some(span) => format!("invalid TOML at line {}", line_at(user, span.start)),
                     None => "invalid TOML".to_owned(),
                 };
                 invalid("config", reason)
@@ -233,7 +251,7 @@ impl ApiConfig {
             DEFAULT_POLICY
         };
         defaults.extend(overrides);
-        let raw = Raw::read(defaults)?;
+        let raw = Raw::read(defaults, user)?;
         let cap = raw
             .monthly_cap_usd
             .as_ref()
@@ -275,7 +293,7 @@ impl ApiConfig {
             let DeValue::Table(table) = entry.into_inner() else {
                 return Err(invalid(scope, "must be a table"));
             };
-            let p = RawProvider::read(table, &scope)?;
+            let p = RawProvider::read(table, &scope, source)?;
             let at = |key: &str| format!("{scope}.{key}");
             let chat_path = p.chat_path.unwrap_or_else(|| raw.chat_path.clone());
             let key_header = p.key_header.unwrap_or_else(|| raw.key_header.clone());
@@ -292,13 +310,16 @@ impl ApiConfig {
             {
                 return Err(invalid(
                     at("model"),
-                    "empty, too long or has control characters",
+                    format!("must be 1 to {MAX_MODEL_CHARS} characters without control characters"),
                 ));
             }
             if p.price_version.is_empty()
                 || p.price_version.chars().count() > MAX_PRICE_VERSION_CHARS
             {
-                return Err(invalid(at("price_version"), "empty or too long"));
+                return Err(invalid(
+                    at("price_version"),
+                    format!("must be 1 to {MAX_PRICE_VERSION_CHARS} characters"),
+                ));
             }
             let key_aliases = match &p.key_aliases {
                 Some(list) => alias_list(&at("key_aliases"), list)?,
@@ -352,7 +373,7 @@ fn price(field: &str, rate: toml::Spanned<toml::Value>, source: &str) -> Result<
     micro_usd(&rate, source)
         .filter(|&(whole, fractional)| !fractional && whole <= MAX_USD * MICRO_PER_USD)
         .map(|(whole, _)| whole)
-        .ok_or_else(|| invalid(field, "must be a non-negative price up to one billion USD in whole micro-dollars per million tokens"))
+        .ok_or_else(|| invalid(field, PRICE_EXPECTED))
 }
 
 fn cap_above_maximum(error: CapAboveMaximum) -> ConfigError {
@@ -370,7 +391,7 @@ fn monthly_cap(value: &Spanned<toml::Value>, source: &str) -> Result<u64, Config
         return Err(error("must be greater than zero"));
     }
     match micro_usd(value, source) {
-        None => Err(error("must be a finite number")),
+        None => Err(error(MONTHLY_CAP_EXPECTED)),
         Some((0, false)) => Err(error("must be greater than zero")),
         Some((0, true)) => Err(error("below one micro-dollar")),
         Some((whole, true)) if whole >= MAX_MONTHLY_CAP_MICRO_USD => {
@@ -436,7 +457,7 @@ fn decimal_micro_usd(literal: &str) -> Option<(u64, bool)> {
 
 fn check_max_tokens(field: &str, value: u32) -> Result<(), ConfigError> {
     if value == 0 {
-        return Err(invalid(field, "must be at least 1"));
+        return Err(invalid(field, MAX_OUTPUT_TOKENS_EXPECTED));
     }
     Ok(())
 }
@@ -444,10 +465,7 @@ fn check_max_tokens(field: &str, value: u32) -> Result<(), ConfigError> {
 fn check_path(field: &str, path: &str) -> Result<(), ConfigError> {
     let bad = |c: char| c.is_whitespace() || c.is_control() || matches!(c, '?' | '#');
     if !path.starts_with('/') || path.chars().any(bad) {
-        return Err(invalid(
-            field,
-            "must start with / and have no query, fragment or spaces",
-        ));
+        return Err(invalid(field, CHAT_PATH_EXPECTED));
     }
     Ok(())
 }
@@ -455,14 +473,14 @@ fn check_path(field: &str, path: &str) -> Result<(), ConfigError> {
 fn check_header_name(field: &str, name: &str) -> Result<(), ConfigError> {
     let token = |c: char| c.is_ascii_alphanumeric() || HEADER_TOKEN_SYMBOLS.contains(c);
     if name.is_empty() || !name.chars().all(token) {
-        return Err(invalid(field, "not a valid header name"));
+        return Err(invalid(field, KEY_HEADER_EXPECTED));
     }
     Ok(())
 }
 
 fn check_prefix(field: &str, prefix: &str) -> Result<(), ConfigError> {
     if prefix.chars().any(char::is_control) {
-        return Err(invalid(field, "has control characters"));
+        return Err(invalid(field, KEY_PREFIX_EXPECTED));
     }
     Ok(())
 }
