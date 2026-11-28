@@ -1,9 +1,19 @@
-import { lstat, mkdir, mkdtemp, readdir, realpath, rmdir, unlink } from 'node:fs/promises'
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  realpath,
+  rmdir,
+  unlink,
+  writeFile,
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const unixSocketPathLimit = 103 // macOS leaves 103 bytes before the terminating NUL.
 const scratchPrefix = 'web-terminal-'
+const profileName = 'browser-profile' // Outside the prefix: reused, not retained.
 
 async function entry(path) {
   return lstat(path, { bigint: true }).catch((error) => {
@@ -91,7 +101,7 @@ async function cleanSocketDirectory(paths, identities, report) {
 }
 
 async function cleanScratch(parent, paths, identities, report) {
-  const { scratch, profile, workdir, devToolsPort, hostConfig, daemonConfig } = paths
+  const { scratch, workdir, hostConfig, daemonConfig } = paths
   const notes = []
   try {
     checkDirectory(await entry(parent), identities.parent)
@@ -104,16 +114,12 @@ async function cleanScratch(parent, paths, identities, report) {
       notes,
     )
     const remaining = new Set(await readdir(scratch))
-    for (const [name, path, identity, files] of [
-      ['browser', profile, identities.profile, [[devToolsPort, 'isFile']]],
-      ['work', workdir, identities.work, []],
-    ]) {
-      if (!remaining.delete(name)) continue
+    if (remaining.delete('work')) {
       try {
-        const subdirectoryNotes = await cleanSubdirectory(path, identity, files)
-        if (subdirectoryNotes.length) notes.push(`${name} (${subdirectoryNotes.join(', ')})`)
+        const workNotes = await cleanSubdirectory(workdir, identities.work, [])
+        if (workNotes.length) notes.push(`work (${workNotes.join(', ')})`)
       } catch (error) {
-        notes.push(`${name} (${cleanupFailure(error)})`)
+        notes.push(`work (${cleanupFailure(error)})`)
       }
     }
     if (remaining.size) notes.push(`root (${remaining.size} retained)`)
@@ -124,36 +130,85 @@ async function cleanScratch(parent, paths, identities, report) {
   if (notes.length) report(`Browser test files in ${scratch}: ${notes.join(', ')}`)
 }
 
-async function directoryBytes(path) {
-  const pending = [path]
-  let bytes = 0n
-  while (pending.length) {
-    const current = pending.pop()
-    const info = await entry(current)
-    if (info?.isDirectory()) {
-      for (const name of await readdir(current)) pending.push(join(current, name))
-    } else if (info?.isFile()) {
-      bytes += info.size
-    }
-  }
-  return bytes
-}
-
 async function reportRetainedDirectories(parent, identity, report) {
   try {
     checkDirectory(await entry(parent), identity)
     let count = 0
-    let bytes = 0n
+    let entries = 0
     for (const name of await readdir(parent)) {
       if (!name.startsWith(scratchPrefix)) continue
       const path = join(parent, name)
       if (!(await entry(path))?.isDirectory()) continue
       count++
-      bytes += await directoryBytes(path)
+      entries += (await readdir(path)).length
     }
-    if (count) report(`Retained web-terminal-* directories: ${count} (${bytes} bytes)`)
+    if (count) {
+      report(`Retained web-terminal-* directories: ${count} (${entries} first-level entries)`)
+    }
   } catch (error) {
     report(`Retained web-terminal-* directories: inventory unavailable (${cleanupFailure(error)})`)
+  }
+}
+
+// An interrupted run leaves the lock behind, and only a person can tell it from a live one.
+async function lockBrowserProfile(lock) {
+  try {
+    await writeFile(lock, `${process.pid}\n`, { flag: 'wx' })
+  } catch (cause) {
+    if (cause.code !== 'EEXIST') throw cause
+    throw new Error(
+      `Browser test profile is locked by ${lock}. Wait for the other run to finish. ` +
+        'If no browser test or test browser is running, delete that file and run again.',
+      { cause },
+    )
+  }
+}
+
+async function prepareBrowserProfile(profile, devToolsPort) {
+  await mkdir(profile).catch((error) => {
+    if (error.code !== 'EEXIST') throw error
+  })
+  const identity = await entry(profile)
+  if (!identity?.isDirectory()) {
+    throw new Error(
+      `Browser test profile is not a real directory: ${profile}. Move it aside and run again.`,
+    )
+  }
+  // A port left by an earlier browser would be read before the new one writes its own.
+  const port = await entry(devToolsPort)
+  if (port?.isFile()) await unlink(devToolsPort)
+  else if (port) throw new Error(`Not a file: ${devToolsPort}. Move it aside and run again.`)
+  return identity
+}
+
+async function cleanBrowserProfile(profile, devToolsPort, identity, report) {
+  const notes = []
+  try {
+    checkDirectory(await entry(profile), identity)
+    await removeKnownFiles([[devToolsPort, 'isFile']], notes)
+    if (!(await readdir(profile)).length) await rmdir(profile)
+  } catch (error) {
+    notes.push(cleanupFailure(error))
+  }
+  if (notes.length) report(`Browser test profile ${profile}: ${notes.join(', ')}`)
+}
+
+async function withBrowserProfile(parent, run, report) {
+  const lock = join(parent, `${profileName}.lock`)
+  await lockBrowserProfile(lock)
+  try {
+    const profile = join(parent, profileName)
+    const devToolsPort = join(profile, 'DevToolsActivePort')
+    const identity = await prepareBrowserProfile(profile, devToolsPort)
+    try {
+      return await run({ profile, devToolsPort })
+    } finally {
+      await cleanBrowserProfile(profile, devToolsPort, identity, report)
+    }
+  } finally {
+    await unlink(lock).catch((error) => {
+      report(`Browser test profile lock ${lock}: ${cleanupFailure(error)}; delete that file`)
+    })
   }
 }
 
@@ -163,24 +218,28 @@ export async function withTestDirectory(root, run, report = console.warn) {
   const identities = { parent: await entry(parent) }
   if (!identities.parent?.isDirectory()) throw new Error('Invalid browser test directory')
 
+  return withBrowserProfile(
+    parent,
+    (browser) => withScratchDirectory(parent, identities, browser, run, report),
+    report,
+  )
+}
+
+async function withScratchDirectory(parent, identities, browser, run, report) {
   const scratch = await mkdtemp(join(parent, scratchPrefix))
-  const profile = join(scratch, 'browser')
   const paths = {
     scratch,
     hostConfig: join(scratch, 'host.toml'),
     daemonConfig: join(scratch, 'daemon.toml'),
     workdir: join(scratch, 'work'),
     channelName: `ads-web-test-${process.pid}`,
-    profile,
-    devToolsPort: join(profile, 'DevToolsActivePort'),
+    ...browser,
   }
   try {
     identities.scratch = await entry(scratch)
     if (process.platform !== 'win32') await createSocketDirectory(paths, identities)
     await mkdir(paths.workdir)
     identities.work = await entry(paths.workdir)
-    await mkdir(profile)
-    identities.profile = await entry(profile)
     return await run(paths)
   } finally {
     await cleanSocketDirectory(paths, identities, report)

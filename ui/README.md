@@ -137,16 +137,31 @@ npm ci
 npm run test:browser
 ```
 
-Cada execução usa uma pasta própria em `.test-tmp/` na raiz do repositório.
-Depois de encerrar os processos, o teste remove os arquivos conhecidos e as
-pastas vazias que criou, inclusive quando falha. Arquivos adicionais do perfil
-do navegador ficam preservados. Se a limpeza falhar, o aviso inclui o código
-do erro quando disponível e preserva o erro original do teste.
+Cada execução usa uma pasta própria `web-terminal-*` em `.test-tmp/`, na raiz do
+repositório, para as configurações e a pasta de trabalho. O perfil do navegador é
+um só, `.test-tmp/browser-profile`, reaproveitado entre execuções para que cada uma
+não deixe um perfil novo no disco. Antes de usá-lo, o teste confere que é uma pasta
+real, não um link nem uma junção, e apaga o `DevToolsActivePort` deixado antes. Se
+não for uma pasta real, o teste para sem tocar no destino; mova o item para outro
+lugar e rode de novo. O teste não limita o tamanho do perfil em bytes: o cache
+pertence ao navegador e pode crescer entre execuções. Para recomeçar, com nenhum
+teste rodando, mova a pasta para outro lugar.
+
+Só uma execução por vez usa o perfil. Enquanto roda, o teste mantém o arquivo
+`.test-tmp/browser-profile.lock`, com o número do processo, e uma segunda execução
+falha. Uma execução interrompida (Ctrl+C ou processo encerrado) deixa esse arquivo.
+Confira que não há teste nem navegador de teste rodando, apague só o arquivo de
+trava e rode de novo.
+
+Depois de encerrar os processos, o teste remove os arquivos conhecidos e as pastas
+vazias, inclusive quando falha. O conteúdo do perfil fica preservado. Se a limpeza
+falhar, o aviso inclui o código do erro quando disponível e preserva o erro original
+do teste. O teste não faz exclusão recursiva.
 
 Se houver pastas `web-terminal-*` em `.test-tmp/` após a limpeza, o teste informa
-a quantidade e a soma dos tamanhos dos arquivos regulares em bytes. O total
-inclui pastas de execuções anteriores e ignora links simbólicos. Na raiz do
-repositório, liste as pastas com PowerShell.
+a quantidade e o total de itens no primeiro nível delas, sem percorrer as
+subpastas e ignorando links simbólicos. Pastas retidas podem conter um perfil
+inteiro e só saem manualmente. Na raiz do repositório, liste-as com PowerShell.
 
 ```powershell
 Get-ChildItem -LiteralPath .test-tmp -Directory -Filter 'web-terminal-*' |
