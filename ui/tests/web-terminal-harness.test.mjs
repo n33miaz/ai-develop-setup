@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
+import fs from 'node:fs/promises'
 import { lstat, mkdir, mkdtemp, readdir, rmdir, unlink, writeFile } from 'node:fs/promises'
+import { syncBuiltinESMExports } from 'node:module'
 import { createServer } from 'node:net'
 import { dirname, join } from 'node:path'
 import test from 'node:test'
@@ -141,10 +143,115 @@ test('browser scratch preserves unexpected entries and the original failure', as
   )
   assert.deepEqual((await readdir(paths.scratch)).sort(), ['browser', 'daemon.toml'])
   assert.deepEqual(await readdir(paths.profile), ['unexpected'])
-  assert.equal(reports.length, 1)
+  assert.equal(reports.length, 2)
   assert.ok(reports[0].includes(paths.scratch))
   assert.match(reports[0], /browser \(1 retained\).*root \(1 retained\)/)
 })
+
+test('browser scratch reports the cleanup error code without replacing the test failure', async (t) => {
+  const fixture = await createScratchFixture()
+  const reports = []
+  const failure = new Error('browser failed')
+  const privatePath = '/third-party/private-profile'
+  const blocked = Object.assign(new Error(`unlink failed: ${privatePath}`), {
+    code: 'EBUSY',
+    path: privatePath,
+  })
+  let paths
+  const mock = t.mock.method(fs, 'unlink', async (path) => {
+    if (path === paths?.hostConfig) throw blocked
+    return unlinkFile(path)
+  })
+  syncBuiltinESMExports()
+  t.after(async () => {
+    mock.mock.restore()
+    syncBuiltinESMExports()
+    if (paths) {
+      await ignoreMissing(unlink(paths.hostConfig))
+      await ignoreMissing(unlink(paths.daemonConfig))
+      await ignoreMissing(rmdir(paths.profile))
+      await ignoreMissing(rmdir(paths.workdir))
+      await ignoreMissing(rmdir(paths.scratch))
+    }
+    await removeScratchFixture(fixture)
+  })
+  await assert.rejects(
+    withTestDirectory(
+      fixture,
+      async (layout) => {
+        paths = layout
+        await writeFile(paths.hostConfig, 'blocked')
+        await writeFile(paths.daemonConfig, 'removable')
+        throw failure
+      },
+      (message) => reports.push(message),
+    ),
+    (error) => error === failure,
+  )
+  assert.deepEqual(await readdir(paths.scratch), ['host.toml'])
+  assert.match(reports.join('\n'), /cleanup incomplete \(EBUSY\)/)
+  assert.ok(!reports.join('\n').includes(privatePath))
+})
+
+const unlinkFile = unlink
+
+test('browser scratch totals retained directories and file bytes without following links', async (t) => {
+  const fixture = await createScratchFixture()
+  const parent = join(fixture, '.test-tmp')
+  const old = join(parent, 'web-terminal-previous')
+  const other = join(parent, 'unrelated')
+  const oldFile = join(old, 'payload')
+  const otherFile = join(other, 'payload')
+  const reports = []
+  await mkdir(old)
+  await mkdir(other)
+  await writeFile(oldFile, '12345')
+  await writeFile(otherFile, 'ignore these bytes')
+  t.after(async () => {
+    await unlink(oldFile)
+    await rmdir(old)
+    await unlink(otherFile)
+    await rmdir(other)
+  })
+  const linkedScratch = join(parent, 'web-terminal-link')
+  await withTestDirectory(
+    fixture,
+    async ({ profile, scratch }) => {
+      const retained = join(profile, 'retained')
+      const retainedFile = join(retained, 'payload')
+      const linkedDirectory = join(retained, 'linked-directory')
+      t.after(async () => {
+        await ignoreMissing(unlink(linkedScratch))
+        await ignoreMissing(unlink(linkedDirectory))
+        await ignoreMissing(unlink(retainedFile))
+        await ignoreMissing(rmdir(retained))
+        await ignoreMissing(rmdir(profile))
+        await ignoreMissing(rmdir(scratch))
+        await removeScratchFixture(fixture)
+      })
+      await mkdir(retained)
+      await writeFile(retainedFile, 'abc')
+      await fs.symlink(other, linkedDirectory, 'junction')
+      await fs.symlink(other, linkedScratch, 'junction')
+    },
+    (message) => reports.push(message),
+  )
+  assert.ok(reports.includes('Retained web-terminal-* directories: 2 (8 bytes)'))
+  assert.equal((await lstat(otherFile)).size, 18)
+})
+
+async function createScratchFixture() {
+  const base = join(root, '.test-tmp')
+  await mkdir(base, { recursive: true })
+  const fixture = await mkdtemp(join(base, 'scratch-test-'))
+  await mkdir(join(fixture, '.test-tmp'))
+  return fixture
+}
+
+async function removeScratchFixture(fixture) {
+  await rmdir(join(fixture, '.test-tmp'))
+  await rmdir(fixture)
+}
 
 async function ignoreMissing(operation) {
   try {

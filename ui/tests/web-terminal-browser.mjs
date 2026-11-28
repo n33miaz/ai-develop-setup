@@ -59,24 +59,31 @@ async function control(socket, key, modifiers = 2) {
   }
 }
 
-let ws
-await withTestDirectory(root, (paths) =>
-  withTestProcesses((start) => runBrowser(start, paths)).finally(() => ws?.close()),
-)
+await withTestDirectory(root, runBrowser)
 
-async function runBrowser(
-  start,
-  {
-    scratch,
-    hostConfig,
-    daemonConfig,
-    workdir,
-    channelName,
-    socketDirectory = scratch,
-    profile,
-    devToolsPort,
-  },
-) {
+async function runBrowser(paths) {
+  let socket
+  try {
+    await withTestProcesses(async (start) => {
+      await writeTestConfigs(paths)
+      const env = testEnvironment(paths.scratch)
+      const { daemon, link } = await startTerminalServices(start, paths, env)
+      const url = await startBrowser(start, paths, env)
+      socket = new WebSocket(url)
+      await waitForOpen(socket)
+      const page = browserPage(cdpRequests(socket))
+      await openTerminal(page, link)
+      await checkKeyboardShortcuts(page)
+      await stop(daemon.child)
+      await checkRecovery(page, link)
+      await checkSampleMode(page)
+    })
+  } finally {
+    socket?.close()
+  }
+}
+
+async function writeTestConfigs({ hostConfig, daemonConfig, workdir, channelName }) {
   await writeFile(hostConfig, `channel_name = '${channelName}'\n`)
   await writeFile(
     daemonConfig,
@@ -88,7 +95,10 @@ program = '${process.execPath}'
 args = ['${fileURLToPath(new URL('terminal-byte-echo.cjs', import.meta.url))}']
 `,
   )
-  const env = {
+}
+
+function testEnvironment(scratch) {
+  return {
     ...process.env,
     LOCALAPPDATA: scratch,
     TEMP: scratch,
@@ -97,6 +107,13 @@ args = ['${fileURLToPath(new URL('terminal-byte-echo.cjs', import.meta.url))}']
     XDG_RUNTIME_DIR: scratch,
     VITE_CORE_HARNESSES: 'claude',
   }
+}
+
+async function startTerminalServices(
+  start,
+  { scratch, hostConfig, daemonConfig, socketDirectory = scratch },
+  env,
+) {
   const channelEnv = { ...env, XDG_RUNTIME_DIR: socketDirectory }
   const host = start(binary('ads-ptyhost'), ['--config', hostConfig], { env: channelEnv })
   await host.waitForReady(
@@ -120,7 +137,10 @@ args = ['${fileURLToPath(new URL('terminal-byte-echo.cjs', import.meta.url))}']
     (output) => output.split(/\r?\n/)[1] !== undefined && output.trim(),
     'Test daemon failed to issue a link',
   )
+  return { daemon, link }
+}
 
+async function startBrowser(start, { profile, devToolsPort }, env) {
   const browser = start(
     chromium,
     [
@@ -144,12 +164,17 @@ args = ['${fileURLToPath(new URL('terminal-byte-echo.cjs', import.meta.url))}']
     'Test browser failed to open DevTools',
   )
   const pages = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()
-  ws = new WebSocket(pages.find((page) => page.type === 'page').webSocketDebuggerUrl)
-  await new Promise((ready, reject) => {
-    ws.addEventListener('open', ready, { once: true })
-    ws.addEventListener('error', reject, { once: true })
+  return pages.find((page) => page.type === 'page').webSocketDebuggerUrl
+}
+
+function waitForOpen(socket) {
+  return new Promise((ready, reject) => {
+    socket.addEventListener('open', ready, { once: true })
+    socket.addEventListener('error', reject, { once: true })
   })
-  const send = cdpRequests(ws)
+}
+
+function browserPage(send) {
   async function evaluate(expression) {
     const result = await send('Runtime.evaluate', {
       expression,
@@ -167,6 +192,14 @@ args = ['${fileURLToPath(new URL('terminal-byte-echo.cjs', import.meta.url))}']
       () => evaluate(`Boolean(document.querySelector('[data-state="${value}"]'))`),
       `Missing connection state: ${value}`,
     )
+  async function navigateToBlank() {
+    await send('Page.navigate', { url: 'about:blank' })
+    await until(() => evaluate("location.href === 'about:blank'"), 'Blank page did not load')
+  }
+  return { send, evaluate, text, hasText, state, navigateToBlank }
+}
+
+async function openTerminal({ send, evaluate, state, hasText }, link) {
   await send('Browser.grantPermissions', {
     origin,
     permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'],
@@ -186,7 +219,9 @@ args = ['${fileURLToPath(new URL('terminal-byte-echo.cjs', import.meta.url))}']
   )
   await hasText('RAW READY')
   assert.equal(await evaluate('document.activeElement?.className'), 'xterm-helper-textarea')
+}
 
+async function checkKeyboardShortcuts({ send, evaluate, text, hasText }) {
   for (const [key, modifiers, value] of [
     ['v', 2, 'plain'],
     ['V', 10, 'shift'],
@@ -223,20 +258,21 @@ args = ['${fileURLToPath(new URL('terminal-byte-echo.cjs', import.meta.url))}']
   )
   assert.equal((await text()).match(/INPUT 03/g)?.length, 1)
   console.log('Browser keyboard shortcuts reached the substitute with the expected bytes')
+}
 
-  await stop(daemon.child)
+async function checkRecovery({ send, state, text, hasText, navigateToBlank }, link) {
   await state('link_unavailable')
   assert.ok(!(await text()).includes('Sessions display received events'))
-  await send('Page.navigate', { url: 'about:blank' })
-  await until(() => evaluate("location.href === 'about:blank'"), 'Blank page did not load')
+  await navigateToBlank()
   await send('Page.navigate', { url: link })
   await state('link_unavailable')
   await hasText('Open the new full link printed by the daemon')
   console.log('Interrupted connection and obsolete launch link show recovery guidance')
+}
 
+async function checkSampleMode({ send, evaluate, hasText, state, navigateToBlank }) {
   await evaluate('sessionStorage.clear()')
-  await send('Page.navigate', { url: 'about:blank' })
-  await until(() => evaluate("location.href === 'about:blank'"), 'Blank page did not load')
+  await navigateToBlank()
   await send('Page.navigate', { url: origin })
   await hasText('Sample data only')
   await state('disconnected')
