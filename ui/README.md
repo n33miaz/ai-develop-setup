@@ -99,14 +99,21 @@ desativado nessa janela. O bundle é o mesmo da interface web.
 
 ## Teste de fumaça do terminal no navegador
 
-O teste manual `tests/web-terminal-browser.mjs` roda separadamente de `npm test`
-e do CI. Ele inicia o Vite na porta 5173, que precisa estar livre, e abre um
+O teste `tests/web-terminal-browser.mjs` roda separadamente de `npm test`. No
+CI, o job `browser-terminal` o executa no Linux, com o Chrome ou o Chromium do
+runner, quando os filtros `ui` ou `pty` do job `changes` do
+[workflow](../.github/workflows/ci.yml) casam: mudanças na interface, no daemon,
+no host de terminais, no que eles usam ou no próprio workflow. O job falha se não
+achar navegador.
+
+O teste inicia o Vite na porta 5173, que precisa estar livre, e abre um
 navegador sem janela. A interface se autentica no daemon por WebSocket e abre
 um processo de teste no terminal xterm. Pelo Chrome DevTools Protocol (CDP), o
 teste simula a digitação de atalhos, confere os bytes recebidos pelo processo
 ao colar e verifica o texto copiado para a área de transferência do navegador.
 
-Na raiz do repositório, compile os executáveis de debug.
+Para rodar na sua máquina, compile os executáveis de debug na raiz do
+repositório.
 
 ```sh
 cargo build -p ads-ptyhost -p ads-daemon

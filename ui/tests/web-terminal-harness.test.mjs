@@ -52,6 +52,20 @@ test('readiness reports an early exit without exposing process output', async ()
   )
 })
 
+test('readiness matches output that a process colors', async () => {
+  await withTestProcesses(async (start) => {
+    const server = start(process.execPath, [
+      '-e',
+      String.raw`console.log('http://127.0.0.1:\x1b[1m5173\x1b[22m/'); setTimeout(() => {}, 30000)`,
+    ])
+    await server.waitForReady(
+      (output) => output.includes('http://127.0.0.1:5173'),
+      'Server did not become ready',
+      50,
+    )
+  })
+})
+
 const root = fileURLToPath(new URL('../..', import.meta.url))
 
 test(

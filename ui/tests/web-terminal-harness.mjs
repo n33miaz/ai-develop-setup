@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { setTimeout as delay } from 'node:timers/promises'
+import { stripVTControlCharacters } from 'node:util'
 
 export async function until(check, message, attempts = 150) {
   for (let attempt = 0; attempt < attempts; attempt++) {
@@ -40,7 +41,8 @@ export async function withTestProcesses(run) {
         return until(
           async () => {
             checkProcess()
-            const result = await check(output)
+            // Vite colors the port in its URL under CI and on Windows.
+            const result = await check(stripVTControlCharacters(output))
             checkProcess()
             return result
           },
