@@ -227,10 +227,19 @@ impl Offer {
                 DeviceRefusal::NotOwnerDevice => AcceptError::NotOwnerDevice,
             },
         )?;
-        if consent.data.handoff_id != self.handoff_id {
+        let record_consent = check_consent_record(record, &self.owner_id, consent);
+        // A record identity error can mask another mismatch. Check both consent IDs against
+        // the offer in that case so the public offer errors still take precedence.
+        let (handoff_id, source_session_id) = match record_consent {
+            Err(ConsentError::OtherHandoff | ConsentError::OtherSession) => {
+                (&consent.data.handoff_id, &consent.data.source_session_id)
+            }
+            _ => (&record.id, &record.source_session_id),
+        };
+        if handoff_id != &self.handoff_id {
             return Err(AcceptError::OtherHandoff);
         }
-        if consent.data.source_session_id != self.source_session_id {
+        if source_session_id != &self.source_session_id {
             return Err(AcceptError::OtherSession);
         }
         let Some(accepted) = consent.data.alternative_id.as_ref() else {
@@ -241,7 +250,7 @@ impl Offer {
         {
             return Err(AcceptError::OtherTrigger);
         }
-        check_consent_record(record, &self.owner_id, consent).map_err(AcceptError::Record)?;
+        record_consent.map_err(AcceptError::Record)?;
         if accepted != choice {
             return Err(AcceptError::OtherRoute);
         }
