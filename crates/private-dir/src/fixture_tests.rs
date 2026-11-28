@@ -114,9 +114,19 @@ fn subfolder_replaced_before_opening_loses_only_the_named_file() {
 
     #[cfg(unix)]
     assert_eq!(error.kind(), ErrorKind::DirectoryNotEmpty);
-    // STATUS_DIRECTORY_NOT_EMPTY, which has no error kind of its own here.
     #[cfg(windows)]
-    assert_eq!(error.to_string(), "the system answered 0xc0000101");
+    {
+        use windows::Win32::Foundation::STATUS_DIRECTORY_NOT_EMPTY;
+
+        assert_eq!(error.kind(), ErrorKind::Other);
+        let message = error.to_string();
+        let status = message
+            .split_whitespace()
+            .last()
+            .and_then(|code| code.strip_prefix("0x"))
+            .and_then(|hex| u32::from_str_radix(hex, 16).ok());
+        assert_eq!(status, Some(STATUS_DIRECTORY_NOT_EMPTY.0 as u32), "{error}");
+    }
     assert!(!temp.path("nested/listed").exists());
     assert_eq!(temp.read("nested/unlisted"), "unlisted");
     assert_eq!(temp.read("original/listed"), "original");
