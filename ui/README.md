@@ -139,9 +139,25 @@ npm run test:browser
 
 Cada execução usa uma pasta própria em `.test-tmp/` na raiz do repositório.
 Depois de encerrar os processos, o teste remove os arquivos conhecidos e as
-pastas vazias que criou, inclusive quando falha. O aviso de limpeza informa o
-caminho e a contagem das entradas preservadas, como arquivos adicionais do
-perfil do navegador.
+pastas vazias que criou, inclusive quando falha. Arquivos adicionais do perfil
+do navegador ficam preservados. Se a limpeza falhar, o aviso inclui o código
+do erro quando disponível e preserva o erro original do teste.
+
+Se houver pastas `web-terminal-*` em `.test-tmp/` após a limpeza, o teste informa
+a quantidade e a soma dos tamanhos dos arquivos regulares em bytes. O total
+inclui pastas de execuções anteriores e ignora links simbólicos. Na raiz do
+repositório, liste as pastas com PowerShell.
+
+```powershell
+Get-ChildItem -LiteralPath .test-tmp -Directory -Filter 'web-terminal-*' |
+  Where-Object { -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) }
+```
+
+No Linux ou macOS, liste com `find`.
+
+```sh
+find .test-tmp ! -path .test-tmp -prune -type d -name 'web-terminal-*' -print
+```
 
 ## Fila de tarefas e aprovações
 
