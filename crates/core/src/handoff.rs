@@ -201,6 +201,29 @@ pub enum ChainError {
     RepeatedOpeningPrompt,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AppendError {
+    Consent(ConsentError),
+    Chain(ChainError),
+}
+
+/// Appends a context or account-switch handoff after validating consent and the full chain.
+/// The caller supplies the lineage owner and the acceptance from its authenticated log.
+pub fn append_handoff(
+    chain: &mut Vec<RecordSessionHandoffV2>,
+    record: RecordSessionHandoffV2,
+    owner_id: &CommonIdV1,
+    event: &EventSessionHandoffV4,
+    owner_at: impl Fn(&CommonIdV1, &CommonTimestampV1) -> Option<CommonIdV1>,
+) -> Result<(), AppendError> {
+    verify_consent(&record, owner_id, event, owner_at).map_err(AppendError::Consent)?;
+    let mut candidate = chain.clone();
+    candidate.push(record);
+    validate_chain(&candidate).map_err(AppendError::Chain)?;
+    *chain = candidate;
+    Ok(())
+}
+
 /// Ordering key of a UTC timestamp whose calendar the contract type already checked. Date and
 /// time have a fixed width and order as text; the fraction does not, so it counts in microseconds.
 fn instant_key(text: &str) -> Option<(&str, u32)> {
