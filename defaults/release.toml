@@ -19,9 +19,13 @@ keep = 10
 # o que apagaria. "off": não poda.
 prune = "apply"
 
+# Espera pela propagação na API, em duas conferências. A primeira tentativa é sempre imediata. Ajuste o total
+# (1 a 10) e o intervalo (1 a 15 segundos) conforme o atraso observado. Com os padrões abaixo cada espera tem até
+# 25 segundos de pausas, além do tempo das consultas.
 # Após publicar, cada tentativa consulta a release pela tag e, quando ela aparece, busca a listagem completa
-# para a retenção. A primeira tentativa é imediata. Ajuste o total (1 a 10) e o intervalo (1 a 15 segundos)
-# conforme o atraso de propagação. Com os padrões abaixo há até 25 segundos de pausas, além do tempo das consultas.
-# Se a listagem não confirmar a mesma release até a última tentativa, o job falha antes de emitir alvos.
+# para a retenção. Se a listagem não confirmar a mesma release até a última tentativa, o job falha antes de emitir
+# alvos.
+# Após cada exclusão da poda (release e depois tag), a consulta repete até a API responder 404; a exclusão não é
+# refeita. Se o alvo continuar lá na última tentativa, ou a consulta falhar de outro modo, o job falha.
 wait_attempts = 6
 wait_interval_seconds = 5
