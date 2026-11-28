@@ -99,14 +99,21 @@ desativado nessa janela. O bundle é o mesmo da interface web.
 
 ## Teste de fumaça do terminal no navegador
 
-O teste manual `tests/web-terminal-browser.mjs` roda separadamente de `npm test`
-e do CI. Ele inicia o Vite na porta 5173, que precisa estar livre, e abre um
+O teste `tests/web-terminal-browser.mjs` roda separadamente de `npm test`. No
+CI, o job `browser-terminal` o executa no Linux, com o Chrome ou o Chromium do
+runner, quando os filtros `ui` ou `pty` do job `changes` do
+[workflow](../.github/workflows/ci.yml) casam: mudanças na interface, no daemon,
+no host de terminais, no que eles usam ou no próprio workflow. O job falha se não
+achar navegador.
+
+O teste inicia o Vite na porta 5173, que precisa estar livre, e abre um
 navegador sem janela. A interface se autentica no daemon por WebSocket e abre
 um processo de teste no terminal xterm. Pelo Chrome DevTools Protocol (CDP), o
 teste simula a digitação de atalhos, confere os bytes recebidos pelo processo
 ao colar e verifica o texto copiado para a área de transferência do navegador.
 
-Na raiz do repositório, compile os executáveis de debug.
+Para rodar na sua máquina, compile os executáveis de debug na raiz do
+repositório.
 
 ```sh
 cargo build -p ads-ptyhost -p ads-daemon
@@ -142,6 +149,17 @@ Depois de encerrar os processos, o teste remove os arquivos conhecidos e as
 pastas vazias que criou, inclusive quando falha. O aviso de limpeza informa o
 caminho e a contagem das entradas preservadas, como arquivos adicionais do
 perfil do navegador.
+
+No Linux e no macOS, o teste cria também uma pasta curta no diretório
+temporário do sistema. Nela ficam o socket do host de terminais e o `TMPDIR` do
+navegador: um socket Unix tem limite de tamanho no caminho, e no Linux o Chrome
+aborta na partida quando o socket que ele cria abaixo do `TMPDIR` não cabe. O que
+o navegador deixar ali também é preservado e informado.
+
+Quando um processo falha ao partir, ou não fica pronto no prazo, a mensagem de
+erro traz o final da saída de erro dele (até 20 linhas e 4000 caracteres), com
+links e sequências longas como o token de acesso trocados por `[redacted]`. A
+saída padrão, por onde o daemon entrega o link, não é incluída.
 
 ## Fila de tarefas e aprovações
 

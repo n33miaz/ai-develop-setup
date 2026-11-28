@@ -18,6 +18,7 @@ Estado da mitigação, em cada risco:
 | [Troca no disco durante a execução](#troca-no-disco-durante-a-execução) | executor de arquivos | implementada e testada, com limites escritos |
 | [Licença de execução usada duas vezes](#licença-de-execução-usada-duas-vezes) | portão, executor e armazenamento | implementada e testada com o `EventLog` ancorado; execução pela API local pendente |
 | [Perda de sessões de terminal](#perda-de-sessões-de-terminal) | host de terminais | implementada e testada; host supervisionado pelo [lançador](../crates/launcher/README.md) |
+| [Terminal web quebrado no navegador](#terminal-web-quebrado-no-navegador) | interface, daemon e host de terminais | parcial: teste com navegador real no Linux; Windows e macOS sem cobertura no CI |
 | [Outro usuário da máquina alcança as sessões](#outro-usuário-da-máquina-alcança-as-sessões) | host de terminais e daemon | implementada e testada no Windows; teste com duas contas ausente |
 | [Credencial de CLI de IA vaza para o processo filho](#credencial-de-cli-de-ia-vaza-para-o-processo-filho) | adaptadores de ferramenta e host | parcial: filtro do ambiente implementado |
 | [Programa ou pasta configurados por um link](#programa-ou-pasta-configurados-por-um-link) | adaptadores de ferramenta | implementada e testada; a abertura usa o caminho resolvido |
@@ -103,6 +104,16 @@ Estado da mitigação, em cada risco:
 - **Mitigação existente (implementada e testada).** Processo separado ([ADR 0003](adr/0003-separate-pty-host-process.md)) com anel de replay numerado: quem reconecta retoma pelo `seq`, sem buraco e sem duplicata, e pedido fora do anel volta erro com o limite ([regras do replay](../crates/ptyhost/README.md#regras-do-replay)). Testes `client_dropped_twenty_times_loses_and_repeats_nothing`, `real_terminal_survives_twenty_client_drops_without_losing_a_byte` e os 20 ciclos de ConPTY (`twenty_cycles_leave_no_process_and_no_handle`) no job `pty-windows`. Na API local, a preparação que vence após uma abertura confirmada preserva a vaga até o host confirmar a limpeza. O descarte por cota de uma espera acorda o assinante ocioso e encerra só a assinatura dessa encarnação. No Windows, uma sessão cujo shell sai deixando vivo um filho num console próprio, dentro do job, não deixa processo depois da devolução automática da vaga (`ended_session_leaves_no_child_behind_on_windows`). Os limites estão no [README do daemon](../crates/daemon/README.md).
 - **Plano B.** Condição de reversão da ADR 0003; para o PTY no Windows, ConPTY direto.
 - **O que falta.** Reassumir a supervisão do host após `stop` segue pendente no [lançador](../crates/launcher/README.md). Os limites de desligamento, criação de processos e conexões estão no [README do host](../crates/ptyhost/README.md#limites-conhecidos). O daemon não adota sessões antigas ao reiniciar. A fila já define o destino da tarefa em `running` quando o núcleo reinicia (espera de `host_confirm_seconds` pela confirmação do host e cancelamento terminal se o prazo vencer, sem gastar tentativa). O daemon ainda precisa parear tarefa e sessão, consultar o host, aplicar o prazo e solicitar o encerramento se a sessão reaparecer ([fila contínua](../crates/core/README.md#fila-contínua)).
+
+### Terminal web quebrado no navegador
+
+- **Descrição.** Uma mudança na interface, no daemon ou no host de terminais quebra a conexão, a entrada ou a saída do terminal no navegador, mesmo com os testes de cada parte passando.
+- **Impacto.** Terminal inutilizável, ou bytes errados enviados à ferramenta ao digitar ou colar.
+- **Dono.** Interface, daemon e host de terminais.
+- **Teto.** Não se aplica.
+- **Mitigação existente (implementada e testada).** O job `browser-terminal` do CI compila `ads-ptyhost` e `ads-daemon` no Linux e roda [`web-terminal-browser.mjs`](../ui/tests/web-terminal-browser.mjs) com o navegador do runner: conexão pelo link do daemon, abertura de um processo substituto, bytes dos atalhos de colar e de interromper, cópia da seleção e os avisos de conexão perdida e de exemplo. Falha se não achar navegador e entra no `ci-ok` ([quando roda](../ui/README.md#teste-de-fumaça-do-terminal-no-navegador)).
+- **Plano B.** Reverter a mudança que quebrou o terminal.
+- **O que falta.** Windows (named pipe, ConPTY e Edge) e macOS (socket Unix com limite de caminho menor) não rodam esse teste no CI; no Windows ele roda à mão. Firefox e Safari não são exercitados. O teste usa o Vite de desenvolvimento, não o bundle publicado nem a janela da casca, um processo substituto no lugar de um CLI real e um daemon sem armazenamento. O navegador é o da imagem do runner, sem versão fixada. Mudança fora dos filtros `ui` e `pty` não dispara o job.
 
 ### Outro usuário da máquina alcança as sessões
 

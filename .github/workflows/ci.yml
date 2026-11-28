@@ -389,6 +389,60 @@ jobs:
       - name: Build
         run: npm run build
 
+  # Terminal web contra navegador, daemon e host de terminais reais. Roda quando muda a interface (`ui`) ou o
+  # que compõe o daemon e o host, inclusive este workflow (`pty`). O navegador é o que já vem no runner.
+  browser-terminal:
+    name: browser-terminal
+    needs: changes
+    if: needs.changes.outputs.ui == 'true' || needs.changes.outputs.pty == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Antes da compilação: sem navegador, o job falha logo.
+      - name: Localizar o navegador do runner
+        run: |
+          browser="$(command -v google-chrome || command -v chromium || command -v chromium-browser || true)"
+          if [ -z "$browser" ]; then
+            echo "::error::nenhum Chrome ou Chromium no runner."
+            exit 1
+          fi
+          "$browser" --version
+          echo "CHROMIUM_BIN=$browser" >> "$GITHUB_ENV"
+      - name: Instalar a versão fixada em rust-toolchain.toml
+        run: |
+          rustup toolchain install
+          rustc --version
+      # Só restaura o cache do Linux: quem salva é o job `rust`.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: linux
+          save-if: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: ui/.node-version
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Instalar dependências da interface
+        working-directory: ui
+        run: npm ci --ignore-scripts
+      - name: Compilar o host de terminais e o daemon
+        run: cargo build --locked -p ads-ptyhost -p ads-daemon
+      # A última mensagem do teste é exigida: uma saída antecipada sem erro não passa.
+      - name: Testar o terminal no navegador
+        working-directory: ui
+        shell: bash
+        run: |
+          npm run test:browser 2>&1 | tee "$RUNNER_TEMP/browser-terminal.log"
+          grep -Fx 'Browser without a launch link shows sample guidance' "$RUNNER_TEMP/browser-terminal.log"
+
   # ConPTY real e Job Object só existem no Windows: os testes do ptyhost (com os 20 ciclos de abrir e fechar
   # sessão), o cliente do daemon, os parâmetros de abertura das ferramentas e o lint do código exclusivo do
   # Windows rodam aqui (ADR 0013).
@@ -555,7 +609,7 @@ jobs:
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [commits, secrets, terms, changes, contracts, rust, shell-check, ui, pty-windows, fs-windows, storage-windows, vault-windows, launcher-windows]
+    needs: [commits, secrets, terms, changes, contracts, rust, shell-check, ui, browser-terminal, pty-windows, fs-windows, storage-windows, vault-windows, launcher-windows]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
