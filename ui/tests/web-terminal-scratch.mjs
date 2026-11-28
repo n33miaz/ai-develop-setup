@@ -60,9 +60,12 @@ async function createSocketDirectory(paths, identities) {
     identities.socket = await entry(paths.socketDirectory)
     if (!identities.socket?.isDirectory()) throw new Error('Invalid socket directory')
   } catch (cause) {
-    throw new Error('Could not create a Unix socket directory; set TMPDIR to a writable directory', {
-      cause,
-    })
+    throw new Error(
+      'Could not create a Unix socket directory; set TMPDIR to a writable directory',
+      {
+        cause,
+      },
+    )
   }
   const socketPath = join(paths.socketDirectory, `${paths.channelName}.sock`)
   if (Buffer.byteLength(socketPath) > unixSocketPathLimit) {
